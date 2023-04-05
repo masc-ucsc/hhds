@@ -1,0 +1,113 @@
+# livehd specific bazel options
+build --output_filter='^//(core|pass|inou)'
+#build --output_filter="^//"
+#build --cxxopt="-std=c++17" --cxxopt="-fexceptions" --force_pic --build_tag_filters="-fixme"
+build --cxxopt="-std=c++17" --force_pic --build_tag_filters="-fixme"
+# test --cache_test_results=no
+
+# Use Clang
+build:clang --action_env=CC=clang
+build:clang --action_env=CXX=clang++
+#build:clang --linkopt -fuse-ld=lld
+
+# config that enables super aggressive optimization for max performance
+build:bench --copt -ffast-math
+build:bench --copt -Ofast
+build:bench --copt -march=native
+build:bench --copt -DNDEBUG
+
+build:bench --cxxopt -ffast-math
+build:bench --cxxopt -Ofast
+build:bench --cxxopt -march=native
+build:bench --cxxopt -DNDEBUG
+
+build:prof --copt -Og
+build:prof --cxxopt -Og
+build:prof --linkopt -Og
+
+build:prof --copt -pg
+build:prof --cxxopt -pg
+build:prof --linkopt -pg
+
+#build:prof --copt -fprofile-arcs
+#build:prof --cxxopt -fprofile-arcs
+#build:prof --linkopt -fprofile-arcs
+
+#build:prof --copt -ftest-coverage
+#build:prof --cxxopt -ftest-coverage
+#build:prof --linkopt -ftest-coverage
+
+test --test_tag_filters "-long1,-long2,-long3,-long4,-long5,-long6,-long7,-long8,-manual,-fixme"
+coverage --test_tag_filters "-long1,-long2,-long3,-long4,-long5,-long6,-long7,-long8,-manual,-fixme"
+coverage --cache_test_results=no
+
+# Address sanitizer
+build:asan --strip=never
+build:asan --copt -fsanitize=address
+build:asan --copt -DADDRESS_SANITIZER
+#build:asan --copt -O1
+build:asan --copt -g
+build:asan --copt -fno-omit-frame-pointer
+build:asan --cxxopt -fsanitize=address
+build:asan --cxxopt -DADDRESS_SANITIZER
+#build:asan --cxxopt -O1
+build:asan --cxxopt -std=c++17
+build:asan --cxxopt -g
+build:asan --cxxopt -fno-omit-frame-pointer
+build:asan --linkopt -fsanitize=address
+
+# asan for OSX
+build:asan_macos --strip=never
+build:asan_macos --copt=-fsanitize=address
+build:asan_macos --copt -Wno-macro-redefined
+build:asan_macos --copt -D_FORTIFY_SOURCE=0
+build:asan_macos --copt=-fsanitize=address
+build:asan_macos --copt=-O0
+build:asan_macos --copt=-fno-omit-frame-pointer
+build:asan_macos --copt=-DGPR_NO_DIRECT_SYSCALLS
+build:asan_macos --cxxopt=-fsanitize=address
+build:asan_macos --cxxopt -Wno-macro-redefined
+build:asan_macos --cxxopt -D_FORTIFY_SOURCE=0
+build:asan_macos --cxxopt=-fsanitize=address
+build:asan_macos --cxxopt=-O0
+build:asan_macos --cxxopt=-fno-omit-frame-pointer
+build:asan_macos --cxxopt=-DGPR_NO_DIRECT_SYSCALLS
+build:asan_macos --linkopt=-fsanitize=address
+build:asan_macos --action_env=ASAN_OPTIONS=detect_leaks=0
+build:asan_macos --dynamic_mode=off
+
+# Thread sanitizer
+build:tsan --strip=never
+build:tsan --copt -fsanitize=thread
+build:tsan --copt -DTHREAD_SANITIZER
+build:tsan --copt -DDYNAMIC_ANNOTATIONS_ENABLED=1
+build:tsan --copt -DDYNAMIC_ANNOTATIONS_EXTERNAL_IMPL=1
+build:tsan --copt -g
+# build:tsan --copt -O1
+build:tsan --copt -fno-omit-frame-pointer
+
+build:tsan --cxxopt -fsanitize=thread
+build:tsan --cxxopt -DTHREAD_SANITIZER
+build:tsan --cxxopt -DDYNAMIC_ANNOTATIONS_ENABLED=1
+build:tsan --cxxopt -DDYNAMIC_ANNOTATIONS_EXTERNAL_IMPL=1
+build:tsan --cxxopt -g
+build:tsan --cxxopt -std=c++17
+# build:tsan --copt -O1
+build:tsan --cxxopt -fno-omit-frame-pointer
+build:tsan --linkopt -fsanitize=thread
+
+# Undefined Behavior sanitizer
+build:ubsan --strip=never
+build:ubsan --copt -fsanitize=undefined
+build:ubsan --copt -fno-omit-frame-pointer
+build:ubsan --linkopt -fsanitize=undefined
+build:ubsan --linkopt -lubsan
+build:ubsan --action_env=UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+
+# clang-tidy
+build:clang-tidy --aspects @bazel_clang_tidy//clang_tidy:clang_tidy.bzl%clang_tidy_aspect
+build:clang-tidy --output_groups=report
+
+# Optionally override the .clang-tidy config file target
+build:clang-tidy --@bazel_clang_tidy//:clang_tidy_config=//:clang_tidy_config
+
