@@ -89,6 +89,7 @@ visited first, and then to process them the leafs are accessed. In a way, the
 following is a typical AST traversal:
 
 
+```
 Index: first Child, parent
 
 01: 00,03 │   +── 1.1.1
@@ -123,6 +124,7 @@ Index: first Child, parent
 30: 00,32 ├── 1.3
 31: 00,32 ├── 1.4
 32: 00,00 | 1
+```
 
 ### Related
 

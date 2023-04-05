@@ -4,14 +4,14 @@
 #include "benchmark/benchmark.h"
 #include "hash_set8.hpp"
 
-#include "graph_core.hpp"
+#include "graph.hpp"
 
 static void BM_create_flops_100K(benchmark::State& state) {
 
   for (auto _ : state) {
 
     for (int j = 0; j < state.range(0); ++j) {
-      Graph_core gc("lg_create_chain", "create_chain");
+      Graph gc("lg_create_chain", "create_chain");
 
       auto inputs = gc.create_node();
       auto clk_id = gc.create_pin(inputs, 1);
@@ -62,7 +62,7 @@ static void BM_create_flops_100Kemhash(benchmark::State& state) {
       emhash8::HashSet<uint32_t> clk_set;
       emhash8::HashSet<uint32_t> rst_set;
 
-      Graph_core gc("lg_create_chain", "create_chain");
+      Graph gc("lg_create_chain", "create_chain");
 
       auto inputs = gc.create_node();
       auto clk_id = gc.create_pin(inputs, 1);
@@ -113,7 +113,7 @@ static void BM_create_flops_100Kabsl(benchmark::State& state) {
       absl::flat_hash_set<uint32_t> clk_set;
       absl::flat_hash_set<uint32_t> rst_set;
 
-      Graph_core gc("lg_create_chain", "create_chain");
+      Graph gc("lg_create_chain", "create_chain");
 
       auto inputs = gc.create_node();
       auto clk_id = gc.create_pin(inputs, 1);
@@ -161,7 +161,7 @@ static void BM_create_chain_100K(benchmark::State& state) {
 
   for (auto _ : state) {
     for (int j = 0; j < state.range(0); ++j) {
-      Graph_core gc("lg_create_chain", "create_chain");
+      Graph gc("lg_create_chain", "create_chain");
 
       auto first_id = gc.create_node();
       auto last_id = first_id;
@@ -185,7 +185,7 @@ static void BM_delete_chain_100K(benchmark::State& state) {
 
   for (auto _ : state) {
     for (int j = 0; j < state.range(0); ++j) {
-      Graph_core gc("lg_create_chain", "create_chain");
+      Graph gc("lg_create_chain", "create_chain");
 
       auto first_id = gc.create_node();
       auto last_id = first_id;
@@ -215,7 +215,7 @@ static void BM_delete_chain_100K(benchmark::State& state) {
 
 static void BM_traverse_chain_1M(benchmark::State& state) {
 
-  Graph_core gc("lg_create_chain", "create_chain");
+  Graph gc("lg_create_chain", "create_chain");
 
   auto first_id = gc.create_node();
   auto last_id = first_id;
