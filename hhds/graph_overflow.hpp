@@ -9,6 +9,8 @@
 #include "graph_base.hpp"
 #include "iassert.hpp"
 
+namespace hhds {
+
 class __attribute__((packed)) Graph_overflow {  // AKA pin or node entry
 public:
   Graph_overflow() { clear(); }
@@ -178,3 +180,5 @@ private:
   // ledges: 16:32
   std::array<uint32_t, 4> ledge;
 };
+
+}; // namespace hhds

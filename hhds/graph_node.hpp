@@ -9,6 +9,8 @@
 #include "graph_base.hpp"
 #include "iassert.hpp"
 
+namespace hhds {
+
 class __attribute__((packed)) Graph_node {  // AKA pin or node entry
 public:
   Graph_node() { clear(); }
@@ -211,3 +213,6 @@ private:
   // void *: Byte 12:15
   uint32_t ledge_or_overflow_or_set;  // ledge is overflow if overflow set
 };
+
+}; // namespace hhds
+

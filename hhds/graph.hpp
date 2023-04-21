@@ -14,34 +14,30 @@
 #include "hash_set8.hpp"
 #include "iassert.hpp"
 
+namespace hhds {
+
 class Graph {
 public:
   Graph(std::string_view name);
 
-  uint8_t get_type(uint32_t id) const {
-    I(id && id < table.size());
-    I(table[id].is_node());
-    return table[id].get_type();
+  uint8_t get_type(Nid nid) const {
+    I(nid && nid < table.size());
+    I(table[nid].is_node());
+    return ref_node(nid)->get_type();
   }
 
-  void set_type(uint32_t id, uint8_t type) {
-    I(id && id < table.size());
-    I(table[id].is_node());
-    table[id].set_type(type);
+  void set_type(uint32_t nid, uint8_t type) {
+    I(nid && nid < table.size());
+    I(table[nid].is_node());
+    ref_node(nid)->set_type(type);
   }
 
   Port_ID get_pid(uint32_t id) const {
     I(!is_invalid(id));
-    return table[id].get_pid();
-  }
+    if (table[id].is_node())
+      return 0;
 
-  void set_bits(uint32_t id, Bits_t bits) {
-    I(id && id < table.size());
-    table[id].set_bits(bits);
-  }
-  Bits_t get_bits(uint32_t id) {
-    I(id && id < table.size());
-    return table[id].get_bits();
+    return ref_pin(id)->get_pid();
   }
 
   bool is_invalid(uint32_t id) const {
@@ -49,7 +45,7 @@ public:
       return true;
     }
 
-    return table[id].overflow_vertex;  // overflow set in deleted nodes
+    return table[id].is_pin() || table[id].is_node();
   }
 
   bool is_node(uint32_t id) const {
@@ -238,6 +234,25 @@ protected:
 
     return (const Overflow_entry *)&table[id];
   }
+
+  const Graph_node *ref_node(uint32_t id) const {
+    I(table[id].is_node());
+    return (const Graph_node *)(&table[id]);
+  }
+  Graph_node *ref_node(uint32_t id)       {
+    I(table[id].is_node());
+    return (      Graph_node *)(&table[id]);
+  }
+
+  const Graph_pin *ref_pin(uint32_t id) const {
+    I(table[id].is_node());
+    return (const Graph_pin *)(&table[id]);
+  }
+  Graph_pin *ref_pin(uint32_t id)       {
+    I(table[id].is_pin());
+    return (      Graph_pin *)(&table[id]);
+  }
+
 };
 
 //----
@@ -354,3 +369,5 @@ public:
 
   const_iterator cend() const { return const_iterator(vec.end(), vec.end(), mp.end()); }
 };
+
+}; // namespace hhds
