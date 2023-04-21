@@ -4,12 +4,15 @@
 #include <algorithm>
 #include <random>
 
+#include "rigtorp_map.hpp"
 #include "benchmark/benchmark.h"
 #include "absl/container/flat_hash_set.h"
 #include "hash_set2.hpp" // emhash2
 #include "hash_set3.hpp" // emhash7
 #include "hash_set4.hpp" // emhash9
 #include "hash_set8.hpp" // emhash8
+
+
 
 #include "iassert.hpp"
 
@@ -26,9 +29,19 @@
 //
 // emhash7 better always unless very large (10K) emhash9
 
+static constexpr int n=50;
+#define TYPE_SEARCH uint32_t
 
-static constexpr int n=32;
-#define TYPE_SEARCH uint16_t
+// Hash for using std::string as lookup key
+struct RigHash {
+  size_t operator()(TYPE_SEARCH v) { return v;  }
+};
+
+// Equal comparison for using std::string as lookup key
+struct RigEqual {
+  bool operator()(TYPE_SEARCH lhs, TYPE_SEARCH rhs) { return lhs == rhs; }
+};
+
 
 template <size_t Size>
 bool linear_erase_word(std::vector<TYPE_SEARCH> &arr , TYPE_SEARCH b) {
@@ -84,6 +97,54 @@ bool binary_insert_word(std::vector<TYPE_SEARCH> &arr , TYPE_SEARCH b) {
   arr.insert(it, b);
 
   return true;
+}
+
+static void rigtorp_map_insert(benchmark::State& state) {
+
+  std::vector<TYPE_SEARCH> v;
+
+  std::mt19937 gen(std::random_device{}());
+  gen.seed(0xDEADC0DE);
+  std::uniform_int_distribution<int> elem_dist(0, 4096000);
+
+  TYPE_SEARCH num;
+  for (int i = 0; i < n; ++i) {
+    num = elem_dist(gen);
+    v.emplace_back(num);
+  }
+
+  for (auto _ : state) {
+    auto set = std::make_unique<rigtorp::HashMap<TYPE_SEARCH, uint32_t>>(32,0);
+    for(auto e:v)
+      set->emplace(e, 22);
+    benchmark::DoNotOptimize(set);
+  }
+}
+
+static void rigtorp_map_erase(benchmark::State& state) {
+  std::vector<TYPE_SEARCH> v;
+
+  std::mt19937 gen(std::random_device{}());
+  gen.seed(0xDEADC0DE);
+  std::uniform_int_distribution<int> elem_dist(0, 4096000);
+
+  for (int i = 0; i < n; ++i) {
+    auto num = elem_dist(gen);
+    v.emplace_back(num);
+  }
+
+  for (auto _ : state) {
+    state.PauseTiming();
+    auto set = std::make_unique<rigtorp::HashMap<TYPE_SEARCH, uint32_t>>(32, 0);
+    for(auto e:v)
+      set->emplace(e, 44);
+    state.ResumeTiming();
+
+    for(auto i=0;i<n;++i)
+      set->erase(v[i]);
+
+    benchmark::DoNotOptimize(set);
+  }
 }
 
 static void emhash2_set_insert(benchmark::State& state) {
@@ -468,6 +529,7 @@ static void binary_insert(benchmark::State& state) {
 BENCHMARK(linear_insert);
 BENCHMARK(binary_insert);
 BENCHMARK(abseil_set_insert);
+BENCHMARK(rigtorp_map_insert);
 BENCHMARK(emhash2_set_insert);
 BENCHMARK(emhash7_set_insert);
 BENCHMARK(emhash8_set_insert);
@@ -476,6 +538,7 @@ BENCHMARK(emhash9_set_insert);
 BENCHMARK(linear_erase);
 //BENCHMARK(binary_erase);
 BENCHMARK(abseil_set_erase);
+BENCHMARK(rigtorp_map_erase);
 BENCHMARK(emhash2_set_erase);
 BENCHMARK(emhash7_set_erase);
 BENCHMARK(emhash8_set_erase);

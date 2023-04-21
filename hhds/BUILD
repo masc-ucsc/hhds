@@ -9,6 +9,14 @@ config_setting(
 )
 
 cc_library(
+    name = "rigtorp",
+    hdrs = glob(["tests/*.hpp"]),
+    copts = COPTS,
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "hhds",
     srcs = glob(
         ["*.cpp"],
@@ -55,7 +63,10 @@ cc_test(
         "tests/small_set_bench.cpp",
     ],
     deps = [
-        ":hhds",
+        ":rigtorp",
+        "@fmt",
+        "@iassert",
+        "@emhash",
         "@com_google_benchmark//:benchmark",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",

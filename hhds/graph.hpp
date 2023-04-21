@@ -5,6 +5,7 @@
 #include <cassert>
 #include <string_view>
 #include <vector>
+#include <cstdint>
 
 #include "graph_node.hpp"
 #include "graph_overflow.hpp"
@@ -125,6 +126,30 @@ public:
 
   static_assert(sizeof(Graph::Master_entry) == 32);
   static_assert(sizeof(Graph::Overflow_entry) == 64);
+
+  [[nodiscard]] uint32_t get_instance(uint32_t id) const {
+    if (unlikely(table[id].is_pin())) {
+      const auto *pin = (const Graph_pin *)(&table[id]);
+      id = pin->get_node_id()();
+    }
+    const auto *node = (const Graph_node *)(&table[id]);
+    return node->get_instance();
+  }
+
+  [[nodiscard]] bool has_instance(uint32_t id) const {
+    if (unlikely(table[id].is_pin())) {
+      const auto *pin = (const Graph_pin *)(&table[id]);
+      id = pin->get_node_id()();
+    }
+    const auto *node = (const Graph_node *)(&table[id]);
+    return node->has_instance();
+  }
+
+  void set_instance(uint32_t id, uint32_t gid) {
+    I(id && id < table.size());
+    I(table[id].is_node());
+    table[id].set_instance(gid);
+  }
 
 protected:
   class __attribute__((packed)) Graph_free {
