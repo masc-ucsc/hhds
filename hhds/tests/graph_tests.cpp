@@ -70,7 +70,7 @@ TEST_F(Setup_graph_core, trivial_ops) {
     EXPECT_TRUE(gc.is_pin(id));
     EXPECT_FALSE(gc.is_node(id));
     EXPECT_EQ(gc.get_node(id), mid);
-    EXPECT_EQ(gc.get_pid(id), i + 1);
+    EXPECT_EQ(gc.get_portid(id), i + 1);
   }
 
   for (auto id : node_id) {

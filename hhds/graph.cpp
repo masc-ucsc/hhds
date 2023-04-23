@@ -35,8 +35,8 @@ HERE: FIrst insert in sedge, then the other places
   }
 #endif
 
-  if (is_node() && sedge2_or_pid == 0) {
-    sedge2_or_pid = rel_id;
+  if (is_node() && sedge2_or_portid == 0) {
+    sedge2_or_portid = rel_id;
     I(n_edges == Num_sedges);
     n_edges = Num_sedges+1;
     inp_mask |= ((out?0:1) << Num_sedges);
@@ -95,9 +95,9 @@ bool Graph::Master_entry::delete_edge(uint32_t self_id, uint32_t other_id, bool 
 
       return true;
     }
-    if (node_vertex && sedge2_or_pid == rel_id) {
+    if (node_vertex && sedge2_or_portid == rel_id) {
       if ((inp_mask & (1 << Num_sedges)) != out) {
-        sedge2_or_pid = 0;
+        sedge2_or_portid = 0;
         --n_edges;
         if (!out) {
           inp_mask ^= (1 << Num_sedges);
@@ -208,7 +208,7 @@ uint32_t Graph::create_node() {
   return id;
 }
 
-uint32_t Graph::create_pin(const uint32_t node_id, const Port_ID pid) {
+uint32_t Graph::create_pin(const uint32_t node_id, const Port_ID portid) {
   I(node_id && node_id < table.size());
 
   return id;
@@ -220,20 +220,31 @@ std::pair<size_t, size_t> Graph::get_num_pin_edges(uint32_t id) const {
   size_t t_inp = 0;
   size_t t_out = 0;
 
-  {
-    auto [l_inp, l_out] = table[id].get_num_local_edges();
-    t_inp += l_inp;
-    t_out += l_out;
+  if (table[id].is_node()) {
+    const auto *node=ref_node(id);
+    t_out = node->get_num_local_edges();
+
+    if (auto oid = node->get_overflow_id(); oid) {
+      t_out += otable[oid].get_num_local_edges(); // node only is a output pin
+    }else if (auto sid = node->get_set_id(); sid ) {
+      t_out += stable[sid].size();                // node only is a output pin
+    }
+
+  } else {
+    const auto *pin=ref_pin(id);
+    auto num = pin->get_num_local_edges();
+
+    if (auto oid = pin->get_overflow_id(); oid) {
+      num += otable[oid].get_num_local_edges();
+    }else if (auto sid = node->get_set_id(); sid ) {
+      num += stable[sid].size();
+    }
+    if (pin->is_sink())
+      t_inp += num;
+    else
+      t_out += num;
   }
 
-  auto over_id = table[id].get_overflow_id();
-  if (over_id) {
-    auto *over_ptr      = ref_overflow(over_id);
-    auto [l_inp, l_out] = over_ptr->get_num_local_edges();
-    t_inp += l_inp;
-    t_out += l_out;
-  }
-HERE: set
 
   return std::pair(t_inp, t_out);
 }
@@ -244,9 +255,9 @@ void Graph::Master_entry::dump(uint32_t self_id) const {
   if (node_vertex) {
     fmt::print("node:{} bits:{} n_inputs:{} n_outputs:{} next:{} over:{}\n", self_id, bits, n_i, n_o, next_pin_ptr, get_overflow_id());
   } else {
-    fmt::print("pin:{} pid:{} bits:{} n_inputs:{} n_outputs:{} next:{} over:{} node:{}\n",
+    fmt::print("pin:{} portid:{} bits:{} n_inputs:{} n_outputs:{} next:{} over:{} node:{}\n",
                self_id,
-               get_pid(),
+               get_portid(),
                bits,
                n_i,
                n_o,
@@ -261,8 +272,8 @@ void Graph::Master_entry::dump(uint32_t self_id) const {
       fmt::print(" {}", self_id + sedge[i]);
     }
   }
-  if (node_vertex && sedge2_or_pid) {
-    fmt::print(" {}", self_id + sedge2_or_pid);
+  if (node_vertex && sedge2_or_portid) {
+    fmt::print(" {}", self_id + sedge2_or_portid);
   }
   if (node_vertex && ledge0_or_prev) {
     fmt::print(" {}", ledge0_or_prev);
@@ -285,12 +296,12 @@ void Graph::Master_entry::delete_node(uint32_t self_id, std::vector<Master_entry
     }
     sedge[i] = 0;
   }
-  if (is_node() && sedge2_or_pid) {
+  if (is_node() && sedge2_or_portid) {
     if (!(inp_mask & (1 << Num_sedges))) {
-      auto id = self_id + sedge2_or_pid;
+      auto id = self_id + sedge2_or_portid;
       mtable[id].delete_edge(id, self_id, false);
     }
-    sedge2_or_pid = 0;
+    sedge2_or_portid = 0;
   }
 
   if (is_node() && ledge0_or_prev) {

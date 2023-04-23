@@ -17,7 +17,6 @@ public:
 
   void clear() {
     bzero(this, sizeof(Graph_overflow));  // set zero everything
-    entry_type = Entry_type::Overflow;
   }
 
   bool add_edge(uint32_t self_id, uint32_t other_id) {
@@ -172,9 +171,8 @@ public:
 private:
   // Overflow (32 bytes) -- Always 32bytes aligned
   // Byte 0:1
-  Entry_type entry_type : 2;  // Free, Node, Pin, Overflow
-  uint8_t    n_sedges : 6;    // number of sedges (7 max)
-  uint8_t    n_ledges;        // number of ledges (4 max)
+  uint8_t    n_sedges;  // number of sedges (7 max) 0xFF means free
+  uint8_t    n_ledges;  // number of ledges (4 max)
   // sedges: 2:15
   std::array<int16_t, 7> sedge;
   // ledges: 16:32

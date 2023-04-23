@@ -20,17 +20,32 @@ public:
     entry_type = Entry_type::Pin;
   }
 
-  [[nodiscard]] uint16_t get_pid() const { return pid; }
-  void                   set_pid(uint16_t p) {
+  [[nodiscard]] bool is_sink  () const { return  sink; }
+  [[nodiscard]] bool is_driver() const { return !sink; }
+
+  [[nodiscard]] uint16_t get_portid() const { return portid; }
+  void                   set_portid(uint16_t p) {
     I(entry_type == Entry_type::Pin);
-    pid = p;
+    portid = p;
+  }
+
+  [[nodiscard]] Oid get_overflow_id() const { // zero if no overflow
+    if(overflow_link)
+      return ledge_or_overflow_or_set;
+    return 0;
+  }
+
+  [[nodiscard]] uint32_t get_set_id() const { // zero if no set
+    if(set_link)
+      return ledge_or_overflow_or_set;
+    return 0;
   }
 
   bool add_edge(uint32_t self_id, uint32_t other_id) {
     I(self_id != other_id);
     if (sedge_0 == 0) {
       int64_t s    = other_id - self_id;
-      bool    fits = s > std::numeric_limits<int16_t>::min() && s < std::numeric_limits<int16_t>::max();
+      bool    fits = s > -(1<<10) && s < ((1<<10)-1); // 11 bits 2-complement
       if (fits) {
         sedge_0 = static_cast<int16_t>(s);
         return true;
@@ -156,9 +171,9 @@ private:
   Entry_type entry_type : 2;     // Free, Node, Pin, Overflow
   uint8_t    set_link : 1;       // set link, ledge otherwise  not set (overflow_link should be false)
   uint8_t    overflow_link : 1;  // When set, ledge points to overflow
-  uint32_t   pid : 12;           // pid in node
-  // SEDGE: 2:3
-  int16_t sedge_0;  // used if set_link?
+  uint8_t    sink    : 1;        // sink (!driver)
+  int16_t    sedge_0: 11;        // Short-edge (11 bits 2-complement)
+  int16_t    portid;
   // node_pin 4:7
   uint32_t node_id;  // points to master node
   // next_pin 8:11

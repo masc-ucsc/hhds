@@ -11,7 +11,6 @@
 #include "graph_overflow.hpp"
 #include "graph_pin.hpp"
 #include "graph_sizing.hpp"
-#include "hash_set8.hpp"
 #include "iassert.hpp"
 
 namespace hhds {
@@ -21,58 +20,53 @@ public:
   Graph(std::string_view name);
 
   uint8_t get_type(Nid nid) const {
-    I(nid && nid < table.size());
-    I(table[nid].is_node());
     return ref_node(nid)->get_type();
   }
 
-  void set_type(uint32_t nid, uint8_t type) {
-    I(nid && nid < table.size());
-    I(table[nid].is_node());
+  void set_type(Nid nid, uint8_t type) {
     ref_node(nid)->set_type(type);
   }
 
-  Port_ID get_pid(uint32_t id) const {
+  Port_ID get_portid(uint32_t id) const {
     I(!is_invalid(id));
-    if (table[id].is_node())
+    if (nptable[id].is_node())
       return 0;
 
-    return ref_pin(id)->get_pid();
+    return ref_pin(id)->get_portid();
   }
 
   bool is_invalid(uint32_t id) const {
-    if (id == 0 || table.size() <= id) {
+    if (id == 0 || nptable.size() <= id) {
       return true;
     }
 
-    return table[id].is_pin() || table[id].is_node();
+    return !nptable[id].is_free();
   }
 
-  bool is_node(uint32_t id) const {
-    I(id && id < table.size());
-    return table[id].is_node();
+  bool is_node(Nid id) const {
+    I(id && id < nptable.size());
+    return nptable[id].is_node();
   }
-  bool is_pin(uint32_t id) const {
-    I(id && id < table.size());
-    return table[id].is_pin();
+  bool is_pin(Pin id) const {
+    I(id && id < nptable.size());
+    return nptable[id].is_pin();
   }
 
-  uint32_t create_node();
-  uint32_t create_pin(uint32_t node_id, const Port_ID pid);
+  Nid create_node();
+  Pid create_pin(Nid nid, const Port_ID portid);
 
-  uint32_t get_node(uint32_t id) {
+  Nid get_node(uint32_t id) const {
     I(!is_invalid(id));
 
-    if (table[id].is_node()) {
+    if (nptable[id].is_node()) {
       return id;
     }
 
-    return table[id].get_prev_ptr();
+    return ref_pin(id)->get_node_id();
   }
 
-  bool has_edges(uint32_t id) const {
-    I(!is_invalid(id));
-    return table[id].has_edges();
+  bool has_edges(Nid id) const {
+    return ref_node(id)->has_edges();
   }
 
   std::pair<size_t, size_t> get_num_pin_edges(uint32_t id) const;
@@ -155,23 +149,20 @@ protected:
 
     Graph_free() { bzero(this, sizeof(Graph_free)); }
 
-    [[nodiscard]] Graph_node *ref_node() {
-      next_ptr         = 0;
+    [[nodiscard]] Graph_node *reset_node() {
       Graph_node *node = (Graph_node *)(data);
       node->clear();
       return node;
     }
-    [[nodiscard]] Graph_pin *ref_pin() {
-      next_ptr       = 0;
+    [[nodiscard]] Graph_pin *reset_pin() {
       Graph_pin *pin = (Graph_pin *)(data);
       pin->clear();
       return pin;
     }
 
-    [[nodiscard]] bool is_node() const { return static_cast<Entry_type>(data[0]) == Entry_type::Node; }
-    [[nodiscard]] bool is_pin() const { return static_cast<Entry_type>(data[0]) == Entry_type::Pin; }
-    [[nodiscard]] bool is_overflow() const { return static_cast<Entry_type>(data[0]) == Entry_type::Overflow; }
-    [[nodiscard]] bool is_free() const { return static_cast<Entry_type>(data[0]) == Entry_type::Free; }
+    [[nodiscard]] bool is_node    () const { return static_cast<Entry_type>(data[0]&3) == Entry_type::Node; }
+    [[nodiscard]] bool is_pin     () const { return static_cast<Entry_type>(data[0]&3) == Entry_type::Pin; }
+    [[nodiscard]] bool is_free    () const { return static_cast<Entry_type>(data[0]&3) == Entry_type::Free; }
   };
 
   class __attribute__((packed)) Graph_free_overflow {
@@ -179,37 +170,24 @@ protected:
     uint8_t  data[12 + 16];
     uint32_t next_ptr;
 
-    Graph_free_overflow() { bzero(this, sizeof(Graph_free_overflow)); }
-
-    std::pair<Graph_node *, Graph_free *> ref_node() {
-      next_ptr         = 0;
-      Graph_node *node = (Graph_node *)(data);
-      node->clear();
-
-      Graph_free *f = (Graph_free *)&data[16];
-
-      return std::pair(node, f);
+    Graph_free_overflow() {
+      data[0] = 0xFF; // MSB or LSB is free_entry bit (endian neutral)
+      bzero(this, sizeof(Graph_free_overflow));
     }
 
-    std::pair<Graph_pin *, Graph_free *> ref_pin() {
-      next_ptr       = 0;
-      Graph_pin *pin = (Graph_pin *)(data);
-      pin->clear();
-
-      Graph_free *f = (Graph_free *)&data[16];
-
-      return std::pair(pin, f);
+    [[nodiscard]] Graph_overflow *reset_overflow() {
+      Graph_overflow *self = (Graph_overflow *)(data);
+      self->clear();
+      return self;
     }
 
-    Graph_overflow *ref_overflow() {
-      next_ptr           = 0;
-      Graph_overflow *ov = (Graph_overflow *)(data);
-      ov->clear();
-      return ov;
-    }
+    [[nodiscard]] is_free() const { return data[0]==0xFF; }
   };
 
-  std::vector<Graph_free> table;
+  std::vector<Graph_free>     nptable; // Graph_node OR Graph_pin
+  std::vector<Graph_overflow> otable;  // Overflow table
+  std::vector<Set *>          stable;  // Set table
+
   const std::string       name;
 
   uint32_t free_master_id;
@@ -236,21 +214,36 @@ protected:
   }
 
   const Graph_node *ref_node(uint32_t id) const {
+    I(id && id < table.size());
     I(table[id].is_node());
     return (const Graph_node *)(&table[id]);
   }
   Graph_node *ref_node(uint32_t id)       {
+    I(id && id < table.size());
     I(table[id].is_node());
     return (      Graph_node *)(&table[id]);
   }
 
   const Graph_pin *ref_pin(uint32_t id) const {
+    I(id && id < table.size());
     I(table[id].is_node());
     return (const Graph_pin *)(&table[id]);
   }
   Graph_pin *ref_pin(uint32_t id)       {
+    I(id && id < table.size());
     I(table[id].is_pin());
     return (      Graph_pin *)(&table[id]);
+  }
+
+  const Graph_overflow *ref_overflow(uint32_t id) const {
+    I(id && id < table.size());
+    I(table[id].is_overflow());
+    return (const Graph_overflow *)(&table[id]);
+  }
+  Graph_overflow *ref_overflow(uint32_t id)       {
+    I(id && id < table.size());
+    I(table[id].is_overflow());
+    return (      Graph_overflow *)(&table[id]);
   }
 
 };
