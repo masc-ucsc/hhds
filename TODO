@@ -1,0 +1,29 @@
+
+Two best maps with VERY small overhead create/destroy:
+
+ tsl::robin_map
+
+  Add this type of test in the small set test to see
+
+
+For parallel? (lib)
+
+
+1st: https://github.com/TooBiased/growt
+
+2nd: phmap::parallel_flat_hash_map
+
+-------
+API:
+
+ iterator:
+   forward/backward/fast
+
+ lambda_each:
+   flood_fast/flood_forward/flood_backward
+
+
+   Similar to fwd/bwd/fast, but it has a starting point and stop propagating
+   when the the lambda returns false.
+
+
