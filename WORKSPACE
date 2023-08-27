@@ -65,9 +65,9 @@ http_archive(
 # clang-tidy
 http_archive(
     name = "bazel_clang_tidy",
-    sha256 = "59b8faf1a2e0ec4a5520130739c1c20b80e331b91026461136babfbe4f7d3f9b",
-    strip_prefix = "bazel_clang_tidy-674fac7640ae0469b7a58017018cb1497c26e2bf",
+    sha256 = "e08f52bb2960cca0c81d4bd65cb94b9671b80847f41e57b5f1a7836931063ab2",
+    strip_prefix = "bazel_clang_tidy-133d89a6069ce253a92d32a93fdb7db9ef100e9d",
     urls = [
-        "https://github.com/erenon/bazel_clang_tidy/archive/674fac7640ae0469b7a58017018cb1497c26e2bf.zip"
+        "https://github.com/erenon/bazel_clang_tidy/archive/133d89a6069ce253a92d32a93fdb7db9ef100e9d.zip"
     ],
 )
