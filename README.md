@@ -201,4 +201,6 @@ Not same, but similar idea and different representation:
 
 Meyerovich, Leo A., Todd Mytkowicz, and Wolfram Schulte. "Data parallel programming for irregular tree computations." (2011).
 
+Vollmer, Michael, Sarah Spall, Buddhika Chamith, Laith Sakka, Chaitanya Koparkar, Milind Kulkarni, Sam Tobin-Hochstadt, and Ryan R. Newton. "Compiling tree transforms to operate on packed representations." (2017): 26.
+
 
