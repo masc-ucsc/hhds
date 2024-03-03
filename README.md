@@ -88,7 +88,6 @@ The traversal is a topological sort equivalent where parents of leafs are
 visited first, and then to process them the leafs are accessed. In a way, the
 following is a typical AST traversal:
 
-
 ```
 Index: first Child, parent
 
@@ -125,6 +124,76 @@ Index: first Child, parent
 31: 00,32 ├── 1.4
 32: 00,00 | 1
 ```
+
+An alternative data structure.
+
+```
+Index: last_child, parent
+// 01: 16,00 | 1
+// 02: 00,01 -── 1.1
+// 03: 04,01 ├── 1.2
+// 04: 05,03 │   -── 1.2.1
+// 05: 00,04 │       -── 1.2.1.1
+// 06: 00,04 │       ├── 1.2.1.2
+// 07: 10,01 ├── 1.3
+// 08: 00,07 │   -── 1.3.1
+// 09: 00,07 │   ├── 1.3.2
+// 10: 13,07 │   ├── 1.3.3
+// 11: 00,10 │       -── 1.3.1.1
+// 12: 00,10 │       |── 1.3.1.2
+// 13: 15,10 │       |── 1.2.1.3
+// 14: 00,13 │           -── 1.2.1.3.1
+// 15: 00,13 │           -── 1.2.1.3.2
+// 16: 20,01 ├── 1.4
+// 17: 00,16 │   -── 1.4.1
+// 18: 19,16 │   ├── 1.4.2
+// 19: 00,18 │   │   -── 1.4.2.1
+// 20: 21,16 │   ├── 1.4.3
+// 21: 00,20 │   │   -── 1.4.3.1
+```
+
+The previous data structure fits quite well with most AST (LiveHD) tree operations with the exception of two popular ones: get_next_sibling and add_child.
+
+An alternative data structure. The siblings are consecutive, the descendent from the siblings are after all the siblings.
+
+```
+Index: first_child, last_child, parent
+// 01: 02,05,00 | 1
+// 02: 00,00,01 -── 1.1
+// 03: 06,06,01 ├── 1.2
+// 04: 12,14,01 ├── 1.3
+// 05: 17,19,01 ├── 1.4
+// 06: 07,09,03 │   -── 1.2.1
+// 07: 00,00,06 │       -── 1.2.1.1
+// 08: 00,00,06 │       ├── 1.2.1.2
+// 09: 10,11,06 │       |── 1.2.1.3
+// 10: 00,00,09 │           -── 1.2.1.3.1
+// 11: 00,00,09 │           -── 1.2.1.3.2
+// 12: 15,16,04 │   -── 1.3.1
+// 13: 00,00,04 │   ├── 1.3.2
+// 14: 00,00,04 │   ├── 1.3.3
+// 15: 00,00,12 │       -── 1.3.1.1
+// 16: 00,00,12 │       |── 1.3.1.2
+// 17: 00,00,05 │   -── 1.4.1
+// 18: 20,21,05 │   ├── 1.4.2
+// 19: 00,00,05 │   ├── 1.4.3
+// 20: 00,00,18 │   │   -── 1.4.2.1
+// 21: 00,00,18 │   │   -── 1.4.3.1
+```
+
+The previous structure handles everything quite fast with the exception of add_child
+
+add_child tends to add nodes close to the end. In which case, and append or just shifting a few nodes works fast.
+
+Some solutions for random location add_child:
+
+ -Support a small hashmap with "other children" that did not fit. Only insert starting from last_child, and change last_child to 0 to indicate that last children are in a hashmap.
+
+ -Allow it BUT trigger a message to fix. This should be rare and easy to fix so that calls are not in that order
+
+ -Chunk the vector to blocks of 16K entries. This allows smaller pointers (first_child,last_child, parent) using shorts (16bits). WHen a pointer needs to point to other table (16K entry max per table),
+it can have a all ones value (-1) to indicate that the following entry uses the 3 fields (16 bits) as pointer to the larger table (32 bits) and 16 bits as offset.
+
 
 ### Related
 

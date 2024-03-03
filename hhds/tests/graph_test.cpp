@@ -1,7 +1,5 @@
 //  This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 
-#include "graph_core.hpp"
-
 #include <random>
 #include <string>
 #include <vector>
@@ -14,8 +12,8 @@
 
 #include "lrand.hpp"
 #include "perf_tracing.hpp"
-#include "graph_library.hpp"
-#include "lgraph.hpp"
+
+#include "graph.hpp"
 
 class Setup_graph_core : public ::testing::Test {
 protected:

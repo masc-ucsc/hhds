@@ -1,6 +1,42 @@
 //  This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 #pragma once
 
+// tree.hpp
+#include <cstdint>
+#include <vector>
+
+namespace hhsd {
+
+using Tree_index = std::int32_t;
+
+class Tree {
+public:
+  // Checks
+  [[nodiscard]] bool is_empty(Tree_index id) const;
+
+  // Gets
+  [[nodiscard]] Tree_index get_parent(Tree_index id) const;
+  [[nodiscard]] Tree_index get_last_child(Tree_index id) const;
+
+  // Insertion
+  [[nodiscard]] Tree_index insert_last_child(Tree_index parent);
+
+private:
+  struct Tree_node {
+    Tree_index first_child_id;
+    Tree_index parent_id;
+  };
+
+  std::vector<Tree_node> nodes;
+};
+
+}  // namespace hhsd
+
+#if 0
+// Even though Moliere said "Trees that are slow to grow bear the best fruit.",
+// but this project aim at the opposite. We want the fastest trees to grow and
+// traverse.
+
 //
 // API: find_siblings
 // API: find_parent
@@ -215,3 +251,5 @@ public:
   void dump() const;
   /* LCOV_EXCL_STOP */
 };
+
+#endif

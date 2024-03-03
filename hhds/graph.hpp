@@ -47,12 +47,16 @@ public:
     I(id && id < nptable.size());
     return nptable[id].is_node();
   }
-  bool is_pin(Pin id) const {
+  bool is_pin(Pid id) const {
     I(id && id < nptable.size());
     return nptable[id].is_pin();
   }
 
-  Nid create_node();
+  // Track top_id, If added new nodes, must notify to top
+  void set_hier_top(uint32_t top_id);
+
+  Nid create_sub();  // instance call (odd Nid)
+  Nid create_node(); // even Nid
   Pid create_pin(Nid nid, const Port_ID portid);
 
   Nid get_node(uint32_t id) const {

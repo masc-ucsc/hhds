@@ -58,6 +58,16 @@ cc_test(
 )
 
 cc_test(
+    name = "graph_test",
+    srcs = ["tests/graph_test.cpp"],
+    deps = [
+        ":hhds",
+        "@boost//:graph",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "small_set_bench",
     srcs = [
         "tests/small_set_bench.cpp",
