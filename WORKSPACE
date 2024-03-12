@@ -16,9 +16,9 @@ git_repository(
 # abseil
 http_archive(
   name = "com_google_absl",
-  strip_prefix = "abseil-cpp-20230802.0",
-  urls = ["https://github.com/abseil/abseil-cpp/archive/refs/tags/20230802.0.zip"],
-  sha256 = "2942db09db29359e0c1982986167167d226e23caac50eea1f07b2eb2181169cf",
+  strip_prefix = "abseil-cpp-20230802.2",
+  urls = ["https://github.com/abseil/abseil-cpp/archive/refs/tags/20230802.2.zip"],
+  sha256 = "823b207ce755bc0b6de01ab6599dc0a8533745ae925779f3617163760e2e1b74",
 )
 
 # Perfetto
