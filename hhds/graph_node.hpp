@@ -26,24 +26,24 @@ public:
     I(entry_type == Entry_type::Node);
     I(!has_instance());
     sedge[0] = gid;
-    sedge[1] = gid>>16;
+    sedge[1] = gid >> 16;
   }
   [[nodiscard]] bool has_instance() const {
     I(entry_type == Entry_type::Node);
-    return link && (sedge[0]|sedge[1]);
+    return set_link && (sedge[0] | sedge[1]);
   }
 
   [[nodiscard]] uint32_t get_instance() const {
     I(entry_type == Entry_type::Node);
-    if (!link)
+    if (!set_link) {
       return 0;
+    }
     uint32_t gid = sedge[1];
     gid <<= 16;
-    gid  |= sedge[0];
+    gid |= sedge[0];
 
     return gid;
   }
-
 
   bool add_edge(uint32_t self_id, uint32_t other_id) {
     I(self_id != other_id);
@@ -205,7 +205,7 @@ private:
   uint8_t    set_link : 1;       // set link, ledge otherwise  not set (overflow_link should be false)
   uint8_t    overflow_link : 1;  // When set, ledge points to overflow
   uint8_t    n_sedges : 2;
-  uint16_t   type : 10;          // type in node
+  uint16_t   type : 10;  // type in node
   // SEDGE: 2:7
   std::array<int16_t, 3> sedge;  // set_link==true -> sedge is SUB-GRAPH ID or zero if no subgraph
   // next_pin 8:11
@@ -214,5 +214,4 @@ private:
   uint32_t ledge_or_overflow_or_set;  // ledge is overflow if overflow set
 };
 
-}; // namespace hhds
-
+};  // namespace hhds
