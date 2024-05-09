@@ -25,9 +25,9 @@ http_archive(
 http_archive(
     name = "com_google_perfetto",
     build_file = "perfetto.BUILD",
-    sha256 = "615d336a5c5c6fc0bb0aad1ef8d4c4575a97be2989973d617fa552bfd4886980",
-    strip_prefix = "perfetto-43.2/sdk",
-    urls = ["https://github.com/google/perfetto/archive/refs/tags/v43.2.tar.gz"],
+    sha256 = "dcb815fb54370fa20a657552288016cb66e7a98237c1a1d47e7645a4325ac75e",
+    strip_prefix = "perfetto-45.0/sdk",
+    urls = ["https://github.com/google/perfetto/archive/refs/tags/v45.0.tar.gz"],
 )
 
 # fmt
