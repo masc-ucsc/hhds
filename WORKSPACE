@@ -75,10 +75,10 @@ http_archive(
 # Boost
 http_archive(
     name = "com_github_nelhage_rules_boost",
-    sha256 = "8d7525bb046049614d2ca28d3be6b3f44e144abf90d0d67a25370d56e6918b28",
-    strip_prefix = "rules_boost-e1854fb177ae91dc82ce9534737f5238d2cee9d0",
+    sha256 = "6c15542d0d3b6f47cd4d2a1632a3054a0502b5102e471b4453354312cb474407",
+    strip_prefix = "rules_boost-5d04542e52164931841d06d5a6b3fd2f43c436d0",
     urls = [
-      "https://github.com/nelhage/rules_boost/archive/e1854fb177ae91dc82ce9534737f5238d2cee9d0.tar.gz",
+      "https://github.com/nelhage/rules_boost/archive/5d04542e52164931841d06d5a6b3fd2f43c436d0.tar.gz",
     ]
 )
 load("@com_github_nelhage_rules_boost//:boost/boost.bzl", "boost_deps")
