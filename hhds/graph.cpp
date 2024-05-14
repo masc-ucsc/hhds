@@ -1,10 +1,12 @@
 //  This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 
-#include "graph.hpp"
 
+#include <limits>
 #include <algorithm>
 #include <iterator>
 #include <string>
+
+#include "graph.hpp"
 
 #include "fmt/format.h"
 #include "iassert.hpp"

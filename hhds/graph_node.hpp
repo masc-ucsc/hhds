@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <array>
 #include <cassert>
 #include <vector>
@@ -51,11 +52,11 @@ public:
       int64_t s    = other_id - self_id;
       bool    fits = s > std::numeric_limits<int16_t>::min() && s < std::numeric_limits<int16_t>::max();
       if (fits) {
-        for (auto& ent : sedge) {
-          if (ent != 0) {
+        for(auto i=0u;i<sedge.size();++i) {
+          if (sedge[i] != 0) {
             continue;
           }
-          ent = static_cast<int16_t>(s);
+          sedge[i] = static_cast<int16_t>(s);
           ++n_sedges;
           return true;
         }
@@ -72,13 +73,13 @@ public:
 
   bool del_edge(uint32_t self_id, uint32_t other_id) {
     I(self_id != other_id);
-    for (auto& ent : sedge) {
-      if ((ent + self_id) != other_id) {
+    for(auto i=0u;i<sedge.size();++i) {
+      if ((self_id + sedge[i]) != other_id) {
         continue;
       }
 
       --n_sedges;
-      ent = 0;
+      sedge[i] = 0;
       return true;
     }
     if (overflow_link | set_link) {
@@ -197,7 +198,6 @@ public:
       sedge[sedge.data() - it.get_ptr()] = 0;
     }
   }
-
 private:
   // Node (16 bytes)
   // Byte 0:1
@@ -212,6 +212,7 @@ private:
   uint32_t next_pin_ptr;  // next pointer (pin)
   // void *: Byte 12:15
   uint32_t ledge_or_overflow_or_set;  // ledge is overflow if overflow set
+
 };
 
 };  // namespace hhds

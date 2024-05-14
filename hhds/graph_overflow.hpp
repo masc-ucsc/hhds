@@ -25,11 +25,11 @@ public:
       int64_t s    = other_id - self_id;
       bool    fits = s > std::numeric_limits<int16_t>::min() && s < std::numeric_limits<int16_t>::max();
       if (fits) {
-        for (auto &ent : sedge) {
-          if (ent != 0) {
+        for(auto i=0u;i<sedge.size();++i) {
+          if (sedge[i] != 0) {
             continue;
           }
-          ent = static_cast<int16_t>(s);
+          sedge[i] = static_cast<int16_t>(s);
           ++n_sedges;
           return true;
         }
