@@ -52,3 +52,7 @@ bazel-*
 # desesc specific
 desesc.??????
 kanata_log.??????
+
+# local vscode file(s)
+.vscode/*.json
+.vscode
