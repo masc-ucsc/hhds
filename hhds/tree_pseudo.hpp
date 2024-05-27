@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace hhsd {
+namespace hhds {
 
 using Tree_index = std::int32_t;
 
