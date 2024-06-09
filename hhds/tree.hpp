@@ -39,6 +39,7 @@ static constexpr short SHORT_DELTA = 21;                   // Amount of short de
 static constexpr short MAX_OFFSET = 3;                     // The number of bits in a chunk offset
 static constexpr short CHUNK_SIZE = 1 << MAX_OFFSET;       // Size of a chunk in bits
 static constexpr short CHUNK_MASK = CHUNK_SIZE - 1;        // Mask for chunk offset
+static constexpr short NUM_SHORT_DEL = CHUNK_MASK;         // Mask for chunk offset
 static constexpr uint64_t MAX_TREE_SIZE = 1 << CHUNK_BITS; // Maximum number of nodes in the tree
 
 class __attribute__((packed, aligned(512))) Tree_pointers {
@@ -53,34 +54,91 @@ private:
     Tree_pos last_child_l           : CHUNK_BITS;
 
     // Short (delta) child pointers
-    struct __attribute__((packed)) short_child {
-        Tree_pos delta : SHORT_DELTA;
-    };
+    Tree_pos first_child_s_0        : SHORT_DELTA;
+    Tree_pos first_child_s_1        : SHORT_DELTA;
+    Tree_pos first_child_s_2        : SHORT_DELTA;
+    Tree_pos first_child_s_3        : SHORT_DELTA;
+    Tree_pos first_child_s_4        : SHORT_DELTA;
+    Tree_pos first_child_s_5        : SHORT_DELTA;
+    Tree_pos first_child_s_6        : SHORT_DELTA;
 
-    std::array<short_child, CHUNK_MASK> first_child_s;
-    std::array<short_child, CHUNK_MASK> last_child_s;
+    Tree_pos last_child_s_0         : SHORT_DELTA;
+    Tree_pos last_child_s_1         : SHORT_DELTA;
+    Tree_pos last_child_s_2         : SHORT_DELTA;
+    Tree_pos last_child_s_3         : SHORT_DELTA;
+    Tree_pos last_child_s_4         : SHORT_DELTA;
+    Tree_pos last_child_s_5         : SHORT_DELTA;
+    Tree_pos last_child_s_6         : SHORT_DELTA;
+
+    // Helper function to access first child pointers by index
+    Tree_pos _get_first_child_s(short index) const {
+        switch (index) {
+            case 0: return first_child_s_0;
+            case 1: return first_child_s_1;
+            case 2: return first_child_s_2;
+            case 3: return first_child_s_3;
+            case 4: return first_child_s_4;
+            case 5: return first_child_s_5;
+            case 6: return first_child_s_6;
+            default: throw std::out_of_range("Invalid index for first_child_s");
+        }
+    }
+
+    void _set_first_child_s(short index, Tree_pos value) {
+        switch (index) {
+            case 0: first_child_s_0 = value; break;
+            case 1: first_child_s_1 = value; break;
+            case 2: first_child_s_2 = value; break;
+            case 3: first_child_s_3 = value; break;
+            case 4: first_child_s_4 = value; break;
+            case 5: first_child_s_5 = value; break;
+            case 6: first_child_s_6 = value; break;
+            default: throw std::out_of_range("Invalid index for first_child_s");
+        }
+    }
+
+    // Helper function to access last child pointers by index
+    Tree_pos _get_last_child_s(short index) const {
+        switch (index) {
+            case 0: return last_child_s_0;
+            case 1: return last_child_s_1;
+            case 2: return last_child_s_2;
+            case 3: return last_child_s_3;
+            case 4: return last_child_s_4;
+            case 5: return last_child_s_5;
+            case 6: return last_child_s_6;
+            default: throw std::out_of_range("Invalid index for last_child_s");
+        }
+    }
+
+    void _set_last_child_s(short index, Tree_pos value) {
+        switch (index) {
+            case 0: last_child_s_0 = value; break;
+            case 1: last_child_s_1 = value; break;
+            case 2: last_child_s_2 = value; break;
+            case 3: last_child_s_3 = value; break;
+            case 4: last_child_s_4 = value; break;
+            case 5: last_child_s_5 = value; break;
+            case 6: last_child_s_6 = value; break;
+            default: throw std::out_of_range("Invalid index for last_child_s");
+        }
+    }
+
 // :private
 
 public:
     /* DEFAULT CONSTRUCTOR */
+    // Parent can be = 0 for someone, but it can never be MAX_TREE_SIZE
+    // That is why the best way to invalidate is to set it to MAX_TREE_SIZE
+    // for every other entry INVALID is the best choice
     Tree_pointers()
-        : parent(MAX_TREE_SIZE), next_sibling(0), prev_sibling(0),
-          first_child_l(0), last_child_l(0) {
-        std::fill(first_child_s.begin(), first_child_s.end(), short_child{0});
-        std::fill(last_child_s.begin(), last_child_s.end(), short_child{0});
-    }
-
-    /* COPY CONSTRUCTOR */
-    Tree_pointers(const Tree_pointers& other)
-        : parent(other.parent), next_sibling(other.next_sibling), prev_sibling(other.prev_sibling),
-          first_child_l(other.first_child_l), last_child_l(other.last_child_l),
-          first_child_s(other.first_child_s), last_child_s(other.last_child_s) {}
-
-    /* PARAM CONSTRUCTOR */
-    Tree_pointers(Tree_pos p, Tree_pos ns, Tree_pos ps, Tree_pos fcl, Tree_pos lcl,
-                  const std::array<short_child, 7>& fcs, const std::array<short_child, 7>& lcs)
-        : parent(p), next_sibling(ns), prev_sibling(ps), first_child_l(fcl), last_child_l(lcl),
-          first_child_s(fcs), last_child_s(lcs) {}
+        : parent(MAX_TREE_SIZE), next_sibling(INVALID), prev_sibling(INVALID),
+          first_child_l(INVALID), last_child_l(INVALID) {
+            for (short i = 0; i < NUM_SHORT_DEL; i++) {
+                _set_first_child_s(i, INVALID);
+                _set_last_child_s(i, INVALID);
+            }
+        }
 
     // Getters
     Tree_pos get_parent() const { return parent; }
@@ -88,8 +146,10 @@ public:
     Tree_pos get_prev_sibling() const { return prev_sibling; }
     Tree_pos get_first_child_l() const { return first_child_l; }
     Tree_pos get_last_child_l() const { return last_child_l; }
-    const std::array<short_child, 7>& get_first_child_s() const { return first_child_s; }
-    const std::array<short_child, 7>& get_last_child_s() const { return last_child_s; }
+
+    // Public getters for short child pointers
+    Tree_pos get_first_child_s_at(short index) const { return get_first_child_s(index); }
+    Tree_pos get_last_child_s_at(short index) const { return get_last_child_s(index); }
 
     // Setters
     void set_parent(Tree_pos p) { parent = p; }
@@ -97,21 +157,29 @@ public:
     void set_prev_sibling(Tree_pos ps) { prev_sibling = ps; }
     void set_first_child_l(Tree_pos fcl) { first_child_l = fcl; }
     void set_last_child_l(Tree_pos lcl) { last_child_l = lcl; }
-    void set_first_child_s(uint32_t idx, Tree_pos fcs) { first_child_s[idx] = short_child{fcs}; }
-    void set_last_child_s(uint32_t idx, Tree_pos lcs) { last_child_s[idx] = short_child{lcs}; }
+
+    // Public setters for short child pointers
+    void set_first_child_s_at(short index, Tree_pos fcs) { set_first_child_s(index, fcs); }
+    void set_last_child_s_at(short index, Tree_pos lcs) { set_last_child_s(index, lcs); }
 
     // Operators
     constexpr bool operator==(const Tree_pointers& other) const {
+        for (short i = 0; i < 7; i++) {
+            if (_get_first_child_s(i) != other._get_first_child_s(i) ||
+                _get_last_child_s(i) != other._get_last_child_s(i)) {
+                return false;
+            }
+        }
         return parent == other.parent && next_sibling == other.next_sibling &&
                prev_sibling == other.prev_sibling && first_child_l == other.first_child_l &&
-               last_child_l == other.last_child_l && first_child_s == other.first_child_s &&
-               last_child_s == other.last_child_s;
+               last_child_l == other.last_child_l;
     }
+
     constexpr bool operator!=(const Tree_pointers& other) const { return !(*this == other); }
     void invalidate() { parent = MAX_TREE_SIZE; }
 
     // Checkers
-    [[nodiscard]] constexpr bool is_invalid() const { return parent == MAX_TREE_SIZE; }
+    [[nodiscard]] constexpr bool is_invalid() const { return parent == INVALID; }
 // :public
 
 }; // Tree_pointers class
@@ -122,7 +190,12 @@ private:
     /* The tree pointers and data stored separately */
     std::vector<Tree_pointers>  pointers_stack;
     std::vector<X>              data_stack;
-// :protected
+
+    /* Special functions for sanity */
+    [[nodiscard]] bool _check_idx_exists(const Tree_pos &idx) const noexcept {
+        return idx >= 0 && idx < static_cast<Tree_pos>(pointers_stack.size());
+    }
+// :private
 
 public:
     /**
@@ -136,31 +209,16 @@ public:
      * @return Tree_pos The absolute ID of the last child, INVALID if none
     */
     Tree_pos get_last_child(const Tree_pos& parent_index) {
-        const auto chunk_id = (parent_index >> 3);
-        const auto last_child_s = pointers_stack[chunk_id].get_last_child_s();
+        const auto chunk_id = (parent_index >> MAX_OFFSET);
+        const auto chunk_offset = (parent_index & CHUNK_MASK);
+        const auto last_child_s_i = pointers_stack[chunk_id].get_last_child_s_at(
+                                                            parent_index & CHUNK_MASK
+                                                        );
 
-        // Try checking if we stored it in a short delta
-        for (const auto& delta : last_child_s) {
-            if (delta.delta != 0) {
-                const auto child_chunk_id = chunk_id + delta.delta;
-                assert(pointers_stack[child_chunk_id].get_parent() == parent_index);
-
-                // NOTE: The last_child will be the last used offset here
-                for (short offset = (1 << 3) - 2; offset >= 0; --offset) {
-                    if (!pointers_stack[child_chunk_id + offset].is_invalid()) {
-                        return child_chunk_id + offset;
-                    }
-                }
-            }
-        }
-
-        // If it’s not in the short delta, it’s in the long one.
-        const auto last_child_l = pointers_stack[chunk_id].get_last_child_l();
-
-        for (short offset = CHUNK_MASK; offset >= 0; --offset) {
-            if (!pointers_stack[last_child_l + offset].is_invalid()) {
-                return last_child_l + offset;
-            }
+        if (chunk_offset) {
+            
+        } else {
+            const auto last_child_l = pointers_stack[chunk_id].get_last_child_l();
         }
 
         return INVALID;
