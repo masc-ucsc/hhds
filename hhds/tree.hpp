@@ -32,17 +32,17 @@ namespace hhds {
 
 using Tree_pos = uint64_t;
 
-static constexpr Tree_pos INVALID = 0;                     // ROOT ID
-static constexpr Tree_pos ROOT = 0;                        // ROOT ID
-static constexpr short CHUNK_BITS = 43;                    // Number of chunks in a tree node
-static constexpr short SHORT_DELTA = 21;                   // Amount of short delta allowed
-static constexpr short CHUNK_SHIFT = 3;                    // The number of bits in a chunk offset
-static constexpr short CHUNK_SIZE = 1 << CHUNK_SHIFT;      // Size of a chunk in bits
-static constexpr short CHUNK_MASK = CHUNK_SIZE - 1;        // Mask for chunk offset
-static constexpr short NUM_SHORT_DEL = CHUNK_MASK;         // Mask for chunk offset
-static constexpr uint64_t MAX_TREE_SIZE = 1 << CHUNK_BITS; // Maximum number of nodes in the tree
+static constexpr Tree_pos INVALID = 0;                          // ROOT ID
+static constexpr Tree_pos ROOT = 0;                             // ROOT ID
+static constexpr short CHUNK_BITS = 43;                         // Number of chunks in a tree node
+static constexpr short SHORT_DELTA = 21;                        // Amount of short delta allowed
+static constexpr short CHUNK_SHIFT = 3;                         // The number of bits in a chunk offset
+static constexpr short CHUNK_SIZE = 1 << CHUNK_SHIFT;           // Size of a chunk in bits
+static constexpr short CHUNK_MASK = CHUNK_SIZE - 1;             // Mask for chunk offset
+static constexpr short NUM_SHORT_DEL = CHUNK_MASK;              // Mask for chunk offset
+static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;    // Maximum number of nodes in the tree
 
-class __attribute__((packed, aligned(512))) Tree_pointers {
+class __attribute__((packed, aligned(64))) Tree_pointers {
 private:
     // We only store the exact ID of parent
     Tree_pos parent                 : CHUNK_BITS + CHUNK_SHIFT;
@@ -148,8 +148,8 @@ public:
     Tree_pos get_last_child_l() const { return last_child_l; }
 
     // Public getters for short child pointers
-    Tree_pos get_first_child_s_at(short index) const { return get_first_child_s(index); }
-    Tree_pos get_last_child_s_at(short index) const { return get_last_child_s(index); }
+    Tree_pos get_first_child_s_at(short index) const { return _get_first_child_s(index); }
+    Tree_pos get_last_child_s_at(short index) const { return _get_last_child_s(index); }
 
     // Setters
     void set_parent(Tree_pos p) { parent = p; }
@@ -159,8 +159,8 @@ public:
     void set_last_child_l(Tree_pos lcl) { last_child_l = lcl; }
 
     // Public setters for short child pointers
-    void set_first_child_s_at(short index, Tree_pos fcs) { set_first_child_s(index, fcs); }
-    void set_last_child_s_at(short index, Tree_pos lcs) { set_last_child_s(index, lcs); }
+    void set_first_child_s_at(short index, Tree_pos fcs) { _set_first_child_s(index, fcs); }
+    void set_last_child_s_at(short index, Tree_pos lcs) { _set_last_child_s(index, lcs); }
 
     // Operators
     constexpr bool operator==(const Tree_pointers& other) const {
@@ -200,14 +200,14 @@ private:
         /* CHANGE THE SECOND CONDITION
         CAN USE STD::OPTIONAL WRAPPING AROUND THE 
         TEMPLATE OF X */
-        return (idx < data_stack.size() && data_stack[idx] != nullptr);
+        return (idx < data_stack.size() && data_stack[idx]);
     }
 // :private
 
 public:
     /**
      *  Query based API (no updates)
-    /*
+    */
 
     /**
      * @brief Get absolute ID of the last child of a node.
@@ -419,7 +419,10 @@ public:
         // Placeholder: Implement the actual width calculation using BFS or additional bookkeeping
         return 0;
     }
-}
-// :public
 
+    /**
+     *  Update based API (Adds and Deletes from the tree)
+     */
+    // :public
+    }; // tree class
 } // hhds namespace
