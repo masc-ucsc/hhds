@@ -36,8 +36,8 @@ static constexpr Tree_pos INVALID = 0;                     // ROOT ID
 static constexpr Tree_pos ROOT = 0;                        // ROOT ID
 static constexpr short CHUNK_BITS = 43;                    // Number of chunks in a tree node
 static constexpr short SHORT_DELTA = 21;                   // Amount of short delta allowed
-static constexpr short MAX_OFFSET = 3;                     // The number of bits in a chunk offset
-static constexpr short CHUNK_SIZE = 1 << MAX_OFFSET;       // Size of a chunk in bits
+static constexpr short CHUNK_SHIFT = 3;                    // The number of bits in a chunk offset
+static constexpr short CHUNK_SIZE = 1 << CHUNK_SHIFT;      // Size of a chunk in bits
 static constexpr short CHUNK_MASK = CHUNK_SIZE - 1;        // Mask for chunk offset
 static constexpr short NUM_SHORT_DEL = CHUNK_MASK;         // Mask for chunk offset
 static constexpr uint64_t MAX_TREE_SIZE = 1 << CHUNK_BITS; // Maximum number of nodes in the tree
@@ -45,7 +45,7 @@ static constexpr uint64_t MAX_TREE_SIZE = 1 << CHUNK_BITS; // Maximum number of 
 class __attribute__((packed, aligned(512))) Tree_pointers {
 private:
     // We only store the exact ID of parent
-    Tree_pos parent                 : CHUNK_BITS + MAX_OFFSET;
+    Tree_pos parent                 : CHUNK_BITS + CHUNK_SHIFT;
     Tree_pos next_sibling           : CHUNK_BITS;
     Tree_pos prev_sibling           : CHUNK_BITS;
 
@@ -179,7 +179,8 @@ public:
     void invalidate() { parent = MAX_TREE_SIZE; }
 
     // Checkers
-    [[nodiscard]] constexpr bool is_invalid() const { return parent == INVALID; }
+    [[nodiscard]] constexpr bool is_invalid() const { return parent == MAX_TREE_SIZE; }
+    [[nodiscard]] constexpr bool is_valid() const { return parent != MAX_TREE_SIZE; }
 // :public
 
 }; // Tree_pointers class
@@ -195,6 +196,12 @@ private:
     [[nodiscard]] bool _check_idx_exists(const Tree_pos &idx) const noexcept {
         return idx >= 0 && idx < static_cast<Tree_pos>(pointers_stack.size());
     }
+    [[nodiscard]] bool _contains_data(const Tree_pos &idx) const noexcept {
+        /* CHANGE THE SECOND CONDITION
+        CAN USE STD::OPTIONAL WRAPPING AROUND THE 
+        TEMPLATE OF X */
+        return (idx < data_stack.size() && data_stack[idx] != nullptr);
+    }
 // :private
 
 public:
@@ -207,58 +214,136 @@ public:
      * 
      * @param parent_index The absolute ID of the parent node.
      * @return Tree_pos The absolute ID of the last child, INVALID if none
+     * 
+     * @throws std::out_of_range If the parent index is out of range
     */
     Tree_pos get_last_child(const Tree_pos& parent_index) {
-        const auto chunk_id = (parent_index >> MAX_OFFSET);
+        if (!_check_idx_exists(parent_index)) {
+            throw std::out_of_range("Parent index out of range");
+        }
+    
+        const auto chunk_id = (parent_index >> CHUNK_SHIFT);
         const auto chunk_offset = (parent_index & CHUNK_MASK);
-        const auto last_child_s_i = pointers_stack[chunk_id].get_last_child_s_at(
-                                                            parent_index & CHUNK_MASK
-                                                        );
+        const auto last_child_s_i = pointers_stack[chunk_id].get_last_child_s_at(chunk_offset);
 
-        if (chunk_offset) {
-            
+        Tree_pos child_chunk_id = INVALID;
+        if (chunk_offset and (last_child_s_i != INVALID)) {
+            // If the short delta contains a value, go to this nearby chunk
+            child_chunk_id = chunk_id + last_child_s_i;
         } else {
-            const auto last_child_l = pointers_stack[chunk_id].get_last_child_l();
+            // The first entry will always have the chunk id of the child
+            child_chunk_id = pointers_stack[chunk_id].get_last_child_l();
+        }
+    
+        // Iterate in reverse to find the last occupied in child chunk
+        if (child_chunk_id != INVALID) {
+            for (short offset = NUM_SHORT_DEL - 1; offset >= 0; offset--) {
+                if (pointers_stack[child_chunk_id + offset].is_valid()) {
+                    return static_cast<Tree_pos>(child_chunk_id + offset);
+                }
+            } 
         }
 
-        return INVALID;
+        return static_cast<Tree_pos>(INVALID);
     }
 
+    /**
+     * @brief Get absolute ID of the first child of a node.
+     * 
+     * @param parent_index The absolute ID of the parent node.
+     * @return Tree_pos The absolute ID of the first child, INVALID if none
+     * 
+     * @throws std::out_of_range If the parent index is out of range
+    */
     Tree_pos get_first_child(const Tree_pos& parent_index) {
-        auto chunk_id = (parent_index >> 3);
-        auto first_child_s = pointers_stack[chunk_id].get_first_child_s();
+        if (!_check_idx_exists(parent_index)) {
+            throw std::out_of_range("Parent index out of range");
+        }
+    
+        const auto chunk_id = (parent_index >> CHUNK_SHIFT);
+        const auto chunk_offset = (parent_index & CHUNK_MASK);
+        const auto last_child_s_i = pointers_stack[chunk_id].get_last_child_s_at(chunk_offset);
 
-        // Try checking if we stored it in a short delta
-        for (const auto& delta : first_child_s) {
-            if (delta.delta != 0) {
-                auto child_chunk_id = chunk_id + delta.delta;
-                assert(pointers_stack[child_chunk_id].get_parent() == parent_index);
-                // NOTE: The first_child is always the first in the cluster
-                return child_chunk_id;
+        Tree_pos child_chunk_id = INVALID;
+        if (chunk_offset and (last_child_s_i != INVALID)) {
+            // If the short delta contains a value, go to this nearby chunk
+            child_chunk_id = chunk_id + last_child_s_i;
+        } else {
+            // The first entry will always have the chunk id of the child
+            child_chunk_id = pointers_stack[chunk_id].get_last_child_l();
+        }
+    
+        // Iterate in reverse to find the last occupied in child chunk
+        if (child_chunk_id != INVALID) {
+            for (short offset = NUM_SHORT_DEL - 1; offset >= 0; offset--) {
+                if (pointers_stack[child_chunk_id + offset].is_valid()) {
+                    return static_cast<Tree_pos>(child_chunk_id + offset);
+                }
+            } 
+        }
+
+        return static_cast<Tree_pos>(INVALID);
+    }
+
+    /**
+     * @brief Check if a node is the last child of its parent.
+     * 
+     * @param self_index The absolute ID of the node.
+     * @return true If the node is the last child of its parent.
+     * 
+     * @throws std::out_of_range If the query index is out of range
+    */
+    bool is_last_child(const Tree_pos& self_index) {
+        if (!_check_idx_exists(self_index)) {
+            throw std::out_of_range("Index out of range");
+        }
+
+        const auto self_chunk_id = (self_index >> CHUNK_SHIFT);
+        const auto self_chunk_offset = (self_index & CHUNK_MASK);
+
+        // If this chunk has a next_sibling pointer, certainly not the last child
+        if (pointers_stack[self_chunk_id].get_next_sibling() != INVALID) {
+            return false;
+        }
+
+        // Now, to be the last child, all entries after this should be invalid
+        for (short offset = self_chunk_offset; offset < NUM_SHORT_DEL; offset++) {
+            const auto last_child_s_i = pointers_stack[self_chunk_id].get_last_child_s_at(offset);
+            if (pointers_stack[self_chunk_id + offset].is_valid()) {
+                return false;
             }
         }
 
-        // If it's not in the short delta, it's in the long one.
-        auto first_child_l = pointers_stack[chunk_id].get_first_child_l();
-
-        // No need to verify offset, first one has to be the first_child
-        return first_child_l;
+        return true;
     }
 
-    bool is_last_child(const Tree_pos& self_index) {
-        auto chunk_id = (self_index >> 3);
-        auto parent_abs_id = pointers_stack[chunk_id].get_parent();
-
-        // It has to be the parent’s last child
-        return get_last_child(parent_abs_id) == self_index;
-    }
-
+    /**
+     * @brief Check if a node is the first child of its parent.
+     * 
+     * @param self_index The absolute ID of the node.
+     * @return true If the node is the first child of its parent.
+     * 
+     * @throws std::out_of_range If the query index is out of range
+    */
     bool is_first_child(const Tree_pos& self_index) {
-        auto chunk_id = (self_index >> 3);
-        auto parent_abs_id = pointers_stack[chunk_id].get_parent();
+        if (!_check_idx_exists(self_index)) {
+            throw std::out_of_range("Index out of range");
+        }
 
-        // It has to be the parent’s first child
-        return get_first_child(parent_abs_id) == self_index;
+        const auto self_chunk_id = (self_index >> CHUNK_SHIFT);
+        const auto self_chunk_offset = (self_index & CHUNK_MASK);
+
+        // If this chunk has a prev_sibling pointer, certainly not the last child
+        if (pointers_stack[self_chunk_id].get_prev_sibling() != INVALID) {
+            return false;
+        }
+
+        // Now, to be the first child, it must have no offset
+        if (self_chunk_offset) {
+            return false;
+        }
+
+        return true;
     }
 
     Tree_pos get_sibling_next(const Tree_pos& sibling_id) {
