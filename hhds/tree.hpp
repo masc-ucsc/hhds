@@ -140,6 +140,17 @@ public:
             }
         }
 
+    /* PARAM CONSTRUCTOR */
+    Tree_pointers(Tree_pos p)
+        : parent(p), 
+            next_sibling(INVALID), prev_sibling(INVALID), 
+            first_child_l(INVALID), last_child_l(INVALID) {
+            for (short i = 0; i < NUM_SHORT_DEL; i++) {
+                _set_first_child_s(i, INVALID);
+                _set_last_child_s(i, INVALID);
+            }
+        }
+
     // Getters
     Tree_pos get_parent() const { return parent; }
     Tree_pos get_next_sibling() const { return next_sibling; }
@@ -201,6 +212,26 @@ private:
         CAN USE STD::OPTIONAL WRAPPING AROUND THE 
         TEMPLATE OF X */
         return (idx < data_stack.size() && data_stack[idx]);
+    }
+
+    /* Function to add an entry to the pointers and data stack (typically for add/append)*/
+    Tree_pos create_space(const Tree_pos &parent_index, const X& data) {
+        if (pointers_stack.size() >= MAX_TREE_SIZE) {
+            throw std::out_of_range("Tree size exceeded");
+        } else if (!_check_idx_exists(parent_index)) {
+            throw std::out_of_range("Parent index out of range");
+        }
+
+        // Make space for CHUNK_SIZE number of entries at the end
+        data_stack.emplace_back(data);
+        for (int i = 0; i < CHUNK_OFFSET; i++) {
+            data_stack.emplace_back();
+        }
+
+        // Add the single pointer node for all CHUNK_SIZE entries
+        pointers_stack.emplace_back(parent_index);
+
+        return data_stack.size() - CHUNK_SIZE;
     }
 // :private
 
@@ -423,6 +454,50 @@ public:
     /**
      *  Update based API (Adds and Deletes from the tree)
      */
+
+    /**
+     * @brief Append a sibling to a node.
+     * 
+     * @param sibling_id The absolute ID of the sibling node.
+     * @param data The data to be stored in the new sibling.
+     * 
+     * @return Tree_pos The absolute ID of the new sibling.
+     * @throws std::out_of_range If the sibling index is out of range
+     */
+    Tree_pos add_child(const Tree_pos& parent_index, const X& data) {
+        if (!_check_idx_exists(parent_index)) {
+            throw std::out_of_range("Parent index out of range");
+        }
+
+        const auto last_child_id = get_last_child(parent_index);
+
+        // This is not the first child being added
+        if (last_child_id != INVALID) {
+            return append_sibling(last_child_id, data);
+        }
+
+        const auto child_chunk_id = create_space(parent_index, data);
+
+        // Update the parent's first and last child pointers to this new child
+        // If the offset is 0, then we can always fit the chunk id of the child
+        // If the offset is non-zero:
+            // Try to fit the delta in short delta pointers
+            // If you can do that then all good we move on.
+            // If you cannot do that then break the chunk in which the parent is
+                // Put [parent, end) in the a new chunk 
+                // Things easy to manage:
+                    // Parent pointer -> remains the same as this chunk
+                    // prev sibling -> initially same as this chunk, becomes the next after every add
+                    // next sibling -> keep making it as createspace()>>shift
+                // Things NOT so easy to manage:
+                    // after moving to the next chunk this might get messed up
+                    // The short deltas that worked out initially might not work now (2^21 * 2 < 2*43)
+                    // So, now we first put the first guy thta was moved, set the long pointers
+                    // keep iterating to the right, try updating the delta, if updated then go to the next guy
+                    // if not updated then break the chunk and move the rest to the next chunk
+                    // repeat and update all the pointers accordingly
+    }
+
     // :public
     }; // tree class
 } // hhds namespace
