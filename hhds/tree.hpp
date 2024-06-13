@@ -505,12 +505,65 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
     }
 
     const auto sibling_chunk_id = (sibling_id >> CHUNK_SHIFT);
-    const auto sibling_chunk_offset = (sibling_id & CHUNK_MASK);
     const auto sibling_parent_id = pointers_stack[sibling_chunk_id].get_parent();
+    const auto last_sib_chunk_id = get_last_child(sibling_parent_id);
 
-    // TODO IMPLEMENTATION
+    // Can fit the sibling in the same chunk
+    for (short offset = NUM_SHORT_DEL - 1; offset >= 0; offset--) {
+        if (!_contains_data(last_sib_chunk_id + offset)) {
+            // Put the data here and update bookkeeping
+            data_stack[last_sib_chunk_id + offset] = data;
+            return static_cast<Tree_pos>(last_sib_chunk_id + offset);
+        }
+    }
 
-    return INVALID
+    // Create a new chunk for the sibling
+    const auto new_chunk_id = _create_space(sibling_parent_id, data);
+
+    // Update bookkeeping
+    pointers_stack[new_chunk_id].set_prev_sibling(last_sib_chunk_id);
+    pointers_stack[new_chunk_id].set_next_sibling(pointers_stack[last_sib_chunk_id].get_next_sibling());
+    pointers_stack[last_sib_chunk_id].set_next_sibling(new_chunk_id);
+
+    if (pointers_stack[new_chunk_id].get_next_sibling() != INVALID) {
+        pointers_stack[pointers_stack[new_chunk_id].get_next_sibling()].set_prev_sibling(new_chunk_id);
+    }
+
+    // Update the last child pointer of the parent
+    if (sibling_parent_id & CHUNK_MASK == 0) {
+        pointers_stack[sibling_parent_id].set_last_child_l(new_chunk_id);
+    } else {
+        // Try to fit the delta in the short delta pointers
+        const auto delta = new_chunk_id - sibling_parent_id;
+        if (abs(delta) <= MAX_SHORT_DELTA) {
+            pointers_stack[sibling_parent_id].set_last_child_s_at(sibling_parent_id & CHUNK_MASK, static_cast<Short_delta>(delta));
+        } else {
+            // If we can't fit the delta, move the rest to a new chunk
+            auto next_new_chunk_id = _create_space(sibling_parent_id, X());
+            const auto sib_parent_chunk_id = (sibling_parent_id >> CHUNK_SHIFT);
+
+            // Update bookkeeping
+            pointers_stack[next_new_chunk_id].set_prev_sibling(sib_parent_chunk_id);
+            pointers_stack[next_new_chunk_id].set_next_sibling(pointers_stack[sib_parent_chunk_id].get_next_sibling());
+            pointers_stack[sib_parent_chunk_id].set_next_sibling(next_new_chunk_id);
+
+            if (pointers_stack[next_new_chunk_id].get_next_sibling() != INVALID) {
+                pointers_stack[pointers_stack[next_new_chunk_id].get_next_sibling()].set_prev_sibling(next_new_chunk_id);
+            }
+
+            pointers_stack[next_new_chunk_id].set_first_child_l(
+                pointers_stack[sibling_parent_id].get_first_child_l()
+            );
+            pointers_stack[next_new_chunk_id].set_last_child_l(new_chunk_id);
+
+            // Update the parent pointer now that it has moved
+            pointers_stack[new_chunk_id].set_parent(next_new_chunk_id);
+            pointers_stack[sibling_parent_id].set_last_child_l(next_new_chunk_id);
+
+            /* TODO : Finish ALL the bookkeeping */
+
+        }
+    }
 }
 
 /**
@@ -590,7 +643,7 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
                     pointers_stack[new_chunk_id].set_next_sibling(next_new_chunk_id);
 
                     if (pointers_stack[next_new_chunk_id].get_next_sibling() != INVALID) {
-                        pointers_stack[pointers_stack[next_new_chunk_id].get_next_sibling()].set_prev_sibling(new_chunk_id);
+                        pointers_stack[pointers_stack[next_new_chunk_id].get_next_sibling()].set_prev_sibling(next_new_chunk_id);
                     }
 
                     pointers_stack[new_chunk_id].set_first_child_l(current_move_id);
@@ -602,6 +655,8 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
                     new_chunk_id = next_new_chunk_id;
                     offset++;
                 }
+
+                /* MAJOR ISSUE : WE WILL HAVE TO ITERATE OVER ALL THE CHILDREN AND CHANGE THE PARENT ID STORED IN THE CHUNKS */
             }
         }
 
