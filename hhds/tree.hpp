@@ -27,51 +27,64 @@ namespace hhds {
  * to be added, please add it to the Tree_pointers class after 
  * adjusting the values of CHUNK_BITS and SHORT_DELTA.
  * 
+ * Other values for reference (CHUNK_BITS, SHORT_DELTA, TOTAL_BITS)
+ *  40 22 -> 511
+    43 21 -> 512
+    45 20 -> 508
+    48 19 -> 509
+ * 
  * NEVER let it exceed 512 bits.
 */
 
 using Tree_pos = uint64_t;
+using Short_delta = int32_t;
 
-static constexpr Tree_pos INVALID = 0;                          // ROOT ID
-static constexpr Tree_pos ROOT = 0;                             // ROOT ID
-static constexpr short CHUNK_BITS = 43;                         // Number of chunks in a tree node
-static constexpr short SHORT_DELTA = 21;                        // Amount of short delta allowed
-static constexpr short CHUNK_SHIFT = 3;                         // The number of bits in a chunk offset
-static constexpr short CHUNK_SIZE = 1 << CHUNK_SHIFT;           // Size of a chunk in bits
-static constexpr short CHUNK_MASK = CHUNK_SIZE - 1;             // Mask for chunk offset
-static constexpr short NUM_SHORT_DEL = CHUNK_MASK;              // Mask for chunk offset
-static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;    // Maximum number of nodes in the tree
+static constexpr Tree_pos INVALID = 0;                                  // This is invalid for all pointers other than parent
+static constexpr Tree_pos ROOT = 0;                                     // ROOT ID
+
+static constexpr short CHUNK_BITS = 43;                                 // Number of chunks in a tree node
+static constexpr short SHORT_DELTA = 21;                                // Amount of short delta allowed
+
+static constexpr short CHUNK_SHIFT = 3;                                 // The number of bits in a chunk offset
+static constexpr short CHUNK_SIZE = 1 << CHUNK_SHIFT;                   // Size of a chunk in bits
+static constexpr short CHUNK_MASK = CHUNK_SIZE - 1;                     // Mask for chunk offset
+static constexpr short NUM_SHORT_DEL = CHUNK_MASK;                      // Number of short delta children in eachc tree_ptr
+
+static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;            // Maximum number of nodes in the tree
+
+static constexpr Short_delta MIN_SHORT_DELTA = -1 << SHORT_DELTA;       // Minimum value for short delta
+static constexpr Short_delta MAX_SHORT_DELTA = (1 << SHORT_DELTA) - 1;  // Maximum value for short delta
 
 class __attribute__((packed, aligned(64))) Tree_pointers {
 private:
     // We only store the exact ID of parent
-    Tree_pos parent                 : CHUNK_BITS + CHUNK_SHIFT;
-    Tree_pos next_sibling           : CHUNK_BITS;
-    Tree_pos prev_sibling           : CHUNK_BITS;
+    Tree_pos parent                     : CHUNK_BITS + CHUNK_SHIFT;
+    Tree_pos next_sibling               : CHUNK_BITS;
+    Tree_pos prev_sibling               : CHUNK_BITS;
 
     // Long child pointers
-    Tree_pos first_child_l          : CHUNK_BITS;
-    Tree_pos last_child_l           : CHUNK_BITS;
+    Tree_pos first_child_l              : CHUNK_BITS;
+    Tree_pos last_child_l               : CHUNK_BITS;
 
     // Short (delta) child pointers
-    Tree_pos first_child_s_0        : SHORT_DELTA;
-    Tree_pos first_child_s_1        : SHORT_DELTA;
-    Tree_pos first_child_s_2        : SHORT_DELTA;
-    Tree_pos first_child_s_3        : SHORT_DELTA;
-    Tree_pos first_child_s_4        : SHORT_DELTA;
-    Tree_pos first_child_s_5        : SHORT_DELTA;
-    Tree_pos first_child_s_6        : SHORT_DELTA;
+    Short_delta first_child_s_0         : SHORT_DELTA;
+    Short_delta first_child_s_1         : SHORT_DELTA;
+    Short_delta first_child_s_2         : SHORT_DELTA;
+    Short_delta first_child_s_3         : SHORT_DELTA;
+    Short_delta first_child_s_4         : SHORT_DELTA;
+    Short_delta first_child_s_5         : SHORT_DELTA;
+    Short_delta first_child_s_6         : SHORT_DELTA;
 
-    Tree_pos last_child_s_0         : SHORT_DELTA;
-    Tree_pos last_child_s_1         : SHORT_DELTA;
-    Tree_pos last_child_s_2         : SHORT_DELTA;
-    Tree_pos last_child_s_3         : SHORT_DELTA;
-    Tree_pos last_child_s_4         : SHORT_DELTA;
-    Tree_pos last_child_s_5         : SHORT_DELTA;
-    Tree_pos last_child_s_6         : SHORT_DELTA;
+    Short_delta last_child_s_0          : SHORT_DELTA;
+    Short_delta last_child_s_1          : SHORT_DELTA;
+    Short_delta last_child_s_2          : SHORT_DELTA;
+    Short_delta last_child_s_3          : SHORT_DELTA;
+    Short_delta last_child_s_4          : SHORT_DELTA;
+    Short_delta last_child_s_5          : SHORT_DELTA;
+    Short_delta last_child_s_6          : SHORT_DELTA;
 
     // Helper function to access first child pointers by index
-    Tree_pos _get_first_child_s(short index) const {
+    Short_delta _get_first_child_s(short index) const {
         switch (index) {
             case 0: return first_child_s_0;
             case 1: return first_child_s_1;
@@ -84,7 +97,7 @@ private:
         }
     }
 
-    void _set_first_child_s(short index, Tree_pos value) {
+    void _set_first_child_s(short index, Short_delta value) {
         switch (index) {
             case 0: first_child_s_0 = value; break;
             case 1: first_child_s_1 = value; break;
@@ -98,7 +111,7 @@ private:
     }
 
     // Helper function to access last child pointers by index
-    Tree_pos _get_last_child_s(short index) const {
+    Short_delta _get_last_child_s(short index) const {
         switch (index) {
             case 0: return last_child_s_0;
             case 1: return last_child_s_1;
@@ -111,7 +124,7 @@ private:
         }
     }
 
-    void _set_last_child_s(short index, Tree_pos value) {
+    void _set_last_child_s(short index, Short_delta value) {
         switch (index) {
             case 0: last_child_s_0 = value; break;
             case 1: last_child_s_1 = value; break;
@@ -159,8 +172,8 @@ public:
     Tree_pos get_last_child_l() const { return last_child_l; }
 
     // Public getters for short child pointers
-    Tree_pos get_first_child_s_at(short index) const { return _get_first_child_s(index); }
-    Tree_pos get_last_child_s_at(short index) const { return _get_last_child_s(index); }
+    Short_delta get_first_child_s_at(short index) const { return _get_first_child_s(index); }
+    Short_delta get_last_child_s_at(short index) const { return _get_last_child_s(index); }
 
     // Setters
     void set_parent(Tree_pos p) { parent = p; }
@@ -170,8 +183,8 @@ public:
     void set_last_child_l(Tree_pos lcl) { last_child_l = lcl; }
 
     // Public setters for short child pointers
-    void set_first_child_s_at(short index, Tree_pos fcs) { _set_first_child_s(index, fcs); }
-    void set_last_child_s_at(short index, Tree_pos lcs) { _set_last_child_s(index, lcs); }
+    void set_first_child_s_at(short index, Short_delta fcs) { _set_first_child_s(index, fcs); }
+    void set_last_child_s_at(short index, Short_delta lcs) { _set_last_child_s(index, lcs); }
 
     // Operators
     constexpr bool operator==(const Tree_pointers& other) const {
@@ -548,27 +561,46 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
         pointers_stack[new_chunk_id].set_first_child_l(child_chunk_id);
         pointers_stack[new_chunk_id].set_last_child_l(child_chunk_id);
 
+        // Set the data in the new_chunk_id
+        data_stack[new_chunk_id] = data;
+
         // Move entries from the parent chunk to the new chunk
-        for (short offset = parent_chunk_offset; offset < NUM_SHORT_DEL; ++offset) {
-            const auto current_child_id = parent_chunk_id + offset;
+        for (short offset = parent_chunk_offset + 1; offset < NUM_SHORT_DEL; ++offset) {
+            const auto current_move_id = parent_chunk_id + offset;
 
-            if (_contains_data(current_child_id)) {
-                ///// THE DELTA CAN BE NEGATIVE??????????????
-                const auto current_child_delta = static_cast<Tree_pos>(current_child_id - new_chunk_id);
+            if (_contains_data(current_move_id)) {
+                ///// THE DELTA CAN BE NEGATIVE
+                const auto current_child_delta = current_move_id - new_chunk_id;
 
-                if (current_child_delta < (1 << SHORT_DELTA)) {
+                if (abs(current_child_delta) <= MAX_SHORT_DELTA) {
                     // We can fit the delta in short delta pointers
-                    pointers_stack[new_chunk_id].set_first_child_s_at(offset, current_child_delta);
-                    pointers_stack[new_chunk_id].set_last_child_s_at(offset, current_child_delta);
+                    pointers_stack[new_chunk_id].set_first_child_s_at(offset, static_cast<Short_delta>(current_child_delta));
+                    pointers_stack[new_chunk_id].set_last_child_s_at(offset, static_cast<Short_delta>(current_child_delta));
+
+                    // Set the data in the next_new_chunk_id
+                    // @todo
+
                 } else {
                     // If we can't fit the delta, move the rest to a new chunk
                     auto next_new_chunk_id = _create_space(grand_parent_id, X());
 
                     pointers_stack[next_new_chunk_id].set_parent(grand_parent_id);
                     pointers_stack[next_new_chunk_id].set_prev_sibling(new_chunk_id);
+                    pointers_stack[next_new_chunk_id].set_next_sibling(pointers_stack[new_chunk_id].get_next_sibling());
                     pointers_stack[new_chunk_id].set_next_sibling(next_new_chunk_id);
+
+                    if (pointers_stack[next_new_chunk_id].get_next_sibling() != INVALID) {
+                        pointers_stack[pointers_stack[next_new_chunk_id].get_next_sibling()].set_prev_sibling(new_chunk_id);
+                    }
+
+                    pointers_stack[new_chunk_id].set_first_child_l(current_move_id);
+                    pointers_stack[new_chunk_id].set_last_child_l(current_move_id);
+
+                    // Set the data in the next_new_chunk_id
+                    // @todo
+
                     new_chunk_id = next_new_chunk_id;
-                    offset = -1;  // Restart the offset loop for the new chunk
+                    offset++;
                 }
             }
         }
