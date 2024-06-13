@@ -231,7 +231,7 @@ private:
         // Add the single pointer node for all CHUNK_SIZE entries
         pointers_stack.emplace_back(parent_index);
 
-        return data_stack.size() - CHUNK_SIZE;
+        return (data_stack.size() - CHUNK_SIZE) >> CHUNK_SHIFT;
     }
 // :private
 
@@ -477,25 +477,60 @@ public:
         }
 
         const auto child_chunk_id = create_space(parent_index, data);
+        const auto parent_chunk_id = (parent_index >> CHUNK_SHIFT);
+        const auto parent_chunk_offset = (parent_index & CHUNK_MASK);
 
-        // Update the parent's first and last child pointers to this new child
-        // If the offset is 0, then we can always fit the chunk id of the child
-        // If the offset is non-zero:
-            // Try to fit the delta in short delta pointers
-            // If you can do that then all good we move on.
-            // If you cannot do that then break the chunk in which the parent is
-                // Put [parent, end) in the a new chunk 
-                // Things easy to manage:
-                    // Parent pointer -> remains the same as this chunk
-                    // prev sibling -> initially same as this chunk, becomes the next after every add
-                    // next sibling -> keep making it as createspace()>>shift
-                // Things NOT so easy to manage:
-                    // after moving to the next chunk this might get messed up
-                    // The short deltas that worked out initially might not work now (2^21 * 2 < 2*43)
-                    // So, now we first put the first guy thta was moved, set the long pointers
-                    // keep iterating to the right, try updating the delta, if updated then go to the next guy
-                    // if not updated then break the chunk and move the rest to the next chunk
-                    // repeat and update all the pointers accordingly
+        /* Update the parent's first and last child pointers to this new child */
+        if (parent_chunk_offset == 0) {
+            // The offset is 0, we can fit the chunk id of the child directly
+            pointers_stack[parent_chunk_id].set_first_child_l(child_chunk_id);
+            pointers_stack[parent_chunk_id].set_last_child_l(child_chunk_id);
+        } else {
+            const auto grand_parent_id = pointers_stack[parent_chunk_id].get_parent();
+            auto new_chunk_id = create_space(grand_parent_id, X());
+
+            // Add bookkeeping to the fresh sibling chunk
+            pointers_stack[new_chunk_id].set_parent(grand_parent_id);
+            pointers_stack[new_chunk_id].set_prev_sibling(parent_chunk_id);
+            pointers_stack[new_chunk_id].set_next_sibling(pointers_stack[parent_chunk_id].get_next_sibling());
+            pointers_stack[parent_chunk_id].set_next_sibling(new_chunk_id);
+
+            if (pointers_stack[new_chunk_id].get_next_sibling() != INVALID) {
+                pointers_stack[pointers_stack[new_chunk_id].get_next_sibling()].set_prev_sibling(new_chunk_id);
+            }
+
+            pointers_stack[new_chunk_id].set_first_child_l(child_chunk_id);
+            pointers_stack[new_chunk_id].set_last_child_l(child_chunk_id);
+
+            // Move entries from the parent chunk to the new chunk
+            for (short offset = parent_chunk_offset; offset < NUM_SHORT_DEL; ++offset) {
+                const auto current_child_id = parent_chunk_id + offset;
+
+                if (_contains_data(current_child_id)) {
+                    const auto current_child_delta = static_cast<Tree_pos>(current_child_id - new_chunk_id);
+
+                    if (current_child_delta < (1 << SHORT_DELTA)) {
+                        // We can fit the delta in short delta pointers
+                        pointers_stack[new_chunk_id].set_first_child_s_at(offset, current_child_delta);
+                        pointers_stack[new_chunk_id].set_last_child_s_at(offset, current_child_delta);
+                    } else {
+                        // If we can't fit the delta, move the rest to a new chunk
+                        auto next_new_chunk_id = create_space(grand_parent_id, X());
+
+                        pointers_stack[next_new_chunk_id].set_parent(grand_parent_id);
+                        pointers_stack[next_new_chunk_id].set_prev_sibling(new_chunk_id);
+                        pointers_stack[new_chunk_id].set_next_sibling(next_new_chunk_id);
+                        new_chunk_id = next_new_chunk_id;
+                        offset = -1;  // Restart the offset loop for the new chunk
+                    }
+                }
+            }
+
+            // Invalidate the moved entries in the parent chunk
+            for (short offset = parent_chunk_offset; offset < NUM_SHORT_DEL; ++offset) {
+                data_stack[parent_chunk_id + offset] = X();
+            }
+        }
     }
 
     // :public
