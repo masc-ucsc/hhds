@@ -52,7 +52,7 @@ static constexpr short NUM_SHORT_DEL = CHUNK_MASK;                      // Numbe
 
 static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;            // Maximum number of nodes in the tree
 
-static constexpr Short_delta MIN_SHORT_DELTA = -1 << SHORT_DELTA;       // Minimum value for short delta
+static constexpr Short_delta MIN_SHORT_DELTA = -(1 << SHORT_DELTA);     // Minimum value for short delta
 static constexpr Short_delta MAX_SHORT_DELTA = (1 << SHORT_DELTA) - 1;  // Maximum value for short delta
 
 class __attribute__((packed, aligned(64))) Tree_pointers {
@@ -83,7 +83,7 @@ private:
     Short_delta last_child_s_5          : SHORT_DELTA;
     Short_delta last_child_s_6          : SHORT_DELTA;
 
-    // Helper function to access first child pointers by index
+    // Helper functions to get and set first child pointers by index
     Short_delta _get_first_child_s(short index) const {
         switch (index) {
             case 0: return first_child_s_0;
@@ -110,7 +110,7 @@ private:
         }
     }
 
-    // Helper function to access last child pointers by index
+    // Helper functions to get and set last child pointers by index
     Short_delta _get_last_child_s(short index) const {
         switch (index) {
             case 0: return last_child_s_0;
@@ -245,6 +245,30 @@ private:
         pointers_stack.emplace_back(parent_index);
 
         return (data_stack.size() - CHUNK_SIZE) >> CHUNK_SHIFT;
+    }
+
+    /* Function to insert a new chunk in between (typically for handling add/append corner cases)*/
+    Tree_pos _insert_chunk_after(const Tree_pos curr) {
+        if (pointers_stack.size() >= MAX_TREE_SIZE) {
+            throw std::out_of_range("Tree size exceeded");
+        } else if (!_check_idx_exists(curr)) {
+            throw std::out_of_range("Current index out of range");
+        }
+        
+        // Allot new chunk at the end
+        const auto new_chunk_id = _create_space(pointers_stack[curr].get_parent(), X());
+
+        // Update bookkeeping
+        // This is basically inserting inside of a doubly linked list
+        pointers_stack[new_chunk_id].set_prev_sibling(curr);
+        pointers_stack[new_chunk_id].set_next_sibling(pointers_stack[curr].get_next_sibling());
+        pointers_stack[curr].set_next_sibling(new_chunk_id);
+
+        if (pointers_stack[new_chunk_id].get_next_sibling() != INVALID) {
+            pointers_stack[pointers_stack[new_chunk_id].get_next_sibling()].set_prev_sibling(new_chunk_id);
+        }
+
+        return new_chunk_id;
     }
 // :private
 
@@ -518,16 +542,7 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
     }
 
     // Create a new chunk for the sibling
-    const auto new_chunk_id = _create_space(sibling_parent_id, data);
-
-    // Update bookkeeping
-    pointers_stack[new_chunk_id].set_prev_sibling(last_sib_chunk_id);
-    pointers_stack[new_chunk_id].set_next_sibling(pointers_stack[last_sib_chunk_id].get_next_sibling());
-    pointers_stack[last_sib_chunk_id].set_next_sibling(new_chunk_id);
-
-    if (pointers_stack[new_chunk_id].get_next_sibling() != INVALID) {
-        pointers_stack[pointers_stack[new_chunk_id].get_next_sibling()].set_prev_sibling(new_chunk_id);
-    }
+    const auto new_chunk_id = _insert_chunk_after(last_sib_chunk_id);
 
     // Update the last child pointer of the parent
     if (sibling_parent_id & CHUNK_MASK == 0) {
@@ -539,17 +554,8 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
             pointers_stack[sibling_parent_id].set_last_child_s_at(sibling_parent_id & CHUNK_MASK, static_cast<Short_delta>(delta));
         } else {
             // If we can't fit the delta, move the rest to a new chunk
-            auto next_new_chunk_id = _create_space(sibling_parent_id, X());
             const auto sib_parent_chunk_id = (sibling_parent_id >> CHUNK_SHIFT);
-
-            // Update bookkeeping
-            pointers_stack[next_new_chunk_id].set_prev_sibling(sib_parent_chunk_id);
-            pointers_stack[next_new_chunk_id].set_next_sibling(pointers_stack[sib_parent_chunk_id].get_next_sibling());
-            pointers_stack[sib_parent_chunk_id].set_next_sibling(next_new_chunk_id);
-
-            if (pointers_stack[next_new_chunk_id].get_next_sibling() != INVALID) {
-                pointers_stack[pointers_stack[next_new_chunk_id].get_next_sibling()].set_prev_sibling(next_new_chunk_id);
-            }
+            auto next_new_chunk_id = _insert_chunk_after(sib_parent_chunk_id);
 
             pointers_stack[next_new_chunk_id].set_first_child_l(
                 pointers_stack[sibling_parent_id].get_first_child_l()
@@ -599,18 +605,8 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
         pointers_stack[parent_chunk_id].set_last_child_l(child_chunk_id);
     } else {
         const auto grand_parent_id = pointers_stack[parent_chunk_id].get_parent();
-        auto new_chunk_id = _create_space(grand_parent_id, X());
-
-        // Add bookkeeping to the fresh sibling chunk
-        pointers_stack[new_chunk_id].set_parent(grand_parent_id);
-        pointers_stack[new_chunk_id].set_prev_sibling(parent_chunk_id);
-        pointers_stack[new_chunk_id].set_next_sibling(pointers_stack[parent_chunk_id].get_next_sibling());
-        pointers_stack[parent_chunk_id].set_next_sibling(new_chunk_id);
-
-        if (pointers_stack[new_chunk_id].get_next_sibling() != INVALID) {
-            pointers_stack[pointers_stack[new_chunk_id].get_next_sibling()].set_prev_sibling(new_chunk_id);
-        }
-
+        auto new_chunk_id = _insert_chunk_after(parent_chunk_id);
+    
         pointers_stack[new_chunk_id].set_first_child_l(child_chunk_id);
         pointers_stack[new_chunk_id].set_last_child_l(child_chunk_id);
 
@@ -635,16 +631,7 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
 
                 } else {
                     // If we can't fit the delta, move the rest to a new chunk
-                    auto next_new_chunk_id = _create_space(grand_parent_id, X());
-
-                    pointers_stack[next_new_chunk_id].set_parent(grand_parent_id);
-                    pointers_stack[next_new_chunk_id].set_prev_sibling(new_chunk_id);
-                    pointers_stack[next_new_chunk_id].set_next_sibling(pointers_stack[new_chunk_id].get_next_sibling());
-                    pointers_stack[new_chunk_id].set_next_sibling(next_new_chunk_id);
-
-                    if (pointers_stack[next_new_chunk_id].get_next_sibling() != INVALID) {
-                        pointers_stack[pointers_stack[next_new_chunk_id].get_next_sibling()].set_prev_sibling(next_new_chunk_id);
-                    }
+                    auto next_new_chunk_id = _insert_chunk_after(new_chunk_id);
 
                     pointers_stack[new_chunk_id].set_first_child_l(current_move_id);
                     pointers_stack[new_chunk_id].set_last_child_l(current_move_id);
