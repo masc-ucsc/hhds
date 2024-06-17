@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <iostream>
 #include <algorithm>
 #include <array>
@@ -232,18 +233,15 @@ template <typename X>
 class tree {
 private:
     /* The tree pointers and data stored separately */
-    std::vector<Tree_pointers>  pointers_stack;
-    std::vector<X>              data_stack;
+    std::vector<Tree_pointers>              pointers_stack;
+    std::vector<std::optional<X>>           data_stack;
 
     /* Special functions for sanity */
     [[nodiscard]] bool _check_idx_exists(const Tree_pos &idx) const noexcept {
         return idx >= 0 && idx < static_cast<Tree_pos>((pointers_stack.size()) << CHUNK_SHIFT) + CHUNK_MASK;
     }
     [[nodiscard]] bool _contains_data(const Tree_pos &idx) const noexcept {
-        /* CHANGE THE SECOND CONDITION
-        CAN USE STD::OPTIONAL WRAPPING AROUND THE 
-        TEMPLATE OF X */
-        return (idx < data_stack.size() && data_stack[idx]);
+        return (idx < data_stack.size() && data_stack[idx].has_value());
     }
 
     /* Function to add an entry to the pointers and data stack (typically for add/append)*/
@@ -400,11 +398,11 @@ public:
      * Data access API
      */
     X get_data(const Tree_pos& idx) {
-        if (!_check_idx_exists(idx)) {
-            throw std::out_of_range("Index out of range");
+        if (!_check_idx_exists(idx) || !data_stack[idx].has_value()) {
+            throw std::out_of_range("Index out of range or no data at index");
         }
 
-        return data_stack[idx];
+        return data_stack[idx].value();
     }
 
     void set_data(const Tree_pos& idx, const X& data) {
