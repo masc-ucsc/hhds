@@ -238,7 +238,7 @@ private:
 
     /* Special functions for sanity */
     [[nodiscard]] bool _check_idx_exists(const Tree_pos &idx) const noexcept {
-        return idx >= 0 && idx < static_cast<Tree_pos>((pointers_stack.size()) << CHUNK_SHIFT) + CHUNK_MASK;
+        return idx >= 0 && idx < static_cast<Tree_pos>(data_stack.size());
     }
     [[nodiscard]] bool _contains_data(const Tree_pos &idx) const noexcept {
         return (idx < data_stack.size() && data_stack[idx].has_value());
@@ -580,8 +580,9 @@ Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) {
     // Check if the next sibling is within the same chunk, at idx + 1
     const auto curr_chunk_id = (sibling_id >> CHUNK_SHIFT);
     const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
-    if (curr_chunk_offset < CHUNK_MASK and _contains_data(curr_chunk_id + curr_chunk_offset + 1)) {
-        return static_cast<Tree_pos>(curr_chunk_id + curr_chunk_offset + 1);
+    if (curr_chunk_offset < CHUNK_MASK and 
+        _contains_data((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1)) {
+        return static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1);
     }
 
     // Just jump to the next sibling chunk, or returns invalid
@@ -595,6 +596,8 @@ Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) {
  * @return Tree_pos The absolute ID of the prev sibling, INVALID if none
  * 
  * @throws std::out_of_range If the sibling index is out of range
+ * @todo handle when the prev or next could be within same chunk but more than 1 offset away
+ *       happens if someone is deleted from the middle
 */
 template <typename X>
 Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) {
@@ -607,11 +610,12 @@ Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) {
         return INVALID;
     }
 
-    // Check if the prev sibling is within the same chunk, at idx + 1
+    // Check if the prev sibling is within the same chunk, at idx - 1
     const auto curr_chunk_id = (sibling_id >> CHUNK_SHIFT);
     const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
-    if (curr_chunk_offset > 0 and _contains_data(curr_chunk_id + curr_chunk_offset - 1)) {
-        return static_cast<Tree_pos>(curr_chunk_id + curr_chunk_offset - 1);
+    if (curr_chunk_offset > 0 and 
+        _contains_data((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset - 1)) {
+        return static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset - 1);
     }
 
     // Just jump to the next sibling chunk, or returns invalid
@@ -654,8 +658,6 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
     const auto sibling_parent_id = pointers_stack[sibling_chunk_id].get_parent();
     const auto sib_parent_chunk_id = (sibling_parent_id >> CHUNK_SHIFT);
     const auto last_sib_chunk_id = get_last_child(sibling_parent_id) >> CHUNK_SHIFT;
-
-    std::cout << "hiihihih2 last : " << last_sib_chunk_id << std::endl;
 
     // Can fit the sibling in the same chunk
     for (short offset = 0; offset < NUM_SHORT_DEL; offset++) {
