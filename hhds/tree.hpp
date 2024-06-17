@@ -52,8 +52,8 @@ static constexpr short NUM_SHORT_DEL = CHUNK_MASK;                      // Numbe
 
 static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;            // Maximum number of nodes in the tree
 
-static constexpr Short_delta MIN_SHORT_DELTA = -(1 << SHORT_DELTA);     // Minimum value for short delta
-static constexpr Short_delta MAX_SHORT_DELTA = (1 << SHORT_DELTA) - 1;  // Maximum value for short delta
+static constexpr Short_delta MIN_SHORT_DELTA = -(1 << (SHORT_DELTA - 1));     // Minimum value for short delta
+static constexpr Short_delta MAX_SHORT_DELTA = (1 << (SHORT_DELTA - 1)) - 1;  // Maximum value for short delta
 
 class __attribute__((packed, aligned(64))) Tree_pointers {
 private:
@@ -210,9 +210,12 @@ public:
                 return false;
             }
         }
-        return parent == other.parent && next_sibling == other.next_sibling &&
-               prev_sibling == other.prev_sibling && first_child_l == other.first_child_l &&
-               last_child_l == other.last_child_l;
+
+        return  parent == other.parent && 
+                next_sibling == other.next_sibling &&
+                prev_sibling == other.prev_sibling && 
+                first_child_l == other.first_child_l &&
+                last_child_l == other.last_child_l;
     }
 
     constexpr bool operator!=(const Tree_pointers& other) const { return !(*this == other); }
@@ -234,7 +237,7 @@ private:
 
     /* Special functions for sanity */
     [[nodiscard]] bool _check_idx_exists(const Tree_pos &idx) const noexcept {
-        return idx >= 0 && idx < static_cast<Tree_pos>(pointers_stack.size());
+        return idx >= 0 && idx < static_cast<Tree_pos>((pointers_stack.size()) << CHUNK_SHIFT) + CHUNK_MASK;
     }
     [[nodiscard]] bool _contains_data(const Tree_pos &idx) const noexcept {
         /* CHANGE THE SECOND CONDITION
@@ -253,7 +256,7 @@ private:
 
         // Make space for CHUNK_SIZE number of entries at the end
         data_stack.emplace_back(data);
-        for (int i = 0; i < CHUNK_OFFSET; i++) {
+        for (int i = 0; i < CHUNK_MASK; i++) {
             data_stack.emplace_back();
         }
 
@@ -391,6 +394,26 @@ public:
      */
     Tree_pos append_sibling(const Tree_pos& sibling_id, const X& data);
     Tree_pos add_child(const Tree_pos& parent_index, const X& data);
+    Tree_pos add_root(const X& data);
+
+    /**
+     * Data access API
+     */
+    X get_data(const Tree_pos& idx) {
+        if (!_check_idx_exists(idx)) {
+            throw std::out_of_range("Index out of range");
+        }
+
+        return data_stack[idx];
+    }
+
+    void set_data(const Tree_pos& idx, const X& data) {
+        if (!_check_idx_exists(idx)) {
+            throw std::out_of_range("Index out of range");
+        }
+
+        data_stack[idx] = data;
+    }
 // :public
 
 }; // tree class
@@ -498,7 +521,7 @@ bool tree<X>::is_last_child(const Tree_pos& self_index) {
 
     // Now, to be the last child, all entries after this should be invalid
     for (short offset = self_chunk_offset; offset < NUM_SHORT_DEL; offset++) {
-        const auto last_child_s_i = pointers_stack[self_chunk_id].get_last_child_s_at(offset);
+        // const auto last_child_s_i = pointers_stack[self_chunk_id].get_last_child_s_at(offset);
         if (_contains_data((self_chunk_id << CHUNK_SHIFT) + offset)) {
             return false;
         }
@@ -632,7 +655,9 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
     const auto sibling_chunk_id = (sibling_id >> CHUNK_SHIFT);
     const auto sibling_parent_id = pointers_stack[sibling_chunk_id].get_parent();
     const auto sib_parent_chunk_id = (sibling_parent_id >> CHUNK_SHIFT);
-    const auto last_sib_chunk_id = get_last_child(sibling_parent_id);
+    const auto last_sib_chunk_id = get_last_child(sibling_parent_id) >> CHUNK_SHIFT;
+
+    std::cout << "hiihihih2 last : " << last_sib_chunk_id << std::endl;
 
     // Can fit the sibling in the same chunk
     for (short offset = 0; offset < NUM_SHORT_DEL; offset++) {
@@ -654,9 +679,12 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
         pointers_stack[sib_parent_chunk_id].set_last_child_l(new_sib_chunk_id);
     } else {
         // Try to fit the delta in the short delta pointers
+        const auto delta = new_sib_chunk_id - sib_parent_chunk_id;
         if (_fits_in_short_del(sibling_parent_id, new_sib_chunk_id)) {
-            pointers_stack[sib_parent_chunk_id].set_last_child_s_at((sibling_parent_id & CHUNK_MASK) - 1, 
-                                                                     static_cast<Short_delta>(delta));
+            pointers_stack[sib_parent_chunk_id].set_last_child_s_at(
+                                                    (sibling_parent_id & CHUNK_MASK) - 1, 
+                                                    static_cast<Short_delta>(delta)
+                                                );
         } else {
             // Break the parent chunk from the parent id
             const auto new_parent_chunk_id = _break_chunk_from(sibling_parent_id);
@@ -667,6 +695,32 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
     }
 
     return new_sib_chunk_id << CHUNK_SHIFT;
+}
+
+/**
+ * @brief Add a root node to the tree.
+ * 
+ * @param data The data to be stored in the root node.
+ * 
+ * @return Tree_pos The absolute ID of the root node.
+ * @throws std::logic_error If the tree is not empty
+ */
+template <typename X>
+Tree_pos tree<X>::add_root(const X& data) {
+    if (!pointers_stack.empty()) {
+        throw std::logic_error("Tree is not empty");
+    }
+
+    // Make space for CHUNK_SIZE number of entries at the end
+    data_stack.emplace_back(data);
+    for (int i = 0; i < CHUNK_MASK; i++) {
+        data_stack.emplace_back();
+    }
+
+    // Add the single pointer node for all CHUNK_SIZE entries
+    pointers_stack.emplace_back(MAX_TREE_SIZE);
+
+    return (data_stack.size() - CHUNK_SIZE) >> CHUNK_SHIFT;
 }
 
 /**
@@ -704,10 +758,15 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
         // Try to fit the delta in the short delta pointers
         const auto delta = child_chunk_id - parent_chunk_id;
         if (_fits_in_short_del(parent_index, child_chunk_id)) {
-            pointers_stack[parent_chunk_id].set_first_child_s_at(parent_chunk_offset - 1, 
-                                                                 static_cast<Short_delta>(delta));
-            pointers_stack[parent_chunk_id].set_last_child_s_at(parent_chunk_offset - 1, 
-                                                                static_cast<Short_delta>(delta));
+            pointers_stack[parent_chunk_id].set_first_child_s_at(
+                                                parent_chunk_offset - 1, 
+                                                static_cast<Short_delta>(delta)
+                                            );
+
+            pointers_stack[parent_chunk_id].set_last_child_s_at(
+                                                parent_chunk_offset - 1, 
+                                                static_cast<Short_delta>(delta)
+                                            );
         } else {
             // Break the parent chunk from the parent id
             const auto new_parent_chunk_id = _break_chunk_from(parent_index);
