@@ -412,6 +412,28 @@ public:
 
         data_stack[idx] = data;
     }
+
+    /**
+     *  Debug API (Temp)
+     */
+    void print_tree() {
+        for (size_t i = 0; i < pointers_stack.size(); i++) {
+            std::cout << "Index: " << i << " Parent: " << pointers_stack[i].get_parent() << " Data: ";
+            std::cout << "First Child: " << pointers_stack[i].get_first_child_l() << " ";
+            std::cout << "Last Child: " << pointers_stack[i].get_last_child_l() << " ";
+            std::cout << "Next Sibling: " << pointers_stack[i].get_next_sibling() << " ";
+            std::cout << "Prev Sibling: " << pointers_stack[i].get_prev_sibling() << std::endl;
+            std::cout << std::endl;
+        }
+
+        for (size_t i = 0; i < data_stack.size(); i++) {
+            if (data_stack[i].has_value()) {
+                std::cout << "Index: " << i << " Data: " << data_stack[i].value() << ", ";
+            } else {
+                std::cout << "Index: " << i << " Data: NULL" << ", ";
+            }
+        }
+    }
 // :public
 
 }; // tree class
@@ -660,7 +682,7 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
     const auto last_sib_chunk_id = get_last_child(sibling_parent_id) >> CHUNK_SHIFT;
 
     // Can fit the sibling in the same chunk
-    for (short offset = 0; offset < NUM_SHORT_DEL; offset++) {
+    for (short offset = 0; offset < CHUNK_SIZE; offset++) {
         if (!_contains_data((last_sib_chunk_id << CHUNK_SHIFT) + offset)) {
             // Put the data here and update bookkeeping
             data_stack[(last_sib_chunk_id << CHUNK_SHIFT) + offset] = data;
@@ -779,4 +801,5 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
 
     return child_chunk_id << CHUNK_SHIFT;
 }
+
 } // hhds namespace
