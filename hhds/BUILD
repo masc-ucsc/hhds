@@ -17,12 +17,12 @@ cc_library(
 )
 
 cc_library(
-    name = "hhds",
+    name = "core",
     srcs = glob(
-        ["*.cpp"],
+        ["tree.cpp"],
         exclude = ["*test*.cpp"],
     ),
-    hdrs = glob(["*.hpp"]),
+    hdrs = glob(["tree.hpp", "lhtree.hpp"],),
     copts = COPTS,
     defines = select({
         ":use_profiling": [
@@ -44,42 +44,51 @@ cc_library(
     }),
 )
 
-cc_test(
-    name = "graph_bench",
-    srcs = [
-        "tests/graph_bench.cpp",
-    ],
-    deps = [
-        ":hhds",
-        "@com_google_benchmark//:benchmark",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/container:flat_hash_set",
-    ],
-)
+# cc_test(
+#     name = "graph_bench",
+#     srcs = [
+#         "tests/graph_bench.cpp",
+#     ],
+#     deps = [
+#         ":hhds",
+#         "@com_google_benchmark//:benchmark",
+#         "@com_google_absl//absl/container:flat_hash_map",
+#         "@com_google_absl//absl/container:flat_hash_set",
+#     ],
+# )
+
+# cc_test(
+#     name = "graph_test",
+#     srcs = ["tests/graph_test.cpp"],
+#     deps = [
+#         ":hhds",
+#         "@boost//:graph",
+#         "@com_google_googletest//:gtest_main",
+#     ],
+# )
+
+# cc_test(
+#     name = "small_set_bench",
+#     srcs = [
+#         "tests/small_set_bench.cpp",
+#     ],
+#     deps = [
+#         ":rigtorp",
+#         "@fmt",
+#         "@iassert",
+#         "@emhash",
+#         "@com_google_benchmark//:benchmark",
+#         "@com_google_absl//absl/container:flat_hash_map",
+#         "@com_google_absl//absl/container:flat_hash_set",
+#     ],
+# )
 
 cc_test(
-    name = "graph_test",
-    srcs = ["tests/graph_test.cpp"],
+    name = "tree_test",
+    srcs = ["tests/tree_test.cpp"],
     deps = [
-        ":hhds",
-        "@boost//:graph",
+        "@com_google_benchmark//:benchmark",
         "@com_google_googletest//:gtest_main",
+        ":core",
     ],
 )
-
-cc_test(
-    name = "small_set_bench",
-    srcs = [
-        "tests/small_set_bench.cpp",
-    ],
-    deps = [
-        ":rigtorp",
-        "@fmt",
-        "@iassert",
-        "@emhash",
-        "@com_google_benchmark//:benchmark",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/container:flat_hash_set",
-    ],
-)
-
