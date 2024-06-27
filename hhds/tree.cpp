@@ -1,116 +1,50 @@
-#include <sys/types.h>
-#include <sys/stat.h>
+// // test.cpp
+// #include "tree.hpp"
 
-#include <stdexcept>
-#include <cassert>
+// int main() {
+//     using namespace hhds;
 
-#include <cstdint>
-#include <functional>
-#include <iostream>
-#include <algorithm>
-#include <array>
-#include <cstdint>
-#include <vector>
-using namespace std;
+//     // Create a tree of integers
+//     tree<int> my_tree;
 
-using Tree_pos = uint64_t;
+//     // Add root node with data 10
+//     Tree_pos root = my_tree.add_root(10);
+//     std::cout << "Root node added with data: " << my_tree.get_data(root) << std::endl;
 
-static constexpr Tree_pos INVALID = 0;                     // ROOT ID
-static constexpr Tree_pos ROOT = 0;                        // ROOT ID
-static constexpr short CHUNK_BITS = 43;                    // Number of chunks in a tree node
-static constexpr short SHORT_DELTA = 21;                   // Amount of short delta allowed
-static constexpr short MAX_OFFSET = 3;                     // The number of bits in a chunk offset
-static constexpr short CHUNK_SIZE = 1 << MAX_OFFSET;       // Size of a chunk in bits
-static constexpr short CHUNK_MASK = CHUNK_SIZE - 1;        // Mask for chunk offset
-static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS; // Maximum number of nodes in the tree
+//     // Add children to root node
+//     Tree_pos child1 = my_tree.add_child(root, 20);
+//     std::cout << "Child 1 added with data: " << 20 << std::endl;
 
-struct __attribute__((packed)) Tree_pointers {
-    // We only store the exact ID of parent
-    Tree_pos parent                 : CHUNK_BITS + MAX_OFFSET;
-    Tree_pos next_sibling           : CHUNK_BITS;
-    Tree_pos prev_sibling           : CHUNK_BITS;
+//     Tree_pos child2 = my_tree.add_child(root, 30);
+//     Tree_pos child3 = my_tree.add_child(root, 40);
+//     std::cout << "Child 3 added with data: " << my_tree.get_data(child3) << std::endl;
 
-    // Long child pointers
-    Tree_pos first_child_l          : CHUNK_BITS;
-    Tree_pos last_child_l           : CHUNK_BITS;
+//     std::cout << "Indices of children: " << child1 << " " << child2 << " " << child3 << std::endl;
+//     // Check if child1 is the first child
+//     bool is_first = my_tree.is_first_child(child1);
+//     std::cout << "Is child1 the first child? " << (is_first ? "Yes" : "No") << std::endl;
 
-    // Short (delta) child pointers
-    struct __attribute__((packed)) short_child {
-        Tree_pos delta : SHORT_DELTA;
-    } first_child_s[CHUNK_SIZE - 1], last_child_s[CHUNK_SIZE - 1];
+//     // Check if child3 is the last child
+//     bool is_last = my_tree.is_last_child(child3);
+//     std::cout << "Is child3 the last child? " << (is_last ? "Yes" : "No") << std::endl;
 
-    // Gives 70 bits
-    // struct __attribute__((packed)) short_child {
-    //     Tree_pos delta : SHORT_DELTA;
-    // } first_child_s[CHUNK_SIZE - 1], last_child_s[CHUNK_SIZE - 1];
+//     // Get the next sibling of child1
+//     std::cout << "gottem ";
+//     Tree_pos next_sibling = my_tree.get_sibling_next(child1);
+//     std::cout << "gottem ";
+//     std::cout << "Next sibling of child1 has data: " << my_tree.get_data(next_sibling) << std::endl;
 
-    // Short deltas
-    // These give 64 bit alignment
-    // Tree_pos first_child_s_0 : SHORT_DELTA;
-    // Tree_pos first_child_s_1 : SHORT_DELTA;
-    // Tree_pos first_child_s_2 : SHORT_DELTA;
-    // Tree_pos first_child_s_3 : SHORT_DELTA;
-    // Tree_pos first_child_s_4 : SHORT_DELTA;
-    // Tree_pos first_child_s_5 : SHORT_DELTA;
-    // Tree_pos first_child_s_6 : SHORT_DELTA;
+//     // Get the previous sibling of child3
+//     Tree_pos prev_sibling = my_tree.get_sibling_prev(child3);
+//     std::cout << "Previous sibling of child3 has data: " << my_tree.get_data(prev_sibling) << std::endl;
 
-    // Tree_pos last_child_s_0 : SHORT_DELTA;
-    // Tree_pos last_child_s_1 : SHORT_DELTA;
-    // Tree_pos last_child_s_2 : SHORT_DELTA;
-    // Tree_pos last_child_s_3 : SHORT_DELTA;
-    // Tree_pos last_child_s_4 : SHORT_DELTA;
-    // Tree_pos last_child_s_5 : SHORT_DELTA;
-    // Tree_pos last_child_s_6 : SHORT_DELTA;
+//     // Get the first child of root
+//     Tree_pos first_child = my_tree.get_first_child(root);
+//     std::cout << "First child of root has data: " << my_tree.get_data(first_child) << std::endl;
 
-    // Gives 70 bytes, 3 for each arr
-    // std::array<short_child, CHUNK_MASK> first_child_s;
-    // std::array<short_child, CHUNK_MASK> last_child_s;
+//     // Get the last child of root
+//     Tree_pos last_child = my_tree.get_last_child(root);
+//     std::cout << "Last child of root has data: " << my_tree.get_data(last_child) << std::endl;
 
-    // Gives 
-    // uint_32t first_child_s[CHUNK_MASK] : SHORT_DELTA;
-    // uint_32t last_child_s[CHUNK_MASK] : SHORT_DELTA;
-
-    Tree_pointers()
-        : parent(MAX_TREE_SIZE), next_sibling(0), prev_sibling(0),
-          first_child_l(0), last_child_l(0) {
-
-        // Fill first_child_s and last_child_s
-        // for (int i = 0; i < CHUNK_SIZE - 1; i++) {
-        //     first_child_s[i].delta = 0;
-        //     last_child_s[i].delta = 0;
-        // }
-
-        // std::fill(first_child_s.begin(), first_child_s.end(), short_child{0});
-        // std::fill(last_child_s.begin(), last_child_s.end(), short_child{0});
-        
-        // first_child_s_0 = 0;
-        // first_child_s_1 = 0;
-        // first_child_s_2 = 0;
-        // first_child_s_3 = 0;
-        // first_child_s_4 = 0;
-        // first_child_s_5 = 0;
-        // first_child_s_6 = 0;
-
-        // last_child_s_0 = 0;
-        // last_child_s_1 = 0;
-        // last_child_s_2 = 0;
-        // last_child_s_3 = 0;
-        // last_child_s_4 = 0;
-        // last_child_s_5 = 0;
-        // last_child_s_6 = 0;
-
-        // for (int i = 0; i < CHUNK_MASK; i++) {
-        //     first_child_s[i] = 0;
-        //     last_child_s[i] = 0;
-        // }
-    }
-};
-
-int main() {
-    
-    Tree_pointers test;
-    cout << sizeof(test) << endl;
-    // cout << sizeof(test.first_child_s[0]) << endl;
-
-    return 0;
-}
+//     return 0;
+// }
