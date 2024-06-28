@@ -184,7 +184,7 @@ public:
     Short_delta get_first_child_s_at(short index) const { 
         return _get_first_child_s(index); 
     }
-    Short_delta get_last_child_s_at(short index) const { 
+    Short_delta get_last_child_s_at(short index) const {
         return _get_last_child_s(index); 
     }
 
@@ -238,7 +238,8 @@ private:
 
     /* Special functions for sanity */
     [[nodiscard]] bool _check_idx_exists(const Tree_pos &idx) const noexcept {
-        return idx >= 0 && idx < static_cast<Tree_pos>(data_stack.size());
+        // idx >= 0 not needed for unsigned int
+        return idx < static_cast<Tree_pos>(data_stack.size());
     }
     [[nodiscard]] bool _contains_data(const Tree_pos &idx) const noexcept {
         return (idx < data_stack.size() && data_stack[idx].has_value());
@@ -455,7 +456,7 @@ Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) {
 
     const auto chunk_id = (parent_index >> CHUNK_SHIFT);
     const auto chunk_offset = (parent_index & CHUNK_MASK);
-    const auto last_child_s_i = pointers_stack[chunk_id].get_last_child_s_at(chunk_offset);
+    const auto last_child_s_i = chunk_offset ? pointers_stack[chunk_id].get_last_child_s_at(chunk_offset - 1) : INVALID;
 
     Tree_pos child_chunk_id = INVALID;
     if (chunk_offset and (last_child_s_i != INVALID)) {
@@ -492,29 +493,23 @@ Tree_pos tree<X>::get_first_child(const Tree_pos& parent_index) {
         throw std::out_of_range("Parent index out of range");
     }
 
+    // @todo MAJOR : the functionality is still that of the get_last_child function. Fix it!
+
     const auto chunk_id = (parent_index >> CHUNK_SHIFT);
     const auto chunk_offset = (parent_index & CHUNK_MASK);
-    const auto last_child_s_i = pointers_stack[chunk_id].get_last_child_s_at(chunk_offset);
+    const auto first_child_s_i = chunk_offset ? pointers_stack[chunk_id].get_first_child_s_at(chunk_offset - 1) : INVALID;
 
     Tree_pos child_chunk_id = INVALID;
-    if (chunk_offset and (last_child_s_i != INVALID)) {
+    if (chunk_offset and (first_child_s_i != INVALID)) {
         // If the short delta contains a value, go to this nearby chunk
-        child_chunk_id = chunk_id + last_child_s_i;
+        child_chunk_id = chunk_id + first_child_s_i;
     } else {
         // The first entry will always have the chunk id of the child
-        child_chunk_id = pointers_stack[chunk_id].get_last_child_l();
+        child_chunk_id = pointers_stack[chunk_id].get_first_child_l();
     }
 
-    // Iterate in reverse to find the last occupied in child chunk
-    if (child_chunk_id != INVALID) {
-        for (short offset = NUM_SHORT_DEL - 1; offset >= 0; offset--) {
-            if (_contains_data((child_chunk_id << CHUNK_SHIFT) + offset)) {
-                return static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) + offset);
-            }
-        } 
-    }
-
-    return static_cast<Tree_pos>(INVALID);
+    // The beginning of the chunk IS the first child (always)
+    return static_cast<Tree_pos>(child_chunk_id << CHUNK_SHIFT);
 }
 
 /**

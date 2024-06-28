@@ -9,45 +9,84 @@
 #include "../tree.hpp"
 #include "../lhtree.hpp"
 
-// Node structure example (replace with your actual node structure)
-struct Node {
-    std::vector<Node> children;
-};
+// Function to benchmark HHDS tree generation
+void test_rand_tree_hhds_tree(std::default_random_engine& generator) {
+    hhds::tree<int> my_tree;
+    std::uniform_int_distribution<int> rootDataDist(1, 100);
+    std::uniform_int_distribution<int> numChildrenDist(4, 16); // Adjust based on the level
+    std::uniform_int_distribution<int> leafChildrenDist(4, 8);
+    std::uniform_int_distribution<int> nodeDataDist(1, 100); // Random data for nodes
 
-// Function to generate a random tree with specified characteristics
-Node generateRandomTree(std::default_random_engine& generator, int depth) {
-    Node node;
-    std::uniform_int_distribution<int> numChildrenDist(4, 100);
-    std::uniform_int_distribution<int> numLeafChildrenDist(4, 8);
+    // Create root node
+    int rootData = rootDataDist(generator);
+    hhds::Tree_pos root = my_tree.add_root(rootData);
 
-    if (depth > 0) {
-        int numChildren = numChildrenDist(generator);
-        for (int i = 0; i < numChildren; ++i) {
-            node.children.push_back(generateRandomTree(generator, depth - 1));
-        }
-    } else {
-        int numLeafChildren = numLeafChildrenDist(generator);
-        for (int i = 0; i < numLeafChildren; ++i) {
-            node.children.push_back(Node()); // Leaf node with children
+    // Generate random tree
+    // Level 1
+    int numChildrenLevel1 = numChildrenDist(generator);
+    std::vector<hhds::Tree_pos> level1Children;
+    for (int i = 0; i < numChildrenLevel1; ++i) {
+        int data = nodeDataDist(generator);
+        hhds::Tree_pos child = my_tree.add_child(root, data);
+        level1Children.push_back(child);
+    }
+
+    // Level 2
+    std::vector<hhds::Tree_pos> level2Children;
+    for (hhds::Tree_pos parent : level1Children) {
+        int numChildrenLevel2 = numChildrenDist(generator);
+        for (int j = 0; j < numChildrenLevel2; ++j) {
+            int data = nodeDataDist(generator);
+            hhds::Tree_pos child = my_tree.add_child(parent, data);
+            level2Children.push_back(child);
         }
     }
 
-    return node;
-}
-
-static void BM_InsertRandomTree(benchmark::State& state) {
-    std::default_random_engine generator;
-    Node randomTree = generateRandomTree(generator, 3); // Adjust depth as needed
-
-    while (state.KeepRunning()) {
-        // Insert nodes into the random tree
-        randomTree.children.push_back(Node());
-        benchmark::DoNotOptimize(randomTree); // Prevent compiler optimizations
+    // Level 3 (leaves)
+    for (hhds::Tree_pos parent : level2Children) {
+        int numChildrenLevel3 = leafChildrenDist(generator);
+        for (int k = 0; k < numChildrenLevel3; ++k) {
+            int data = nodeDataDist(generator);
+            my_tree.add_child(parent, data);
+        }
     }
 }
 
-// Register the benchmark
-BENCHMARK(BM_InsertRandomTree);
+void test_rand_tree_lh_tree() {
+    // Implementation for testing random tree insertion for lh tree
+}
 
-// Run the benchmark
+void test_rand_tree_generic_tree() {
+    // Implementation for testing random tree insertion for generic tree
+}
+
+
+// Benchmark function for test_rand_tree_hhds_tree
+static void BM_TestRandTreeHHDS(benchmark::State& state) {
+    std::default_random_engine generator(42); // Fixed seed for reproducibility
+    for (auto _ : state) {
+        test_rand_tree_hhds_tree(generator);
+    }
+}
+
+// Benchmark function for test_rand_tree_lh_tree
+static void BM_TestRandTreeLH(benchmark::State& state) {
+    for (auto _ : state) {
+        test_rand_tree_lh_tree();
+    }
+}
+
+// Benchmark function for test_rand_tree_generic_tree
+static void BM_TestRandTreeGeneric(benchmark::State& state) {
+    for (auto _ : state) {
+        test_rand_tree_generic_tree();
+    }
+}
+
+// Register the benchmarks
+BENCHMARK(BM_TestRandTreeHHDS);
+BENCHMARK(BM_TestRandTreeLH);
+BENCHMARK(BM_TestRandTreeGeneric);
+
+// Run the benchmarks
 BENCHMARK_MAIN();
