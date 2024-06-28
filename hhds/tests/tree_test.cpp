@@ -4,7 +4,7 @@
 #include <iostream>
 #include <vector>
 #include <random>
-#include <TreeDS/tree> // Include the necessary headers for your tree data structures
+#include <TreeDS/tree>
 
 #include "../tree.hpp"
 #include "../lhtree.hpp"
