@@ -4,10 +4,16 @@
 #include <iostream>
 #include <vector>
 #include <random>
+#include <malloc.h>
 #include <TreeDS/tree>
 
 #include "../tree.hpp"
 #include "../lhtree.hpp"
+
+size_t get_memory_usage() {
+    struct mallinfo info = mallinfo();
+    return info.uordblks; // Memory allocated in bytes
+}
 
 // Function to benchmark HHDS tree generation
 void test_rand_tree_hhds_tree(std::default_random_engine& generator) {
@@ -134,7 +140,10 @@ void test_rand_tree_lh_tree(std::default_random_engine& generator) {
 static void BM_TestRandTreeHHDS(benchmark::State& state) {
     std::default_random_engine generator(0);
     for (auto _ : state) {
+        // size_t before_memory = get_memory_usage();
         test_rand_tree_hhds_tree(generator);
+        // size_t after_memory = get_memory_usage();
+        // std::cout << "Memory used (HHDS): " << after_memory - before_memory << " bytes" << std::endl;
     }
 }
 
@@ -142,7 +151,10 @@ static void BM_TestRandTreeHHDS(benchmark::State& state) {
 static void BM_TestRandTreeLH(benchmark::State& state) {
     std::default_random_engine generator(0);
     for (auto _ : state) {
+        // size_t before_memory = get_memory_usage();
         test_rand_tree_lh_tree(generator);
+        // size_t after_memory = get_memory_usage();
+        // std::cout << "Memory used (LH) : " << after_memory - before_memory << " bytes" << std::endl;
     }
 }
 
