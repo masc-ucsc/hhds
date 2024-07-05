@@ -414,6 +414,10 @@ public:
         data_stack[idx] = data;
     }
 
+    X operator[] (const Tree_pos& idx) {
+        return get_data(idx);
+    }
+
     /**
      *  Debug API (Temp)
      */
