@@ -34,10 +34,10 @@ http_archive(
 http_archive(
     name = "fmt",
     build_file = "@//tools:fmt.BUILD",
-    sha256 = "d368f9c39a33a3aef800f5be372ec1df1c12ad57ada1f60adc62f24c0e348469",
-    strip_prefix = "fmt-10.2.1",
+    sha256 = "b694bb0e46b2a3e308c25a59befa8d716dc4af9cc6a19aa924b4eb5c859dcdf2",
+    strip_prefix = "fmt-11.0.1",
     urls = [
-        "https://github.com/fmtlib/fmt/archive/refs/tags/10.2.1.zip",
+        "https://github.com/fmtlib/fmt/archive/refs/tags/11.0.1.zip",
     ],
 )
 
