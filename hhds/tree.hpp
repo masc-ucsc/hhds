@@ -41,7 +41,7 @@ using Tree_pos = uint64_t;
 using Short_delta = int32_t;
 
 static constexpr Tree_pos INVALID = 0;                                  // This is invalid for all pointers other than parent
-static constexpr Tree_pos ROOT = 0;                                     // ROOT ID
+static constexpr Tree_pos ROOT = 1;                                     // ROOT ID
 
 static constexpr short CHUNK_BITS = 43;                                 // Number of chunks in a tree node
 static constexpr short SHORT_DELTA = 21;                                // Amount of short delta allowed
@@ -154,7 +154,7 @@ public:
     // That is why the best way to invalidate is to set it to MAX_TREE_SIZE
     // for every other entry INVALID is the best choice
     Tree_pointers()
-        : parent(MAX_TREE_SIZE), next_sibling(INVALID), prev_sibling(INVALID),
+        : parent(INVALID), next_sibling(INVALID), prev_sibling(INVALID),
           first_child_l(INVALID), last_child_l(INVALID) {
             for (short i = 0; i < NUM_SHORT_DEL; i++) {
                 _set_first_child_s(i, INVALID);
@@ -220,11 +220,7 @@ public:
     }
 
     constexpr bool operator!=(const Tree_pointers& other) const { return !(*this == other); }
-    void invalidate() { parent = MAX_TREE_SIZE; }
-
-    // Checkers
-    [[nodiscard]] constexpr bool is_invalid() const { return parent == MAX_TREE_SIZE; }
-    [[nodiscard]] constexpr bool is_valid() const { return parent != MAX_TREE_SIZE; }
+    void invalidate() { parent = INVALID; }
 // :public
 
 }; // Tree_pointers class
@@ -260,7 +256,7 @@ private:
         }
 
         // Add the single pointer node for all CHUNK_SIZE entries
-        pointers_stack.emplace_back(parent_index);
+        pointers_stack.emplace_back();
 
         return (data_stack.size() - CHUNK_SIZE) >> CHUNK_SHIFT;
     }
@@ -732,6 +728,12 @@ Tree_pos tree<X>::add_root(const X& data) {
         throw std::logic_error("Tree is not empty");
     }
 
+    // Add empty nodes to make the tree 1-indexed
+    for (int i = 0; i < CHUNK_SIZE; i++) {
+        data_stack.emplace_back();
+    }
+    pointers_stack.emplace_back();
+
     // Make space for CHUNK_SIZE number of entries at the end
     data_stack.emplace_back(data);
     for (int i = 0; i < CHUNK_MASK; i++) {
@@ -739,7 +741,7 @@ Tree_pos tree<X>::add_root(const X& data) {
     }
 
     // Add the single pointer node for all CHUNK_SIZE entries
-    pointers_stack.emplace_back(MAX_TREE_SIZE);
+    pointers_stack.emplace_back();
 
     return (data_stack.size() - CHUNK_SIZE) >> CHUNK_SHIFT;
 }
