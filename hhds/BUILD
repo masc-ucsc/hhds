@@ -102,3 +102,13 @@ cc_test(
         ":core",
     ],
 )
+
+cc_test(
+    name = "stress_tester",
+    srcs = ["tests/stress_tester.cpp"],
+    deps = [
+        "@com_google_benchmark//:benchmark",
+        "@com_google_googletest//:gtest_main",
+        ":core",
+    ],
+)

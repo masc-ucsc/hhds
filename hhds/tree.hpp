@@ -290,7 +290,7 @@ private:
 
     /* Helper function to check if we can fit something in the short delta*/
     [[nodiscard]] bool _fits_in_short_del(const Tree_pos parent_id, const Tree_pos child_id) {
-        const auto delta = child_id - parent_id;
+        const int delta = child_id - parent_id;
         return abs(delta) <= MAX_SHORT_DELTA;
     }
 
