@@ -84,8 +84,28 @@ cc_library(
 # )
 
 cc_test(
-    name = "tree_test",
+    name = "tree_random_test",
     srcs = ["tests/tree_test.cpp"],
+    deps = [
+        "@com_google_benchmark//:benchmark",
+        "@com_google_googletest//:gtest_main",
+        ":core",
+    ],
+)
+
+cc_test(
+    name = "tree_chip_typical_test",
+    srcs = ["tests/tree_chip_typical_tests.cpp"],
+    deps = [
+        "@com_google_benchmark//:benchmark",
+        "@com_google_googletest//:gtest_main",
+        ":core",
+    ],
+)
+
+cc_test(
+    name = "stress_tester",
+    srcs = ["tests/stress_tester.cpp"],
     deps = [
         "@com_google_benchmark//:benchmark",
         "@com_google_googletest//:gtest_main",
