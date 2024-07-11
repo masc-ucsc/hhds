@@ -17,6 +17,9 @@
 #include <cstdint>
 #include <vector>
 
+#include <iterator>
+#include <cstddef> 
+
 namespace hhds {
 /** NOTES for future contributors:
  * Realize that the total number of bits for the 
@@ -435,6 +438,57 @@ public:
             }
         }
     }
+
+    /**
+     * ITERATORS
+     * - SIBLING-ORDER(start)
+     * - POSTORDER (subtree_parent)
+     * - PREORDER (subtree_parent)
+     */
+    
+    // SIBLING-ORDER ITERATOR
+    class sibling_order_iterator {
+    private:
+        Tree_pos current;
+        tree<X>* tree_ptr;
+
+    public:
+        sibling_order_iterator(Tree_pos start, tree<X>* tree) 
+            : current(start), tree_ptr(tree) {}
+
+        sibling_order_iterator& operator++() {
+            current = tree_ptr->get_sibling_next(current);
+            return *this;
+        }
+
+        sibling_order_iterator operator++(int) {
+            sibling_order_iterator temp = *this;
+            current = tree_ptr->get_sibling_next(current);
+            return temp;
+        }
+
+        bool operator==(const sibling_order_iterator& other) {
+            return current == other.current;
+        }
+
+        bool operator!=(const sibling_order_iterator& other) {
+            return current != other.current;
+        }
+
+        X& operator*() const { return tree_ptr->get_data(current); }
+        X* operator->() const { return &tree_ptr->get_data(current); }
+    };
+
+    sibling_order_iterator sibling_begin() {
+        return sibling_order_iterator(ROOT, this);
+    }
+    sibling_order_iterator sibling_begin(Tree_pos start) {
+        return sibling_order_iterator(start, this);
+    }
+    sibling_order_iterator sibling_end() {
+        return sibling_order_iterator(INVALID, this);
+    }
+
 // :public
 
 }; // tree class
