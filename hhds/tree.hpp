@@ -489,6 +489,71 @@ public:
         return sibling_order_iterator(INVALID, this);
     }
 
+    // PRE-ORDER TRAVERSAL
+    class pre_order_traversal {
+    private:
+        Tree_pos current;
+        tree<X>* tree_ptr;
+
+    public:
+        pre_order_traversal(Tree_pos start, tree<X>* tree) 
+            : current(start), tree_ptr(tree) {}
+
+        pre_order_traversal& operator++() {
+            if (tree_ptr->get_first_child(current) != INVALID) {
+                current = tree_ptr->get_first_child(current);
+            } else {
+                while (tree_ptr->get_sibling_next(current) == INVALID) {
+                    current = tree_ptr->get_parent(current);
+                }
+                current = tree_ptr->get_sibling_next(current);
+            }
+
+            return *this;
+        }
+
+        pre_order_traversal operator++(int) {
+            pre_order_traversal temp = *this;
+            if (tree_ptr->get_first_child(current) != INVALID) {
+                current = tree_ptr->get_first_child(current);
+            } else {
+                while (tree_ptr->get_sibling_next(current) == INVALID) {
+                    current = tree_ptr->get_parent(current);
+                }
+                current = tree_ptr->get_sibling_next(current);
+            }
+
+            return temp;
+        }
+
+        bool operator==(const pre_order_traversal& other) {
+            return current == other.current;
+        }
+
+        bool operator!=(const pre_order_traversal& other) {
+            return current != other.current;
+        }
+
+        X& operator*() const { return tree_ptr->get_data(current); }
+        X* operator->() const { return &tree_ptr->get_data(current); }
+    };
+
+    pre_order_traversal pre_order_begin() {
+        return pre_order_traversal(ROOT, this);
+    }
+    pre_order_traversal pre_order_end() {
+        return pre_order_traversal(INVALID, this);
+    }
+
+    // POST-ORDER Traversal
+    // class post_order_traversal {
+    // private:
+    //     Tree_pos current;
+    //     tree<X>* tree_ptr;
+
+    // public:
+    // } ;
+
 // :public
 
 }; // tree class
