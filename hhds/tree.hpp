@@ -482,55 +482,61 @@ public:
     sibling_order_iterator sibling_begin() {
         return sibling_order_iterator(ROOT, this);
     }
-    sibling_order_iterator sibling_begin(Tree_pos start) {
-        return sibling_order_iterator(start, this);
-    }
     sibling_order_iterator sibling_end() {
         return sibling_order_iterator(INVALID, this);
     }
 
     // PRE-ORDER TRAVERSAL
-    class pre_order_traversal {
+    class pre_order_iterator {
     private:
         Tree_pos current;
         tree<X>* tree_ptr;
 
     public:
-        pre_order_traversal(Tree_pos start, tree<X>* tree) 
+        // Iterator type definitions
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = X;
+        using difference_type = std::ptrdiff_t;
+        using pointer = X*;
+        using reference = X&;
+
+        pre_order_iterator(Tree_pos start, tree<X>* tree) 
             : current(start), tree_ptr(tree) {}
 
-        pre_order_traversal& operator++() {
+        pre_order_iterator& operator++() {
             if (tree_ptr->get_first_child(current) != INVALID) {
                 current = tree_ptr->get_first_child(current);
             } else {
                 while (tree_ptr->get_sibling_next(current) == INVALID) {
                     current = tree_ptr->get_parent(current);
+                    if (current == INVALID) {
+                        break;
+                    }
                 }
-                current = tree_ptr->get_sibling_next(current);
+                if (current != INVALID) {
+                    current = tree_ptr->get_sibling_next(current);
+                }
             }
-
             return *this;
         }
 
-        pre_order_traversal operator++(int) {
-            pre_order_traversal temp = *this;
-            if (tree_ptr->get_first_child(current) != INVALID) {
-                current = tree_ptr->get_first_child(current);
-            } else {
-                while (tree_ptr->get_sibling_next(current) == INVALID) {
-                    current = tree_ptr->get_parent(current);
-                }
-                current = tree_ptr->get_sibling_next(current);
-            }
+        /** IMPORTANT TODO BELOW */
+        // // Should I just make it copy and use ++(*this)
+        // pre_order_iterator operator++(int) {
+        //     pre_order_iterator temp = *this;
+        //     ++(*this);
+        //     return temp;
+        // }
+        /** IMPORTANT TODO ABOVE */
 
-            return temp;
-        }
+        // // Or delete the overload
+        // pre_order_iterator operator++(int) = delete;
 
-        bool operator==(const pre_order_traversal& other) {
+        bool operator==(const pre_order_iterator& other) const {
             return current == other.current;
         }
 
-        bool operator!=(const pre_order_traversal& other) {
+        bool operator!=(const pre_order_iterator& other) const {
             return current != other.current;
         }
 
@@ -538,21 +544,205 @@ public:
         X* operator->() const { return &tree_ptr->get_data(current); }
     };
 
-    pre_order_traversal pre_order_begin() {
-        return pre_order_traversal(ROOT, this);
-    }
-    pre_order_traversal pre_order_end() {
-        return pre_order_traversal(INVALID, this);
+    class const_pre_order_iterator {
+    private:
+        Tree_pos current;
+        const tree<X>* tree_ptr;
+
+    public:
+        // Iterator type definitions
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = X;
+        using difference_type = std::ptrdiff_t;
+        using pointer = const X*;
+        using reference = const X&;
+
+        const_pre_order_iterator(Tree_pos start, const tree<X>* tree) 
+            : current(start), tree_ptr(tree) {}
+
+        const_pre_order_iterator& operator++() {
+            if (tree_ptr->get_first_child(current) != INVALID) {
+                current = tree_ptr->get_first_child(current);
+            } else {
+                while (tree_ptr->get_sibling_next(current) == INVALID) {
+                    current = tree_ptr->get_parent(current);
+                    if (current == INVALID) {
+                        break;
+                    }
+                }
+                if (current != INVALID) {
+                    current = tree_ptr->get_sibling_next(current);
+                }
+            }
+            return *this;
+        }
+
+        /** IMPORTANT TODO FOR POST-INCREMENT*/
+        // const_pre_order_iterator operator++(int) {
+        //     const_pre_order_iterator temp = *this;
+        //     ++(*this);
+        //     return temp;
+        // }
+
+        bool operator==(const const_pre_order_iterator& other) const {
+            return current == other.current;
+        }
+
+        bool operator!=(const const_pre_order_iterator& other) const {
+            return current != other.current;
+        }
+
+        const X& operator*() const { return tree_ptr->get_data(current); }
+        const X* operator->() const { return &tree_ptr->get_data(current); }
+    };
+
+    pre_order_iterator pre_order_begin() {
+        return pre_order_iterator(ROOT, this);
     }
 
-    // POST-ORDER Traversal
-    // class post_order_traversal {
-    // private:
-    //     Tree_pos current;
-    //     tree<X>* tree_ptr;
+    pre_order_iterator pre_order_end() {
+        return pre_order_iterator(INVALID, this);
+    }
 
-    // public:
-    // } ;
+    const_pre_order_iterator pre_order_begin() const {
+        return const_pre_order_iterator(ROOT, this);
+    }
+
+    const_pre_order_iterator pre_order_end() const {
+        return const_pre_order_iterator(INVALID, this);
+    }
+
+    // POST-ORDER TRAVERSAL
+    class post_order_iterator {
+    private:
+        Tree_pos current;
+        tree<X>* tree_ptr;
+        std::vector<Tree_pos> traversal_stack;
+
+        void traverse_to_next() {
+            while (!traversal_stack.empty()) {
+                Tree_pos top = traversal_stack.back();
+                Tree_pos child = tree_ptr->get_first_child(top);
+                if (child == INVALID || child == current) {
+                    current = top;
+                    traversal_stack.pop_back();
+                    return;
+                } else {
+                    while (child != INVALID) {
+                        traversal_stack.push_back(child);
+                        child = tree_ptr->get_sibling_next(child);
+                    }
+                }
+            }
+            current = INVALID;
+        }
+
+    public:
+        // Iterator type definitions
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = X;
+        using difference_type = std::ptrdiff_t;
+        using pointer = X*;
+        using reference = X&;
+
+        post_order_iterator(Tree_pos start, tree<X>* tree)
+            : current(start), tree_ptr(tree) {
+            if (current != INVALID) {
+                traversal_stack.push_back(current);
+                traverse_to_next();
+            }
+        }
+
+        post_order_iterator& operator++() {
+            traverse_to_next();
+            return *this;
+        }
+
+        bool operator==(const post_order_iterator& other) const {
+            return current == other.current;
+        }
+
+        bool operator!=(const post_order_iterator& other) const {
+            return current != other.current;
+        }
+
+        X& operator*() const { return tree_ptr->get_data(current); }
+        X* operator->() const { return &tree_ptr->get_data(current); }
+    };
+
+    class const_post_order_iterator {
+    private:
+        Tree_pos current;
+        const tree<X>* tree_ptr;
+        std::vector<Tree_pos> traversal_stack;
+
+        void traverse_to_next() {
+            while (!traversal_stack.empty()) {
+                Tree_pos top = traversal_stack.back();
+                Tree_pos child = tree_ptr->get_first_child(top);
+                if (child == INVALID || child == current) {
+                    current = top;
+                    traversal_stack.pop_back();
+                    return;
+                } else {
+                    while (child != INVALID) {
+                        traversal_stack.push_back(child);
+                        child = tree_ptr->get_sibling_next(child);
+                    }
+                }
+            }
+            current = INVALID;
+        }
+
+    public:
+        // Iterator type definitions
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = X;
+        using difference_type = std::ptrdiff_t;
+        using pointer = const X*;
+        using reference = const X&;
+
+        const_post_order_iterator(Tree_pos start, const tree<X>* tree)
+            : current(start), tree_ptr(tree) {
+            if (current != INVALID) {
+                traversal_stack.push_back(current);
+                traverse_to_next();
+            }
+        }
+
+        const_post_order_iterator& operator++() {
+            traverse_to_next();
+            return *this;
+        }
+
+        bool operator==(const const_post_order_iterator& other) const {
+            return current == other.current;
+        }
+
+        bool operator!=(const const_post_order_iterator& other) const {
+            return current != other.current;
+        }
+
+        const X& operator*() const { return tree_ptr->get_data(current); }
+        const X* operator->() const { return &tree_ptr->get_data(current); }
+    };
+
+    // Functions to get iterators
+    post_order_iterator post_order_begin() {
+        return post_order_iterator(ROOT, this);
+    }
+
+    post_order_iterator post_order_end() {
+        return post_order_iterator(INVALID, this);
+    }
+
+    const_post_order_iterator post_order_begin() const {
+        return const_post_order_iterator(ROOT, this);
+    }
+
+    const_post_order_iterator post_order_end() const {
+        return const_post_order_iterator(INVALID, this);
+    }
 
 // :public
 
