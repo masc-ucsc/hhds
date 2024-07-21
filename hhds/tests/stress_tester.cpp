@@ -72,44 +72,44 @@ void generate_random_tree(int n, int t, std::vector<std::pair<int, int>>& renumb
                     return a.first < b.first;
                 });
 
-    for (auto& edge : renumbered_edges) {
-        std::cout << edge.first << " " << edge.second << ", ";
-    }    
+    // for (auto& edge : renumbered_edges) {
+    //     std::cout << edge.first << " " << edge.second << ", ";
+    // }    
 }
 
-void bfs_traversal_hhds(hhds::tree<int>& tree, hhds::Tree_pos root, std::vector<int>& result) {
-    std::queue<hhds::Tree_pos> q; q.push(root);
-    while (!q.empty()) {
-        hhds::Tree_pos node = q.front(); q.pop();
-        result.push_back(tree[node]);
-
-        std::cout << "Starting from : " << node << std::endl << "Children : ";
-
-        for (hhds::Tree_pos child = tree.get_first_child(node); 
-             child != hhds::INVALID; 
-             child = tree.get_sibling_next(child)) {
-
-            std::cout << child << " ";
-            q.push(child);
-        }
+void preorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {
+    for (auto it = tree.pre_order_begin(); it != tree.pre_order_end(); ++it) {
+        result.push_back(*it);
     }
 }
 
-void bfs_traversal_lhtree(lh::tree<int>& tree, lh::Tree_index root, std::vector<int>& result) {
-    std::queue<lh::Tree_index> q;
-    q.push(root);
-    while (!q.empty()) {
-        lh::Tree_index node = q.front();
-        q.pop();
-        result.push_back(tree.get_data(node));
-
-        for (lh::Tree_index child = tree.get_first_child(node); 
-             !child.is_invalid(); 
-             child = tree.get_sibling_next(child)) {
-            q.push(child);
-        }
+void preorder_traversal_lhtree(lh::tree<int>& tree, std::vector<int>& result) {
+    // Assuming the tree class has a method to get the root index
+    auto root_index = lh::Tree_index(0, 0);
+    
+    // Using the Tree_depth_preorder_iterator provided by lhtree
+    typename lh::tree<int>::Tree_depth_preorder_iterator it(root_index, &tree);
+    
+    for (auto node_it = it.begin(); node_it != it.end(); ++node_it) {
+        // Assuming tree has a method to get the value at a given index
+        result.push_back(tree.get_data(*node_it));
     }
 }
+
+// void postorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {
+//     for (auto it = tree.post_order_begin(); it != tree.post_order_end(); ++it) {
+//         result.push_back(*it);
+//     }
+// }
+
+// void postorder_traversal_lhtree(lh::tree<int>& tree, std::vector<int>& result) {
+//     lh::Tree_index root_index = lh::Tree_index(0, 0); // Assuming the root is at level 0, position 0
+//     auto it = tree.get_depth_postorder_iterator(root_index).begin();
+//     auto end = tree.get_depth_postorder_iterator(root_index).end();
+//     for (; it != end; ++it) {
+//         result.push_back(tree.get_data(*it));
+//     }
+// }
 
 TEST(TreeTest, RandomTreeTest) {
     const int num_tests = 1;
@@ -131,9 +131,9 @@ TEST(TreeTest, RandomTreeTest) {
         lh_tree.set_root(0);
 
         // Print the edges
-        for (auto& edge : edges) {
-            std::cout << edge.first << " " << edge.second << std::endl;
-        }
+        // for (auto& edge : edges) {
+        //     std::cout << edge.first << " " << edge.second << std::endl;
+        // }
 
         for (const auto& edge : edges) {
             int parent = edge.first;
@@ -143,15 +143,20 @@ TEST(TreeTest, RandomTreeTest) {
             break;
         }
 
-        std::vector<int> hhds_result;
-        std::vector<int> lh_result;
+        std::vector<int> hhds_preorder_result;
+        std::vector<int> lh_preorder_result;
+        std::vector<int> hhds_postorder_result;
+        std::vector<int> lh_postorder_result;
 
-        bfs_traversal_hhds(hhds_tree, 0, hhds_result);
-        // bfs_traversal_lhtree(lh_tree, lh_nodes[0], lh_result);
+        preorder_traversal_hhds(hhds_tree, hhds_preorder_result);
+        preorder_traversal_lhtree(lh_tree, lh_preorder_result);
+        // postorder_traversal_hhds(hhds_tree, hhds_postorder_result);
+        // postorder_traversal_lhtree(lh_tree, lh_postorder_result);
 
-        EXPECT_EQ(hhds_result, lh_result) << "Test case " << test << " failed.";
+        EXPECT_EQ(hhds_preorder_result, lh_preorder_result) << "Preorder traversal test case " << test << " failed.";
+        // EXPECT_EQ(hhds_postorder_result, lh_postorder_result) << "Postorder traversal test case " << test << " failed.";
         
-        if (hhds_result != lh_result) {
+        if (hhds_preorder_result != lh_preorder_result || hhds_postorder_result != lh_postorder_result) {
             std::ofstream out("failing_test_case.txt");
             out << num_vertices << " " << t << std::endl;
             for (auto& edge : edges) {

@@ -378,6 +378,7 @@ public:
     /**
      *  Query based API (no updates)
     */
+    Tree_pos get_parent(const Tree_pos& curr_index);
     Tree_pos get_last_child(const Tree_pos& parent_index);
     Tree_pos get_first_child(const Tree_pos& parent_index);
     bool is_last_child(const Tree_pos& self_index);
@@ -397,7 +398,15 @@ public:
     /**
      * Data access API
      */
-    X get_data(const Tree_pos& idx) {
+    X& get_data(const Tree_pos& idx) {
+        if (!_check_idx_exists(idx) || !data_stack[idx].has_value()) {
+            throw std::out_of_range("Index out of range or no data at index");
+        }
+
+        return data_stack[idx].value();
+    }
+
+    const X& get_data(const Tree_pos& idx) const {
         if (!_check_idx_exists(idx) || !data_stack[idx].has_value()) {
             throw std::out_of_range("Index out of range or no data at index");
         }
@@ -540,7 +549,7 @@ public:
             return current != other.current;
         }
 
-        X& operator*() const { return tree_ptr->get_data(current); }
+        X const& operator*() const { return tree_ptr->get_data(current); }
         X* operator->() const { return &tree_ptr->get_data(current); }
     };
 
@@ -750,6 +759,23 @@ public:
 
 // ---------------------------------- TEMPLATE IMPLEMENTATION ---------------------------------- //
 /**
+ * @brief Get absolute ID of the parent of a node.
+ * 
+ * @param curr_index The absolute ID of the current node.
+ * @return Tree_pos The absolute ID of the parent, INVALID if none
+ * 
+ * @throws std::out_of_range If current index is out of range
+*/
+template<typename X>
+Tree_pos tree<X>::get_parent(const Tree_pos& curr_index) {
+    if (!_check_idx_exists(curr_index)) {
+        throw std::out_of_range("Index out of range");
+    }
+
+    return pointers_stack[curr_index >> CHUNK_SHIFT].get_parent();
+}
+
+/**
  * @brief Get absolute ID of the last child of a node.
  * 
  * @param parent_index The absolute ID of the parent node.
@@ -765,7 +791,9 @@ Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) {
 
     const auto chunk_id = (parent_index >> CHUNK_SHIFT);
     const auto chunk_offset = (parent_index & CHUNK_MASK);
-    const auto last_child_s_i = chunk_offset ? pointers_stack[chunk_id].get_last_child_s_at(chunk_offset - 1) : INVALID;
+    const auto last_child_s_i = chunk_offset ? 
+                                    pointers_stack[chunk_id].get_last_child_s_at(chunk_offset - 1) 
+                                    : INVALID;
 
     Tree_pos child_chunk_id = INVALID;
     if (chunk_offset and (last_child_s_i != INVALID)) {
