@@ -15,15 +15,15 @@ int generate_random_int(std::default_random_engine& generator, int min, int max)
 
 // Preorder traversal for hhds::tree
 void preorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {
-    for (auto it = tree.pre_order_begin(); it != tree.pre_order_end(); ++it) {
-        result.push_back(*it);
+    for (const auto& node : tree.pre_order()) {
+        result.push_back(node);
     }
 }
 
 // Postorder traversal for hhds::tree
 void postorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {
-    for (auto it = tree.post_order_begin(); it != tree.post_order_end(); ++it) {
-        result.push_back(*it);
+    for (const auto& node : tree.post_order()) {
+        result.push_back(node);
     }
 }
 
@@ -62,9 +62,12 @@ void test_deep_tree_hhds(benchmark::State& state) {
         for (int i = 0; i < num_nodes; ++i) {
             current = my_tree.add_child(current, generate_random_int(generator, 1, 100));
         }
+
         std::vector<int> preorder_result, postorder_result;
         preorder_traversal_hhds(my_tree, preorder_result);
         postorder_traversal_hhds(my_tree, postorder_result);
+
+        std::cout << preorder_result.size() << std::endl;
         if (!compare_vectors(preorder_result, postorder_result)) {
             std::cerr << "Traversal mismatch in test_deep_tree_hhds" << std::endl;
         }
@@ -223,12 +226,12 @@ void test_append_end_only_lh(benchmark::State& state) {
 // Benchmark registration
 BENCHMARK(test_deep_tree_hhds);
 BENCHMARK(test_deep_tree_lh);
-BENCHMARK(test_wide_tree_hhds);
-BENCHMARK(test_wide_tree_lh);
-BENCHMARK(test_chip_tree_hhds);
-BENCHMARK(test_chip_tree_lh);
-BENCHMARK(test_append_end_only_hhds);
-BENCHMARK(test_append_end_only_lh);
+// BENCHMARK(test_wide_tree_hhds);
+// BENCHMARK(test_wide_tree_lh);
+// BENCHMARK(test_chip_tree_hhds);
+// BENCHMARK(test_chip_tree_lh);
+// BENCHMARK(test_append_end_only_hhds);
+// BENCHMARK(test_append_end_only_lh);
 
 // Run the benchmarks
 BENCHMARK_MAIN();

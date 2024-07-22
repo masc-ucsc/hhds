@@ -43,16 +43,16 @@ namespace hhds {
 using Tree_pos = uint64_t;
 using Short_delta = int32_t;
 
-static constexpr Tree_pos INVALID = 0;                                  // This is invalid for all pointers other than parent
-static constexpr Tree_pos ROOT = 1;                                     // ROOT ID
-
-static constexpr short CHUNK_BITS = 43;                                 // Number of chunks in a tree node
-static constexpr short SHORT_DELTA = 21;                                // Amount of short delta allowed
-
 static constexpr short CHUNK_SHIFT = 3;                                 // The number of bits in a chunk offset
 static constexpr short CHUNK_SIZE = 1 << CHUNK_SHIFT;                   // Size of a chunk in bits
 static constexpr short CHUNK_MASK = CHUNK_SIZE - 1;                     // Mask for chunk offset
 static constexpr short NUM_SHORT_DEL = CHUNK_MASK;                      // Number of short delta children in eachc tree_ptr
+
+static constexpr Tree_pos INVALID = 0;                                  // This is invalid for all pointers other than parent
+static constexpr Tree_pos ROOT = 1 << CHUNK_SHIFT;                      // ROOT ID
+
+static constexpr short CHUNK_BITS = 43;                                 // Number of chunks in a tree node
+static constexpr short SHORT_DELTA = 21;                                // Amount of short delta allowed
 
 static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;            // Maximum number of nodes in the tree
 
@@ -99,7 +99,7 @@ private:
             case 6: return first_child_s_6;
             
             default:
-            throw std::out_of_range("Invalid index for first_child_s");
+            throw std::out_of_range("_get_first_child_s: Invalid index for first_child_s");
         }
     }
 
@@ -114,7 +114,7 @@ private:
             case 6: first_child_s_6 = value; break;
             
             default:
-            throw std::out_of_range("Invalid index for first_child_s");
+            throw std::out_of_range("_set_first_child_s: Invalid index for first_child_s");
         }
     }
 
@@ -130,7 +130,7 @@ private:
             case 6: return last_child_s_6;
             
             default:
-            throw std::out_of_range("Invalid index for last_child_s");
+            throw std::out_of_range("_get_last_child_s: Invalid index for last_child_s");
         }
     }
 
@@ -145,7 +145,7 @@ private:
             case 6: last_child_s_6 = value; break;
 
             default: 
-            throw std::out_of_range("Invalid index for last_child_s");
+            throw std::out_of_range("_get_last_child_s: Invalid index for last_child_s");
         }
     }
 
@@ -247,9 +247,9 @@ private:
     /* Function to add an entry to the pointers and data stack (typically for add/append)*/
     [[nodiscard]] Tree_pos _create_space(const Tree_pos &parent_index, const X& data) {
         if (pointers_stack.size() >= MAX_TREE_SIZE) {
-            throw std::out_of_range("Tree size exceeded");
+            throw std::out_of_range("_create_space: Tree size exceeded");
         } else if (!_check_idx_exists(parent_index)) {
-            throw std::out_of_range("Parent index out of range");
+            throw std::out_of_range("_create_space: Parent index out of range");
         }
 
         // Make space for CHUNK_SIZE number of entries at the end
@@ -267,9 +267,9 @@ private:
     /* Function to insert a new chunk in between (typically for handling add/append corner cases)*/
     [[nodiscard]] Tree_pos _insert_chunk_after(const Tree_pos curr) {
         if (pointers_stack.size() >= MAX_TREE_SIZE) {
-            throw std::out_of_range("Tree size exceeded");
+            throw std::out_of_range("_insert_chunk_after: Tree size exceeded");
         } else if (!_check_idx_exists(curr)) {
-            throw std::out_of_range("Current index out of range");
+            throw std::out_of_range("_insert_chunk_after: Current index out of range");
         }
         
         // Allot new chunk at the end
@@ -400,7 +400,7 @@ public:
      */
     X& get_data(const Tree_pos& idx) {
         if (!_check_idx_exists(idx) || !data_stack[idx].has_value()) {
-            throw std::out_of_range("Index out of range or no data at index");
+            throw std::out_of_range("get_data: Index out of range or no data at index");
         }
 
         return data_stack[idx].value();
@@ -408,7 +408,7 @@ public:
 
     const X& get_data(const Tree_pos& idx) const {
         if (!_check_idx_exists(idx) || !data_stack[idx].has_value()) {
-            throw std::out_of_range("Index out of range or no data at index");
+            throw std::out_of_range("get_data: Index out of range or no data at index");
         }
 
         return data_stack[idx].value();
@@ -416,7 +416,7 @@ public:
 
     void set_data(const Tree_pos& idx, const X& data) {
         if (!_check_idx_exists(idx)) {
-            throw std::out_of_range("Index out of range");
+            throw std::out_of_range("set_data: Index out of range");
         }
 
         data_stack[idx] = data;
@@ -476,11 +476,11 @@ public:
             return temp;
         }
 
-        bool operator==(const sibling_order_iterator& other) {
+        bool operator==(const sibling_order_iterator& other) const {
             return current == other.current;
         }
 
-        bool operator!=(const sibling_order_iterator& other) {
+        bool operator!=(const sibling_order_iterator& other) const {
             return current != other.current;
         }
 
@@ -488,11 +488,26 @@ public:
         X* operator->() const { return &tree_ptr->get_data(current); }
     };
 
-    sibling_order_iterator sibling_begin() {
-        return sibling_order_iterator(ROOT, this);
-    }
-    sibling_order_iterator sibling_end() {
-        return sibling_order_iterator(INVALID, this);
+    class sibling_order_range {
+    private:
+        Tree_pos m_start;
+        tree<X>* m_tree_ptr;
+
+    public:
+        sibling_order_range(Tree_pos start, tree<X>* tree) 
+            : m_start(start), m_tree_ptr(tree) {}
+
+        sibling_order_iterator begin() {
+            return sibling_order_iterator(m_start, m_tree_ptr);
+        }
+
+        sibling_order_iterator end() {
+            return sibling_order_iterator(INVALID, m_tree_ptr);
+        }
+    };
+
+    sibling_order_range sibling_order(Tree_pos start = ROOT) {
+        return sibling_order_range(start, this);
     }
 
     // PRE-ORDER TRAVERSAL
@@ -502,7 +517,6 @@ public:
         tree<X>* tree_ptr;
 
     public:
-        // Iterator type definitions
         using iterator_category = std::forward_iterator_tag;
         using value_type = X;
         using difference_type = std::ptrdiff_t;
@@ -513,6 +527,7 @@ public:
             : current(start), tree_ptr(tree) {}
 
         pre_order_iterator& operator++() {
+            // std::cout << "Current: " << current << std::endl;
             if (tree_ptr->get_first_child(current) != INVALID) {
                 current = tree_ptr->get_first_child(current);
             } else {
@@ -526,20 +541,15 @@ public:
                     current = tree_ptr->get_sibling_next(current);
                 }
             }
+            // std::cout << "Current: " << current << std::endl;
             return *this;
         }
 
-        /** IMPORTANT TODO BELOW */
-        // // Should I just make it copy and use ++(*this)
-        // pre_order_iterator operator++(int) {
-        //     pre_order_iterator temp = *this;
-        //     ++(*this);
-        //     return temp;
-        // }
-        /** IMPORTANT TODO ABOVE */
-
-        // // Or delete the overload
-        // pre_order_iterator operator++(int) = delete;
+        pre_order_iterator operator++(int) {
+            pre_order_iterator temp = *this;
+            ++(*this);
+            return temp;
+        }
 
         bool operator==(const pre_order_iterator& other) const {
             return current == other.current;
@@ -549,9 +559,31 @@ public:
             return current != other.current;
         }
 
-        X const& operator*() const { return tree_ptr->get_data(current); }
+        X& operator*() const { return tree_ptr->get_data(current); }
         X* operator->() const { return &tree_ptr->get_data(current); }
     };
+
+    class pre_order_range {
+    private:
+        Tree_pos m_start;
+        tree<X>* m_tree_ptr;
+
+    public:
+        pre_order_range(Tree_pos start, tree<X>* tree) 
+            : m_start(start), m_tree_ptr(tree) {}
+
+        pre_order_iterator begin() {
+            return pre_order_iterator(m_start, m_tree_ptr);
+        }
+
+        pre_order_iterator end() {
+            return pre_order_iterator(INVALID, m_tree_ptr);
+        }
+    };
+
+    pre_order_range pre_order(Tree_pos start = ROOT) {
+        return pre_order_range(start, this);
+    }
 
     class const_pre_order_iterator {
     private:
@@ -559,7 +591,6 @@ public:
         const tree<X>* tree_ptr;
 
     public:
-        // Iterator type definitions
         using iterator_category = std::forward_iterator_tag;
         using value_type = X;
         using difference_type = std::ptrdiff_t;
@@ -586,12 +617,11 @@ public:
             return *this;
         }
 
-        /** IMPORTANT TODO FOR POST-INCREMENT*/
-        // const_pre_order_iterator operator++(int) {
-        //     const_pre_order_iterator temp = *this;
-        //     ++(*this);
-        //     return temp;
-        // }
+        const_pre_order_iterator operator++(int) {
+            const_pre_order_iterator temp = *this;
+            ++(*this);
+            return temp;
+        }
 
         bool operator==(const const_pre_order_iterator& other) const {
             return current == other.current;
@@ -605,20 +635,26 @@ public:
         const X* operator->() const { return &tree_ptr->get_data(current); }
     };
 
-    pre_order_iterator pre_order_begin() {
-        return pre_order_iterator(ROOT, this);
-    }
+    class const_pre_order_range {
+    private:
+        Tree_pos m_start;
+        const tree<X>* m_tree_ptr;
 
-    pre_order_iterator pre_order_end() {
-        return pre_order_iterator(INVALID, this);
-    }
+    public:
+        const_pre_order_range(Tree_pos start, const tree<X>* tree) 
+            : m_start(start), m_tree_ptr(tree) {}
 
-    const_pre_order_iterator pre_order_begin() const {
-        return const_pre_order_iterator(ROOT, this);
-    }
+        const_pre_order_iterator begin() {
+            return const_pre_order_iterator(m_start, m_tree_ptr);
+        }
 
-    const_pre_order_iterator pre_order_end() const {
-        return const_pre_order_iterator(INVALID, this);
+        const_pre_order_iterator end() {
+            return const_pre_order_iterator(INVALID, m_tree_ptr);
+        }
+    };
+
+    const_pre_order_range pre_order(Tree_pos start = ROOT) const {
+        return const_pre_order_range(start, this);
     }
 
     // POST-ORDER TRAVERSAL
@@ -647,7 +683,6 @@ public:
         }
 
     public:
-        // Iterator type definitions
         using iterator_category = std::forward_iterator_tag;
         using value_type = X;
         using difference_type = std::ptrdiff_t;
@@ -679,6 +714,28 @@ public:
         X* operator->() const { return &tree_ptr->get_data(current); }
     };
 
+    class post_order_range {
+    private:
+        Tree_pos m_start;
+        tree<X>* m_tree_ptr;
+
+    public:
+        post_order_range(Tree_pos start, tree<X>* tree) 
+            : m_start(start), m_tree_ptr(tree) {}
+
+        post_order_iterator begin() {
+            return post_order_iterator(m_start, m_tree_ptr);
+        }
+
+        post_order_iterator end() {
+            return post_order_iterator(INVALID, m_tree_ptr);
+        }
+    };
+
+    post_order_range post_order(Tree_pos start = ROOT) {
+        return post_order_range(start, this);
+    }
+
     class const_post_order_iterator {
     private:
         Tree_pos current;
@@ -704,7 +761,6 @@ public:
         }
 
     public:
-        // Iterator type definitions
         using iterator_category = std::forward_iterator_tag;
         using value_type = X;
         using difference_type = std::ptrdiff_t;
@@ -736,22 +792,28 @@ public:
         const X* operator->() const { return &tree_ptr->get_data(current); }
     };
 
-    // Functions to get iterators
-    post_order_iterator post_order_begin() {
-        return post_order_iterator(ROOT, this);
+    class const_post_order_range {
+    private:
+        Tree_pos m_start;
+        const tree<X>* m_tree_ptr;
+
+    public:
+        const_post_order_range(Tree_pos start, const tree<X>* tree) 
+            : m_start(start), m_tree_ptr(tree) {}
+
+        const_post_order_iterator begin() {
+            return const_post_order_iterator(m_start, m_tree_ptr);
+        }
+
+        const_post_order_iterator end() {
+            return const_post_order_iterator(INVALID, m_tree_ptr);
+        }
+    };
+
+    const_post_order_range post_order(Tree_pos start = ROOT) const {
+        return const_post_order_range(start, this);
     }
 
-    post_order_iterator post_order_end() {
-        return post_order_iterator(INVALID, this);
-    }
-
-    const_post_order_iterator post_order_begin() const {
-        return const_post_order_iterator(ROOT, this);
-    }
-
-    const_post_order_iterator post_order_end() const {
-        return const_post_order_iterator(INVALID, this);
-    }
 
 // :public
 
@@ -769,7 +831,7 @@ public:
 template<typename X>
 Tree_pos tree<X>::get_parent(const Tree_pos& curr_index) {
     if (!_check_idx_exists(curr_index)) {
-        throw std::out_of_range("Index out of range");
+        throw std::out_of_range("get_parent: Index out of range");
     }
 
     return pointers_stack[curr_index >> CHUNK_SHIFT].get_parent();
@@ -786,7 +848,7 @@ Tree_pos tree<X>::get_parent(const Tree_pos& curr_index) {
 template <typename X>
 Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) {
     if (!_check_idx_exists(parent_index)) {
-        throw std::out_of_range("Parent index out of range");
+        throw std::out_of_range("get_last_child: Parent index out of range");
     }
 
     const auto chunk_id = (parent_index >> CHUNK_SHIFT);
@@ -827,7 +889,7 @@ Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) {
 template <typename X>
 Tree_pos tree<X>::get_first_child(const Tree_pos& parent_index) {
     if (!_check_idx_exists(parent_index)) {
-        throw std::out_of_range("Parent index out of range");
+        throw std::out_of_range("get_first_child: Parent index out of range");
     }
 
     // @todo MAJOR : the functionality is still that of the get_last_child function. Fix it!
@@ -860,7 +922,7 @@ Tree_pos tree<X>::get_first_child(const Tree_pos& parent_index) {
 template <typename X>
 bool tree<X>::is_last_child(const Tree_pos& self_index) {
     if (!_check_idx_exists(self_index)) {
-        throw std::out_of_range("Index out of range");
+        throw std::out_of_range("is_last_child: Index out of range");
     }
 
     const auto self_chunk_id = (self_index >> CHUNK_SHIFT);
@@ -893,7 +955,7 @@ bool tree<X>::is_last_child(const Tree_pos& self_index) {
 template <typename X>
 bool tree<X>::is_first_child(const Tree_pos& self_index) {
     if (!_check_idx_exists(self_index)) {
-        throw std::out_of_range("Index out of range");
+        throw std::out_of_range("is_first_child: Index out of range");
     }
 
     const auto self_chunk_id = (self_index >> CHUNK_SHIFT);
@@ -923,7 +985,7 @@ bool tree<X>::is_first_child(const Tree_pos& self_index) {
 template <typename X>
 Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) {
     if (!_check_idx_exists(sibling_id)) {
-        throw std::out_of_range("Sibling index out of range");
+        throw std::out_of_range("get_sibling_next: Sibling index out of range");
     }
 
     // If this is the last child, no next sibling
@@ -956,7 +1018,7 @@ Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) {
 template <typename X>
 Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) {
     if (!_check_idx_exists(sibling_id)) {
-        throw std::out_of_range("Sibling index out of range");
+        throw std::out_of_range("get_sibling_prev: Sibling index out of range");
     }
 
     // If this is the first child, no prev sibling
@@ -1005,7 +1067,7 @@ int tree<X>::get_tree_width(const int& level) {
 template <typename X>
 Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
     if (!_check_idx_exists(sibling_id)) {
-        throw std::out_of_range("Sibling index out of range");
+        throw std::out_of_range("append_sibling: Sibling index out of range");
     }
 
     const auto sibling_chunk_id = (sibling_id >> CHUNK_SHIFT);
@@ -1062,7 +1124,7 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
 template <typename X>
 Tree_pos tree<X>::add_root(const X& data) {
     if (!pointers_stack.empty()) {
-        throw std::logic_error("Tree is not empty");
+        throw std::logic_error("add_root: Tree is not empty");
     }
 
     // Add empty nodes to make the tree 1-indexed
@@ -1080,7 +1142,7 @@ Tree_pos tree<X>::add_root(const X& data) {
     // Add the single pointer node for all CHUNK_SIZE entries
     pointers_stack.emplace_back();
 
-    return (data_stack.size() - CHUNK_SIZE) >> CHUNK_SHIFT;
+    return (data_stack.size() - CHUNK_SIZE);
 }
 
 /**
@@ -1095,7 +1157,7 @@ Tree_pos tree<X>::add_root(const X& data) {
 template <typename X>
 Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
     if (!_check_idx_exists(parent_index)) {
-        throw std::out_of_range("Parent index out of range");
+        throw std::out_of_range("add_child: Parent index out of range");
     }
 
     const auto last_child_id = get_last_child(parent_index);
