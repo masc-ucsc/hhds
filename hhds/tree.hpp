@@ -431,7 +431,7 @@ public:
      */
     void print_tree() {
         for (size_t i = 0; i < pointers_stack.size(); i++) {
-            std::cout << "Index: " << i << " Parent: " << pointers_stack[i].get_parent() << " Data: ";
+            std::cout << "Index: " << i << " Parent: " << pointers_stack[i].get_parent() << " Data: " << data_stack[i].value_or(-1) << std::endl;
             std::cout << "First Child: " << pointers_stack[i].get_first_child_l() << " ";
             std::cout << "Last Child: " << pointers_stack[i].get_last_child_l() << " ";
             std::cout << "Next Sibling: " << pointers_stack[i].get_next_sibling() << " ";
@@ -518,17 +518,16 @@ public:
 
     public:
         using iterator_category = std::forward_iterator_tag;
-        using value_type = X;
+        using value_type = Tree_pos;
         using difference_type = std::ptrdiff_t;
-        using pointer = X*;
-        using reference = X&;
+        using pointer = Tree_pos*;
+        using reference = Tree_pos&;
 
-        pre_order_iterator(Tree_pos start, tree<X>* tree) 
+        pre_order_iterator(Tree_pos start, tree<X>* tree)
             : current(start), tree_ptr(tree) {}
 
         pre_order_iterator& operator++() {
-            // std::cout << "Current: " << current << std::endl;
-            if (tree_ptr->get_first_child(current) != INVALID) {
+            if (tree_ptr->get_first_child(this->current) != INVALID) {
                 current = tree_ptr->get_first_child(current);
             } else {
                 while (tree_ptr->get_sibling_next(current) == INVALID) {
@@ -541,7 +540,6 @@ public:
                     current = tree_ptr->get_sibling_next(current);
                 }
             }
-            // std::cout << "Current: " << current << std::endl;
             return *this;
         }
 
@@ -559,8 +557,8 @@ public:
             return current != other.current;
         }
 
-        X& operator*() const { return tree_ptr->get_data(current); }
-        X* operator->() const { return &tree_ptr->get_data(current); }
+        Tree_pos operator*() const { return current; }
+        Tree_pos* operator->() const { return &current; }
     };
 
     class pre_order_range {
@@ -569,7 +567,7 @@ public:
         tree<X>* m_tree_ptr;
 
     public:
-        pre_order_range(Tree_pos start, tree<X>* tree) 
+        pre_order_range(Tree_pos start, tree<X>* tree)
             : m_start(start), m_tree_ptr(tree) {}
 
         pre_order_iterator begin() {
@@ -892,8 +890,6 @@ Tree_pos tree<X>::get_first_child(const Tree_pos& parent_index) {
         throw std::out_of_range("get_first_child: Parent index out of range");
     }
 
-    // @todo MAJOR : the functionality is still that of the get_last_child function. Fix it!
-
     const auto chunk_id = (parent_index >> CHUNK_SHIFT);
     const auto chunk_offset = (parent_index & CHUNK_MASK);
     const auto first_child_s_i = chunk_offset ? pointers_stack[chunk_id].get_first_child_s_at(chunk_offset - 1) : INVALID;
@@ -1002,7 +998,7 @@ Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) {
     }
 
     // Just jump to the next sibling chunk, or returns invalid
-    return pointers_stack[sibling_id].get_next_sibling(); // default is INVALID
+    return pointers_stack[curr_chunk_id].get_next_sibling(); // default is INVALID
 }
 
 /**
@@ -1035,7 +1031,7 @@ Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) {
     }
 
     // Just jump to the next sibling chunk, or returns invalid
-    const auto prev_sibling = pointers_stack[sibling_id].get_prev_sibling();
+    const auto prev_sibling = pointers_stack[curr_chunk_id].get_prev_sibling();
     
     // Find the last occupied in the prev sibling chunk
     if (prev_sibling != INVALID) {
@@ -1109,6 +1105,9 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
             pointers_stack[new_parent_chunk_id].set_last_child_l(new_sib_chunk_id);
         }
     }
+
+    // Set the parent pointer of the sibling
+    pointers_stack[new_sib_chunk_id].set_parent(sibling_parent_id);
 
     return new_sib_chunk_id << CHUNK_SHIFT;
 }
@@ -1198,6 +1197,9 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
             pointers_stack[new_parent_chunk_id].set_last_child_l(child_chunk_id);
         }
     }
+
+    // Set the parent pointer of the child
+    pointers_stack[child_chunk_id].set_parent(parent_index);
 
     return child_chunk_id << CHUNK_SHIFT;
 }

@@ -112,3 +112,11 @@ cc_test(
         ":core",
     ],
 )
+
+cc_binary(
+    name = "deep_tree_correctness",
+    srcs = ["tests/deep_tree_correctness.cpp"],
+    deps = [
+        ":core",
+    ],
+)

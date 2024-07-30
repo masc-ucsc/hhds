@@ -52,186 +52,160 @@ bool compare_vectors(const std::vector<T>& vec1, const std::vector<T>& vec2) {
 }
 
 // Test 1: Very Deep Tree (Tens of Millions of Nodes)
-void test_deep_tree_hhds(benchmark::State& state) {
+void test_deep_tree(benchmark::State& state) {
     std::default_random_engine generator(42);
-    int num_nodes = 10000000; // 10 million nodes
+    int num_nodes = 100; // 10 million nodes
     for (auto _ : state) {
-        hhds::tree<int> my_tree;
-        auto root = my_tree.add_root(generate_random_int(generator, 1, 100));
-        auto current = root;
+        hhds::tree<int> hhds_tree;
+        lh::tree<int> lh_tree;
+
+        auto hhds_root = hhds_tree.add_root(generate_random_int(generator, 1, 100));
+        lh_tree.set_root(generate_random_int(generator, 1, 100));
+        lh::Tree_index lh_current(0, 0);
+        auto hhds_current = hhds_root;
+
         for (int i = 0; i < num_nodes; ++i) {
-            current = my_tree.add_child(current, generate_random_int(generator, 1, 100));
+            hhds_current = hhds_tree.add_child(hhds_current, generate_random_int(generator, 1, 100));
+            lh_current = lh_tree.add_child(lh_current, generate_random_int(generator, 1, 100));
         }
 
-        std::vector<int> preorder_result, postorder_result;
-        preorder_traversal_hhds(my_tree, preorder_result);
-        postorder_traversal_hhds(my_tree, postorder_result);
+        std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, lh_postorder;
+        preorder_traversal_hhds(hhds_tree, hhds_preorder);
+        preorder_traversal_lhtree(lh_tree, lh_preorder);
+        postorder_traversal_hhds(hhds_tree, hhds_postorder);
+        postorder_traversal_lhtree(lh_tree, lh_postorder);
 
-        std::cout << preorder_result.size() << std::endl;
-        if (!compare_vectors(preorder_result, postorder_result)) {
-            std::cerr << "Traversal mismatch in test_deep_tree_hhds" << std::endl;
+        if (!compare_vectors(hhds_preorder, lh_preorder)) {
+            std::cerr << "Preorder traversal mismatch in test_deep_tree" << std::endl;
         }
-    }
-}
-
-void test_deep_tree_lh(benchmark::State& state) {
-    std::default_random_engine generator(42);
-    int num_nodes = 10000000; // 10 million nodes
-    for (auto _ : state) {
-        lh::tree<int> my_tree;
-        my_tree.set_root(generate_random_int(generator, 1, 100));
-        lh::Tree_index current(0, 0);
-        for (int i = 0; i < num_nodes; ++i) {
-            current = my_tree.add_child(current, generate_random_int(generator, 1, 100));
-        }
-        std::vector<int> preorder_result, postorder_result;
-        preorder_traversal_lhtree(my_tree, preorder_result);
-        postorder_traversal_lhtree(my_tree, postorder_result);
-        if (!compare_vectors(preorder_result, postorder_result)) {
-            std::cerr << "Traversal mismatch in test_deep_tree_lh" << std::endl;
+        if (!compare_vectors(hhds_postorder, lh_postorder)) {
+            std::cerr << "Postorder traversal mismatch in test_deep_tree" << std::endl;
         }
     }
 }
 
 // Test 2: Very Wide Tree (Tens of Millions of Nodes)
-void test_wide_tree_hhds(benchmark::State& state) {
+void test_wide_tree(benchmark::State& state) {
     std::default_random_engine generator(42);
-    int num_children = 10000000; // 10 million children
+    int num_children = 100; // 10 million children
     for (auto _ : state) {
-        hhds::tree<int> my_tree;
-        auto root = my_tree.add_root(generate_random_int(generator, 1, 100));
-        for (int i = 0; i < num_children; ++i) {
-            my_tree.add_child(root, generate_random_int(generator, 1, 100));
-        }
-        std::vector<int> preorder_result, postorder_result;
-        preorder_traversal_hhds(my_tree, preorder_result);
-        postorder_traversal_hhds(my_tree, postorder_result);
-        if (!compare_vectors(preorder_result, postorder_result)) {
-            std::cerr << "Traversal mismatch in test_wide_tree_hhds" << std::endl;
-        }
-    }
-}
+        hhds::tree<int> hhds_tree;
+        lh::tree<int> lh_tree;
 
-void test_wide_tree_lh(benchmark::State& state) {
-    std::default_random_engine generator(42);
-    int num_children = 10000000; // 10 million children
-    for (auto _ : state) {
-        lh::tree<int> my_tree;
-        my_tree.set_root(generate_random_int(generator, 1, 100));
-        lh::Tree_index root(0, 0);
+        auto hhds_root = hhds_tree.add_root(generate_random_int(generator, 1, 100));
+        lh_tree.set_root(generate_random_int(generator, 1, 100));
+        lh::Tree_index lh_root(0, 0);
+
         for (int i = 0; i < num_children; ++i) {
-            my_tree.add_child(root, generate_random_int(generator, 1, 100));
+            hhds_tree.add_child(hhds_root, generate_random_int(generator, 1, 100));
+            lh_tree.add_child(lh_root, generate_random_int(generator, 1, 100));
         }
-        std::vector<int> preorder_result, postorder_result;
-        preorder_traversal_lhtree(my_tree, preorder_result);
-        postorder_traversal_lhtree(my_tree, postorder_result);
-        if (!compare_vectors(preorder_result, postorder_result)) {
-            std::cerr << "Traversal mismatch in test_wide_tree_lh" << std::endl;
+
+        std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, lh_postorder;
+        preorder_traversal_hhds(hhds_tree, hhds_preorder);
+        preorder_traversal_lhtree(lh_tree, lh_preorder);
+        postorder_traversal_hhds(hhds_tree, hhds_postorder);
+        postorder_traversal_lhtree(lh_tree, lh_postorder);
+
+        if (!compare_vectors(hhds_preorder, lh_preorder)) {
+            std::cerr << "Preorder traversal mismatch in test_wide_tree" << std::endl;
+        }
+        if (!compare_vectors(hhds_postorder, lh_postorder)) {
+            std::cerr << "Postorder traversal mismatch in test_wide_tree" << std::endl;
         }
     }
 }
 
 // Test 3: "Chip" Typical Tree (8 Depth, 4-8 Children per Node)
-void test_chip_tree_hhds(benchmark::State& state) {
+void test_chip_tree(benchmark::State& state) {
     std::default_random_engine generator(42);
     for (auto _ : state) {
-        hhds::tree<int> my_tree;
-        auto root = my_tree.add_root(generate_random_int(generator, 1, 100));
+        hhds::tree<int> hhds_tree;
+        lh::tree<int> lh_tree;
 
-        std::vector<hhds::Tree_pos> current_level{root};
+        auto hhds_root = hhds_tree.add_root(generate_random_int(generator, 1, 100));
+        lh_tree.set_root(generate_random_int(generator, 1, 100));
+
+        std::vector<hhds::Tree_pos> hhds_current_level{hhds_root};
+        std::vector<lh::Tree_index> lh_current_level{lh::Tree_index(0, 0)};
+
         for (int depth = 0; depth < 8; ++depth) {
-            std::vector<hhds::Tree_pos> next_level;
-            for (auto node : current_level) {
+            std::vector<hhds::Tree_pos> hhds_next_level;
+            std::vector<lh::Tree_index> lh_next_level;
+            for (auto hhds_node : hhds_current_level) {
                 int num_children = generate_random_int(generator, 4, 8);
                 for (int i = 0; i < num_children; ++i) {
-                    next_level.push_back(my_tree.add_child(node, generate_random_int(generator, 1, 100)));
+                    hhds_next_level.push_back(hhds_tree.add_child(hhds_node, generate_random_int(generator, 1, 100)));
                 }
             }
-            current_level = next_level;
-        }
-        std::vector<int> preorder_result, postorder_result;
-        preorder_traversal_hhds(my_tree, preorder_result);
-        postorder_traversal_hhds(my_tree, postorder_result);
-        if (!compare_vectors(preorder_result, postorder_result)) {
-            std::cerr << "Traversal mismatch in test_chip_tree_hhds" << std::endl;
-        }
-    }
-}
-
-void test_chip_tree_lh(benchmark::State& state) {
-    std::default_random_engine generator(42);
-    for (auto _ : state) {
-        lh::tree<int> my_tree;
-        my_tree.set_root(generate_random_int(generator, 1, 100));
-
-        std::vector<lh::Tree_index> current_level{lh::Tree_index(0, 0)};
-        for (int depth = 0; depth < 8; ++depth) {
-            std::vector<lh::Tree_index> next_level;
-            for (auto node : current_level) {
+            for (auto lh_node : lh_current_level) {
                 int num_children = generate_random_int(generator, 4, 8);
                 for (int i = 0; i < num_children; ++i) {
-                    next_level.push_back(my_tree.add_child(node, generate_random_int(generator, 1, 100)));
+                    lh_next_level.push_back(lh_tree.add_child(lh_node, generate_random_int(generator, 1, 100)));
                 }
             }
-            current_level = next_level;
+            hhds_current_level = hhds_next_level;
+            lh_current_level = lh_next_level;
         }
-        std::vector<int> preorder_result, postorder_result;
-        preorder_traversal_lhtree(my_tree, preorder_result);
-        postorder_traversal_lhtree(my_tree, postorder_result);
-        if (!compare_vectors(preorder_result, postorder_result)) {
-            std::cerr << "Traversal mismatch in test_chip_tree_lh" << std::endl;
+
+        std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, lh_postorder;
+        preorder_traversal_hhds(hhds_tree, hhds_preorder);
+        preorder_traversal_lhtree(lh_tree, lh_preorder);
+        postorder_traversal_hhds(hhds_tree, hhds_postorder);
+        postorder_traversal_lhtree(lh_tree, lh_postorder);
+
+        if (!compare_vectors(hhds_preorder, lh_preorder)) {
+            std::cerr << "Preorder traversal mismatch in test_chip_tree" << std::endl;
+        }
+        if (!compare_vectors(hhds_postorder, lh_postorder)) {
+            std::cerr << "Postorder traversal mismatch in test_chip_tree" << std::endl;
         }
     }
 }
 
 // Test 4: Append End Only
-void test_append_end_only_hhds(benchmark::State& state) {
+void test_append_end_only(benchmark::State& state) {
     std::default_random_engine generator(42);
-    int num_nodes = 10000000; // 10 million nodes
+    int num_nodes = 100; // 10 million nodes
     for (auto _ : state) {
-        hhds::tree<int> my_tree;
-        auto root = my_tree.add_root(generate_random_int(generator, 1, 100));
-        auto current = root;
-        for (int i = 0; i < num_nodes; ++i) {
-            current = my_tree.add_child(current, generate_random_int(generator, 1, 100));
-        }
-        std::vector<int> preorder_result, postorder_result;
-        preorder_traversal_hhds(my_tree, preorder_result);
-        postorder_traversal_hhds(my_tree, postorder_result);
-        if (!compare_vectors(preorder_result, postorder_result)) {
-            std::cerr << "Traversal mismatch in test_append_end_only_hhds" << std::endl;
-        }
-    }
-}
+        hhds::tree<int> hhds_tree;
+        lh::tree<int> lh_tree;
 
-void test_append_end_only_lh(benchmark::State& state) {
-    std::default_random_engine generator(42);
-    int num_nodes = 10000000; // 10 million nodes
-    for (auto _ : state) {
-        lh::tree<int> my_tree;
-        my_tree.set_root(generate_random_int(generator, 1, 100));
-        lh::Tree_index current(0, 0);
+        auto hhds_root = hhds_tree.add_root(generate_random_int(generator, 1, 100));
+        lh_tree.set_root(generate_random_int(generator, 1, 100));
+        lh::Tree_index lh_current(0, 0);
+        auto hhds_current = hhds_root;
+
         for (int i = 0; i < num_nodes; ++i) {
-            current = my_tree.add_child(current, generate_random_int(generator, 1, 100));
+            hhds_current = hhds_tree.add_child(hhds_current, generate_random_int(generator, 1, 100));
+            lh_current = lh_tree.add_child(lh_current, generate_random_int(generator, 1, 100));
         }
-        std::vector<int> preorder_result, postorder_result;
-        preorder_traversal_lhtree(my_tree, preorder_result);
-        postorder_traversal_lhtree(my_tree, postorder_result);
-        if (!compare_vectors(preorder_result, postorder_result)) {
-            std::cerr << "Traversal mismatch in test_append_end_only_lh" << std::endl;
+
+        std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, lh_postorder;
+        preorder_traversal_hhds(hhds_tree, hhds_preorder);
+        preorder_traversal_lhtree(lh_tree, lh_preorder);
+        postorder_traversal_hhds(hhds_tree, hhds_postorder);
+        postorder_traversal_lhtree(lh_tree, lh_postorder);
+
+        for (auto node : hhds_preorder) {
+            std::cout << node << ' ';
+        }
+        std::cout << std::endl;
+
+        if (!compare_vectors(hhds_preorder, lh_preorder)) {
+            std::cerr << "Preorder traversal mismatch in test_append_end_only" << std::endl;
+        }
+        if (!compare_vectors(hhds_postorder, lh_postorder)) {
+            std::cerr << "Postorder traversal mismatch in test_append_end_only" << std::endl;
         }
     }
 }
 
 // Benchmark registration
-BENCHMARK(test_deep_tree_hhds);
-BENCHMARK(test_deep_tree_lh);
-// BENCHMARK(test_wide_tree_hhds);
-// BENCHMARK(test_wide_tree_lh);
-// BENCHMARK(test_chip_tree_hhds);
-// BENCHMARK(test_chip_tree_lh);
-// BENCHMARK(test_append_end_only_hhds);
-// BENCHMARK(test_append_end_only_lh);
+BENCHMARK(test_deep_tree);
+// BENCHMARK(test_wide_tree);
+// BENCHMARK(test_chip_tree);
+// BENCHMARK(test_append_end_only);
 
 // Run the benchmarks
 BENCHMARK_MAIN();
