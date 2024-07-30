@@ -203,7 +203,7 @@ void test_append_end_only(benchmark::State& state) {
 
 // Benchmark registration
 BENCHMARK(test_deep_tree);
-// BENCHMARK(test_wide_tree);
+BENCHMARK(test_wide_tree);
 // BENCHMARK(test_chip_tree);
 // BENCHMARK(test_append_end_only);
 

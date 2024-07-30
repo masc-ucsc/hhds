@@ -399,6 +399,7 @@ public:
      * Data access API
      */
     X& get_data(const Tree_pos& idx) {
+        std::cout << "idx : " << idx << std::endl;
         if (!_check_idx_exists(idx) || !data_stack[idx].has_value()) {
             throw std::out_of_range("get_data: Index out of range or no data at index");
         }

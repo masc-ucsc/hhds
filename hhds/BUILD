@@ -120,3 +120,11 @@ cc_binary(
         ":core",
     ],
 )
+
+cc_binary(
+    name = "wide_tree_correctness",
+    srcs = ["tests/wide_tree_correctness.cpp"],
+    deps = [
+        ":core",
+    ],
+)
