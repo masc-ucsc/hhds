@@ -14,7 +14,6 @@ int generate_random_int(std::default_random_engine& generator, int min, int max)
 
 // Preorder traversal for hhds::tree
 void preorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {
-    tree.print_tree();
     for (const auto& node : tree.pre_order()) {
         result.push_back(tree[node]);
     }
@@ -54,7 +53,7 @@ bool compare_vectors(const std::vector<T>& vec1, const std::vector<T>& vec2) {
 // Test 1: Very Deep Tree (Tens of Millions of Nodes)
 void test_deep_tree() {
     std::default_random_engine generator(42);
-    int num_nodes = 70; // Use a smaller number for testing
+    int num_nodes = 10'000'000; // Use a smaller number for testing
 
     hhds::tree<int> hhds_tree;
     lh::tree<int> lh_tree;
@@ -74,20 +73,20 @@ void test_deep_tree() {
     std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, lh_postorder;
     preorder_traversal_hhds(hhds_tree, hhds_preorder);
     preorder_traversal_lhtree(lh_tree, lh_preorder);
-    // postorder_traversal_hhds(hhds_tree, hhds_postorder);
-    // postorder_traversal_lhtree(lh_tree, lh_postorder);
+    postorder_traversal_hhds(hhds_tree, hhds_postorder);
+    postorder_traversal_lhtree(lh_tree, lh_postorder);
 
-    std::cout << "\nHHDS preorder: ";
-    for (auto node : hhds_preorder) {
-        std::cout << node << " ";
-    }
-    std::cout << std::endl;
+    // std::cout << "\nHHDS preorder: ";
+    // for (auto node : hhds_preorder) {
+    //     std::cout << node << " ";
+    // }
+    // std::cout << std::endl;
 
-    std::cout << "\nLH preorder: ";
-    for (auto node : lh_preorder) {
-        std::cout << node << " ";
-    }
-    std::cout << std::endl;
+    // std::cout << "\nLH preorder: ";
+    // for (auto node : lh_preorder) {
+    //     std::cout << node << " ";
+    // }
+    // std::cout << std::endl;
 
     if (!compare_vectors(hhds_preorder, lh_preorder)) {
         std::cout << "Preorder traversal mismatch in test_deep_tree" << std::endl;

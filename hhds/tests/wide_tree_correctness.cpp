@@ -53,7 +53,7 @@ bool compare_vectors(const std::vector<T>& vec1, const std::vector<T>& vec2) {
 // Test 2: Wide Tree (One node with many children)
 void test_wide_tree() {
     std::default_random_engine generator(42);
-    int num_children = 100; // Number of children for the wide tree
+    int num_children = 10'000'000; // Number of children for the wide tree
 
     hhds::tree<int> hhds_tree;
     lh::tree<int> lh_tree;
@@ -65,27 +65,29 @@ void test_wide_tree() {
 
     for (int i = 0; i < num_children; ++i) {
         data_to_add = generate_random_int(generator, 1, 100);
-        hhds_tree.add_child(hhds_root, data_to_add);
-        lh_tree.add_child(lh_root, data_to_add);
+        auto ht = hhds_tree.add_child(hhds_root, data_to_add);
+        auto lt = lh_tree.add_child(lh_root, data_to_add);
+
+        std::vector<int> vht; postorder_traversal_hhds(hhds_tree, vht);
+        std::vector<int> vlt; postorder_traversal_lhtree(lh_tree, vht);
     }
 
     std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, lh_postorder;
     preorder_traversal_hhds(hhds_tree, hhds_preorder);
-    // preorder_traversal_lhtree(lh_tree, lh_preorder);
-    // postorder_traversal_hhds(hhds_tree, hhds_postorder);
-    // postorder_traversal_lhtree(lh_tree, lh_postorder);
+    preorder_traversal_lhtree(lh_tree, lh_preorder);
+    postorder_traversal_hhds(hhds_tree, hhds_postorder);
+    postorder_traversal_lhtree(lh_tree, lh_postorder);
 
-    std::cout << "\nHHDS preorder: ";
-    for (auto node : hhds_preorder) {
-        std::cout << node << " ";
-    }
-    std::cout << std::endl;
 
-    std::cout << "\nLH preorder: ";
-    for (auto node : lh_preorder) {
-        std::cout << node << " ";
-    }
-    std::cout << std::endl;
+    // std::cout << "\nHHDS postorder: ";
+    // for (auto node : hhds_postorder) {
+    //     std::cout << node << " ";
+    // }
+    // std::cout << "\nLH postorder: ";
+    // for (auto node : lh_postorder) {
+    //     std::cout << node << " ";
+    // }
+    // std::cout << std::endl;
 
     if (!compare_vectors(hhds_preorder, lh_preorder)) {
         std::cout << "Preorder traversal mismatch in test_wide_tree" << std::endl;

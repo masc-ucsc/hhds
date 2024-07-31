@@ -399,7 +399,6 @@ public:
      * Data access API
      */
     X& get_data(const Tree_pos& idx) {
-        std::cout << "idx : " << idx << std::endl;
         if (!_check_idx_exists(idx) || !data_stack[idx].has_value()) {
             throw std::out_of_range("get_data: Index out of range or no data at index");
         }
@@ -528,7 +527,7 @@ public:
             : current(start), tree_ptr(tree) {}
 
         pre_order_iterator& operator++() {
-            if (tree_ptr->get_first_child(this->current) != INVALID) {
+            if (tree_ptr->get_first_child(current) != INVALID) {
                 current = tree_ptr->get_first_child(current);
             } else {
                 while (tree_ptr->get_sibling_next(current) == INVALID) {
@@ -591,10 +590,10 @@ public:
 
     public:
         using iterator_category = std::forward_iterator_tag;
-        using value_type = X;
+        using value_type = Tree_pos;
         using difference_type = std::ptrdiff_t;
-        using pointer = const X*;
-        using reference = const X&;
+        using pointer = Tree_pos*;
+        using reference = Tree_pos&;
 
         const_pre_order_iterator(Tree_pos start, const tree<X>* tree) 
             : current(start), tree_ptr(tree) {}
@@ -661,44 +660,30 @@ public:
     private:
         Tree_pos current;
         tree<X>* tree_ptr;
-        std::vector<Tree_pos> traversal_stack;
-
-        void traverse_to_next() {
-            while (!traversal_stack.empty()) {
-                Tree_pos top = traversal_stack.back();
-                Tree_pos child = tree_ptr->get_first_child(top);
-                if (child == INVALID || child == current) {
-                    current = top;
-                    traversal_stack.pop_back();
-                    return;
-                } else {
-                    while (child != INVALID) {
-                        traversal_stack.push_back(child);
-                        child = tree_ptr->get_sibling_next(child);
-                    }
-                }
-            }
-            current = INVALID;
-        }
 
     public:
         using iterator_category = std::forward_iterator_tag;
-        using value_type = X;
+        using value_type = Tree_pos;
         using difference_type = std::ptrdiff_t;
-        using pointer = X*;
-        using reference = X&;
+        using pointer = Tree_pos*;
+        using reference = Tree_pos&;
 
         post_order_iterator(Tree_pos start, tree<X>* tree)
-            : current(start), tree_ptr(tree) {
-            if (current != INVALID) {
-                traversal_stack.push_back(current);
-                traverse_to_next();
-            }
-        }
+            : current(start), tree_ptr(tree) {}
 
         post_order_iterator& operator++() {
-            traverse_to_next();
-            return *this;
+            post_order_iterator temp = *this;
+            if (tree_ptr->get_sibling_next(current) != INVALID) {
+                auto next = tree_ptr->get_sibling_next(current);
+                while (tree_ptr->get_sibling_next(next) != INVALID) {
+                    next = tree_ptr->get_first_child(next);
+                }
+
+                current = next;
+            } else {
+                current = tree_ptr->get_parent(current);
+            }
+            return temp;
         }
 
         bool operator==(const post_order_iterator& other) const {
@@ -709,8 +694,8 @@ public:
             return current != other.current;
         }
 
-        X& operator*() const { return tree_ptr->get_data(current); }
-        X* operator->() const { return &tree_ptr->get_data(current); }
+        Tree_pos operator*() const { return current; }
+        Tree_pos* operator->() const { return &current; }
     };
 
     class post_order_range {
@@ -719,7 +704,7 @@ public:
         tree<X>* m_tree_ptr;
 
     public:
-        post_order_range(Tree_pos start, tree<X>* tree) 
+        post_order_range(Tree_pos start, tree<X>* tree)
             : m_start(start), m_tree_ptr(tree) {}
 
         post_order_iterator begin() {
@@ -739,43 +724,29 @@ public:
     private:
         Tree_pos current;
         const tree<X>* tree_ptr;
-        std::vector<Tree_pos> traversal_stack;
-
-        void traverse_to_next() {
-            while (!traversal_stack.empty()) {
-                Tree_pos top = traversal_stack.back();
-                Tree_pos child = tree_ptr->get_first_child(top);
-                if (child == INVALID || child == current) {
-                    current = top;
-                    traversal_stack.pop_back();
-                    return;
-                } else {
-                    while (child != INVALID) {
-                        traversal_stack.push_back(child);
-                        child = tree_ptr->get_sibling_next(child);
-                    }
-                }
-            }
-            current = INVALID;
-        }
 
     public:
         using iterator_category = std::forward_iterator_tag;
-        using value_type = X;
+        using value_type = Tree_pos;
         using difference_type = std::ptrdiff_t;
-        using pointer = const X*;
-        using reference = const X&;
+        using pointer = Tree_pos*;
+        using reference = Tree_pos&;
 
         const_post_order_iterator(Tree_pos start, const tree<X>* tree)
-            : current(start), tree_ptr(tree) {
-            if (current != INVALID) {
-                traversal_stack.push_back(current);
-                traverse_to_next();
-            }
-        }
+            : current(start), tree_ptr(tree) {}
 
         const_post_order_iterator& operator++() {
-            traverse_to_next();
+            // post_order_iterator temp = *this;
+            if (tree_ptr->get_sibling_next(current) != INVALID) {
+                auto next = tree_ptr->get_sibling_next(current);
+                while (tree_ptr->get_sibling_next(next) != INVALID) {
+                    next = tree_ptr->get_first_child(next);
+                }
+
+                current = next;
+            } else {
+                current = tree_ptr->get_parent(current);
+            }
             return *this;
         }
 
@@ -999,7 +970,7 @@ Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) {
     }
 
     // Just jump to the next sibling chunk, or returns invalid
-    return pointers_stack[curr_chunk_id].get_next_sibling(); // default is INVALID
+    return pointers_stack[curr_chunk_id].get_next_sibling() << CHUNK_SHIFT; // default is INVALID
 }
 
 /**
