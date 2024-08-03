@@ -92,27 +92,25 @@ void test_chip_tree() {
 
         hhds_current_level = hhds_next_level;
         lh_current_level = lh_next_level;
-    
-        hhds_tree.print_tree(1);
     }
 
     std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, lh_postorder;
     preorder_traversal_hhds(hhds_tree, hhds_preorder);
     preorder_traversal_lhtree(lh_tree, lh_preorder);
-    // postorder_traversal_hhds(hhds_tree, hhds_postorder);
-    // postorder_traversal_lhtree(lh_tree, lh_postorder);
+    postorder_traversal_hhds(hhds_tree, hhds_postorder);
+    postorder_traversal_lhtree(lh_tree, lh_postorder);
 
-    std::cout << "\nHHDS preorder: ";
-    for (auto node : hhds_preorder) {
-        std::cout << node << " ";
-    }
-    std::cout << std::endl;
+    // std::cout << "\nHHDS preorder: ";
+    // for (auto node : hhds_preorder) {
+    //     std::cout << node << " ";
+    // }
+    // std::cout << std::endl;
 
-    std::cout << "\nLH preorder: ";
-    for (auto node : lh_preorder) {
-        std::cout << node << " ";
-    }
-    std::cout << std::endl;
+    // std::cout << "\nLH preorder: ";
+    // for (auto node : lh_preorder) {
+    //     std::cout << node << " ";
+    // }
+    // std::cout << std::endl;
 
     if (!compare_vectors(hhds_preorder, lh_preorder)) {
         std::cerr << "Preorder traversal mismatch in test_chip_tree" << std::endl;

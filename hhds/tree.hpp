@@ -861,7 +861,7 @@ Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) {
 
     // Iterate in reverse to find the last occupied in child chunk
     if (child_chunk_id != INVALID) {
-        for (short offset = NUM_SHORT_DEL - 1; offset >= 0; offset--) {
+        for (short offset = NUM_SHORT_DEL; offset >= 0; offset--) {
             if (_contains_data((child_chunk_id << CHUNK_SHIFT) + offset)) {
                 return static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) + offset);
             }
