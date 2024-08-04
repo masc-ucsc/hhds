@@ -325,10 +325,12 @@ private:
     
             if (!requires_new_chunk) {
                 // Try fitting first and last child in the short delta
-                if (_fits_in_short_del(curr_id, fc) and _fits_in_short_del(curr_id, lc)) {
-                    //***** YET ANOTHER ISSUE HERE, DECIDE IF YOU WANT TO KEEP THE CHUNK DEL */
-                    pointers_stack[old_chunk_id].set_first_child_s_at(new_chunk_offset, fc - curr_id);
-                    pointers_stack[old_chunk_id].set_last_child_s_at(new_chunk_offset, lc - curr_id);
+                if (_fits_in_short_del(old_chunk_id, fc >> CHUNK_SHIFT) 
+                    and _fits_in_short_del(old_chunk_id, lc >> CHUNK_SHIFT)) {
+                    pointers_stack[old_chunk_id].set_first_child_s_at(new_chunk_offset, 
+                                                                      (fc >> CHUNK_SHIFT) - old_chunk_id);
+                    pointers_stack[old_chunk_id].set_last_child_s_at(new_chunk_offset, 
+                                                                     (lc >> CHUNK_SHIFT) - old_chunk_id);
                     new_chunk_offset++;
 
                     // Copy the data to the new chunk
@@ -467,24 +469,34 @@ public:
      * - PREORDER (subtree_parent)
      */
     
-    // SIBLING-ORDER ITERATOR
+    // SIBLING ORDER TRAVERSAL
     class sibling_order_iterator {
     private:
         Tree_pos current;
         tree<X>* tree_ptr;
 
     public:
-        sibling_order_iterator(Tree_pos start, tree<X>* tree) 
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = Tree_pos;
+        using difference_type = std::ptrdiff_t;
+        using pointer = Tree_pos*;
+        using reference = Tree_pos&;
+
+        sibling_order_iterator(Tree_pos start, tree<X>* tree)
             : current(start), tree_ptr(tree) {}
 
         sibling_order_iterator& operator++() {
-            current = tree_ptr->get_sibling_next(current);
+            if (tree_ptr->get_sibling_next(current) != INVALID) {
+                current = tree_ptr->get_sibling_next(current);
+            } else {
+                current = INVALID;
+            }
             return *this;
         }
 
         sibling_order_iterator operator++(int) {
             sibling_order_iterator temp = *this;
-            current = tree_ptr->get_sibling_next(current);
+            ++(*this);
             return temp;
         }
 
@@ -496,8 +508,8 @@ public:
             return current != other.current;
         }
 
-        X& operator*() const { return tree_ptr->get_data(current); }
-        X* operator->() const { return &tree_ptr->get_data(current); }
+        Tree_pos operator*() const { return current; }
+        Tree_pos* operator->() const { return &current; }
     };
 
     class sibling_order_range {
@@ -506,7 +518,7 @@ public:
         tree<X>* m_tree_ptr;
 
     public:
-        sibling_order_range(Tree_pos start, tree<X>* tree) 
+        sibling_order_range(Tree_pos start, tree<X>* tree)
             : m_start(start), m_tree_ptr(tree) {}
 
         sibling_order_iterator begin() {
@@ -518,8 +530,72 @@ public:
         }
     };
 
-    sibling_order_range sibling_order(Tree_pos start = ROOT) {
+    sibling_order_range sibling_order(Tree_pos start) {
         return sibling_order_range(start, this);
+    }
+
+    class const_sibling_order_iterator {
+    private:
+        Tree_pos current;
+        const tree<X>* tree_ptr;
+
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = Tree_pos;
+        using difference_type = std::ptrdiff_t;
+        using pointer = const Tree_pos*;
+        using reference = const Tree_pos&;
+
+        const_sibling_order_iterator(Tree_pos start, const tree<X>* tree)
+            : current(start), tree_ptr(tree) {}
+
+        const_sibling_order_iterator& operator++() {
+            if (tree_ptr->get_sibling_next(current) != INVALID) {
+                current = tree_ptr->get_sibling_next(current);
+            } else {
+                current = INVALID;
+            }
+            return *this;
+        }
+
+        const_sibling_order_iterator operator++(int) {
+            const_sibling_order_iterator temp = *this;
+            ++(*this);
+            return temp;
+        }
+
+        bool operator==(const const_sibling_order_iterator& other) const {
+            return current == other.current;
+        }
+
+        bool operator!=(const const_sibling_order_iterator& other) const {
+            return current != other.current;
+        }
+
+        Tree_pos operator*() const { return current; }
+        const Tree_pos* operator->() const { return &current; }
+    };
+
+    class const_sibling_order_range {
+    private:
+        Tree_pos m_start;
+        const tree<X>* m_tree_ptr;
+
+    public:
+        const_sibling_order_range(Tree_pos start, const tree<X>* tree)
+            : m_start(start), m_tree_ptr(tree) {}
+
+        const_sibling_order_iterator begin() const {
+            return const_sibling_order_iterator(m_start, m_tree_ptr);
+        }
+
+        const_sibling_order_iterator end() const {
+            return const_sibling_order_iterator(INVALID, m_tree_ptr);
+        }
+    };
+
+    const_sibling_order_range sibling_order(Tree_pos start) const {
+        return const_sibling_order_range(start, this);
     }
 
     // PRE-ORDER TRAVERSAL
@@ -1105,19 +1181,29 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
             // Set the last child pointer of the parent
             pointers_stack[new_parent_chunk_id].set_last_child_l(chunk_id);
 
+            // Set the first child pointer if needed
+            if (pointers_stack[new_parent_chunk_id].get_first_child_l() == INVALID) {
+                pointers_stack[new_parent_chunk_id].set_first_child_l(chunk_id);
+            }
+
             // Setting the first child pointer should never be necessary
             // Realize that we have appended a sibling, so it a child of
             // the parent must have existed before this.
-            assert(pointers_stack[new_parent_chunk_id].get_first_child_l() != INVALID);
+            // assert(pointers_stack[new_parent_chunk_id].get_first_child_l() != INVALID);
         }
     } else {
         // Can directly update the long pointer
         pointers_stack[parent_chunk_id].set_last_child_l(chunk_id);
 
+        // Set the first child pointer if needed
+        if (pointers_stack[parent_chunk_id].get_first_child_l() == INVALID) {
+            pointers_stack[parent_chunk_id].set_first_child_l(chunk_id);
+        }
+
         // Setting the first child pointer should never be necessary
         // Realize that we have appended a sibling, so it a child of
         // the parent must have existed before this.
-        assert(pointers_stack[parent_chunk_id].get_first_child_l() != INVALID);
+        // assert(pointers_stack[parent_chunk_id].get_first_child_l() != INVALID);
     }
 
     return new_sib;

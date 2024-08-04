@@ -136,3 +136,11 @@ cc_binary(
         ":core",
     ],
 )
+
+cc_binary(
+    name = "chip_typical_long_correctness",
+    srcs = ["tests/chip_typical_long_correctness.cpp"],
+    deps = [
+        ":core",
+    ],
+)

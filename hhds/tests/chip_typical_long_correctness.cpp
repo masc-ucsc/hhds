@@ -70,7 +70,7 @@ void test_chip_tree() {
         std::vector<std::vector<int>> level_data;
 
         for (auto hhds_node : hhds_current_level) {
-            int num_children = generate_random_int(generator, 4, 7);
+            int num_children = generate_random_int(generator, 7, 16);
             std::vector<int> children_data;
 
             for (int i = 0; i < num_children; ++i) {
@@ -94,6 +94,7 @@ void test_chip_tree() {
         lh_current_level = lh_next_level;
     }
 
+
     std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, lh_postorder;
     preorder_traversal_hhds(hhds_tree, hhds_preorder);
     preorder_traversal_lhtree(lh_tree, lh_preorder);
@@ -114,9 +115,13 @@ void test_chip_tree() {
 
     if (!compare_vectors(hhds_preorder, lh_preorder)) {
         std::cerr << "Preorder traversal mismatch in test_chip_tree" << std::endl;
+    } else {
+        std::cout << "Preorder traversal match in test_chip_tree" << std::endl;
     }
     if (!compare_vectors(hhds_postorder, lh_postorder)) {
         std::cerr << "Postorder traversal mismatch in test_chip_tree" << std::endl;
+    } else {
+        std::cout << "Postorder traversal match in test_chip_tree" << std::endl;
     }
 }
 
