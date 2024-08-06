@@ -114,9 +114,13 @@ void test_chip_tree() {
 
     if (!compare_vectors(hhds_preorder, lh_preorder)) {
         std::cerr << "Preorder traversal mismatch in test_chip_tree" << std::endl;
+    } else {
+        std::cout << "Preorder traversal match in test_chip_tree" << std::endl;
     }
     if (!compare_vectors(hhds_postorder, lh_postorder)) {
         std::cerr << "Postorder traversal mismatch in test_chip_tree" << std::endl;
+    } else {
+        std::cout << "Postorder traversal match in test_chip_tree" << std::endl;
     }
 }
 
