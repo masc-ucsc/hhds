@@ -1328,7 +1328,7 @@ Tree_pos tree<X>::add_root(const X& data) {
 template <typename X>
 Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
     if (!_check_idx_exists(parent_index)) {
-        throw std::out_of_range("add_child: Parent index out of range");
+        throw std::out_of_range("add_child: Parent index out of range: " + std::to_string(parent_index));
     }
 
     const auto last_child_id = get_last_child(parent_index);
