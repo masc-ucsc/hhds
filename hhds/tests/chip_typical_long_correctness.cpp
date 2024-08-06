@@ -5,6 +5,8 @@
 #include "../tree.hpp"
 #include "../lhtree.hpp"
 
+std::vector<std::vector<int>> hhds_sibling_data, lh_sibling_data;
+
 // Utility function to generate a random int within a range
 int generate_random_int(std::default_random_engine& generator, int min, int max) {
     std::uniform_int_distribution<int> distribution(min, max);
@@ -15,6 +17,12 @@ int generate_random_int(std::default_random_engine& generator, int min, int max)
 void preorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {
     for (const auto& node : tree.pre_order()) {
         result.push_back(tree[node]);
+        // Use the sibling order iterator here
+        std::vector<int> sibling_data;
+        for (const auto& sibling : tree.sibling_order(node)) {
+            sibling_data.push_back(tree[sibling]);
+        }
+        hhds_sibling_data.push_back(sibling_data);
     }
 }
 
@@ -31,6 +39,14 @@ void preorder_traversal_lhtree(lh::tree<int>& tree, std::vector<int>& result) {
     typename lh::tree<int>::Tree_depth_preorder_iterator it(root_index, &tree);
     for (auto node_it = it.begin(); node_it != it.end(); ++node_it) {
         result.push_back(tree.get_data(*node_it));
+
+        // Use the sibling order iterator here
+        std::vector<int> sibling_data;
+        lh::tree<int>::Tree_sibling_iterator sib_it(*node_it, &tree);
+        for (auto sib = sib_it.begin(); sib != sib_it.end(); ++sib) {
+            sibling_data.push_back(tree.get_data(*sib));
+        }
+        lh_sibling_data.push_back(sibling_data);
     }
 }
 
@@ -111,6 +127,22 @@ void test_chip_tree() {
     //     std::cout << node << " ";
     // }
     // std::cout << std::endl;
+
+    bool sib_valid = true;
+    for (auto i = 0; i < hhds_sibling_data.size(); ++i) {
+        if (i > lh_sibling_data.size()) {
+            std::cerr << "Sibling data mismatch in test_chip_tree" << std::endl;
+            sib_valid = false;
+        }
+        if (!compare_vectors(hhds_sibling_data[i], lh_sibling_data[i])) {
+            std::cerr << "Sibling data mismatch in test_chip_tree" << std::endl;
+            sib_valid = false;
+        }
+    }
+
+    if (sib_valid) {
+        std::cout << "Sibling data match in test_chip_tree" << std::endl;
+    }
 
     if (!compare_vectors(hhds_preorder, lh_preorder)) {
         std::cerr << "Preorder traversal mismatch in test_chip_tree" << std::endl;
