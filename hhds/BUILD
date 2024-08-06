@@ -112,3 +112,35 @@ cc_test(
         ":core",
     ],
 )
+
+cc_binary(
+    name = "deep_tree_correctness",
+    srcs = ["tests/deep_tree_correctness.cpp"],
+    deps = [
+        ":core",
+    ],
+)
+
+cc_binary(
+    name = "wide_tree_correctness",
+    srcs = ["tests/wide_tree_correctness.cpp"],
+    deps = [
+        ":core",
+    ],
+)
+
+cc_binary(
+    name = "chip_typical_correctness",
+    srcs = ["tests/chip_typical_correctness.cpp"],
+    deps = [
+        ":core",
+    ],
+)
+
+cc_binary(
+    name = "chip_typical_long_correctness",
+    srcs = ["tests/chip_typical_long_correctness.cpp"],
+    deps = [
+        ":core",
+    ],
+)
