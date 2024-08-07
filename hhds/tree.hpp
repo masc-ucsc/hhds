@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdint>
 #include <vector>
+#include <queue>
 
 #include <iterator>
 #include <cstddef> 
@@ -379,7 +380,7 @@ private:
         return retval;
     }
 
-    void _try_fit_child_ptr(const Tree_pos parent_id, const Tree_pos child_id) {
+    [[nodiscard]] Tree_pos _try_fit_child_ptr(const Tree_pos parent_id, const Tree_pos child_id) {
         // Check and throw accordingly
         if (!_check_idx_exists(parent_id) || !_check_idx_exists(child_id)) {
             throw std::out_of_range("_try_fit_child_ptr: Index out of range");
@@ -392,13 +393,14 @@ private:
             if (pointers_stack[parent_id >> CHUNK_SHIFT].get_first_child_l() == INVALID) {
                 pointers_stack[parent_id >> CHUNK_SHIFT].set_first_child_l(child_id >> CHUNK_SHIFT);
             }
-            return;
+            return parent_id;
         }
+
 
         // Now, try to fit the child in the short delta
         const auto parent_chunk_id = (parent_id >> CHUNK_SHIFT);
         const auto parent_chunk_offset = (parent_id & CHUNK_MASK);
-        if (_fits_in_short_del(parent_chunk_id, child_id)) {
+        if (_fits_in_short_del(parent_chunk_id, child_id >> CHUNK_SHIFT)) {
             // Adjust the child pointers
             pointers_stack[parent_chunk_id].set_last_child_s_at(parent_chunk_offset - 1, 
                                                                 (child_id >> CHUNK_SHIFT) - parent_chunk_id);
@@ -407,44 +409,62 @@ private:
                 pointers_stack[parent_chunk_id].set_first_child_s_at(parent_chunk_offset - 1, 
                                                                     (child_id >> CHUNK_SHIFT) - parent_chunk_id);
             }
-
-            return;
+            return parent_id;
         }
 
         /* RECURSION */
-        auto last_new_chunk = INVALID;
-        // Step 1: Break the chunk fully
-        for (short offset = parent_chunk_offset; offset < NUM_SHORT_DEL; offset++) 
-        if (_contains_data((parent_chunk_id << CHUNK_SHIFT) + offset)) {
-            const auto curr_id = (parent_chunk_id << CHUNK_SHIFT) + offset;
+        const auto grandparent_id = pointers_stack[parent_chunk_id].get_parent();
+        std::vector<Tree_pos> new_chunks;
 
-            // Create a new chunk, put this one over there
-            const auto new_chunk_id = _insert_chunk_after(curr_id);
+        // Break the chunk fully -> Every node in the chunk is moved to a separate chunk
+        for (short offset = parent_chunk_offset - 1; offset < NUM_SHORT_DEL; offset++) {
+            if (_contains_data((parent_chunk_id << CHUNK_SHIFT) + offset + 1)) {
+                const auto curr_id = (parent_chunk_id << CHUNK_SHIFT) + offset + 1;
 
-            // Remove data from old, and put it here
-            data_stack[new_chunk_id << CHUNK_SHIFT] = data_stack[curr_id];
-            data_stack[curr_id] = X();
+                // Create a new chunk, put this one over there
+                const auto new_chunk_id = _insert_chunk_after(
+                                                new_chunks.empty() ? 
+                                                    parent_chunk_id 
+                                                :   new_chunks.back()
+                                            );
 
-            // Convert the short pointers here to long pointers there
-            const auto fc = pointers_stack[curr_id].get_first_child_s_at(offset);
-            const auto lc = pointers_stack[curr_id].get_last_child_s_at(offset);
-            pointers_stack[new_chunk_id].set_first_child_l(fc + parent_chunk_id);
-            pointers_stack[new_chunk_id].set_last_child_l(lc + parent_chunk_id);
+                // Store the new chunk id for updates later
+                new_chunks.push_back(new_chunk_id);
 
-            // Update the parent pointer of all children of this guy
-            _update_parent_pointer((fc + parent_chunk_id) << CHUNK_SHIFT, 
-                                   new_chunk_id << CHUNK_SHIFT);
+                // Remove data from old, and put it here
+                data_stack[new_chunk_id << CHUNK_SHIFT] = data_stack[curr_id];
+                data_stack[curr_id] = X();
 
-            // Remove the short pointers
-            pointers_stack[curr_id].set_first_child_s_at(offset, INVALID);
-            pointers_stack[curr_id].set_last_child_s_at(offset, INVALID);
+                // Convert the short pointers here to long pointers there
+                const auto fc = pointers_stack[parent_chunk_id].get_first_child_s_at(offset);
+                const auto lc = pointers_stack[parent_chunk_id].get_last_child_s_at(offset);
+                pointers_stack[new_chunk_id].set_first_child_l(fc + parent_chunk_id);
+                pointers_stack[new_chunk_id].set_last_child_l(lc + parent_chunk_id);
 
-            // Set the last new chunk
-            last_new_chunk = new_chunk_id;
+                // Update the parent pointer of all children of this guy
+                // THIS LOOKS LIKE A BOTTLENECK -> Will iterate over all ~ (children / 8) chunks
+                _update_parent_pointer((fc + parent_chunk_id) << CHUNK_SHIFT, 
+                                    new_chunk_id << CHUNK_SHIFT);
+
+                // Remove the short pointers in the old chunk
+                pointers_stack[parent_chunk_id].set_first_child_s_at(offset, INVALID);
+                pointers_stack[parent_chunk_id].set_last_child_s_at(offset, INVALID);
+            }
         }
 
-        // Step 2: Try fitting the last chunk here in the parent. Recurse.
-        _try_fit_child_ptr(last_new_chunk, child_id);
+        // Try fitting the last chunk here in the grandparent. Recurse.
+        const auto my_new_parent = _try_fit_child_ptr(grandparent_id,
+                                                      new_chunks.back() << CHUNK_SHIFT);
+
+    
+        // Update the parent pointer of the new chunks
+        if (my_new_parent != grandparent_id) {
+            for (const auto& new_chunk : new_chunks) {
+                pointers_stack[new_chunk].set_parent(my_new_parent);
+            }
+        }
+
+        return new_chunks.front() << CHUNK_SHIFT; // The first one was where the parent was sent
     }
 // :private
 
@@ -470,7 +490,7 @@ public:
     Tree_pos add_root(const X& data);
 
     void delete_leaf(const Tree_pos& leaf_index);
-    void delete_subtree(const Tree_pos& subtree_root)
+    void delete_subtree(const Tree_pos& subtree_root);
 
     /**
      * Data access API
@@ -1219,9 +1239,6 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
 
     // Directly go to the last sibling of the sibling_id
     const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
-    const auto parent_chunk_id = parent_id >> CHUNK_SHIFT;
-    const auto parent_chunk_offset = parent_id & CHUNK_MASK;
-
     auto new_sib = get_last_child(parent_id);
 
     // If this chunk does not have more space, just add a new chunk
@@ -1236,50 +1253,10 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
         data_stack[new_sib] = data;
     }
 
-    // _try_fit_child_ptr(parent_id, new_sib);
-
-    // new_sib is the new sibling, split it into id and offset
-    const auto chunk_id = new_sib >> CHUNK_SHIFT;
-
-    // Update the parent pointer of the new sibling
-    /* NOTE : MAKE SURE TO NOT LEAVE ANY GAPS IN THE DATA STACK WHEN DELETING */ 
-    if (parent_chunk_offset) {
-        if (_fits_in_short_del(parent_id, chunk_id)) {
-            const auto delta = chunk_id - parent_chunk_id;
-            pointers_stack[parent_chunk_id].set_last_child_s_at(
-                                                parent_chunk_offset - 1, 
-                                                static_cast<Short_delta>(delta)
-                                            );
-        } else {
-            // Break the parent chunk from the parent id
-            const auto new_parent_chunk_id = _break_chunk_from(parent_id);
-
-            // Set the last child pointer of the parent
-            pointers_stack[new_parent_chunk_id].set_last_child_l(chunk_id);
-
-            // Set the first child pointer if needed
-            if (pointers_stack[new_parent_chunk_id].get_first_child_l() == INVALID) {
-                pointers_stack[new_parent_chunk_id].set_first_child_l(chunk_id);
-            }
-
-            // Setting the first child pointer should never be necessary
-            // Realize that we have appended a sibling, so it a child of
-            // the parent must have existed before this.
-            // assert(pointers_stack[new_parent_chunk_id].get_first_child_l() != INVALID);
-        }
-    } else {
-        // Can directly update the long pointer
-        pointers_stack[parent_chunk_id].set_last_child_l(chunk_id);
-
-        // Set the first child pointer if needed
-        if (pointers_stack[parent_chunk_id].get_first_child_l() == INVALID) {
-            pointers_stack[parent_chunk_id].set_first_child_l(chunk_id);
-        }
-
-        // Setting the first child pointer should never be necessary
-        // Realize that we have appended a sibling, so it a child of
-        // the parent must have existed before this.
-        // assert(pointers_stack[parent_chunk_id].get_first_child_l() != INVALID);
+    const auto first_sib = get_first_child(parent_id);
+    const auto new_parent_id = _try_fit_child_ptr(parent_id, new_sib);
+    if (new_parent_id != parent_id) {
+        _update_parent_pointer(first_sib, new_parent_id);
     }
 
     return new_sib;
@@ -1340,44 +1317,11 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
     }
 
     const auto child_chunk_id = _create_space(parent_index, data);
-    pointers_stack[child_chunk_id].set_parent(parent_index);
 
-    // // Try to fit this child pointer
-    // _try_fit_child_ptr(parent_index, 
-    //                    child_chunk_id << CHUNK_SHIFT);
-
-    const auto parent_chunk_id = (parent_index >> CHUNK_SHIFT);
-    const auto parent_chunk_offset = (parent_index & CHUNK_MASK);
-
-    /* Update the parent's first and last child pointers to this new child */
-    if (parent_chunk_offset == 0) {
-        // The offset is 0, we can fit the chunk id of the child directly
-        pointers_stack[parent_chunk_id].set_first_child_l(child_chunk_id);
-        pointers_stack[parent_chunk_id].set_last_child_l(child_chunk_id);
-    } else {
-        // Try to fit the delta in the short delta pointers
-        const auto delta = (child_chunk_id - parent_chunk_id); // todo : CHECK DANGER
-        if (_fits_in_short_del(parent_index, child_chunk_id)) {
-            // I am resetting the first child s pointer, I don't need to do it
-            pointers_stack[parent_chunk_id].set_first_child_s_at(
-                                                parent_chunk_offset - 1, 
-                                                static_cast<Short_delta>(delta)
-                                            );
-
-            pointers_stack[parent_chunk_id].set_last_child_s_at(
-                                                parent_chunk_offset - 1, 
-                                                static_cast<Short_delta>(delta)
-                                            );
-        } else {
-            // Break the parent chunk from the parent id
-            const auto new_parent_chunk_id = _break_chunk_from(parent_index);
-
-            // Set the first and last child pointer of the parent to the new parent chunk
-            pointers_stack[new_parent_chunk_id].set_first_child_l(child_chunk_id);
-            pointers_stack[new_parent_chunk_id].set_last_child_l(child_chunk_id);
-        }
-    }
-
+    // Try to fit this child pointer
+    const auto new_parent_id = _try_fit_child_ptr(parent_index, 
+                                                  child_chunk_id << CHUNK_SHIFT);
+    pointers_stack[child_chunk_id].set_parent(new_parent_id);
 
     return child_chunk_id << CHUNK_SHIFT;
 }
@@ -1417,7 +1361,7 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
             break;
         }
 
-        std::swap(data_stack[(leaf_chunk_id << C1HUNK_SHIFT) + offset], 
+        std::swap(data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset], 
                   data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1]);
 
         // Update all pointers.
