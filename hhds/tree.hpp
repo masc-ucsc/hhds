@@ -470,6 +470,7 @@ public:
     Tree_pos add_root(const X& data);
 
     void delete_leaf(const Tree_pos& leaf_index);
+    void delete_subtree(const Tree_pos& subtree_root)
 
     /**
      * Data access API
@@ -1416,7 +1417,7 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
             break;
         }
 
-        std::swap(data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset], 
+        std::swap(data_stack[(leaf_chunk_id << C1HUNK_SHIFT) + offset], 
                   data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1]);
 
         // Update all pointers.
@@ -1453,6 +1454,45 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
         } else {
             // Do nothing!! This child was not contributing to any 
             // bookkeeping the parent pointers chunk
+        }
+    }
+}
+
+/**
+ * @brief Delete a subtree rooted at a node.
+ * 
+ * @param subtree_root The absolute ID of the root of the subtree.
+ * 
+ * @throws std::out_of_range If the subtree root index is out of range
+ */
+template <typename X>
+void tree<X>::delete_subtree(const Tree_pos& subtree_root) {
+    if (!_check_idx_exists(subtree_root)) {
+        throw std::out_of_range("delete_subtree: Subtree root index out of range");
+    }
+
+    // Vector to store the nodes in reverse level order
+    std::vector<Tree_pos> nodes_to_delete;
+    
+    // Queue for level order traversal
+    std::queue<Tree_pos> q;
+    q.push(subtree_root);
+
+    // Perform level order traversal to collect nodes
+    while (!q.empty()) {
+        Tree_pos node = q.front();
+        q.pop();
+        nodes_to_delete.push_back(node);
+
+        for (auto child = get_first_child(node); child != INVALID; child = get_next_sibling(child)) {
+            q.push(child);
+        }
+    }
+
+    // Delete nodes in reverse order to ensure leaves are deleted first
+    for (auto it = nodes_to_delete.rbegin(); it != nodes_to_delete.rend(); ++it) {
+        if (get_first_child(*it) == INVALID) {
+            delete_leaf(*it);
         }
     }
 }
