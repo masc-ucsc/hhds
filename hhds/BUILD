@@ -113,6 +113,46 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "add_append_deep_bench",
+    srcs = ["tests/add_append_bench/deep_tree_bench.cpp"],
+    deps = [
+        "@com_google_benchmark//:benchmark",
+        "@com_google_googletest//:gtest_main",
+        ":core",
+    ],
+)
+
+cc_test(
+    name = "add_append_wide_bench",
+    srcs = ["tests/add_append_bench/wide_tree_bench.cpp"],
+    deps = [
+        "@com_google_benchmark//:benchmark",
+        "@com_google_googletest//:gtest_main",
+        ":core",
+    ],
+)
+
+cc_test(
+    name = "add_append_chip_typical_bench",
+    srcs = ["tests/add_append_bench/chip_typical_tree_bench.cpp"],
+    deps = [
+        "@com_google_benchmark//:benchmark",
+        "@com_google_googletest//:gtest_main",
+        ":core",
+    ],
+)
+
+cc_test(
+    name = "add_append_chip_typical_long_bench",
+    srcs = ["tests/add_append_bench/chip_typical_long_tree_bench.cpp"],
+    deps = [
+        "@com_google_benchmark//:benchmark",
+        "@com_google_googletest//:gtest_main",
+        ":core",
+    ],
+)
+
 cc_binary(
     name = "deep_tree_correctness",
     srcs = ["tests/deep_tree_correctness.cpp"],
