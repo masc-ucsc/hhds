@@ -2,9 +2,13 @@
 #include <iostream>
 #include <vector>
 #include <random>
+#include <chrono>
 
 #include "../../tree.hpp"
 #include "../../lhtree.hpp"
+auto now = std::chrono::high_resolution_clock::now();
+auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+std::default_random_engine generator(microseconds);
 
 // Utility function to generate a random int within a range
 int generate_random_int(std::default_random_engine& generator, int min, int max) {
@@ -13,7 +17,6 @@ int generate_random_int(std::default_random_engine& generator, int min, int max)
 }
 
 void build_hhds_tree(hhds::tree<int>& hhds_tree, int num_nodes) {
-    std::default_random_engine generator(42);
     auto hhds_root = hhds_tree.add_root(generate_random_int(generator, 1, 100));
     auto hhds_current = hhds_root;
 
@@ -23,7 +26,6 @@ void build_hhds_tree(hhds::tree<int>& hhds_tree, int num_nodes) {
 }
 
 void build_lh_tree(lh::tree<int>& lh_tree, int num_nodes) {
-    std::default_random_engine generator(42);
     lh_tree.set_root(generate_random_int(generator, 1, 100));
     lh::Tree_index lh_current(0, 0);
 
@@ -34,7 +36,6 @@ void build_lh_tree(lh::tree<int>& lh_tree, int num_nodes) {
 
 // Tree that is 10 nodes deep
 void test_deep_tree_10_hhds(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 10;
     for (auto _ : state) {
         hhds::tree<int> hhds_tree;
@@ -42,7 +43,6 @@ void test_deep_tree_10_hhds(benchmark::State& state) {
     }
 }
 void test_deep_tree_10_lh(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 10;
     for (auto _ : state) {
         lh::tree<int> lh_tree;
@@ -52,7 +52,6 @@ void test_deep_tree_10_lh(benchmark::State& state) {
 
 // Tree that is 100 nodes deep
 void test_deep_tree_100_hhds(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 100;
     for (auto _ : state) {
         hhds::tree<int> hhds_tree;
@@ -60,7 +59,6 @@ void test_deep_tree_100_hhds(benchmark::State& state) {
     }
 }
 void test_deep_tree_100_lh(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 100;
     for (auto _ : state) {
         lh::tree<int> lh_tree;
@@ -70,7 +68,6 @@ void test_deep_tree_100_lh(benchmark::State& state) {
 
 // Tree that is 1000 nodes deep
 void test_deep_tree_1000_hhds(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 1000;
     for (auto _ : state) {
         hhds::tree<int> hhds_tree;
@@ -78,7 +75,6 @@ void test_deep_tree_1000_hhds(benchmark::State& state) {
     }
 }
 void test_deep_tree_1000_lh(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 1000;
     for (auto _ : state) {
         lh::tree<int> lh_tree;
@@ -88,7 +84,6 @@ void test_deep_tree_1000_lh(benchmark::State& state) {
 
 // Tree that is 10000 nodes deep
 void test_deep_tree_10000_hhds(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 10000;
     for (auto _ : state) {
         hhds::tree<int> hhds_tree;
@@ -96,7 +91,6 @@ void test_deep_tree_10000_hhds(benchmark::State& state) {
     }
 }
 void test_deep_tree_10000_lh(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 10000;
     for (auto _ : state) {
         lh::tree<int> lh_tree;
@@ -106,7 +100,6 @@ void test_deep_tree_10000_lh(benchmark::State& state) {
 
 // Tree that is 100000 nodes deep
 void test_deep_tree_100000_hhds(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 100000;
     for (auto _ : state) {
         hhds::tree<int> hhds_tree;
@@ -114,7 +107,6 @@ void test_deep_tree_100000_hhds(benchmark::State& state) {
     }
 }
 void test_deep_tree_100000_lh(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 100000;
     for (auto _ : state) {
         lh::tree<int> lh_tree;
@@ -124,7 +116,6 @@ void test_deep_tree_100000_lh(benchmark::State& state) {
 
 // Tree that is 1000000 nodes deep
 void test_deep_tree_1000000_hhds(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 1000000;
     for (auto _ : state) {
         hhds::tree<int> hhds_tree;
@@ -132,7 +123,6 @@ void test_deep_tree_1000000_hhds(benchmark::State& state) {
     }
 }
 void test_deep_tree_1000000_lh(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 1000000;
     for (auto _ : state) {
         lh::tree<int> lh_tree;
@@ -142,7 +132,6 @@ void test_deep_tree_1000000_lh(benchmark::State& state) {
 
 // Tree that is 10000000 nodes deep
 void test_deep_tree_10000000_hhds(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 10000000;
     for (auto _ : state) {
         hhds::tree<int> hhds_tree;
@@ -150,7 +139,6 @@ void test_deep_tree_10000000_hhds(benchmark::State& state) {
     }
 }
 void test_deep_tree_10000000_lh(benchmark::State& state) {
-    std::default_random_engine generator(42);
     int num_nodes = 10000000;
     for (auto _ : state) {
         lh::tree<int> lh_tree;

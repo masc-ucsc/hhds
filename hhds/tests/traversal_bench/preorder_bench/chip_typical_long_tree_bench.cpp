@@ -4,8 +4,8 @@
 #include <random>
 #include <chrono>
 
-#include "../../tree.hpp"
-#include "../../lhtree.hpp"
+#include "../../../tree.hpp"
+#include "../../../lhtree.hpp"
 
 auto now = std::chrono::high_resolution_clock::now();
 auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
@@ -212,10 +212,10 @@ BENCHMARK(test_chip_typical_long_tree_4_hhds);
 BENCHMARK(test_chip_typical_long_tree_4_lh);
 BENCHMARK(test_chip_typical_long_tree_5_hhds);
 BENCHMARK(test_chip_typical_long_tree_5_lh);
-BENCHMARK(test_chip_typical_long_tree_6_hhds)->Iterations(6);
-BENCHMARK(test_chip_typical_long_tree_6_lh)->Iterations(6);
-BENCHMARK(test_chip_typical_long_tree_7_hhds)->Iterations(4);
-BENCHMARK(test_chip_typical_long_tree_7_lh)->Iterations(4);
+BENCHMARK(test_chip_typical_long_tree_6_hhds);
+BENCHMARK(test_chip_typical_long_tree_6_lh);
+BENCHMARK(test_chip_typical_long_tree_7_hhds);
+BENCHMARK(test_chip_typical_long_tree_7_lh);
 // BENCHMARK(test_chip_typical_long_tree_8_hhds);
 // BENCHMARK(test_chip_typical_long_tree_8_lh);
 

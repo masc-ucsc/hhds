@@ -4,8 +4,8 @@
 #include <random>
 #include <chrono>
 
-#include "../../tree.hpp"
-#include "../../lhtree.hpp"
+#include "../../../tree.hpp"
+#include "../../../lhtree.hpp"
 
 auto now = std::chrono::high_resolution_clock::now();
 auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
@@ -73,131 +73,167 @@ void build_lh_tree(lh::tree<int>& lh_tree, int depth_val) {
     }
 }
 
+// Preorder traversal for hhds::tree
+void preorder_traversal_hhds(hhds::tree<int>& tree) {
+    int cnt = 0;
+    for (const auto& node : tree.pre_order()) {
+        // result.push_back(tree[node]);
+        cnt++;
+    }
+}
+
+// Preorder traversal for lh::tree
+void preorder_traversal_lhtree(lh::tree<int>& tree) {
+    auto root_index = lh::Tree_index(0, 0);
+    int cnt = 0;
+    typename lh::tree<int>::Tree_depth_preorder_iterator it(root_index, &tree);
+    for (auto node_it = it.begin(); node_it != it.end(); ++node_it) {
+        // result.push_back(tree.get_data(*node_it));
+        cnt++;
+    }
+}
+
 // Tree that is 1 nodes chip_typical
 void test_chip_typical_tree_1_hhds(benchmark::State& state) {
-    int depth_val = 1;
+    int num_nodes = 1;
+    hhds::tree<int> hhds_tree;
+    build_hhds_tree(hhds_tree, num_nodes);
     for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
+        preorder_traversal_hhds(hhds_tree);
     }
 }
 void test_chip_typical_tree_1_lh(benchmark::State& state) {
-    int depth_val = 1;
+    int num_nodes = 1;
+    lh::tree<int> lh_tree;
+    build_lh_tree(lh_tree, num_nodes);
     for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
+        preorder_traversal_lhtree(lh_tree);
     }
 }
 
 // Tree that is 2 nodes chip_typical
 void test_chip_typical_tree_2_hhds(benchmark::State& state) {
-    int depth_val = 2;
+    int num_nodes = 2;
+    hhds::tree<int> hhds_tree;
+    build_hhds_tree(hhds_tree, num_nodes);
     for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
+        preorder_traversal_hhds(hhds_tree);
     }
 }
 void test_chip_typical_tree_2_lh(benchmark::State& state) {
-    int depth_val = 2;
+    int num_nodes = 2;
+    lh::tree<int> lh_tree;
+    build_lh_tree(lh_tree, num_nodes);
     for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
+        preorder_traversal_lhtree(lh_tree);
     }
 }
 
 // Tree that is 3 nodes chip_typical
 void test_chip_typical_tree_3_hhds(benchmark::State& state) {
-    int depth_val = 3;
+    int num_nodes = 3;
+    hhds::tree<int> hhds_tree;
+    build_hhds_tree(hhds_tree, num_nodes);
     for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
+        preorder_traversal_hhds(hhds_tree);
     }
 }
 void test_chip_typical_tree_3_lh(benchmark::State& state) {
-    int depth_val = 3;
+    int num_nodes = 3;
+    lh::tree<int> lh_tree;
+    build_lh_tree(lh_tree, num_nodes);
     for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
+        preorder_traversal_lhtree(lh_tree);
     }
 }
 
 // Tree that is 4 nodes chip_typical
 void test_chip_typical_tree_4_hhds(benchmark::State& state) {
-    int depth_val = 4;
+    int num_nodes = 4;
+    hhds::tree<int> hhds_tree;
+    build_hhds_tree(hhds_tree, num_nodes);
     for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
+        preorder_traversal_hhds(hhds_tree);
     }
 }
 void test_chip_typical_tree_4_lh(benchmark::State& state) {
-    int depth_val = 4;
+    int num_nodes = 4;
+    lh::tree<int> lh_tree;
+    build_lh_tree(lh_tree, num_nodes);
     for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
+        preorder_traversal_lhtree(lh_tree);
     }
 }
 
 // Tree that is 5 nodes chip_typical
 void test_chip_typical_tree_5_hhds(benchmark::State& state) {
-    int depth_val = 5;
+    int num_nodes = 5;
+    hhds::tree<int> hhds_tree;
+    build_hhds_tree(hhds_tree, num_nodes);
     for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
+        preorder_traversal_hhds(hhds_tree);
     }
 }
 void test_chip_typical_tree_5_lh(benchmark::State& state) {
-    int depth_val = 5;
+    int num_nodes = 5;
+    lh::tree<int> lh_tree;
+    build_lh_tree(lh_tree, num_nodes);
     for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
+        preorder_traversal_lhtree(lh_tree);
     }
 }
 
 // Tree that is 6 nodes chip_typical
 void test_chip_typical_tree_6_hhds(benchmark::State& state) {
-    int depth_val = 6;
+    int num_nodes = 6;
+    hhds::tree<int> hhds_tree;
+    build_hhds_tree(hhds_tree, num_nodes);
     for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
+        preorder_traversal_hhds(hhds_tree);
     }
 }
 void test_chip_typical_tree_6_lh(benchmark::State& state) {
-    int depth_val = 6;
+    int num_nodes = 6;
+    lh::tree<int> lh_tree;
+    build_lh_tree(lh_tree, num_nodes);
     for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
+        preorder_traversal_lhtree(lh_tree);
     }
 }
 
 // Tree that is 7 nodes chip_typical
 void test_chip_typical_tree_7_hhds(benchmark::State& state) {
-    int depth_val = 7;
+    int num_nodes = 7;
+    hhds::tree<int> hhds_tree;
+    build_hhds_tree(hhds_tree, num_nodes);
     for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
+        preorder_traversal_hhds(hhds_tree);
     }
 }
 void test_chip_typical_tree_7_lh(benchmark::State& state) {
-    int depth_val = 7;
+    int num_nodes = 7;
+    lh::tree<int> lh_tree;
+    build_lh_tree(lh_tree, num_nodes);
     for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
+        preorder_traversal_lhtree(lh_tree);
     }
 }
 
 // Tree that is 8 nodes chip_typical
 void test_chip_typical_tree_8_hhds(benchmark::State& state) {
-    int depth_val = 8;
+    int num_nodes = 8;
+    hhds::tree<int> hhds_tree;
+    build_hhds_tree(hhds_tree, num_nodes);
     for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
+        preorder_traversal_hhds(hhds_tree);
     }
 }
 void test_chip_typical_tree_8_lh(benchmark::State& state) {
-    int depth_val = 8;
+    int num_nodes = 8;
+    lh::tree<int> lh_tree;
+    build_lh_tree(lh_tree, num_nodes);
     for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
+        preorder_traversal_lhtree(lh_tree);
     }
 }
 

@@ -14,7 +14,8 @@ int generate_random_int(std::default_random_engine& generator, int min, int max)
 }
 
 // Preorder traversal for hhds::tree
-void preorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {
+void preorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result, 
+                             std::vector<std::vector<int>>& hhds_sibling_data) {
     for (const auto& node : tree.pre_order()) {
         result.push_back(tree[node]);
         // Use the sibling order iterator here
