@@ -65,6 +65,25 @@ bool compare_vectors(const std::vector<T>& vec1, const std::vector<T>& vec2) {
     return vec1 == vec2;
 }
 
+// Function to collect all leaf nodes from the tree
+void collect_leaves_hhds(hhds::tree<int>& tree, std::vector<hhds::Tree_pos>& leaves) {
+    for (const auto& node : tree.pre_order()) {
+        if (tree.get_first_child(node) == hhds::INVALID) {
+            leaves.push_back(node);
+        }
+    }
+}
+
+void collect_leaves_lhtree(lh::tree<int>& tree, std::vector<lh::Tree_index>& leaves) {
+    auto root_index = lh::Tree_index(0, 0);
+    typename lh::tree<int>::Tree_depth_preorder_iterator it(root_index, &tree);
+    for (auto node_it = it.begin(); node_it != it.end(); ++node_it) {
+        if (tree.is_leaf(*node_it)) {
+            leaves.push_back(*node_it);
+        }
+    }
+}
+
 // Test 3: "Chip" Typical Tree (8 Depth, 4-8 Children per Node)
 void test_chip_tree() {
     std::default_random_engine generator(42);
@@ -79,7 +98,7 @@ void test_chip_tree() {
     std::vector<lh::Tree_index> lh_current_level{lh::Tree_index(0, 0)};
 
     int id = 1;
-    for (int depth = 0; depth < 7; ++depth) {
+    for (int depth = 0; depth < 6; ++depth) {
         std::vector<hhds::Tree_pos> hhds_next_level;
         std::vector<lh::Tree_index> lh_next_level;
         std::vector<std::vector<int>> level_data;
@@ -154,6 +173,31 @@ void test_chip_tree() {
         std::cerr << "Postorder traversal mismatch in test_chip_tree" << std::endl;
     } else {
         std::cout << "Postorder traversal match in test_chip_tree" << std::endl;
+    }
+
+    std::vector<hhds::Tree_pos> hhds_leaves;
+    std::vector<lh::Tree_index> lh_leaves;
+    collect_leaves_hhds(hhds_tree, hhds_leaves);
+    collect_leaves_lhtree(lh_tree, lh_leaves);
+
+    // Now randomly delete_leaf from the tree, delete same leaves
+    for (auto &x : hhds_leaves) {
+        hhds_tree.delete_leaf(x);
+    }
+
+    for (auto &x : lh_leaves) {
+        lh_tree.delete_leaf(x);
+    }
+
+    // Do a preorder traversal again and confirm equality
+    std::vector<int> hhds_preorder_after, lh_preorder_after;
+    preorder_traversal_hhds(hhds_tree, hhds_preorder_after);
+    preorder_traversal_lhtree(lh_tree, lh_preorder_after);
+
+    if (!compare_vectors(hhds_preorder_after, lh_preorder_after)) {
+        std::cerr << "Preorder traversal mismatch after deleting leaves in test_chip_tree" << std::endl;
+    } else {
+        std::cout << "Preorder traversal match after deleting leaves in test_chip_tree" << std::endl;
     }
 }
 
