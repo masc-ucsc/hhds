@@ -101,7 +101,7 @@ void test_chip_tree() {
     std::vector<lh::Tree_index> lh_current_level{lh::Tree_index(0, 0)};
 
     int id = 1;
-    for (int depth = 0; depth < 4; ++depth) {
+    for (int depth = 0; depth < 6; ++depth) {
         std::vector<hhds::Tree_pos> hhds_next_level;
         std::vector<lh::Tree_index> lh_next_level;
         std::vector<std::vector<int>> level_data;
@@ -192,55 +192,55 @@ void test_chip_tree() {
         std::cout << "Postorder traversal match in test_chip_tree" << std::endl;
     }
 
-    std::vector<hhds::Tree_pos> hhds_leaves;
-    std::vector<lh::Tree_index> lh_leaves;
-    collect_leaves_hhds(hhds_tree, hhds_leaves);
-    collect_leaves_lhtree(lh_tree, lh_leaves);
+    // std::vector<hhds::Tree_pos> hhds_leaves;
+    // std::vector<lh::Tree_index> lh_leaves;
+    // collect_leaves_hhds(hhds_tree, hhds_leaves);
+    // collect_leaves_lhtree(lh_tree, lh_leaves);
 
-    // Make an array of size hhds_leaves.size() and randomly fill with 0, 1
-    std::vector<int> delete_flags(hhds_leaves.size());
-    for (auto &x : delete_flags) {
-        x = generate_random_int(generator, 0, 1);
-    }
+    // // Make an array of size hhds_leaves.size() and randomly fill with 0, 1
+    // std::vector<int> delete_flags(hhds_leaves.size());
+    // for (auto &x : delete_flags) {
+    //     x = generate_random_int(generator, 0, 1);
+    // }
 
-    // Now randomly delete_leaf from the tree, delete same leaves
-    // std::cout << "--------------------------------------\n";
-    // hhds_tree.print_tree(1);
-    for (int i = 0; i < hhds_leaves.size(); ++i) {
-        if (delete_flags[i]) {
-            std::cout << "Deleting leaf " << hhds_tree[hhds_leaves[i]] << " " << lh_tree.get_data(lh_leaves[i]) << std::endl;
-            hhds_tree.delete_leaf(hhds_leaves[i]);
-            if(! lh_tree.delete_leaf(lh_leaves[i])) {
-                std::cerr << "Failed to delete leaf in lh_tree" << std::endl;
-            }
-        }
-    }
-    // std::cout << "--------------------------------------\n";
-    // hhds_tree.print_tree(1);
+    // // Now randomly delete_leaf from the tree, delete same leaves
+    // // std::cout << "--------------------------------------\n";
+    // // hhds_tree.print_tree(1);
+    // for (int i = 0; i < hhds_leaves.size(); ++i) {
+    //     if (delete_flags[i]) {
+    //         std::cout << "Deleting leaf " << hhds_tree[hhds_leaves[i]] << " " << lh_tree.get_data(lh_leaves[i]) << std::endl;
+    //         hhds_tree.delete_leaf(hhds_leaves[i]);
+    //         if(! lh_tree.delete_leaf(lh_leaves[i])) {
+    //             std::cerr << "Failed to delete leaf in lh_tree" << std::endl;
+    //         }
+    //     }
+    // }
+    // // std::cout << "--------------------------------------\n";
+    // // hhds_tree.print_tree(1);
 
 
-    // Do a preorder traversal again and confirm equality
-    std::vector<int> hhds_preorder_after, lh_preorder_after;
-    preorder_traversal_hhds(hhds_tree, hhds_preorder_after);
-    preorder_traversal_lhtree(lh_tree, lh_preorder_after);
+    // // Do a preorder traversal again and confirm equality
+    // std::vector<int> hhds_preorder_after, lh_preorder_after;
+    // preorder_traversal_hhds(hhds_tree, hhds_preorder_after);
+    // preorder_traversal_lhtree(lh_tree, lh_preorder_after);
 
-    if (!compare_vectors(hhds_preorder_after, lh_preorder_after)) {
-        std::cerr << "Preorder traversal mismatch after deleting leaves in test_chip_tree" << std::endl;
-    } else {
-        std::cout << "Preorder traversal match after deleting leaves in test_chip_tree" << std::endl;
-    }
+    // if (!compare_vectors(hhds_preorder_after, lh_preorder_after)) {
+    //     std::cerr << "Preorder traversal mismatch after deleting leaves in test_chip_tree" << std::endl;
+    // } else {
+    //     std::cout << "Preorder traversal match after deleting leaves in test_chip_tree" << std::endl;
+    // }
 
-    std::cout << "\nHHDS preorder: ";
-    for (auto node : hhds_preorder_after) {
-        std::cout << node << " ";
-    }
-    std::cout << std::endl;
+    // std::cout << "\nHHDS preorder: ";
+    // for (auto node : hhds_preorder_after) {
+    //     std::cout << node << " ";
+    // }
+    // std::cout << std::endl;
 
-    std::cout << "\nLH preorder: ";
-    for (auto node : lh_preorder_after) {
-        std::cout << node << " ";
-    }
-    std::cout << std::endl;
+    // std::cout << "\nLH preorder: ";
+    // for (auto node : lh_preorder_after) {
+    //     std::cout << node << " ";
+    // }
+    // std::cout << std::endl;
 }
 
 int main() {

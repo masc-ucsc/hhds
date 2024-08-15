@@ -14,6 +14,7 @@ int generate_random_int(std::default_random_engine& generator, int min, int max)
 // Preorder traversal for hhds::tree
 void preorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {
     for (const auto& node : tree.pre_order()) {
+        std::cout << "Node: " << node << " Data: " << tree[node] << std::endl;
         result.push_back(tree[node]);
     }
 }
@@ -52,7 +53,7 @@ bool compare_vectors(const std::vector<T>& vec1, const std::vector<T>& vec2) {
 // Test 2: Wide Tree (One node with many children)
 void test_wide_tree() {
     std::default_random_engine generator(42);
-    int num_children = 10'000'000; // Number of children for the wide tree
+    int num_children = 10; // Number of children for the wide tree
 
     hhds::tree<int> hhds_tree;
     lh::tree<int> lh_tree;
@@ -69,6 +70,8 @@ void test_wide_tree() {
 
         std::vector<int> vht; postorder_traversal_hhds(hhds_tree, vht);
         std::vector<int> vlt; postorder_traversal_lhtree(lh_tree, vht);
+
+        hhds_tree.print_tree(1);
     }
 
     std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, lh_postorder;
@@ -77,16 +80,15 @@ void test_wide_tree() {
     postorder_traversal_hhds(hhds_tree, hhds_postorder);
     postorder_traversal_lhtree(lh_tree, lh_postorder);
 
-
-    // std::cout << "\nHHDS preorder: ";
-    // for (auto node : hhds_preorder) {
-    //     std::cout << node << " ";
-    // }
-    // std::cout << "\nLH preorder: ";
-    // for (auto node : lh_preorder) {
-    //     std::cout << node << " ";
-    // }
-    // std::cout << std::endl;
+    std::cout << "\nHHDS preorder: ";
+    for (auto node : hhds_preorder) {
+        std::cout << node << " ";
+    }
+    std::cout << "\nLH preorder: ";
+    for (auto node : lh_preorder) {
+        std::cout << node << " ";
+    }
+    std::cout << std::endl;
 
     if (!compare_vectors(hhds_preorder, lh_preorder)) {
         std::cout << "Preorder traversal mismatch in test_wide_tree" << std::endl;

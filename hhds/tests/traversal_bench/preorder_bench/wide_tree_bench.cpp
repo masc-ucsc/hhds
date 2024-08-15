@@ -189,10 +189,10 @@ BENCHMARK(test_wide_tree_10000_hhds);
 BENCHMARK(test_wide_tree_10000_lh);
 BENCHMARK(test_wide_tree_100000_hhds);
 BENCHMARK(test_wide_tree_100000_lh);
-BENCHMARK(test_wide_tree_1000000_hhds);
-BENCHMARK(test_wide_tree_1000000_lh);
-BENCHMARK(test_wide_tree_10000000_hhds);
-BENCHMARK(test_wide_tree_10000000_lh);
+BENCHMARK(test_wide_tree_1000000_hhds)->Iterations(10);
+BENCHMARK(test_wide_tree_1000000_lh)->Iterations(10);
+BENCHMARK(test_wide_tree_10000000_hhds)->Iterations(7);
+BENCHMARK(test_wide_tree_10000000_lh)->Iterations(7);
 
 // Run the benchmarks
 BENCHMARK_MAIN();
