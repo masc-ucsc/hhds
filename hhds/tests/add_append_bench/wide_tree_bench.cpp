@@ -12,7 +12,7 @@ auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(now.ti
 std::default_random_engine generator(microseconds);
 
 // Utility function to generate a random int within a range
-int generate_random_int(std::default_random_engine& generator, int min, int max) {
+int generate_random_int(std::default_random_engine& generator, int min, int max)  {
     std::uniform_int_distribution<int> distribution(min, max);
     return distribution(generator);
 }

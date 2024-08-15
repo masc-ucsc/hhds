@@ -404,7 +404,7 @@ public:
     bool is_first_child (const Tree_pos& self_index) const;
     Tree_pos get_sibling_next (const Tree_pos& sibling_id) const;
     Tree_pos get_sibling_prev (const Tree_pos& sibling_id) const;
-    int get_tree_width (const int& level) const;
+    bool is_leaf (const Tree_pos& leaf_index) const;
 
 
     /**
@@ -415,11 +415,11 @@ public:
     Tree_pos add_child(const Tree_pos& parent_index, const X& data);
     Tree_pos add_root(const X& data);
 
-    // INFREQUENT UPDATES
-    Tree_pos insert_next_sibling(const Tree_pos& sibling_id, const X& data);
-
     void delete_leaf(const Tree_pos& leaf_index);
     void delete_subtree(const Tree_pos& subtree_root);
+
+    // INFREQUENT UPDATES
+    Tree_pos insert_next_sibling(const Tree_pos& sibling_id, const X& data);
 
     /**
      * Data access API
@@ -1076,6 +1076,28 @@ bool tree<X>::is_first_child(const Tree_pos& self_index) const {
 }
 
 /**
+ * @brief Check if a node is a leaf node.
+ * 
+ * @param leaf_index The absolute ID of the node.
+ * @return true If the node is a leaf node.
+ * 
+ * @throws std::out_of_range If the query index is out of range
+ */
+template <typename X>
+bool tree<X>::is_leaf(const Tree_pos& leaf_index) const {
+    if (!_check_idx_exists(leaf_index)) {
+        throw std::out_of_range("is_leaf: Index out of range");
+    }
+
+    if (leaf_index & CHUNK_MASK) {
+        return pointers_stack[leaf_index >> CHUNK_SHIFT].get_first_child_l() == INVALID;
+    } else {
+        return pointers_stack[leaf_index >> CHUNK_SHIFT].get_first_child_s_at(
+                                                            (leaf_index & CHUNK_MASK) - 1) == INVALID;
+    }
+}
+
+/**
  * @brief Get the next sibling of a node.
  * 
  * @param sibling_id The absolute ID of the sibling node.
@@ -1163,12 +1185,6 @@ Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
     }
 
     return INVALID;
-}
-
-template <typename X>
-int tree<X>::get_tree_width(const int& level) const {
-    // Placeholder: Implement the actual width calculation using BFS or additional bookkeeping
-    return 0;
 }
 
 /**
@@ -1274,6 +1290,43 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
     pointers_stack[child_chunk_id].set_parent(new_parent_id);
 
     return child_chunk_id << CHUNK_SHIFT;
+}
+
+/**
+ * @brief Insert a sibling after a node.
+ * 
+ * @param sibling_id The absolute ID of the sibling node.
+ * @param data The data to be stored in the new sibling.
+ * 
+ * @return Tree_pos The absolute ID of the new sibling.
+ * @throws std::out_of_range If the sibling index is out of range
+ */
+template <typename X>
+Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data) {
+    if (!_check_idx_exists(sibling_id)) {
+        throw std::out_of_range("insert_next_sibling: Sibling index out of range");
+    }
+
+    // If this is the last child, just append a sibling
+    if (is_last_child(sibling_id)) {
+        return append_sibling(sibling_id, data);
+    }
+
+    // Directly go to the next sibling of the sibling_id
+    const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
+    auto new_sib = sibling_id;
+
+    // Try to fir the sibling right after this, if the chunk has some space
+    if ((new_sib & CHUNK_MASK) != CHUNK_MASK
+        && !_contains_data(new_sib + 1)) {
+        new_sib++;
+        data_stack[new_sib] = data;
+    } else {
+        new_sib = _insert_chunk_after(new_sib >> CHUNK_SHIFT) << CHUNK_SHIFT;
+        data_stack[new_sib] = data;
+    }
+
+    return new_sib;
 }
 
 /**
