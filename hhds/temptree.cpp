@@ -1,4 +1,4 @@
-// This file is distributed under the BSD 3-Clause License. See LICENSE for details.
+//  This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 #pragma once
 
 // tree.hpp
@@ -114,7 +114,8 @@ private:
             case 5: first_child_s_5 = value; break;
             case 6: first_child_s_6 = value; break;
             
-            default: break;
+            default:
+            break;
             // throw std::out_of_range("_set_first_child_s: Invalid index for first_child_s");
         }
     }
@@ -145,7 +146,8 @@ private:
             case 5: last_child_s_5 = value; break;
             case 6: last_child_s_6 = value; break;
 
-            default: break;
+            default: 
+            break;
             // throw std::out_of_range("_get_last_child_s: Invalid index for last_child_s");
         }
     }
@@ -237,16 +239,16 @@ private:
     std::vector<std::optional<X>>           data_stack;
 
     /* Special functions for sanity */
-    bool _check_idx_exists(const Tree_pos &idx) const noexcept {
+    [[nodiscard]] bool _check_idx_exists(const Tree_pos &idx) const noexcept {
         // idx >= 0 not needed for unsigned int
         return idx < static_cast<Tree_pos>(data_stack.size());
     }
-    bool _contains_data(const Tree_pos &idx) const noexcept {
+    [[nodiscard]] bool _contains_data(const Tree_pos &idx) const noexcept {
         return (idx < data_stack.size() && data_stack[idx].has_value());
     }
 
     /* Function to add an entry to the pointers and data stack (typically for add/append)*/
-    inline Tree_pos _create_space(const X& data) {
+    [[nodiscard]] inline Tree_pos _create_space(const X& data) {
         // if (pointers_stack.size() >= MAX_TREE_SIZE) {
         //     throw std::out_of_range("_create_space: Tree size exceeded");
         // } else if (!_check_idx_exists(parent_index)) {
@@ -266,7 +268,7 @@ private:
     }
 
     /* Function to insert a new chunk in between (typically for handling add/append corner cases)*/
-    inline Tree_pos _insert_chunk_after(const Tree_pos &curr) {
+    [[nodiscard]] inline Tree_pos _insert_chunk_after(const Tree_pos& curr) {
         // if (pointers_stack.size() >= MAX_TREE_SIZE) {
         //     throw std::out_of_range("_insert_chunk_after: Tree size exceeded");
         // } else if (!_check_idx_exists(curr)) {
@@ -291,13 +293,13 @@ private:
     }
 
     /* Helper function to check if we can fit something in the short delta*/
-    inline bool _fits_in_short_del(const Tree_pos &parent_chunk_id, const Tree_pos &child_chunk_id) {
+    [[nodiscard]] bool _fits_in_short_del(const Tree_pos& parent_chunk_id, const Tree_pos& child_chunk_id) {
         const int delta = child_chunk_id - parent_chunk_id;
         return abs(delta) <= MAX_SHORT_DELTA;
     }
 
     /* Helper function to update the parent pointer of all sibling chunks*/
-    void _update_parent_pointer(const Tree_pos &first_child, const Tree_pos &new_parent_id) {
+    void _update_parent_pointer(const Tree_pos first_child, const Tree_pos new_parent_id) {
         auto curr_chunk_id = (first_child >> CHUNK_SHIFT);
 
         while (curr_chunk_id != INVALID) {
@@ -306,7 +308,7 @@ private:
         }
     }
 
-    Tree_pos _try_fit_child_ptr(const Tree_pos &parent_id, const Tree_pos &child_id) {
+    [[nodiscard]] Tree_pos _try_fit_child_ptr(const Tree_pos& parent_id, const Tree_pos& child_id) {
         // Check and throw accordingly
         // if (!_check_idx_exists(parent_id) || !_check_idx_exists(child_id)) {
         //     throw std::out_of_range("_try_fit_child_ptr: Index out of range");
@@ -357,10 +359,6 @@ private:
                 // Store the new chunk id for updates later
                 new_chunks.push_back(new_chunk_id);
 
-                // Remove data from old, and put it here
-                data_stack[new_chunk_id << CHUNK_SHIFT] = data_stack[curr_id];
-                data_stack[curr_id] = X();
-
                 // Convert the short pointers here to long pointers there
                 const auto fc = pointers_stack[parent_chunk_id].get_first_child_s_at(offset);
                 const auto lc = pointers_stack[parent_chunk_id].get_last_child_s_at(offset);
@@ -375,6 +373,10 @@ private:
                 // Remove the short pointers in the old chunk
                 pointers_stack[parent_chunk_id].set_first_child_s_at(offset, INVALID);
                 pointers_stack[parent_chunk_id].set_last_child_s_at(offset, INVALID);
+
+                // Remove data from old, and put it here
+                data_stack[new_chunk_id << CHUNK_SHIFT] = data_stack[curr_id];
+                data_stack[curr_id] = std::nullopt;
             }
         }
 
@@ -942,10 +944,12 @@ bool tree<X>::is_leaf(const Tree_pos& leaf_index) const {
     // if (!_check_idx_exists(leaf_index)) {
     //     throw std::out_of_range("is_leaf: Index out of range");
     // }
+    if (leaf_index == INVALID) return true;
 
     if (leaf_index & CHUNK_MASK) {
         return pointers_stack[leaf_index >> CHUNK_SHIFT].get_first_child_s_at(
-                                                            (leaf_index & CHUNK_MASK) - 1) == INVALID;
+                                                            (leaf_index & CHUNK_MASK) - 1
+                                                        ) == INVALID;
     } else {
         return pointers_stack[leaf_index >> CHUNK_SHIFT].get_first_child_l() == INVALID;
     }
@@ -980,29 +984,13 @@ Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) {
         child_chunk_id = pointers_stack[chunk_id].get_last_child_l();
     }
 
-    // // Binary search to find the first vacant spot in the child chunk
-    // short low = -1, high = CHUNK_SIZE;
-    // while (high - low > 1) {
-    //     short mid = (low + high) >> 1;
-    //     if (_contains_data((child_chunk_id << CHUNK_SHIFT) + mid)) {
-    //         low = mid;
-    //     } else {
-    //         high = mid;
-    //     }
-    // }
-
-    // // Return the last occupied in child chunk
-    // if (low >= 0) {
-    //     return static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) + low);
-    // }
-
     // Iterate in reverse to find the last occupied in child chunk
     if (child_chunk_id != INVALID) {
         for (short offset = NUM_SHORT_DEL; offset >= 0; offset--) {
             if (_contains_data((child_chunk_id << CHUNK_SHIFT) + offset)) {
                 return static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) + offset);
             }
-        } 
+        }
     }
 
     return static_cast<Tree_pos>(INVALID);
@@ -1200,24 +1188,34 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
 
     // Directly go to the last sibling of the sibling_id
     const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
-    auto new_sib = get_last_child(parent_id);
+    auto new_sib = INVALID;
+    if (!is_last_child(parent_id))
+        new_sib = get_last_child(parent_id);
+    else
+        new_sib = sibling_id;
+
+    auto first_sib_chunk = INVALID;
+    if (parent_id & CHUNK_MASK) {
+        first_sib_chunk = pointers_stack[parent_id >> CHUNK_SHIFT].get_first_child_s_at(
+                          (parent_id & CHUNK_MASK) - 1) + parent_id; 
+    } else {
+        first_sib_chunk = pointers_stack[parent_id >> CHUNK_SHIFT].get_first_child_l();
+    }
 
     // If this chunk does not have more space, just add a new chunk
     // and treat that as the last child
-    if ((new_sib & CHUNK_MASK) == CHUNK_MASK) {
+    if ((new_sib & CHUNK_MASK) != CHUNK_MASK) {
         // Make a new chunk after this, and put the data there
         new_sib = _insert_chunk_after(new_sib >> CHUNK_SHIFT) << CHUNK_SHIFT;
-        data_stack[new_sib] = data;
     } else {
-        // Just put the data in the next offset
         new_sib++;
-        data_stack[new_sib] = data;
     }
+    data_stack[new_sib] = data;
 
-    const auto first_sib = get_first_child(parent_id);
+    // const auto first_sib = get_first_child(parent_id);
     const auto new_parent_id = _try_fit_child_ptr(parent_id, new_sib);
     if (new_parent_id != parent_id) {
-        _update_parent_pointer(first_sib, new_parent_id);
+        _update_parent_pointer(first_sib_chunk << CHUNK_SHIFT, new_parent_id);
     }
 
     return new_sib;
@@ -1307,19 +1305,20 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
     //     throw std::out_of_range("add_child: Parent index out of range: " + std::to_string(parent_index));
     // }
 
-    // This is not the first child being added
-    const auto last_child_id = get_last_child(parent_index);
-    if (last_child_id != INVALID) {
-        return append_sibling(last_child_id, data);
+    // This is the first child being added
+    if (is_leaf(parent_index)) {
+        const auto child_chunk_id = _create_space(data);
+        pointers_stack[child_chunk_id].set_parent(parent_index);
+
+        // Try to fit this child pointer
+        const auto new_parent_id = _try_fit_child_ptr(parent_index, 
+                                                    child_chunk_id << CHUNK_SHIFT);
+        pointers_stack[child_chunk_id].set_parent(new_parent_id);
+
+        return child_chunk_id << CHUNK_SHIFT;
     }
 
-    // Try to fit this child pointer
-    const auto child_chunk_id = _create_space(data);
-    const auto new_parent_id = _try_fit_child_ptr(parent_index, 
-                                                  child_chunk_id << CHUNK_SHIFT);
-    pointers_stack[child_chunk_id].set_parent(new_parent_id);
-
-    return child_chunk_id << CHUNK_SHIFT;
+    return append_sibling(get_last_child(parent_index), data);
 }
 
 /**
@@ -1337,10 +1336,10 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
     //     throw std::out_of_range("delete_leaf: Leaf index out of range");
     // }
 
-    // // Check if the leaf actually is a leaf
-    // if (get_first_child(leaf_index) != INVALID) {
-    //     throw std::logic_error("delete_leaf: Index is not a leaf");
-    // }
+    // Check if the leaf actually is a leaf
+    if (get_first_child(leaf_index) != INVALID) {
+        throw std::logic_error("delete_leaf: Index is not a leaf");
+    }
 
     const auto leaf_chunk_id = leaf_index >> CHUNK_SHIFT;
     const auto leaf_chunk_offset = leaf_index & CHUNK_MASK;
@@ -1388,7 +1387,7 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
         } else {
             break;
         }
-    }
+    } 
 
     // Short circuit prev and next sibling chunk if this chunk is empty
     if (remaining_data == 0) {

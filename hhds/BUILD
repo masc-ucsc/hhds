@@ -207,6 +207,8 @@ cc_test(
 #     deps = [
 #         ":core",
 #     ],
+#     # copts = ["-DPROFILE"],  # Enable profiling in code
+#     # linkopts = ["-lprofiler"],
 # )
 
 # cc_binary(
