@@ -2,8 +2,8 @@
 #include <vector>
 #include <random>
 
-#include "../tree.hpp"
-#include "../lhtree.hpp"
+#include "tree.hpp"
+#include "lhtree.hpp"
 
 // Set seed 42
 // std::default_random_engine generator(42); -> what????

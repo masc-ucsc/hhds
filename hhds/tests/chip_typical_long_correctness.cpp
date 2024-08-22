@@ -2,8 +2,8 @@
 #include <vector>
 #include <random>
 
-#include "../tree.hpp"
-#include "../lhtree.hpp"
+#include "tree.hpp"
+#include "lhtree.hpp"
 
 std::vector<std::vector<int>> hhds_sibling_data, lh_sibling_data;
 

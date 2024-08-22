@@ -2,8 +2,8 @@
 #include <vector>
 #include <random>
 
-#include "../tree.hpp"
-#include "../lhtree.hpp"
+#include "tree.hpp"
+#include "lhtree.hpp"
 
 // Utility function to generate a random int within a range
 int generate_random_int(std::default_random_engine& generator, int min, int max) {
