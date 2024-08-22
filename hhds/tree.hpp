@@ -255,9 +255,7 @@ private:
 
         // Make space for CHUNK_SIZE number of entries at the end
         data_stack.emplace_back(data);
-        for (int i = 0; i < CHUNK_MASK; i++) {
-            data_stack.emplace_back();
-        }
+        data_stack.resize(data_stack.size() + CHUNK_MASK);
 
         // Add the single pointer node for all CHUNK_SIZE entries
         pointers_stack.emplace_back();
@@ -1346,12 +1344,6 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
     const auto leaf_chunk_offset = leaf_index & CHUNK_MASK;
     const auto prev_sibling_id = get_sibling_prev(leaf_index);
 
-    // std::cout << "BEFORE DELETTING : " << leaf_index << " ... \n";
-    // for (short offset = 0; offset < CHUNK_SIZE; offset++) {
-    //     std::cout << data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset].value_or(-1) << " ";
-    // }
-    // std::cout << "------------------------------------------------------\n";
-
     // Empty this spot in the data array
     data_stack[leaf_index] = std::nullopt;
     short remaining_data = 0;
@@ -1410,12 +1402,6 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
         const auto new_par_id = _try_fit_child_ptr(parent_index, prev_sibling_id);
         pointers_stack[leaf_chunk_id].set_parent(new_par_id);
     }
-
-    // std::cout << "AFTER DELETTING : " << leaf_index << " ... \n";
-    // for (short offset = 0; offset < CHUNK_SIZE; offset++) {
-    //     std::cout << data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset].value_or(-1) << " ";
-    // }
-    // std::cout << "************************************************************\n";
 }
 
 /**

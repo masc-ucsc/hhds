@@ -4,8 +4,8 @@
 #include <random>
 #include <chrono>
 
-#include "../../tree.hpp"
-#include "../../lhtree.hpp"
+#include "tree.hpp"
+#include "lhtree.hpp"
 auto now = std::chrono::high_resolution_clock::now();
 auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
 std::default_random_engine generator(microseconds);

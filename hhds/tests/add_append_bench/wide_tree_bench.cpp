@@ -7,8 +7,8 @@
 #include <unistd.h>
 #include <memory>
 
-#include "../../tree.hpp"
-#include "../../lhtree.hpp"
+#include "tree.hpp"
+#include "lhtree.hpp"
 
 // class CustomMemoryManager : public benchmark::MemoryManager {
 // public:
