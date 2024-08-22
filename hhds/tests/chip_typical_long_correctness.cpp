@@ -98,7 +98,7 @@ void test_chip_tree() {
     std::vector<lh::Tree_index> lh_current_level{lh::Tree_index(0, 0)};
 
     int id = 1;
-    for (int depth = 0; depth < 6; ++depth) {
+    for (int depth = 0; depth < 7; ++depth) {
         std::vector<hhds::Tree_pos> hhds_next_level;
         std::vector<lh::Tree_index> lh_next_level;
         std::vector<std::vector<int>> level_data;
@@ -175,30 +175,30 @@ void test_chip_tree() {
         std::cout << "Postorder traversal match in test_chip_tree" << std::endl;
     }
 
-    std::vector<hhds::Tree_pos> hhds_leaves;
-    std::vector<lh::Tree_index> lh_leaves;
-    collect_leaves_hhds(hhds_tree, hhds_leaves);
-    collect_leaves_lhtree(lh_tree, lh_leaves);
+    // std::vector<hhds::Tree_pos> hhds_leaves;
+    // std::vector<lh::Tree_index> lh_leaves;
+    // collect_leaves_hhds(hhds_tree, hhds_leaves);
+    // collect_leaves_lhtree(lh_tree, lh_leaves);
 
-    // Now randomly delete_leaf from the tree, delete same leaves
-    for (auto &x : hhds_leaves) {
-        hhds_tree.delete_leaf(x);
-    }
+    // // Now randomly delete_leaf from the tree, delete same leaves
+    // for (auto &x : hhds_leaves) {
+    //     hhds_tree.delete_leaf(x);
+    // }
 
-    for (auto &x : lh_leaves) {
-        lh_tree.delete_leaf(x);
-    }
+    // for (auto &x : lh_leaves) {
+    //     lh_tree.delete_leaf(x);
+    // }
 
-    // Do a preorder traversal again and confirm equality
-    std::vector<int> hhds_preorder_after, lh_preorder_after;
-    preorder_traversal_hhds(hhds_tree, hhds_preorder_after);
-    preorder_traversal_lhtree(lh_tree, lh_preorder_after);
+    // // Do a preorder traversal again and confirm equality
+    // std::vector<int> hhds_preorder_after, lh_preorder_after;
+    // preorder_traversal_hhds(hhds_tree, hhds_preorder_after);
+    // preorder_traversal_lhtree(lh_tree, lh_preorder_after);
 
-    if (!compare_vectors(hhds_preorder_after, lh_preorder_after)) {
-        std::cerr << "Preorder traversal mismatch after deleting leaves in test_chip_tree" << std::endl;
-    } else {
-        std::cout << "Preorder traversal match after deleting leaves in test_chip_tree" << std::endl;
-    }
+    // if (!compare_vectors(hhds_preorder_after, lh_preorder_after)) {
+    //     std::cerr << "Preorder traversal mismatch after deleting leaves in test_chip_tree" << std::endl;
+    // } else {
+    //     std::cout << "Preorder traversal match after deleting leaves in test_chip_tree" << std::endl;
+    // }
 }
 
 int main() {

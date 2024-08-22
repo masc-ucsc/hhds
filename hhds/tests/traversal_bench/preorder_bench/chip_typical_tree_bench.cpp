@@ -80,6 +80,7 @@ void preorder_traversal_hhds(hhds::tree<int>& tree) {
         // result.push_back(tree[node]);
         cnt++;
     }
+    benchmark::DoNotOptimize(cnt);
 }
 
 // Preorder traversal for lh::tree
@@ -91,6 +92,7 @@ void preorder_traversal_lhtree(lh::tree<int>& tree) {
         // result.push_back(tree.get_data(*node_it));
         cnt++;
     }
+    benchmark::DoNotOptimize(cnt);
 }
 
 // Tree that is 1 nodes chip_typical

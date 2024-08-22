@@ -42,6 +42,7 @@ void preorder_traversal_hhds(hhds::tree<int>& tree) {
         // result.push_back(tree[node]);
         cnt++;
     }
+    benchmark::DoNotOptimize(cnt);
 }
 // void preorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result, 
 //                              std::vector<std::vector<int>>& hhds_sibling_data) {
@@ -66,6 +67,7 @@ void preorder_traversal_lhtree(lh::tree<int>& tree) {
         // result.push_back(tree.get_data(*node_it));
         cnt++;
     }
+    benchmark::DoNotOptimize(cnt);
 }
 // void preorder_traversal_lhtree(lh::tree<int>& tree, std::vector<int>& result,
 //                                std::vector<std::vector<int>>& lh_sibling_data) {
@@ -86,8 +88,10 @@ void preorder_traversal_lhtree(lh::tree<int>& tree) {
 
 // Postorder traversal for hhds::tree
 void postorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {
+    int cnt = 0;
     for (const auto& node : tree.post_order()) {
-        result.push_back(tree[node]);
+        // result.push_back(tree[node]);
+        cnt++;
     }
 }
 
@@ -95,8 +99,10 @@ void postorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {
 void postorder_traversal_lhtree(lh::tree<int>& tree, std::vector<int>& result) {
     auto root_index = lh::Tree_index(0, 0);
     typename lh::tree<int>::Tree_depth_postorder_iterator it(root_index, &tree);
+    int cnt = 0;
     for (auto node_it = it.begin(); node_it != it.end(); ++node_it) {
-        result.push_back(tree.get_data(*node_it));
+        // result.push_back(tree.get_data(*node_it));
+        cnt++;
     }
 }
 

@@ -193,36 +193,46 @@ cc_test(
     ],
 )
 
-# cc_binary(
-#     name = "deep_tree_correctness",
-#     srcs = ["tests/deep_tree_correctness.cpp"],
+# cc_test(
+#     name = "delete_chip_typical_bench",
+#     srcs = ["tests/delete_bench/delete_leaf_bench/chip_typical_tree_bench.cpp"],
 #     deps = [
+#         "@com_google_benchmark//:benchmark",
+#         "@com_google_googletest//:gtest_main",
 #         ":core",
 #     ],
 # )
 
-# cc_binary(
-#     name = "wide_tree_correctness",
-#     srcs = ["tests/wide_tree_correctness.cpp"],
-#     deps = [
-#         ":core",
-#     ],
-#     # copts = ["-DPROFILE"],  # Enable profiling in code
-#     # linkopts = ["-lprofiler"],
-# )
+cc_binary(
+    name = "deep_tree_correctness",
+    srcs = ["tests/deep_tree_correctness.cpp"],
+    deps = [
+        ":core",
+    ],
+)
 
-# cc_binary(
-#     name = "chip_typical_correctness",
-#     srcs = ["tests/chip_typical_correctness.cpp"],
-#     deps = [
-#         ":core",
-#     ],
-# )
+cc_binary(
+    name = "wide_tree_correctness",
+    srcs = ["tests/wide_tree_correctness.cpp"],
+    deps = [
+        ":core",
+    ],
+    # copts = ["-DPROFILE"],  # Enable profiling in code
+    # linkopts = ["-lprofiler"],
+)
 
-# cc_binary(
-#     name = "chip_typical_long_correctness",
-#     srcs = ["tests/chip_typical_long_correctness.cpp"],
-#     deps = [
-#         ":core",
-#     ],
-# )
+cc_binary(
+    name = "chip_typical_correctness",
+    srcs = ["tests/chip_typical_correctness.cpp"],
+    deps = [
+        ":core",
+    ],
+)
+
+cc_binary(
+    name = "chip_typical_long_correctness",
+    srcs = ["tests/chip_typical_long_correctness.cpp"],
+    deps = [
+        ":core",
+    ],
+)
