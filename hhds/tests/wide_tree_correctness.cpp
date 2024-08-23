@@ -1,8 +1,6 @@
 #include <iostream>
 #include <vector>
 #include <random>
-#include <gperftools/profiler.h>
-
 #include "tree.hpp"
 #include "lhtree.hpp"
 
@@ -63,34 +61,19 @@ void test_wide_tree() {
     lh_tree.set_root(data_to_add);
     lh::Tree_index lh_root(0, 0);
 
-    // ProfilerStart("profile_output.prof");
     for (int i = 0; i < num_children; ++i) {
         data_to_add = generate_random_int(generator, 1, 100);
         auto ht = hhds_tree.add_child(hhds_root, data_to_add);
         auto lt = lh_tree.add_child(lh_root, data_to_add);
         std::vector<int> vht; postorder_traversal_hhds(hhds_tree, vht);
         std::vector<int> vlt; postorder_traversal_lhtree(lh_tree, vht);
-
-        // hhds_tree.print_tree(1);
-        // std::cout << "------------------------------------------------------\n";
     }
-    // ProfilerStop();
 
     std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, lh_postorder;
     preorder_traversal_hhds(hhds_tree, hhds_preorder);
     preorder_traversal_lhtree(lh_tree, lh_preorder);
     postorder_traversal_hhds(hhds_tree, hhds_postorder);
     postorder_traversal_lhtree(lh_tree, lh_postorder);
-
-    // std::cout << "\nHHDS preorder: ";
-    // for (auto node : hhds_preorder) {
-    //     std::cout << node << " ";
-    // }
-    // std::cout << "\nLH preorder: ";
-    // for (auto node : lh_preorder) {
-    //     std::cout << node << " ";
-    // }
-    // std::cout << std::endl;
 
     if (!compare_vectors(hhds_preorder, lh_preorder)) {
         std::cout << "Preorder traversal mismatch in test_wide_tree" << std::endl;

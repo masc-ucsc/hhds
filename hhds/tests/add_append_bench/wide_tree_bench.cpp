@@ -10,29 +10,6 @@
 #include "tree.hpp"
 #include "lhtree.hpp"
 
-// class CustomMemoryManager : public benchmark::MemoryManager {
-// public:
-//     void Start() override {
-//         start_memory_usage_ = GetCurrentMemoryUsage();
-//     }
-
-//     void Stop(Result& result) override { // Use reference instead of pointer
-//         result.num_allocs = 0;  // Set to zero since we're not tracking allocations
-//         result.max_bytes_used = GetCurrentMemoryUsage() - start_memory_usage_;
-//     }
-
-// private:
-//     size_t start_memory_usage_;
-
-//     size_t GetCurrentMemoryUsage() {
-//         std::ifstream statm("/proc/self/statm");
-//         size_t resident = 0;
-//         statm >> resident >> resident; // The second value is the RSS
-//         std::cout << "resident " << resident << std::endl;;
-//         return resident * getpagesize(); // Convert pages to bytes
-//     }
-// };
-
 auto now = std::chrono::high_resolution_clock::now();
 auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
 std::default_random_engine generator(microseconds);

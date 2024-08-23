@@ -252,8 +252,6 @@ BENCHMARK(test_chip_typical_long_tree_5_hhds);
 BENCHMARK(test_chip_typical_long_tree_5_lh);
 BENCHMARK(test_chip_typical_long_tree_6_hhds);
 BENCHMARK(test_chip_typical_long_tree_6_lh);
-// BENCHMARK(test_chip_typical_long_tree_7_hhds);
-// BENCHMARK(test_chip_typical_long_tree_7_lh);
 
 // Run the benchmarks
 BENCHMARK_MAIN();

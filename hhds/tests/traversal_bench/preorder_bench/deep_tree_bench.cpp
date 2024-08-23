@@ -44,19 +44,6 @@ void preorder_traversal_hhds(hhds::tree<int>& tree) {
     }
     benchmark::DoNotOptimize(cnt);
 }
-// void preorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result, 
-//                              std::vector<std::vector<int>>& hhds_sibling_data) {
-//     for (const auto& node : tree.pre_order()) {
-//         result.push_back(tree[node]);
-
-//         // Use the sibling order iterator here
-//         std::vector<int> sibling_data;
-//         for (const auto& sibling : tree.sibling_order(node)) {
-//             sibling_data.push_back(tree[sibling]);
-//         }
-//         hhds_sibling_data.push_back(sibling_data);
-//     }
-// }
 
 // Preorder traversal for lh::tree
 void preorder_traversal_lhtree(lh::tree<int>& tree) {
@@ -69,22 +56,6 @@ void preorder_traversal_lhtree(lh::tree<int>& tree) {
     }
     benchmark::DoNotOptimize(cnt);
 }
-// void preorder_traversal_lhtree(lh::tree<int>& tree, std::vector<int>& result,
-//                                std::vector<std::vector<int>>& lh_sibling_data) {
-//     auto root_index = lh::Tree_index(0, 0);
-//     typename lh::tree<int>::Tree_depth_preorder_iterator it(root_index, &tree);
-//     for (auto node_it = it.begin(); node_it != it.end(); ++node_it) {
-//         result.push_back(tree.get_data(*node_it));
-
-//         // Use the sibling order iterator here
-//         std::vector<int> sibling_data;
-//         lh::tree<int>::Tree_sibling_iterator sib_it(*node_it, &tree);
-//         for (auto sib = sib_it.begin(); sib != sib_it.end(); ++sib) {
-//             sibling_data.push_back(tree.get_data(*sib));
-//         }
-//         lh_sibling_data.push_back(sibling_data);
-//     }
-// }
 
 // Postorder traversal for hhds::tree
 void postorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {

@@ -75,18 +75,6 @@ void test_deep_tree() {
     postorder_traversal_hhds(hhds_tree, hhds_postorder);
     postorder_traversal_lhtree(lh_tree, lh_postorder);
 
-    // std::cout << "\nHHDS preorder: ";
-    // for (auto node : hhds_preorder) {
-    //     std::cout << node << " ";
-    // }
-    // std::cout << std::endl;
-
-    // std::cout << "\nLH preorder: ";
-    // for (auto node : lh_preorder) {
-    //     std::cout << node << " ";
-    // }
-    // std::cout << std::endl;
-
     if (!compare_vectors(hhds_preorder, lh_preorder)) {
         std::cout << "Preorder traversal mismatch in test_deep_tree" << std::endl;
     } else {

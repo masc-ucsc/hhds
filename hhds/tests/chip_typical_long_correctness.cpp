@@ -65,25 +65,6 @@ bool compare_vectors(const std::vector<T>& vec1, const std::vector<T>& vec2) {
     return vec1 == vec2;
 }
 
-// Function to collect all leaf nodes from the tree
-void collect_leaves_hhds(hhds::tree<int>& tree, std::vector<hhds::Tree_pos>& leaves) {
-    for (const auto& node : tree.pre_order()) {
-        if (tree.get_first_child(node) == hhds::INVALID) {
-            leaves.push_back(node);
-        }
-    }
-}
-
-void collect_leaves_lhtree(lh::tree<int>& tree, std::vector<lh::Tree_index>& leaves) {
-    auto root_index = lh::Tree_index(0, 0);
-    typename lh::tree<int>::Tree_depth_preorder_iterator it(root_index, &tree);
-    for (auto node_it = it.begin(); node_it != it.end(); ++node_it) {
-        if (tree.is_leaf(*node_it)) {
-            leaves.push_back(*node_it);
-        }
-    }
-}
-
 // Test 3: "Chip" Typical Tree (8 Depth, 4-8 Children per Node)
 void test_chip_tree() {
     std::default_random_engine generator(42);
@@ -127,26 +108,12 @@ void test_chip_tree() {
         hhds_current_level = hhds_next_level;
         lh_current_level = lh_next_level;
     }
-    std::cout << "HHDS TREE READY!!\n";
-
 
     std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, lh_postorder;
     preorder_traversal_hhds(hhds_tree, hhds_preorder);
     preorder_traversal_lhtree(lh_tree, lh_preorder);
     postorder_traversal_hhds(hhds_tree, hhds_postorder);
     postorder_traversal_lhtree(lh_tree, lh_postorder);
-
-    // std::cout << "\nHHDS preorder: ";
-    // for (auto node : hhds_preorder) {
-    //     std::cout << node << " ";
-    // }
-    // std::cout << std::endl;
-
-    // std::cout << "\nLH preorder: ";
-    // for (auto node : lh_preorder) {
-    //     std::cout << node << " ";
-    // }
-    // std::cout << std::endl;
 
     bool sib_valid = true;
     for (auto i = 0; i < hhds_sibling_data.size(); ++i) {
@@ -174,31 +141,6 @@ void test_chip_tree() {
     } else {
         std::cout << "Postorder traversal match in test_chip_tree" << std::endl;
     }
-
-    // std::vector<hhds::Tree_pos> hhds_leaves;
-    // std::vector<lh::Tree_index> lh_leaves;
-    // collect_leaves_hhds(hhds_tree, hhds_leaves);
-    // collect_leaves_lhtree(lh_tree, lh_leaves);
-
-    // // Now randomly delete_leaf from the tree, delete same leaves
-    // for (auto &x : hhds_leaves) {
-    //     hhds_tree.delete_leaf(x);
-    // }
-
-    // for (auto &x : lh_leaves) {
-    //     lh_tree.delete_leaf(x);
-    // }
-
-    // // Do a preorder traversal again and confirm equality
-    // std::vector<int> hhds_preorder_after, lh_preorder_after;
-    // preorder_traversal_hhds(hhds_tree, hhds_preorder_after);
-    // preorder_traversal_lhtree(lh_tree, lh_preorder_after);
-
-    // if (!compare_vectors(hhds_preorder_after, lh_preorder_after)) {
-    //     std::cerr << "Preorder traversal mismatch after deleting leaves in test_chip_tree" << std::endl;
-    // } else {
-    //     std::cout << "Preorder traversal match after deleting leaves in test_chip_tree" << std::endl;
-    // }
 }
 
 int main() {
