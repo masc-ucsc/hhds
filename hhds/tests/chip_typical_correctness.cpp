@@ -2,8 +2,11 @@
 #include <vector>
 #include <random>
 
-#include "../tree.hpp"
-#include "../lhtree.hpp"
+#include "tree.hpp"
+#include "lhtree.hpp"
+
+// Set seed 42
+std::default_random_engine generator(32);
 
 std::vector<std::vector<int>> hhds_sibling_data, lh_sibling_data;
 
@@ -17,6 +20,7 @@ int generate_random_int(std::default_random_engine& generator, int min, int max)
 void preorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {
     for (const auto& node : tree.pre_order()) {
         result.push_back(tree[node]);
+        std::cout << node << ' ';
         // Use the sibling order iterator here
         std::vector<int> sibling_data;
         for (const auto& sibling : tree.sibling_order(node)) {
@@ -65,10 +69,28 @@ bool compare_vectors(const std::vector<T>& vec1, const std::vector<T>& vec2) {
     return vec1 == vec2;
 }
 
+// Function to collect all leaf nodes from the tree
+void collect_leaves_hhds(hhds::tree<int>& tree, std::vector<hhds::Tree_pos>& leaves) {
+    for (const auto& node : tree.pre_order()) {
+        if (tree.get_first_child(node) == hhds::INVALID) {
+            leaves.push_back(node);
+        }
+    }
+}
+
+// Function to collect all leaf nodes from the tree
+void collect_leaves_lhtree(lh::tree<int>& tree, std::vector<lh::Tree_index>& leaves) {
+    auto root_index = lh::Tree_index(0, 0);
+    typename lh::tree<int>::Tree_depth_preorder_iterator it(root_index, &tree);
+    for (auto node_it = it.begin(); node_it != it.end(); ++node_it) {
+        if (tree.is_leaf(*node_it)) {
+            leaves.push_back(*node_it);
+        }
+    }
+}
+
 // Test 3: "Chip" Typical Tree (8 Depth, 4-8 Children per Node)
 void test_chip_tree() {
-    std::default_random_engine generator(42);
-
     hhds::tree<int> hhds_tree;
     lh::tree<int> lh_tree;
 
@@ -79,13 +101,13 @@ void test_chip_tree() {
     std::vector<lh::Tree_index> lh_current_level{lh::Tree_index(0, 0)};
 
     int id = 1;
-    for (int depth = 0; depth < 2; ++depth) {
+    for (int depth = 0; depth < 7; ++depth) {
         std::vector<hhds::Tree_pos> hhds_next_level;
         std::vector<lh::Tree_index> lh_next_level;
         std::vector<std::vector<int>> level_data;
 
         for (auto hhds_node : hhds_current_level) {
-            int num_children = generate_random_int(generator, 4, 7);
+            int num_children = generate_random_int(generator, 1, 7);
             std::vector<int> children_data;
 
             for (int i = 0; i < num_children; ++i) {
@@ -114,34 +136,6 @@ void test_chip_tree() {
     preorder_traversal_lhtree(lh_tree, lh_preorder);
     postorder_traversal_hhds(hhds_tree, hhds_postorder);
     postorder_traversal_lhtree(lh_tree, lh_postorder);
-
-    // std::cout << "\nHHDS preorder: ";
-    // for (auto node : hhds_preorder) {
-    //     std::cout << node << " ";
-    // }
-    // std::cout << std::endl;
-
-    // std::cout << "\nLH preorder: ";
-    // for (auto node : lh_preorder) {
-    //     std::cout << node << " ";
-    // }
-    // std::cout << std::endl;
-
-    // Compare hhds and lh sibling data
-    // for (auto i = 0; i < hhds_sibling_data.size(); ++i) {
-    //     for (auto j = 0; j < hhds_sibling_data[i].size(); ++j) {
-    //         std::cout << hhds_sibling_data[i][j] << " ";
-    //     }
-    //     std::cout << std::endl;
-    // }
-
-    // std::cout << "=========================================";
-    // for (auto i = 0; i < lh_sibling_data.size(); ++i) {
-    //     for (auto j = 0; j < lh_sibling_data[i].size(); ++j) {
-    //         std::cout << lh_sibling_data[i][j] << " ";
-    //     }
-    //     std::cout << std::endl;
-    // }
 
     bool sib_valid = true;
     for (auto i = 0; i < hhds_sibling_data.size(); ++i) {

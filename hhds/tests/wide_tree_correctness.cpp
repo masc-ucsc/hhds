@@ -1,9 +1,8 @@
 #include <iostream>
 #include <vector>
 #include <random>
-
-#include "../tree.hpp"
-#include "../lhtree.hpp"
+#include "tree.hpp"
+#include "lhtree.hpp"
 
 // Utility function to generate a random int within a range
 int generate_random_int(std::default_random_engine& generator, int min, int max) {
@@ -66,7 +65,6 @@ void test_wide_tree() {
         data_to_add = generate_random_int(generator, 1, 100);
         auto ht = hhds_tree.add_child(hhds_root, data_to_add);
         auto lt = lh_tree.add_child(lh_root, data_to_add);
-
         std::vector<int> vht; postorder_traversal_hhds(hhds_tree, vht);
         std::vector<int> vlt; postorder_traversal_lhtree(lh_tree, vht);
     }
@@ -76,17 +74,6 @@ void test_wide_tree() {
     preorder_traversal_lhtree(lh_tree, lh_preorder);
     postorder_traversal_hhds(hhds_tree, hhds_postorder);
     postorder_traversal_lhtree(lh_tree, lh_postorder);
-
-
-    // std::cout << "\nHHDS preorder: ";
-    // for (auto node : hhds_preorder) {
-    //     std::cout << node << " ";
-    // }
-    // std::cout << "\nLH preorder: ";
-    // for (auto node : lh_preorder) {
-    //     std::cout << node << " ";
-    // }
-    // std::cout << std::endl;
 
     if (!compare_vectors(hhds_preorder, lh_preorder)) {
         std::cout << "Preorder traversal mismatch in test_wide_tree" << std::endl;

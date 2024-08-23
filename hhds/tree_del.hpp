@@ -52,8 +52,8 @@ static constexpr short NUM_SHORT_DEL = CHUNK_MASK;                      // Numbe
 static constexpr Tree_pos INVALID = 0;                                  // This is invalid for all pointers other than parent
 static constexpr Tree_pos ROOT = 1 << CHUNK_SHIFT;                      // ROOT ID
 
-static constexpr short CHUNK_BITS = 43;                                 // Number of chunks in a tree node
-static constexpr short SHORT_DELTA = 21;                                // Amount of short delta allowed
+static constexpr short CHUNK_BITS = 48;                                 // Number of chunks in a tree node
+static constexpr short SHORT_DELTA = 19;                                // Amount of short delta allowed
 
 static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;            // Maximum number of nodes in the tree
 
@@ -70,6 +70,11 @@ private:
     // Long child pointers
     Tree_pos first_child_l              : CHUNK_BITS;
     Tree_pos last_child_l               : CHUNK_BITS;
+
+    // Storing the last occupied index in the short delta
+    // This is to avoid iterating over all short deltas
+    // to find the last occupied index
+    unsigned short last_occupied        : CHUNK_SHIFT;
 
     // Short (delta) child pointers
     Short_delta first_child_s_0         : SHORT_DELTA;
@@ -159,7 +164,7 @@ public:
     // for every other entry INVALID is the best choice
     Tree_pointers()
         : parent(INVALID), next_sibling(INVALID), prev_sibling(INVALID),
-          first_child_l(INVALID), last_child_l(INVALID) {
+          first_child_l(INVALID), last_child_l(INVALID), last_occupied(INVALID) {
             for (short i = 0; i < NUM_SHORT_DEL; i++) {
                 _set_first_child_s(i, INVALID);
                 _set_last_child_s(i, INVALID);
@@ -170,7 +175,7 @@ public:
     Tree_pointers(Tree_pos p)
         : parent(p), 
             next_sibling(INVALID), prev_sibling(INVALID), 
-            first_child_l(INVALID), last_child_l(INVALID) {
+            first_child_l(INVALID), last_child_l(INVALID), last_occupied(INVALID) {
             for (short i = 0; i < NUM_SHORT_DEL; i++) {
                 _set_first_child_s(i, INVALID);
                 _set_last_child_s(i, INVALID);
@@ -192,6 +197,9 @@ public:
         return _get_last_child_s(index); 
     }
 
+    // Get the last occupied index in the short delta
+    Short_delta get_last_occupied() const { return last_occupied; }
+
     // Setters
     void set_parent(Tree_pos p) { parent = p; }
     void set_next_sibling(Tree_pos ns) { next_sibling = ns; }
@@ -206,6 +214,9 @@ public:
     void set_last_child_s_at(short index, Short_delta lcs) {
         _set_last_child_s(index, lcs); 
     }
+
+    // Set the last occupied index in the short delta
+    void set_last_occupied(Short_delta lo) { last_occupied = lo; }
 
     // Operators
     constexpr bool operator==(const Tree_pointers& other) const {
@@ -255,7 +266,9 @@ private:
 
         // Make space for CHUNK_SIZE number of entries at the end
         data_stack.emplace_back(data);
-        data_stack.resize(data_stack.size() + CHUNK_MASK);
+        for (int i = 0; i < CHUNK_MASK; i++) {
+            data_stack.emplace_back();
+        }
 
         // Add the single pointer node for all CHUNK_SIZE entries
         pointers_stack.emplace_back();
@@ -336,50 +349,58 @@ private:
             return parent_id;
         }
 
+        std::cout << "THE WORST THING HAPPENED\n";
+
         /* RECURSION */
         const auto grandparent_id = pointers_stack[parent_chunk_id].get_parent();
         std::vector<Tree_pos> new_chunks;
 
         // Break the chunk fully -> Every node in the chunk is moved to a separate chunk
-        for (short offset = parent_chunk_offset - 1; offset < NUM_SHORT_DEL; offset++) {
-            if (_contains_data((parent_chunk_id << CHUNK_SHIFT) + offset + 1)) {
-                const auto curr_id = (parent_chunk_id << CHUNK_SHIFT) + offset + 1;
+        for (short offset = parent_chunk_offset - 1; 
+            offset < pointers_stack[parent_chunk_id].get_last_occupied() - 1; 
+            offset++) {
+            // if (_contains_data((parent_chunk_id << CHUNK_SHIFT) + offset + 1)) {
+            const auto curr_id = (parent_chunk_id << CHUNK_SHIFT) + offset + 1;
 
-                // Create a new chunk, put this one over there
-                const auto new_chunk_id = _insert_chunk_after(
-                                                new_chunks.empty() ? 
-                                                    parent_chunk_id 
-                                                :   new_chunks.back()
-                                            );
+            // Create a new chunk, put this one over there
+            const auto new_chunk_id = _insert_chunk_after(
+                                            new_chunks.empty() ? 
+                                                parent_chunk_id 
+                                            :   new_chunks.back()
+                                        );
 
-                // Store the new chunk id for updates later
-                new_chunks.push_back(new_chunk_id);
+            // Store the new chunk id for updates later
+            new_chunks.push_back(new_chunk_id);
 
-                // Remove data from old, and put it here
-                data_stack[new_chunk_id << CHUNK_SHIFT] = data_stack[curr_id];
-                data_stack[curr_id] = X();
+            // Convert the short pointers here to long pointers there
+            const auto fc = pointers_stack[parent_chunk_id].get_first_child_s_at(offset);
+            const auto lc = pointers_stack[parent_chunk_id].get_last_child_s_at(offset);
+            pointers_stack[new_chunk_id].set_first_child_l(fc + parent_chunk_id);
+            pointers_stack[new_chunk_id].set_last_child_l(lc + parent_chunk_id);
 
-                // Convert the short pointers here to long pointers there
-                const auto fc = pointers_stack[parent_chunk_id].get_first_child_s_at(offset);
-                const auto lc = pointers_stack[parent_chunk_id].get_last_child_s_at(offset);
-                pointers_stack[new_chunk_id].set_first_child_l(fc + parent_chunk_id);
-                pointers_stack[new_chunk_id].set_last_child_l(lc + parent_chunk_id);
+            // Update the parent pointer of all children of this guy
+            // THIS LOOKS LIKE A BOTTLENECK -> Will iterate over all ~ (children / 8) chunks
+            _update_parent_pointer((fc + parent_chunk_id) << CHUNK_SHIFT, 
+                                new_chunk_id << CHUNK_SHIFT);
 
-                // Update the parent pointer of all children of this guy
-                // THIS LOOKS LIKE A BOTTLENECK -> Will iterate over all ~ (children / 8) chunks
-                _update_parent_pointer((fc + parent_chunk_id) << CHUNK_SHIFT, 
-                                    new_chunk_id << CHUNK_SHIFT);
+            // Remove the short pointers in the old chunk
+            pointers_stack[parent_chunk_id].set_first_child_s_at(offset, INVALID);
+            pointers_stack[parent_chunk_id].set_last_child_s_at(offset, INVALID);
 
-                // Remove the short pointers in the old chunk
-                pointers_stack[parent_chunk_id].set_first_child_s_at(offset, INVALID);
-                pointers_stack[parent_chunk_id].set_last_child_s_at(offset, INVALID);
-            }
+            // Decrement the last occupied index
+            pointers_stack[parent_chunk_id].set_last_occupied(
+                pointers_stack[parent_chunk_id].get_last_occupied() - 1
+            );
+
+            // Remove data from old, and put it here
+            data_stack[new_chunk_id << CHUNK_SHIFT] = data_stack[curr_id];
+            data_stack[curr_id] = std::nullopt;
+            // }
         }
 
         // Try fitting the last chunk here in the grandparent. Recurse.
         const auto my_new_parent = _try_fit_child_ptr(grandparent_id,
                                                       new_chunks.back() << CHUNK_SHIFT);
-
     
         // Update the parent pointer of the new chunks
         if (my_new_parent != grandparent_id) {
@@ -396,13 +417,13 @@ public:
     /**
      *  Query based API (no updates)
     */
-    Tree_pos get_parent(const Tree_pos& curr_index);
-    Tree_pos get_last_child(const Tree_pos& parent_index);
-    Tree_pos get_first_child(const Tree_pos& parent_index);
-    bool is_last_child(const Tree_pos& self_index);
-    bool is_first_child(const Tree_pos& self_index);
-    Tree_pos get_sibling_next(const Tree_pos& sibling_id);
-    Tree_pos get_sibling_prev(const Tree_pos& sibling_id);
+    Tree_pos get_parent(const Tree_pos& curr_index) const;
+    Tree_pos get_last_child(const Tree_pos& parent_index) const;
+    Tree_pos get_first_child(const Tree_pos& parent_index) const;
+    bool is_last_child(const Tree_pos& self_index) const;
+    bool is_first_child(const Tree_pos& self_index) const;
+    Tree_pos get_sibling_next(const Tree_pos& sibling_id) const;
+    Tree_pos get_sibling_prev(const Tree_pos& sibling_id) const;
     bool is_leaf (const Tree_pos& leaf_index) const;
 
     /**
@@ -919,7 +940,7 @@ public:
  * @throws std::out_of_range If current index is out of range
 */
 template<typename X>
-Tree_pos tree<X>::get_parent(const Tree_pos& curr_index) {
+Tree_pos tree<X>::get_parent(const Tree_pos& curr_index) const {
     // if (!_check_idx_exists(curr_index)) {
     //     throw std::out_of_range("get_parent: Index out of range");
     // }
@@ -958,7 +979,7 @@ bool tree<X>::is_leaf(const Tree_pos& leaf_index) const {
  * @throws std::out_of_range If the parent index is out of range
 */
 template <typename X>
-Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) {
+Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) const {
     // if (!_check_idx_exists(parent_index)) {
     //     throw std::out_of_range("get_last_child: Parent index out of range");
     // }
@@ -994,13 +1015,17 @@ Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) {
     //     return static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) + low);
     // }
 
+    
+
     // Iterate in reverse to find the last occupied in child chunk
     if (child_chunk_id != INVALID) {
-        for (short offset = NUM_SHORT_DEL; offset >= 0; offset--) {
-            if (_contains_data((child_chunk_id << CHUNK_SHIFT) + offset)) {
-                return static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) + offset);
-            }
-        } 
+        // for (short offset = NUM_SHORT_DEL; offset >= 0; offset--) {
+        //     if (_contains_data((child_chunk_id << CHUNK_SHIFT) + offset)) {
+        //         return static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) + offset);
+        //     }
+        // }
+        return static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) 
+                                        + pointers_stack[child_chunk_id].get_last_occupied());
     }
 
     return static_cast<Tree_pos>(INVALID);
@@ -1015,7 +1040,7 @@ Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) {
  * @throws std::out_of_range If the parent index is out of range
 */
 template <typename X>
-Tree_pos tree<X>::get_first_child(const Tree_pos& parent_index) {
+Tree_pos tree<X>::get_first_child(const Tree_pos& parent_index) const {
     // if (!_check_idx_exists(parent_index)) {
     //     throw std::out_of_range("get_first_child: Parent index out of range");
     // }
@@ -1048,13 +1073,13 @@ Tree_pos tree<X>::get_first_child(const Tree_pos& parent_index) {
  * @throws std::out_of_range If the query index is out of range
 */
 template <typename X>
-bool tree<X>::is_last_child(const Tree_pos& self_index) {
+bool tree<X>::is_last_child(const Tree_pos& self_index) const {
     // if (!_check_idx_exists(self_index)) {
     //     throw std::out_of_range("is_last_child: Index out of range");
     // }
 
     const auto self_chunk_id = (self_index >> CHUNK_SHIFT);
-    const auto self_chunk_offset = (self_index & CHUNK_MASK);
+    // const auto self_chunk_offset = (self_index & CHUNK_MASK);
 
     // If this chunk has a next_sibling pointer, certainly not the last child
     if (pointers_stack[self_chunk_id].get_next_sibling() != INVALID) {
@@ -1062,17 +1087,18 @@ bool tree<X>::is_last_child(const Tree_pos& self_index) {
     }
 
     // Now, to be the last child, all entries after this should be invalid
-    for (short offset = self_chunk_offset; offset < NUM_SHORT_DEL; offset++) {
-        /* POSSIBLE IMPROVEMENT, instead of checking the data pointers track,just check if the pointer is MIN_VAL
-          BE CAREFUL HERE THOUGH, DONT SIMPLY CHECK IF THE SHORT DELTA = 0, BUT ASSIGN A SPECIAL VALUE WHICH IS 
-          -2 ** (SHORT_DELTA_BITS)*/
-        // const auto last_child_s_i = pointers_stack[self_chunk_id].get_last_child_s_at(offset);
-        if (_contains_data((self_chunk_id << CHUNK_SHIFT) + offset)) {
-            return false;
-        }
-    }
+    // for (short offset = self_chunk_offset; offset < NUM_SHORT_DEL; offset++) {
+    //     /* POSSIBLE IMPROVEMENT, instead of checking the data pointers track,just check if the pointer is MIN_VAL
+    //       BE CAREFUL HERE THOUGH, DONT SIMPLY CHECK IF THE SHORT DELTA = 0, BUT ASSIGN A SPECIAL VALUE WHICH IS 
+    //       -2 ** (SHORT_DELTA_BITS)*/
+    //     // const auto last_child_s_i = pointers_stack[self_chunk_id].get_last_child_s_at(offset);
+    //     if (_contains_data((self_chunk_id << CHUNK_SHIFT) + offset)) {
+    //         return false;
+    //     }
+    // }
 
-    return true;
+    return (static_cast<Short_delta>((self_index & CHUNK_MASK))
+            == pointers_stack[self_chunk_id].get_last_occupied());
 }
 
 /**
@@ -1084,7 +1110,7 @@ bool tree<X>::is_last_child(const Tree_pos& self_index) {
  * @throws std::out_of_range If the query index is out of range
 */
 template <typename X>
-bool tree<X>::is_first_child(const Tree_pos& self_index) {
+bool tree<X>::is_first_child(const Tree_pos& self_index) const {
     // if (!_check_idx_exists(self_index)) {
     //     throw std::out_of_range("is_first_child: Index out of range");
     // }
@@ -1098,11 +1124,7 @@ bool tree<X>::is_first_child(const Tree_pos& self_index) {
     }
 
     // Now, to be the first child, it must have no offset
-    if (self_chunk_offset) {
-        return false;
-    }
-
-    return true;
+    return (!self_chunk_offset);
 }
 
 /**
@@ -1114,7 +1136,7 @@ bool tree<X>::is_first_child(const Tree_pos& self_index) {
  * @throws std::out_of_range If the sibling index is out of range
 */
 template <typename X>
-Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) {
+Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) const {
     // if (!_check_idx_exists(sibling_id)) {
     //     throw std::out_of_range("get_sibling_next: Sibling index out of range");
     // }
@@ -1147,7 +1169,7 @@ Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) {
  *       happens if someone is deleted from the middle
 */
 template <typename X>
-Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) {
+Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
     // if (!_check_idx_exists(sibling_id)) {
     //     throw std::out_of_range("get_sibling_prev: Sibling index out of range");
     // }
@@ -1170,12 +1192,17 @@ Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) {
     
     // Find the last occupied in the prev sibling chunk
     if (prev_sibling != INVALID) {
-        for (short offset = NUM_SHORT_DEL - 1; offset >= 0; offset--) {
-            if (_contains_data(prev_sibling + offset)) {
-                return static_cast<Tree_pos>(prev_sibling + offset);
-            }
-        }
+        return static_cast<Tree_pos>(
+            pointers_stack[prev_sibling].get_last_occupied() + (prev_sibling << CHUNK_SHIFT)
+        );
     }
+    // if (prev_sibling != INVALID) {
+    //     for (short offset = NUM_SHORT_DEL - 1; offset >= 0; offset--) {
+    //         if (_contains_data((prev_sibling << CHUNK_SHIFT) + offset)) {
+    //             return static_cast<Tree_pos>((prev_sibling << CHUNK_SHIFT) + offset);
+    //         }
+    //     }
+    // }
 
     return INVALID;
 }
@@ -1217,6 +1244,9 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
     if (new_parent_id != parent_id) {
         _update_parent_pointer(first_sib, new_parent_id);
     }
+
+    // Set the last occupied
+    pointers_stack[new_sib >> CHUNK_SHIFT].set_last_occupied(new_sib & CHUNK_MASK);
 
     return new_sib;
 }
@@ -1344,6 +1374,12 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
     const auto leaf_chunk_offset = leaf_index & CHUNK_MASK;
     const auto prev_sibling_id = get_sibling_prev(leaf_index);
 
+    // std::cout << "BEFORE DELETTING : " << leaf_index << " ... \n";
+    // for (short offset = 0; offset < CHUNK_SIZE; offset++) {
+    //     std::cout << data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset].value_or(-1) << " ";
+    // }
+    // std::cout << "------------------------------------------------------\n";
+
     // Empty this spot in the data array
     data_stack[leaf_index] = std::nullopt;
     short remaining_data = 0;
@@ -1402,6 +1438,12 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
         const auto new_par_id = _try_fit_child_ptr(parent_index, prev_sibling_id);
         pointers_stack[leaf_chunk_id].set_parent(new_par_id);
     }
+
+    // std::cout << "AFTER DELETTING : " << leaf_index << " ... \n";
+    // for (short offset = 0; offset < CHUNK_SIZE; offset++) {
+    //     std::cout << data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset].value_or(-1) << " ";
+    // }
+    // std::cout << "************************************************************\n";
 }
 
 /**
