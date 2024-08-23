@@ -4,40 +4,40 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 git_repository(
     name = "com_google_googletest",
     remote = "https://github.com/google/googletest",
-    tag = "v1.14.0",
+    tag = "v1.15.2",
 )
 
 git_repository(
     name = "com_google_benchmark",
     remote = "https://github.com/google/benchmark.git",
-    tag = "v1.8.3",
+    tag = "v1.8.5",
 )
 
 # abseil
 http_archive(
   name = "com_google_absl",
-  strip_prefix = "abseil-cpp-20240116.2",
-  urls = ["https://github.com/abseil/abseil-cpp/archive/refs/tags/20240116.2.zip"],
-  sha256 = "69909dd729932cbbabb9eeaff56179e8d124515f5d3ac906663d573d700b4c7d",
+  strip_prefix = "abseil-cpp-20240722.0",
+  urls = ["https://github.com/abseil/abseil-cpp/archive/refs/tags/20240722.0.zip"],
+  sha256 = "95e90be7c3643e658670e0dd3c1b27092349c34b632c6e795686355f67eca89f",
 )
 
 # Perfetto
 http_archive(
     name = "com_google_perfetto",
     build_file = "perfetto.BUILD",
-    sha256 = "dcb815fb54370fa20a657552288016cb66e7a98237c1a1d47e7645a4325ac75e",
-    strip_prefix = "perfetto-45.0/sdk",
-    urls = ["https://github.com/google/perfetto/archive/refs/tags/v45.0.tar.gz"],
+    sha256 = "dfc9b645c020d7a7469bae73d7432545b8005411c8176f46f04875058df0aa97",
+    strip_prefix = "perfetto-46.0/sdk",
+    urls = ["https://github.com/google/perfetto/archive/refs/tags/v46.0.tar.gz"],
 )
 
 # fmt
 http_archive(
     name = "fmt",
     build_file = "@//tools:fmt.BUILD",
-    sha256 = "d368f9c39a33a3aef800f5be372ec1df1c12ad57ada1f60adc62f24c0e348469",
-    strip_prefix = "fmt-10.2.1",
+    sha256 = "7aa4b58e361de10b8e5d7b6c18aebd98be1886ab3efe43e368527a75cd504ae4",
+    strip_prefix = "fmt-11.0.2",
     urls = [
-        "https://github.com/fmtlib/fmt/archive/refs/tags/10.2.1.zip",
+        "https://github.com/fmtlib/fmt/archive/refs/tags/11.0.2.zip",
     ],
 )
 
@@ -75,10 +75,10 @@ http_archive(
 # Boost
 http_archive(
     name = "com_github_nelhage_rules_boost",
-    sha256 = "6c15542d0d3b6f47cd4d2a1632a3054a0502b5102e471b4453354312cb474407",
-    strip_prefix = "rules_boost-5d04542e52164931841d06d5a6b3fd2f43c436d0",
+    sha256 = "3950bc0c09a44869669bb2b5e83bdea42d8038231263c567fd80314ae3dfe117",
+    strip_prefix = "rules_boost-1d5cd42547905c0fea655275babfba8c0b07b753",
     urls = [
-      "https://github.com/nelhage/rules_boost/archive/5d04542e52164931841d06d5a6b3fd2f43c436d0.tar.gz",
+      "https://github.com/nelhage/rules_boost/archive/1d5cd42547905c0fea655275babfba8c0b07b753.tar.gz",
     ]
 )
 load("@com_github_nelhage_rules_boost//:boost/boost.bzl", "boost_deps")
