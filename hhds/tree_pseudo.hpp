@@ -30,7 +30,7 @@ private:
   std::vector<Tree_node> nodes;
 };
 
-}  // namespace hhsd
+}  // namespace hhds
 
 #if 0
 // Even though Moliere said "Trees that are slow to grow bear the best fruit.",

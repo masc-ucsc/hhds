@@ -34,35 +34,31 @@ Disadvantages:
 
 namespace rigtorp {
 
-template <typename Key, typename T, typename Hash = std::hash<Key>,
-          typename KeyEqual = std::equal_to<void>,
+template <typename Key, typename T, typename Hash = std::hash<Key>, typename KeyEqual = std::equal_to<void>,
           typename Allocator = std::allocator<std::pair<Key, T>>>
 class HashMap {
 public:
-  using key_type = Key;
-  using mapped_type = T;
-  using value_type = std::pair<Key, T>;
-  using size_type = std::size_t;
-  using hasher = Hash;
-  using key_equal = KeyEqual;
-  using allocator_type = Allocator;
-  using reference = value_type &;
+  using key_type        = Key;
+  using mapped_type     = T;
+  using value_type      = std::pair<Key, T>;
+  using size_type       = std::size_t;
+  using hasher          = Hash;
+  using key_equal       = KeyEqual;
+  using allocator_type  = Allocator;
+  using reference       = value_type &;
   using const_reference = const value_type &;
-  using buckets = std::vector<value_type, allocator_type>;
+  using buckets         = std::vector<value_type, allocator_type>;
 
-  template <typename ContT, typename IterVal> struct hm_iterator {
-    using difference_type = std::ptrdiff_t;
-    using value_type = IterVal;
-    using pointer = value_type *;
-    using reference = value_type &;
+  template <typename ContT, typename IterVal>
+  struct hm_iterator {
+    using difference_type   = std::ptrdiff_t;
+    using value_type        = IterVal;
+    using pointer           = value_type *;
+    using reference         = value_type &;
     using iterator_category = std::forward_iterator_tag;
 
-    bool operator==(const hm_iterator &other) const {
-      return other.hm_ == hm_ && other.idx_ == idx_;
-    }
-    bool operator!=(const hm_iterator &other) const {
-      return !(other == *this);
-    }
+    bool operator==(const hm_iterator &other) const { return other.hm_ == hm_ && other.idx_ == idx_; }
+    bool operator!=(const hm_iterator &other) const { return !(other == *this); }
 
     hm_iterator &operator++() {
       ++idx_;
@@ -71,33 +67,30 @@ public:
     }
 
     reference operator*() const { return hm_->buckets_[idx_]; }
-    pointer operator->() const { return &hm_->buckets_[idx_]; }
+    pointer   operator->() const { return &hm_->buckets_[idx_]; }
 
   private:
     explicit hm_iterator(ContT *hm) : hm_(hm) { advance_past_empty(); }
     explicit hm_iterator(ContT *hm, size_type idx) : hm_(hm), idx_(idx) {}
     template <typename OtherContT, typename OtherIterVal>
-    hm_iterator(const hm_iterator<OtherContT, OtherIterVal> &other)
-        : hm_(other.hm_), idx_(other.idx_) {}
+    hm_iterator(const hm_iterator<OtherContT, OtherIterVal> &other) : hm_(other.hm_), idx_(other.idx_) {}
 
     void advance_past_empty() {
-      while (idx_ < hm_->buckets_.size() &&
-             key_equal()(hm_->buckets_[idx_].first, hm_->empty_key_)) {
+      while (idx_ < hm_->buckets_.size() && key_equal()(hm_->buckets_[idx_].first, hm_->empty_key_)) {
         ++idx_;
       }
     }
 
-    ContT *hm_ = nullptr;
+    ContT                    *hm_  = nullptr;
     typename ContT::size_type idx_ = 0;
     friend ContT;
   };
 
-  using iterator = hm_iterator<HashMap, value_type>;
+  using iterator       = hm_iterator<HashMap, value_type>;
   using const_iterator = hm_iterator<const HashMap, const value_type>;
 
 public:
-  HashMap(size_type bucket_count, key_type empty_key,
-          const allocator_type &alloc = allocator_type())
+  HashMap(size_type bucket_count, key_type empty_key, const allocator_type &alloc = allocator_type())
       : empty_key_(empty_key), buckets_(alloc) {
     size_t pow2 = 1;
     while (pow2 < bucket_count) {
@@ -106,16 +99,13 @@ public:
     buckets_.resize(pow2, std::make_pair(empty_key_, T()));
   }
 
-  HashMap(const HashMap &other, size_type bucket_count)
-      : HashMap(bucket_count, other.empty_key_, other.get_allocator()) {
+  HashMap(const HashMap &other, size_type bucket_count) : HashMap(bucket_count, other.empty_key_, other.get_allocator()) {
     for (auto it = other.begin(); it != other.end(); ++it) {
       insert(*it);
     }
   }
 
-  allocator_type get_allocator() const noexcept {
-    return buckets_.get_allocator();
-  }
+  allocator_type get_allocator() const noexcept { return buckets_.get_allocator(); }
 
   // Iterators
   iterator begin() noexcept { return iterator(this); }
@@ -126,13 +116,9 @@ public:
 
   iterator end() noexcept { return iterator(this, buckets_.size()); }
 
-  const_iterator end() const noexcept {
-    return const_iterator(this, buckets_.size());
-  }
+  const_iterator end() const noexcept { return const_iterator(this, buckets_.size()); }
 
-  const_iterator cend() const noexcept {
-    return const_iterator(this, buckets_.size());
-  }
+  const_iterator cend() const noexcept { return const_iterator(this, buckets_.size()); }
 
   // Capacity
   bool empty() const noexcept { return size() == 0; }
@@ -151,16 +137,12 @@ public:
     size_ = 0;
   }
 
-  std::pair<iterator, bool> insert(const value_type &value) {
-    return emplace_impl(value.first, value.second);
-  }
+  std::pair<iterator, bool> insert(const value_type &value) { return emplace_impl(value.first, value.second); }
 
-  std::pair<iterator, bool> insert(value_type &&value) {
-    return emplace_impl(value.first, std::move(value.second));
-  }
+  std::pair<iterator, bool> insert(value_type &&value) { return emplace_impl(value.first, std::move(value.second)); }
 
   template <typename... Args>
-  std::pair<iterator, bool> emplace(Args &&... args) {
+  std::pair<iterator, bool> emplace(Args &&...args) {
     return emplace_impl(std::forward<Args>(args)...);
   }
 
@@ -168,7 +150,10 @@ public:
 
   size_type erase(const key_type &key) { return erase_impl(key); }
 
-  template <typename K> size_type erase(const K &x) { return erase_impl(x); }
+  template <typename K>
+  size_type erase(const K &x) {
+    return erase_impl(x);
+  }
 
   void swap(HashMap &other) noexcept {
     std::swap(buckets_, other.buckets_);
@@ -179,31 +164,38 @@ public:
   // Lookup
   mapped_type &at(const key_type &key) { return at_impl(key); }
 
-  template <typename K> mapped_type &at(const K &x) { return at_impl(x); }
-
-  const mapped_type &at(const key_type &key) const { return at_impl(key); }
-
-  template <typename K> const mapped_type &at(const K &x) const {
+  template <typename K>
+  mapped_type &at(const K &x) {
     return at_impl(x);
   }
 
-  mapped_type &operator[](const key_type &key) {
-    return emplace_impl(key).first->second;
+  const mapped_type &at(const key_type &key) const { return at_impl(key); }
+
+  template <typename K>
+  const mapped_type &at(const K &x) const {
+    return at_impl(x);
   }
+
+  mapped_type &operator[](const key_type &key) { return emplace_impl(key).first->second; }
 
   size_type count(const key_type &key) const { return count_impl(key); }
 
-  template <typename K> size_type count(const K &x) const {
+  template <typename K>
+  size_type count(const K &x) const {
     return count_impl(x);
   }
 
   iterator find(const key_type &key) { return find_impl(key); }
 
-  template <typename K> iterator find(const K &x) { return find_impl(x); }
+  template <typename K>
+  iterator find(const K &x) {
+    return find_impl(x);
+  }
 
   const_iterator find(const key_type &key) const { return find_impl(key); }
 
-  template <typename K> const_iterator find(const K &x) const {
+  template <typename K>
+  const_iterator find(const K &x) const {
     return find_impl(x);
   }
 
@@ -232,13 +224,13 @@ public:
 
 private:
   template <typename K, typename... Args>
-  std::pair<iterator, bool> emplace_impl(const K &key, Args &&... args) {
+  std::pair<iterator, bool> emplace_impl(const K &key, Args &&...args) {
     assert(!key_equal()(empty_key_, key) && "empty key shouldn't be used");
     reserve(size_ + 1);
     for (size_t idx = key_to_idx(key);; idx = probe_next(idx)) {
       if (key_equal()(buckets_[idx].first, empty_key_)) {
         buckets_[idx].second = mapped_type(std::forward<Args>(args)...);
-        buckets_[idx].first = key;
+        buckets_[idx].first  = key;
         size_++;
         return {iterator(this, idx), true};
       } else if (key_equal()(buckets_[idx].first, key)) {
@@ -259,12 +251,13 @@ private:
       if (diff(bucket, ideal) < diff(idx, ideal)) {
         // swap, bucket is closer to ideal than idx
         buckets_[bucket] = buckets_[idx];
-        bucket = idx;
+        bucket           = idx;
       }
     }
   }
 
-  template <typename K> size_type erase_impl(const K &key) {
+  template <typename K>
+  size_type erase_impl(const K &key) {
     auto it = find_impl(key);
     if (it != end()) {
       erase_impl(it);
@@ -273,7 +266,8 @@ private:
     return 0;
   }
 
-  template <typename K> mapped_type &at_impl(const K &key) {
+  template <typename K>
+  mapped_type &at_impl(const K &key) {
     iterator it = find_impl(key);
     if (it != end()) {
       return it->second;
@@ -281,15 +275,18 @@ private:
     throw std::out_of_range("HashMap::at");
   }
 
-  template <typename K> const mapped_type &at_impl(const K &key) const {
+  template <typename K>
+  const mapped_type &at_impl(const K &key) const {
     return const_cast<HashMap *>(this)->at_impl(key);
   }
 
-  template <typename K> size_t count_impl(const K &key) const {
+  template <typename K>
+  size_t count_impl(const K &key) const {
     return find_impl(key) == end() ? 0 : 1;
   }
 
-  template <typename K> iterator find_impl(const K &key) {
+  template <typename K>
+  iterator find_impl(const K &key) {
     assert(!key_equal()(empty_key_, key) && "empty key shouldn't be used");
     for (size_t idx = key_to_idx(key);; idx = probe_next(idx)) {
       if (key_equal()(buckets_[idx].first, key)) {
@@ -301,7 +298,8 @@ private:
     }
   }
 
-  template <typename K> const_iterator find_impl(const K &key) const {
+  template <typename K>
+  const_iterator find_impl(const K &key) const {
     return const_cast<HashMap *>(this)->find_impl(key);
   }
 
@@ -323,7 +321,7 @@ private:
 
 private:
   key_type empty_key_;
-  buckets buckets_;
-  size_t size_ = 0;
+  buckets  buckets_;
+  size_t   size_ = 0;
 };
-} // namespace rigtorp
+}  // namespace rigtorp

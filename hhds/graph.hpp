@@ -4,9 +4,9 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <string_view>
 #include <vector>
-#include <limits>
 
 #include "graph_node.hpp"
 #include "graph_overflow.hpp"

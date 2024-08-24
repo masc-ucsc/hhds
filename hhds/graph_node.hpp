@@ -2,9 +2,9 @@
 
 #pragma once
 
-#include <cstdint>
 #include <array>
 #include <cassert>
+#include <cstdint>
 #include <vector>
 
 #include "graph_base.hpp"
@@ -52,7 +52,7 @@ public:
       int64_t s    = other_id - self_id;
       bool    fits = s > std::numeric_limits<int16_t>::min() && s < std::numeric_limits<int16_t>::max();
       if (fits) {
-        for(auto i=0u;i<sedge.size();++i) {
+        for (auto i = 0u; i < sedge.size(); ++i) {
           if (sedge[i] != 0) {
             continue;
           }
@@ -73,7 +73,7 @@ public:
 
   bool del_edge(uint32_t self_id, uint32_t other_id) {
     I(self_id != other_id);
-    for(auto i=0u;i<sedge.size();++i) {
+    for (auto i = 0u; i < sedge.size(); ++i) {
       if ((self_id + sedge[i]) != other_id) {
         continue;
       }
@@ -198,6 +198,7 @@ public:
       sedge[sedge.data() - it.get_ptr()] = 0;
     }
   }
+
 private:
   // Node (16 bytes)
   // Byte 0:1
@@ -212,7 +213,6 @@ private:
   uint32_t next_pin_ptr;  // next pointer (pin)
   // void *: Byte 12:15
   uint32_t ledge_or_overflow_or_set;  // ledge is overflow if overflow set
-
 };
 
 };  // namespace hhds
