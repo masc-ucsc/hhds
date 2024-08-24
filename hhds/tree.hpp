@@ -1,7 +1,8 @@
 // This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 #pragma once
 
-// tree.hpp
+#include "iassert.hpp"
+
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -17,6 +18,16 @@
 #include <queue>
 #include <stdexcept>
 #include <vector>
+
+// TODO: PERFORMANCE OPTIMIZATIONS
+//  Currently slower than lh, so not worth it
+//
+//  1-Change SHORT_DELTA to 18, then 7 pointers fit in 128 bits
+//    -Remove the first_child_s_... and use a "int128_t first_child_s;"
+//    -This allows to index directly (remove the switch/case in _get_first_child_s
+//    -Also allows to detect fast if next pointers are ZERO (slow loop in is_last_child)
+//
+//    This uses 460bits isntead of 512, Add padding so that the int128_t is 16 bytes align
 
 namespace hhds {
 /** NOTES for future contributors:
@@ -57,7 +68,7 @@ static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;  // Maximum number 
 static constexpr Short_delta MIN_SHORT_DELTA = -(1 << (SHORT_DELTA - 1));     // Minimum value for short delta
 static constexpr Short_delta MAX_SHORT_DELTA = (1 << (SHORT_DELTA - 1)) - 1;  // Maximum value for short delta
 
-class __attribute__((packed, aligned(64))) Tree_pointers {
+class __attribute__((packed)) Tree_pointers {
 private:
   // We only store the exact ID of parent
   Tree_pos parent : CHUNK_BITS + CHUNK_SHIFT;
@@ -87,6 +98,8 @@ private:
 
   // Helper functions to get and set first child pointers by index
   Short_delta _get_first_child_s(short index) const {
+    I(index>=0 && index<=6);
+
     switch (index) {
       case 0: return first_child_s_0;
       case 1: return first_child_s_1;
@@ -95,11 +108,9 @@ private:
       case 4: return first_child_s_4;
       case 5: return first_child_s_5;
       case 6: return first_child_s_6;
-
-      default:
-        return INVALID;
-        // throw std::out_of_range("_get_first_child_s: Invalid index for first_child_s");
     }
+
+    return INVALID;
   }
 
   void _set_first_child_s(short index, Short_delta value) {
@@ -475,11 +486,8 @@ public:
     sibling_order_iterator(Tree_pos start, tree<X>* tree) : current(start), tree_ptr(tree) {}
 
     sibling_order_iterator& operator++() {
-      if (tree_ptr->get_sibling_next(current) != INVALID) {
-        current = tree_ptr->get_sibling_next(current);
-      } else {
-        current = INVALID;
-      }
+      I(current!=INVALID);
+      current = tree_ptr->get_sibling_next(current);
       return *this;
     }
 
@@ -960,7 +968,8 @@ bool tree<X>::is_last_child(const Tree_pos& self_index) {
       BE CAREFUL HERE THOUGH, DONT SIMPLY CHECK IF THE SHORT DELTA = 0, BUT ASSIGN A SPECIAL VALUE WHICH IS
       -2 ** (SHORT_DELTA_BITS)*/
     // const auto last_child_s_i = pointers_stack[self_chunk_id].get_last_child_s_at(offset);
-    if (_contains_data((self_chunk_id << CHUNK_SHIFT) + offset)) {
+    // if (_contains_data((self_chunk_id << CHUNK_SHIFT) + offset)) {
+    if (pointers_stack[self_chunk_id].get_first_child_s_at(offset) != 0) {
       return false;
     }
   }
