@@ -21,6 +21,8 @@
 #include <iterator>
 #include <cstddef> 
 
+#include "iassert.hpp"
+
 namespace hhds {
 /** NOTES for future contributors:
  * Realize that the total number of bits for the 
@@ -52,10 +54,10 @@ static constexpr short NUM_SHORT_DEL = CHUNK_MASK;                      // Numbe
 static constexpr Tree_pos INVALID = 0;                                  // This is invalid for all pointers other than parent
 static constexpr Tree_pos ROOT = 1 << CHUNK_SHIFT;                      // ROOT ID
 
-static constexpr short CHUNK_BITS = 43;                                 // Number of chunks in a tree node
-static constexpr short SHORT_DELTA = 21;                                // Amount of short delta allowed
+static constexpr short CHUNK_BITS = 50;                                 // Number of chunks in a tree node
+static constexpr short SHORT_DELTA = 18;                                // Amount of short delta allowed
 
-static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;            // Maximum number of nodes in the tree
+static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;            // Maximum number of chunks in the tree
 
 static constexpr Short_delta MIN_SHORT_DELTA = -(1 << (SHORT_DELTA - 1));     // Minimum value for short delta
 static constexpr Short_delta MAX_SHORT_DELTA = (1 << (SHORT_DELTA - 1)) - 1;  // Maximum value for short delta
@@ -71,111 +73,51 @@ private:
     Tree_pos first_child_l              : CHUNK_BITS;
     Tree_pos last_child_l               : CHUNK_BITS;
 
-    // Short (delta) child pointers
-    Short_delta first_child_s_0         : SHORT_DELTA;
-    Short_delta first_child_s_1         : SHORT_DELTA;
-    Short_delta first_child_s_2         : SHORT_DELTA;
-    Short_delta first_child_s_3         : SHORT_DELTA;
-    Short_delta first_child_s_4         : SHORT_DELTA;
-    Short_delta first_child_s_5         : SHORT_DELTA;
-    Short_delta first_child_s_6         : SHORT_DELTA;
+    // Track number of occupied short delta pointers
+    unsigned short num_occupied         : CHUNK_SHIFT;
 
-    Short_delta last_child_s_0          : SHORT_DELTA;
-    Short_delta last_child_s_1          : SHORT_DELTA;
-    Short_delta last_child_s_2          : SHORT_DELTA;
-    Short_delta last_child_s_3          : SHORT_DELTA;
-    Short_delta last_child_s_4          : SHORT_DELTA;
-    Short_delta last_child_s_5          : SHORT_DELTA;
-    Short_delta last_child_s_6          : SHORT_DELTA;
+    // Short (delta) child pointers
+    __int128 first_child_s              : SHORT_DELTA;
+    __int128 last_child_s               : SHORT_DELTA;
 
     // Helper functions to get and set first child pointers by index
-    Short_delta _get_first_child_s(short index) const {
-        switch (index) {
-            case 0: return first_child_s_0;
-            case 1: return first_child_s_1;
-            case 2: return first_child_s_2;
-            case 3: return first_child_s_3;
-            case 4: return first_child_s_4;
-            case 5: return first_child_s_5;
-            case 6: return first_child_s_6;
-            
-            default: return INVALID;
-            // throw std::out_of_range("_get_first_child_s: Invalid index for first_child_s");
-        }
+    inline Short_delta _get_first_child_s(short index) const {
+        return (first_child_s >> (index * CHUNK_SHIFT)) & CHUNK_MASK;
     }
 
-    void _set_first_child_s(short index, Short_delta value) {
-        switch (index) {
-            case 0: first_child_s_0 = value; break;
-            case 1: first_child_s_1 = value; break;
-            case 2: first_child_s_2 = value; break;
-            case 3: first_child_s_3 = value; break;
-            case 4: first_child_s_4 = value; break;
-            case 5: first_child_s_5 = value; break;
-            case 6: first_child_s_6 = value; break;
-            
-            default: break;
-            // throw std::out_of_range("_set_first_child_s: Invalid index for first_child_s");
-        }
+    inline void _set_first_child_s(short index, Short_delta value) {
+        first_child_s &= ~((__int128)CHUNK_MASK << (index * CHUNK_SHIFT));
+        first_child_s |= ((__int128)value << (index * CHUNK_SHIFT));
     }
 
     // Helper functions to get and set last child pointers by index
-    Short_delta _get_last_child_s(short index) const {
-        switch (index) {
-            case 0: return last_child_s_0;
-            case 1: return last_child_s_1;
-            case 2: return last_child_s_2;
-            case 3: return last_child_s_3;
-            case 4: return last_child_s_4;
-            case 5: return last_child_s_5;
-            case 6: return last_child_s_6;
-            
-            default: return INVALID;
-            // throw std::out_of_range("_get_last_child_s: Invalid index for last_child_s");
-        }
+    inline Short_delta _get_last_child_s(short index) const {
+        return (last_child_s >> (index * CHUNK_SHIFT)) & CHUNK_MASK;
     }
 
-    void _set_last_child_s(short index, Short_delta value) {
-        switch (index) {
-            case 0: last_child_s_0 = value; break;
-            case 1: last_child_s_1 = value; break;
-            case 2: last_child_s_2 = value; break;
-            case 3: last_child_s_3 = value; break;
-            case 4: last_child_s_4 = value; break;
-            case 5: last_child_s_5 = value; break;
-            case 6: last_child_s_6 = value; break;
-
-            default: break;
-            // throw std::out_of_range("_get_last_child_s: Invalid index for last_child_s");
-        }
+    inline void _set_last_child_s(short index, Short_delta value) {
+        last_child_s &= ~((__int128)CHUNK_MASK << (index * CHUNK_SHIFT));
+        last_child_s |= ((__int128)value << (index * CHUNK_SHIFT));
     }
 
 // :private
 
 public:
     /* DEFAULT CONSTRUCTOR */
-    // Parent can be = 0 for someone, but it can never be MAX_TREE_SIZE
-    // That is why the best way to invalidate is to set it to MAX_TREE_SIZE
-    // for every other entry INVALID is the best choice
     Tree_pointers()
-        : parent(INVALID), next_sibling(INVALID), prev_sibling(INVALID),
-          first_child_l(INVALID), last_child_l(INVALID) {
-            for (short i = 0; i < NUM_SHORT_DEL; i++) {
-                _set_first_child_s(i, INVALID);
-                _set_last_child_s(i, INVALID);
-            }
-        }
+        : parent(INVALID), 
+          next_sibling(INVALID), prev_sibling(INVALID),
+          first_child_l(INVALID), last_child_l(INVALID), 
+          num_occupied(0), 
+          first_child_s(INVALID), last_child_s(INVALID) {}
 
     /* PARAM CONSTRUCTOR */
     Tree_pointers(Tree_pos p)
         : parent(p), 
-            next_sibling(INVALID), prev_sibling(INVALID), 
-            first_child_l(INVALID), last_child_l(INVALID) {
-            for (short i = 0; i < NUM_SHORT_DEL; i++) {
-                _set_first_child_s(i, INVALID);
-                _set_last_child_s(i, INVALID);
-            }
-        }
+          next_sibling(INVALID), prev_sibling(INVALID), 
+          first_child_l(INVALID), last_child_l(INVALID),
+          num_occupied(0), 
+          first_child_s(INVALID), last_child_s(INVALID) {}
 
     // Getters
     Tree_pos get_parent() const { return parent; }
@@ -192,6 +134,9 @@ public:
         return _get_last_child_s(index); 
     }
 
+    // Getter for num_occ
+    unsigned short get_num_occupied() const { return num_occupied; }
+
     // Setters
     void set_parent(Tree_pos p) { parent = p; }
     void set_next_sibling(Tree_pos ns) { next_sibling = ns; }
@@ -200,27 +145,25 @@ public:
     void set_last_child_l(Tree_pos lcl) { last_child_l = lcl; }
 
     // Setters for short child pointers
-    void set_first_child_s_at(short index, Short_delta fcs) { 
+    void set_first_child_s_at(short index, Short_delta fcs) {
         _set_first_child_s(index, fcs); 
     }
     void set_last_child_s_at(short index, Short_delta lcs) {
         _set_last_child_s(index, lcs); 
     }
 
+    // Setter for num_occ
+    void set_num_occupied(unsigned short num) { num_occupied = num; }
+
     // Operators
     constexpr bool operator==(const Tree_pointers& other) const {
-        for (short i = 0; i < 7; i++) {
-            if (_get_first_child_s(i) != other._get_first_child_s(i) ||
-                _get_last_child_s(i) != other._get_last_child_s(i)) {
-                return false;
-            }
-        }
-
         return  parent == other.parent && 
                 next_sibling == other.next_sibling &&
                 prev_sibling == other.prev_sibling && 
                 first_child_l == other.first_child_l &&
-                last_child_l == other.last_child_l;
+                last_child_l == other.last_child_l &&
+                first_child_s == other.first_child_s &&
+                last_child_s == other.last_child_s;
     }
 
     constexpr bool operator!=(const Tree_pointers& other) const { return !(*this == other); }
@@ -237,22 +180,18 @@ private:
     std::vector<std::optional<X>>           data_stack;
 
     /* Special functions for sanity */
-    bool _check_idx_exists(const Tree_pos &idx) const noexcept {
+    inline bool _check_idx_exists(const Tree_pos &idx) const noexcept {
         // idx >= 0 not needed for unsigned int
-        return idx < static_cast<Tree_pos>(data_stack.size());
+        return idx < static_cast<Tree_pos>(pointers_stack.size() << CHUNK_SHIFT);
     }
-    bool _contains_data(const Tree_pos &idx) const noexcept {
-        return (idx < data_stack.size() && data_stack[idx].has_value());
+
+    inline bool _contains_data(const Tree_pos &idx) const noexcept {
+        return (pointers_stack[idx >> CHUNK_SHIFT].get_num_occupied() >= (idx & CHUNK_MASK));
+        // return (idx < data_stack.size() && data_stack[idx].has_value());
     }
 
     /* Function to add an entry to the pointers and data stack (typically for add/append)*/
-    inline Tree_pos _create_space(const X& data) {
-        // if (pointers_stack.size() >= MAX_TREE_SIZE) {
-        //     throw std::out_of_range("_create_space: Tree size exceeded");
-        // } else if (!_check_idx_exists(parent_index)) {
-        //     throw std::out_of_range("_create_space: Parent index out of range");
-        // }
-
+    Tree_pos _create_space(const X& data) {
         // Make space for CHUNK_SIZE number of entries at the end
         data_stack.emplace_back(data);
         data_stack.resize(data_stack.size() + CHUNK_MASK);
@@ -264,13 +203,7 @@ private:
     }
 
     /* Function to insert a new chunk in between (typically for handling add/append corner cases)*/
-    inline Tree_pos _insert_chunk_after(const Tree_pos &curr) {
-        // if (pointers_stack.size() >= MAX_TREE_SIZE) {
-        //     throw std::out_of_range("_insert_chunk_after: Tree size exceeded");
-        // } else if (!_check_idx_exists(curr)) {
-        //     throw std::out_of_range("_insert_chunk_after: Current index out of range");
-        // }
-        
+    Tree_pos _insert_chunk_after(const Tree_pos &curr) {
         // Allot new chunk at the end
         const auto new_chunk_id = _create_space(X());
 
@@ -296,6 +229,9 @@ private:
 
     /* Helper function to update the parent pointer of all sibling chunks*/
     void _update_parent_pointer(const Tree_pos &first_child, const Tree_pos &new_parent_id) {
+        I(_check_idx_exists(first_child), "First child index out of range");
+        I(_check_idx_exists(new_parent_id), "New parent index out of range");
+
         auto curr_chunk_id = (first_child >> CHUNK_SHIFT);
 
         while (curr_chunk_id != INVALID) {
@@ -305,10 +241,8 @@ private:
     }
 
     Tree_pos _try_fit_child_ptr(const Tree_pos &parent_id, const Tree_pos &child_id) {
-        // Check and throw accordingly
-        // if (!_check_idx_exists(parent_id) || !_check_idx_exists(child_id)) {
-        //     throw std::out_of_range("_try_fit_child_ptr: Index out of range");
-        // }
+        I(_check_idx_exists(parent_id), "First parent_id index out of range");
+        I(_check_idx_exists(child_id), "child_id index out of range");
 
         /* BASE CASE OF THE RECURSION */
         // If parent has long ptr access, this is easy
@@ -357,7 +291,7 @@ private:
 
                 // Remove data from old, and put it here
                 data_stack[new_chunk_id << CHUNK_SHIFT] = data_stack[curr_id];
-                data_stack[curr_id] = X();
+                data_stack[curr_id] = std::nullopt;
 
                 // Convert the short pointers here to long pointers there
                 const auto fc = pointers_stack[parent_chunk_id].get_first_child_s_at(offset);
@@ -375,6 +309,8 @@ private:
                 pointers_stack[parent_chunk_id].set_last_child_s_at(offset, INVALID);
             }
         }
+        // Decrement the number of occupied slots in the chunk
+        pointers_stack[parent_chunk_id].set_num_occupied(parent_chunk_offset - 1);
 
         // Try fitting the last chunk here in the grandparent. Recurse.
         const auto my_new_parent = _try_fit_child_ptr(grandparent_id,
@@ -396,13 +332,13 @@ public:
     /**
      *  Query based API (no updates)
     */
-    Tree_pos get_parent(const Tree_pos& curr_index);
-    Tree_pos get_last_child(const Tree_pos& parent_index);
-    Tree_pos get_first_child(const Tree_pos& parent_index);
-    bool is_last_child(const Tree_pos& self_index);
-    bool is_first_child(const Tree_pos& self_index);
-    Tree_pos get_sibling_next(const Tree_pos& sibling_id);
-    Tree_pos get_sibling_prev(const Tree_pos& sibling_id);
+    Tree_pos get_parent(const Tree_pos& curr_index) const;
+    Tree_pos get_last_child(const Tree_pos& parent_index) const;
+    Tree_pos get_first_child(const Tree_pos& parent_index) const;
+    bool is_last_child(const Tree_pos& self_index) const;
+    bool is_first_child(const Tree_pos& self_index) const;
+    Tree_pos get_sibling_next(const Tree_pos& sibling_id) const;
+    Tree_pos get_sibling_prev(const Tree_pos& sibling_id) const;
     bool is_leaf (const Tree_pos& leaf_index) const;
 
     /**
@@ -423,25 +359,21 @@ public:
      * Data access API
      */
     X& get_data(const Tree_pos& idx) {
-        // if (!_check_idx_exists(idx) || !data_stack[idx].has_value()) {
-        //     throw std::out_of_range("get_data: Index out of range or no data at index");
-        // }
+        GI(_check_idx_exists(idx), data_stack[idx].has_value(),
+           "Index out of range or no data at the index");
 
         return data_stack[idx].value();
     }
 
     const X& get_data(const Tree_pos& idx) const {
-        // if (!_check_idx_exists(idx) || !data_stack[idx].has_value()) {
-        //     throw std::out_of_range("get_data: Index out of range or no data at index");
-        // }
+        GI(_check_idx_exists(idx), data_stack[idx].has_value(),
+           "Index out of range or no data at the index");
 
         return data_stack[idx].value();
     }
 
     void set_data(const Tree_pos& idx, const X& data) {
-        // if (!_check_idx_exists(idx)) {
-        //     throw std::out_of_range("set_data: Index out of range");
-        // }
+        I(_check_idx_exists(idx), "Index out of range");
 
         data_stack[idx] = data;
     }
@@ -461,7 +393,8 @@ public:
             std::cout << "First Child: " << pointers_stack[i].get_first_child_l() << " ";
             std::cout << "Last Child: " << pointers_stack[i].get_last_child_l() << " ";
             std::cout << "Next Sibling: " << pointers_stack[i].get_next_sibling() << " ";
-            std::cout << "Prev Sibling: " << pointers_stack[i].get_prev_sibling() << std::endl;
+            std::cout << "Prev Sibling: " << pointers_stack[i].get_prev_sibling() << " ";
+            std::cout << "Num Occ: " << pointers_stack[i].get_num_occupied() << std::endl;
             std::cout << std::endl;
         }
 
@@ -916,13 +849,11 @@ public:
  * @param curr_index The absolute ID of the current node.
  * @return Tree_pos The absolute ID of the parent, INVALID if none
  * 
- * @throws std::out_of_range If current index is out of range
+ * @assert If the index is out of range
 */
 template<typename X>
-Tree_pos tree<X>::get_parent(const Tree_pos& curr_index) {
-    // if (!_check_idx_exists(curr_index)) {
-    //     throw std::out_of_range("get_parent: Index out of range");
-    // }
+Tree_pos tree<X>::get_parent(const Tree_pos& curr_index) const {
+    I(_check_idx_exists(curr_index), "get_parent: Index out of range");
 
     return pointers_stack[curr_index >> CHUNK_SHIFT].get_parent();
 }
@@ -933,13 +864,11 @@ Tree_pos tree<X>::get_parent(const Tree_pos& curr_index) {
  * @param leaf_index The absolute ID of the node.
  * @return true If the node is a leaf node.
  * 
- * @throws std::out_of_range If the query index is out of range
+ * @assert If the index is out of range
  */
 template <typename X>
 bool tree<X>::is_leaf(const Tree_pos& leaf_index) const {
-    // if (!_check_idx_exists(leaf_index)) {
-    //     throw std::out_of_range("is_leaf: Index out of range");
-    // }
+    I(_check_idx_exists(leaf_index), "is_leaf: Index out of range");
 
     if (leaf_index & CHUNK_MASK) {
         return pointers_stack[leaf_index >> CHUNK_SHIFT].get_first_child_s_at(
@@ -958,10 +887,8 @@ bool tree<X>::is_leaf(const Tree_pos& leaf_index) const {
  * @throws std::out_of_range If the parent index is out of range
 */
 template <typename X>
-Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) {
-    // if (!_check_idx_exists(parent_index)) {
-    //     throw std::out_of_range("get_last_child: Parent index out of range");
-    // }
+Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) const {
+    I(_check_idx_exists(parent_index), "get_last_child: Parent index out of range");
 
     const auto chunk_id = (parent_index >> CHUNK_SHIFT);
     const auto chunk_offset = (parent_index & CHUNK_MASK);
@@ -978,32 +905,9 @@ Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) {
         child_chunk_id = pointers_stack[chunk_id].get_last_child_l();
     }
 
-    // // Binary search to find the first vacant spot in the child chunk
-    // short low = -1, high = CHUNK_SIZE;
-    // while (high - low > 1) {
-    //     short mid = (low + high) >> 1;
-    //     if (_contains_data((child_chunk_id << CHUNK_SHIFT) + mid)) {
-    //         low = mid;
-    //     } else {
-    //         high = mid;
-    //     }
-    // }
-
-    // // Return the last occupied in child chunk
-    // if (low >= 0) {
-    //     return static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) + low);
-    // }
-
-    // Iterate in reverse to find the last occupied in child chunk
-    if (child_chunk_id != INVALID) {
-        for (short offset = NUM_SHORT_DEL; offset >= 0; offset--) {
-            if (_contains_data((child_chunk_id << CHUNK_SHIFT) + offset)) {
-                return static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) + offset);
-            }
-        } 
-    }
-
-    return static_cast<Tree_pos>(INVALID);
+    return (child_chunk_id == INVALID) ? (static_cast<Tree_pos>(INVALID))
+                                       : (static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) 
+                                                                + pointers_stack[child_chunk_id].get_num_occupied()));
 }
 
 /**
@@ -1015,7 +919,7 @@ Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) {
  * @throws std::out_of_range If the parent index is out of range
 */
 template <typename X>
-Tree_pos tree<X>::get_first_child(const Tree_pos& parent_index) {
+Tree_pos tree<X>::get_first_child(const Tree_pos& parent_index) const {
     // if (!_check_idx_exists(parent_index)) {
     //     throw std::out_of_range("get_first_child: Parent index out of range");
     // }
@@ -1048,10 +952,8 @@ Tree_pos tree<X>::get_first_child(const Tree_pos& parent_index) {
  * @throws std::out_of_range If the query index is out of range
 */
 template <typename X>
-bool tree<X>::is_last_child(const Tree_pos& self_index) {
-    // if (!_check_idx_exists(self_index)) {
-    //     throw std::out_of_range("is_last_child: Index out of range");
-    // }
+bool tree<X>::is_last_child(const Tree_pos& self_index) const {
+    I(_check_idx_exists(self_index), "is_last_child: Index out of range");
 
     const auto self_chunk_id = (self_index >> CHUNK_SHIFT);
     const auto self_chunk_offset = (self_index & CHUNK_MASK);
@@ -1061,18 +963,14 @@ bool tree<X>::is_last_child(const Tree_pos& self_index) {
         return false;
     }
 
-    // Now, to be the last child, all entries after this should be invalid
-    for (short offset = self_chunk_offset; offset < NUM_SHORT_DEL; offset++) {
-        /* POSSIBLE IMPROVEMENT, instead of checking the data pointers track,just check if the pointer is MIN_VAL
-          BE CAREFUL HERE THOUGH, DONT SIMPLY CHECK IF THE SHORT DELTA = 0, BUT ASSIGN A SPECIAL VALUE WHICH IS 
-          -2 ** (SHORT_DELTA_BITS)*/
-        // const auto last_child_s_i = pointers_stack[self_chunk_id].get_last_child_s_at(offset);
-        if (_contains_data((self_chunk_id << CHUNK_SHIFT) + offset)) {
-            return false;
-        }
-    }
+    return pointers_stack[self_chunk_id].get_num_occupied() == self_chunk_offset;
 
-    return true;
+    // Now, to be the last child, all entries after this should be invalid
+    // for (short offset = self_chunk_offset; offset < NUM_SHORT_DEL; offset++) {
+    //     if (_contains_data((self_chunk_id << CHUNK_SHIFT) + offset)) {
+    //         return false;
+    //     }
+    // }
 }
 
 /**
@@ -1084,10 +982,8 @@ bool tree<X>::is_last_child(const Tree_pos& self_index) {
  * @throws std::out_of_range If the query index is out of range
 */
 template <typename X>
-bool tree<X>::is_first_child(const Tree_pos& self_index) {
-    // if (!_check_idx_exists(self_index)) {
-    //     throw std::out_of_range("is_first_child: Index out of range");
-    // }
+bool tree<X>::is_first_child(const Tree_pos& self_index) const {
+    I(_check_idx_exists(self_index), "is_first_child: Index out of range");
 
     const auto self_chunk_id = (self_index >> CHUNK_SHIFT);
     const auto self_chunk_offset = (self_index & CHUNK_MASK);
@@ -1098,11 +994,7 @@ bool tree<X>::is_first_child(const Tree_pos& self_index) {
     }
 
     // Now, to be the first child, it must have no offset
-    if (self_chunk_offset) {
-        return false;
-    }
-
-    return true;
+    return !self_chunk_offset;
 }
 
 /**
@@ -1114,10 +1006,8 @@ bool tree<X>::is_first_child(const Tree_pos& self_index) {
  * @throws std::out_of_range If the sibling index is out of range
 */
 template <typename X>
-Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) {
-    // if (!_check_idx_exists(sibling_id)) {
-    //     throw std::out_of_range("get_sibling_next: Sibling index out of range");
-    // }
+Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) const {
+    I(_check_idx_exists(sibling_id), "get_sibling_next: Sibling index out of range");
 
     // If this is the last child, no next sibling
     if (is_last_child(sibling_id)) {
@@ -1147,10 +1037,8 @@ Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) {
  *       happens if someone is deleted from the middle
 */
 template <typename X>
-Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) {
-    // if (!_check_idx_exists(sibling_id)) {
-    //     throw std::out_of_range("get_sibling_prev: Sibling index out of range");
-    // }
+Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
+    I(_check_idx_exists(sibling_id), "get_sibling_prev: Sibling index out of range");
 
     // If this is the first child, no prev sibling
     if (is_first_child(sibling_id)) {
@@ -1169,15 +1057,17 @@ Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) {
     const auto prev_sibling = pointers_stack[curr_chunk_id].get_prev_sibling();
     
     // Find the last occupied in the prev sibling chunk
-    if (prev_sibling != INVALID) {
-        for (short offset = NUM_SHORT_DEL - 1; offset >= 0; offset--) {
-            if (_contains_data(prev_sibling + offset)) {
-                return static_cast<Tree_pos>(prev_sibling + offset);
-            }
-        }
-    }
-
-    return INVALID;
+    return (prev_sibling == INVALID) ? INVALID 
+          : static_cast<Tree_pos>((prev_sibling << CHUNK_SHIFT) 
+                                  + pointers_stack[prev_sibling].get_num_occupied());
+    // // TODOTODO
+    // if (prev_sibling != INVALID) {
+    //     for (short offset = NUM_SHORT_DEL - 1; offset >= 0; offset--) {
+    //         if (_contains_data(prev_sibling + offset)) {
+    //             return static_cast<Tree_pos>(prev_sibling + offset);
+    //         }
+    //     }
+    // }
 }
 
 /**
@@ -1217,6 +1107,11 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
     if (new_parent_id != parent_id) {
         _update_parent_pointer(first_sib, new_parent_id);
     }
+
+    // Increment the number of occupied slots in the sibling chunk
+    pointers_stack[new_sib >> CHUNK_SHIFT].set_num_occupied(
+                                                ((unsigned)new_sib & CHUNK_MASK)
+                                            );
 
     return new_sib;
 }
@@ -1287,6 +1182,9 @@ Tree_pos tree<X>::add_root(const X& data) {
     // Add the single pointer node for all CHUNK_SIZE entries
     pointers_stack.emplace_back();
 
+    // Set num occupied to 1
+    pointers_stack[ROOT].set_num_occupied(0);
+
     return (data_stack.size() - CHUNK_SIZE);
 }
 
@@ -1316,6 +1214,9 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
     const auto new_parent_id = _try_fit_child_ptr(parent_index, 
                                                   child_chunk_id << CHUNK_SHIFT);
     pointers_stack[child_chunk_id].set_parent(new_parent_id);
+
+    // Set num occupied to 1
+    pointers_stack[child_chunk_id].set_num_occupied(0);
 
     return child_chunk_id << CHUNK_SHIFT;
 }
