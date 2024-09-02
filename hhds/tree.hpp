@@ -82,22 +82,22 @@ private:
 
     // Helper functions to get and set first child pointers by index
     inline Short_delta _get_first_child_s(short index) const {
-        return (first_child_s >> (index * CHUNK_SHIFT)) & CHUNK_MASK;
+        return (first_child_s >> (index * SHORT_DELTA)) & ((1 << SHORT_DELTA) - 1);
     }
 
     inline void _set_first_child_s(short index, Short_delta value) {
-        first_child_s &= ~((__int128)CHUNK_MASK << (index * CHUNK_SHIFT));
-        first_child_s |= ((__int128)value << (index * CHUNK_SHIFT));
+        first_child_s &= ~((__int128)((1 << SHORT_DELTA) - 1) << (index * SHORT_DELTA));
+        first_child_s |= ((__int128)value << (index * SHORT_DELTA));
     }
 
     // Helper functions to get and set last child pointers by index
     inline Short_delta _get_last_child_s(short index) const {
-        return (last_child_s >> (index * CHUNK_SHIFT)) & CHUNK_MASK;
+        return (last_child_s >> (index * SHORT_DELTA)) & ((1 << SHORT_DELTA) - 1);
     }
 
     inline void _set_last_child_s(short index, Short_delta value) {
-        last_child_s &= ~((__int128)CHUNK_MASK << (index * CHUNK_SHIFT));
-        last_child_s |= ((__int128)value << (index * CHUNK_SHIFT));
+        last_child_s &= ~((__int128)((1 << SHORT_DELTA) - 1) << (index * SHORT_DELTA));
+        last_child_s |= ((__int128)value << (index * SHORT_DELTA));
     }
 
 // :private
@@ -186,8 +186,8 @@ private:
     }
 
     inline bool _contains_data(const Tree_pos &idx) const noexcept {
-        return (pointers_stack[idx >> CHUNK_SHIFT].get_num_occupied() >= (idx & CHUNK_MASK));
-        // return (idx < data_stack.size() && data_stack[idx].has_value());
+        // return (pointers_stack[idx >> CHUNK_SHIFT].get_num_occupied() >= (idx & CHUNK_MASK));
+        return (idx < data_stack.size() && data_stack[idx].has_value());
     }
 
     /* Function to add an entry to the pointers and data stack (typically for add/append)*/
@@ -253,7 +253,6 @@ private:
             }
             return parent_id;
         }
-
 
         // Now, try to fit the child in the short delta
         const auto parent_chunk_id = (parent_id >> CHUNK_SHIFT);
@@ -389,7 +388,7 @@ public:
      */
     void print_tree(int deep = 0) {
         for (size_t i = 0; i < pointers_stack.size(); i++) {
-            std::cout << "Index: " << i << " Parent: " << pointers_stack[i].get_parent() << " Data: " << data_stack[i << CHUNK_SHIFT].value_or(-1) << std::endl;
+            std::cout << "Index: " << (i << CHUNK_SHIFT) << " Parent: " << pointers_stack[i].get_parent() << " Data: " << data_stack[i << CHUNK_SHIFT].value_or(-1) << std::endl;
             std::cout << "First Child: " << pointers_stack[i].get_first_child_l() << " ";
             std::cout << "Last Child: " << pointers_stack[i].get_last_child_l() << " ";
             std::cout << "Next Sibling: " << pointers_stack[i].get_next_sibling() << " ";
@@ -931,12 +930,12 @@ Tree_pos tree<X>::get_first_child(const Tree_pos& parent_index) const {
                                     : INVALID;
 
     Tree_pos child_chunk_id = INVALID;
-    if (chunk_offset and (first_child_s_i != INVALID)) {
+    if (!chunk_offset) {
         // If the short delta contains a value, go to this nearby chunk
-        child_chunk_id = chunk_id + first_child_s_i;
-    } else {
-        // The first entry will always have the chunk id of the child
         child_chunk_id = pointers_stack[chunk_id].get_first_child_l();
+    } else if (first_child_s_i != INVALID) {
+        // The first entry will always have the chunk id of the child
+        child_chunk_id = chunk_id + first_child_s_i;
     }
 
     // The beginning of the chunk IS the first child (always)
@@ -1213,9 +1212,10 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
     const auto child_chunk_id = _create_space(data);
     const auto new_parent_id = _try_fit_child_ptr(parent_index, 
                                                   child_chunk_id << CHUNK_SHIFT);
+
     pointers_stack[child_chunk_id].set_parent(new_parent_id);
 
-    // Set num occupied to 1
+    // Set num occupied to 0
     pointers_stack[child_chunk_id].set_num_occupied(0);
 
     return child_chunk_id << CHUNK_SHIFT;

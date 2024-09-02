@@ -20,6 +20,7 @@ int generate_random_int(std::default_random_engine& generator, int min, int max)
 void preorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {
     for (const auto& node : tree.pre_order()) {
         result.push_back(tree[node]);
+        // std::cout << node << std::endl;
         // Use the sibling order iterator here
         std::vector<int> sibling_data;
         for (const auto& sibling : tree.sibling_order(node)) {
@@ -109,12 +110,18 @@ void test_chip_tree() {
             int num_children = generate_random_int(generator, 1, 7);
             std::vector<int> children_data;
 
+            // std::cout << "ADDING CHILDREN: " << num_children << " to " << hhds_node << std::endl;
+            // Try to print the bookkeeping in the pointers stack[64]
+
             for (int i = 0; i < num_children; ++i) {
                 int data = id++;
                 auto added = hhds_tree.add_child(hhds_node, data);
 
                 hhds_next_level.push_back(added);
                 children_data.push_back(data);
+
+                // hhds_tree.print_tree(1);
+                // std::cout << "-------------------" << std::endl;
             }
             level_data.push_back(children_data);
         }
@@ -128,9 +135,9 @@ void test_chip_tree() {
 
         hhds_current_level = hhds_next_level;
         lh_current_level = lh_next_level;
+
     }
 
-    hhds_tree.print_tree(1);
 
     std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, lh_postorder;
     preorder_traversal_hhds(hhds_tree, hhds_preorder);
@@ -138,15 +145,15 @@ void test_chip_tree() {
     postorder_traversal_hhds(hhds_tree, hhds_postorder);
     postorder_traversal_lhtree(lh_tree, lh_postorder);
 
-    // std::cout << "HHDS Preorder: \n";
-    // for (auto i : hhds_preorder) {
-    //     std::cout << i << " ";
-    // }
+    std::cout << "HHDS Preorder: \n";
+    for (auto i : hhds_preorder) {
+        std::cout << i << " ";
+    }
 
-    // std::cout << "\nLH Preorder: \n";
-    // for (auto i : lh_preorder) {
-    //     std::cout << i << " ";
-    // }
+    std::cout << "\nLH Preorder: \n";
+    for (auto i : lh_preorder) {
+        std::cout << i << " ";
+    }
 
     bool sib_valid = true;
     for (auto i = 0; i < hhds_sibling_data.size(); ++i) {
