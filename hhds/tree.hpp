@@ -80,6 +80,7 @@ private:
     __int128 first_child_s              : SHORT_DELTA;
     __int128 last_child_s               : SHORT_DELTA;
 
+    /* BUGGY START*/
     // Helper functions to get and set first child pointers by index
     inline Short_delta _get_first_child_s(short index) const {
         return (first_child_s >> (index * SHORT_DELTA)) & ((1 << SHORT_DELTA) - 1);
@@ -92,13 +93,28 @@ private:
 
     // Helper functions to get and set last child pointers by index
     inline Short_delta _get_last_child_s(short index) const {
-        return (last_child_s >> (index * SHORT_DELTA)) & ((1 << SHORT_DELTA) - 1);
+        return (last_child_s >> (index * SHORT_DELTA)) & ((static_cast<__int128>(1) << SHORT_DELTA) - 1);
     }
 
     inline void _set_last_child_s(short index, Short_delta value) {
-        last_child_s &= ~((__int128)((1 << SHORT_DELTA) - 1) << (index * SHORT_DELTA));
-        last_child_s |= ((__int128)value << (index * SHORT_DELTA));
+        __int128 mask = (static_cast<__int128>(1) << SHORT_DELTA) - static_cast<__int128>(1);
+
+        // This is what the mask looks like before
+        // for (int i = 0; i < 128; i++) std::cout << !!(mask & (static_cast<__int128>(1) << i));
+        // std::cout << std::endl;
+
+        // We shift the mask to the left by the index * SHORT_DELTA (a window of 1s appearing SHORT_DELTA times, starting at index)
+        mask = mask << static_cast<__int128>(index * SHORT_DELTA);
+        
+        // This is what the mask looks like after
+        // for (int i = 0; i < 128; i++) std::cout << !!(mask & (static_cast<__int128>(1) << i));
+        // std::cout << std::endl;
+        // BUG / UB: The mask does not change at all!!
+
+        last_child_s &= ~mask;
+        last_child_s |= (static_cast<__int128>(value) << (index * SHORT_DELTA));
     }
+    /* BUGGY END*/
 
 // :private
 
@@ -186,8 +202,8 @@ private:
     }
 
     inline bool _contains_data(const Tree_pos &idx) const noexcept {
-        // return (pointers_stack[idx >> CHUNK_SHIFT].get_num_occupied() >= (idx & CHUNK_MASK));
-        return (idx < data_stack.size() && data_stack[idx].has_value());
+        return (pointers_stack[idx >> CHUNK_SHIFT].get_num_occupied() >= (idx & CHUNK_MASK));
+        // return (idx < data_stack.size() && data_stack[idx].has_value());
     }
 
     /* Function to add an entry to the pointers and data stack (typically for add/append)*/
@@ -266,6 +282,7 @@ private:
                 pointers_stack[parent_chunk_id].set_first_child_s_at(parent_chunk_offset - 1, 
                                                                     (child_id >> CHUNK_SHIFT) - parent_chunk_id);
             }
+
             return parent_id;
         }
 
