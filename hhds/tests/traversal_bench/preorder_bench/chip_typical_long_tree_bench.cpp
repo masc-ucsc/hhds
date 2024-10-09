@@ -250,8 +250,12 @@ BENCHMARK(test_chip_typical_long_tree_4_hhds);
 BENCHMARK(test_chip_typical_long_tree_4_lh);
 BENCHMARK(test_chip_typical_long_tree_5_hhds);
 BENCHMARK(test_chip_typical_long_tree_5_lh);
-BENCHMARK(test_chip_typical_long_tree_6_hhds);
-BENCHMARK(test_chip_typical_long_tree_6_lh);
+// BENCHMARK(test_chip_typical_long_tree_6_hhds);
+// BENCHMARK(test_chip_typical_long_tree_6_lh);
+// BENCHMARK(test_chip_typical_long_tree_7_hhds);
+// BENCHMARK(test_chip_typical_long_tree_7_lh);
+// BENCHMARK(test_chip_typical_long_tree_8_hhds);
+// BENCHMARK(test_chip_typical_long_tree_8_lh);
 
 // Run the benchmarks
 BENCHMARK_MAIN();

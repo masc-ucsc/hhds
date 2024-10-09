@@ -77,17 +77,16 @@ private:
     unsigned short num_occupied         : CHUNK_SHIFT;
 
     // Short (delta) child pointers
-    __int128 first_child_s              : SHORT_DELTA;
-    __int128 last_child_s               : SHORT_DELTA;
+    __int128 first_child_s;
+    __int128 last_child_s;
 
-    /* BUGGY START*/
     // Helper functions to get and set first child pointers by index
     inline Short_delta _get_first_child_s(short index) const {
         return (first_child_s >> (index * SHORT_DELTA)) & ((1 << SHORT_DELTA) - 1);
     }
 
     inline void _set_first_child_s(short index, Short_delta value) {
-        first_child_s &= ~((__int128)((1 << SHORT_DELTA) - 1) << (index * SHORT_DELTA));
+        first_child_s &= ~((__int128)((static_cast<__int128>(1) << SHORT_DELTA) - 1) << (index * SHORT_DELTA));
         first_child_s |= ((__int128)value << (index * SHORT_DELTA));
     }
 
@@ -97,24 +96,9 @@ private:
     }
 
     inline void _set_last_child_s(short index, Short_delta value) {
-        __int128 mask = (static_cast<__int128>(1) << SHORT_DELTA) - static_cast<__int128>(1);
-
-        // This is what the mask looks like before
-        // for (int i = 0; i < 128; i++) std::cout << !!(mask & (static_cast<__int128>(1) << i));
-        // std::cout << std::endl;
-
-        // We shift the mask to the left by the index * SHORT_DELTA (a window of 1s appearing SHORT_DELTA times, starting at index)
-        mask = mask << static_cast<__int128>(index * SHORT_DELTA);
-        
-        // This is what the mask looks like after
-        // for (int i = 0; i < 128; i++) std::cout << !!(mask & (static_cast<__int128>(1) << i));
-        // std::cout << std::endl;
-        // BUG / UB: The mask does not change at all!!
-
-        last_child_s &= ~mask;
-        last_child_s |= (static_cast<__int128>(value) << (index * SHORT_DELTA));
+        last_child_s &= ~((__int128)((static_cast<__int128>(1) << SHORT_DELTA) - 1) << (index * SHORT_DELTA));
+        last_child_s |= ((__int128)value << (index * SHORT_DELTA));
     }
-    /* BUGGY END*/
 
 // :private
 
@@ -169,7 +153,9 @@ public:
     }
 
     // Setter for num_occ
-    void set_num_occupied(unsigned short num) { num_occupied = num; }
+    void set_num_occupied(unsigned short num) {
+        num_occupied = num; 
+    }
 
     // Operators
     constexpr bool operator==(const Tree_pointers& other) const {
@@ -1179,6 +1165,7 @@ Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data)
  */
 template <typename X>
 Tree_pos tree<X>::add_root(const X& data) {
+    I(pointers_stack.empty(), "add_root: Tree is not empty");
     // if (!pointers_stack.empty()) {
     //     throw std::logic_error("add_root: Tree is not empty");
     // }
@@ -1199,7 +1186,7 @@ Tree_pos tree<X>::add_root(const X& data) {
     pointers_stack.emplace_back();
 
     // Set num occupied to 1
-    pointers_stack[ROOT].set_num_occupied(0);
+    // pointers_stack[ROOT].set_num_occupied(0);
 
     return (data_stack.size() - CHUNK_SIZE);
 }

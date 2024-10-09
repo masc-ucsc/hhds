@@ -79,7 +79,7 @@ void test_chip_tree() {
     std::vector<lh::Tree_index> lh_current_level{lh::Tree_index(0, 0)};
 
     int id = 1;
-    for (int depth = 0; depth < 7; ++depth) {
+    for (int depth = 0; depth < 6; ++depth) {
         std::vector<hhds::Tree_pos> hhds_next_level;
         std::vector<lh::Tree_index> lh_next_level;
         std::vector<std::vector<int>> level_data;

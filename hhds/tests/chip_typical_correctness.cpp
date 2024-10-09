@@ -101,7 +101,7 @@ void test_chip_tree() {
     std::vector<lh::Tree_index> lh_current_level{lh::Tree_index(0, 0)};
 
     int id = 1;
-    for (int depth = 0; depth < 4; ++depth) {
+    for (int depth = 0; depth < 8; ++depth) {
         std::vector<hhds::Tree_pos> hhds_next_level;
         std::vector<lh::Tree_index> lh_next_level;
         std::vector<std::vector<int>> level_data;
@@ -110,17 +110,12 @@ void test_chip_tree() {
             int num_children = generate_random_int(generator, 1, 7);
             std::vector<int> children_data;
 
-            std::cout << "ADDING CHILDREN: " << num_children << " to " << hhds_node << std::endl;
-
             for (int i = 0; i < num_children; ++i) {
                 int data = id++;
                 auto added = hhds_tree.add_child(hhds_node, data);
 
                 hhds_next_level.push_back(added);
                 children_data.push_back(data);
-
-                hhds_tree.print_tree(1);
-                std::cout << "-------------------" << std::endl;
             }
             level_data.push_back(children_data);
         }
