@@ -74,7 +74,7 @@ private:
     Tree_pos last_child_l               : CHUNK_BITS;
 
     // Track number of occupied short delta pointers
-    unsigned short num_occupied         : CHUNK_SHIFT;
+    unsigned short num_short_del_occ    : CHUNK_SHIFT;
 
     // Short (delta) child pointers
     __int128 first_child_s;
@@ -108,7 +108,7 @@ public:
         : parent(INVALID), 
           next_sibling(INVALID), prev_sibling(INVALID),
           first_child_l(INVALID), last_child_l(INVALID), 
-          num_occupied(0), 
+          num_short_del_occ(0), 
           first_child_s(INVALID), last_child_s(INVALID) {}
 
     /* PARAM CONSTRUCTOR */
@@ -116,7 +116,7 @@ public:
         : parent(p), 
           next_sibling(INVALID), prev_sibling(INVALID), 
           first_child_l(INVALID), last_child_l(INVALID),
-          num_occupied(0), 
+          num_short_del_occ(0), 
           first_child_s(INVALID), last_child_s(INVALID) {}
 
     // Getters
@@ -135,7 +135,7 @@ public:
     }
 
     // Getter for num_occ
-    unsigned short get_num_occupied() const { return num_occupied; }
+    unsigned short get_num_short_del_occ() const { return num_short_del_occ; }
 
     // Setters
     void set_parent(Tree_pos p) { parent = p; }
@@ -152,9 +152,9 @@ public:
         _set_last_child_s(index, lcs); 
     }
 
-    // Setter for num_occ
-    void set_num_occupied(unsigned short num) {
-        num_occupied = num; 
+    // Setter for num_short_del_occ
+    void set_num_short_del_occ(unsigned short num) {
+        num_short_del_occ = num; 
     }
 
     // Operators
@@ -188,7 +188,7 @@ private:
     }
 
     inline bool _contains_data(const Tree_pos &idx) const noexcept {
-        return (pointers_stack[idx >> CHUNK_SHIFT].get_num_occupied() >= (idx & CHUNK_MASK));
+        return (pointers_stack[idx >> CHUNK_SHIFT].get_num_short_del_occ() >= (idx & CHUNK_MASK));
         // return (idx < data_stack.size() && data_stack[idx].has_value());
     }
 
@@ -243,7 +243,7 @@ private:
     }
 
     Tree_pos _try_fit_child_ptr(const Tree_pos &parent_id, const Tree_pos &child_id) {
-        I(_check_idx_exists(parent_id), "First parent_id index out of range");
+        I(_check_idx_exists(parent_id), "parent_id index out of range");
         I(_check_idx_exists(child_id), "child_id index out of range");
 
         /* BASE CASE OF THE RECURSION */
@@ -312,7 +312,7 @@ private:
             }
         }
         // Decrement the number of occupied slots in the chunk
-        pointers_stack[parent_chunk_id].set_num_occupied(parent_chunk_offset - 1);
+        pointers_stack[parent_chunk_id].set_num_short_del_occ(parent_chunk_offset - 1);
 
         // Try fitting the last chunk here in the grandparent. Recurse.
         const auto my_new_parent = _try_fit_child_ptr(grandparent_id,
@@ -396,7 +396,7 @@ public:
             std::cout << "Last Child: " << pointers_stack[i].get_last_child_l() << " ";
             std::cout << "Next Sibling: " << pointers_stack[i].get_next_sibling() << " ";
             std::cout << "Prev Sibling: " << pointers_stack[i].get_prev_sibling() << " ";
-            std::cout << "Num Occ: " << pointers_stack[i].get_num_occupied() << std::endl;
+            std::cout << "Num Occ: " << pointers_stack[i].get_num_short_del_occ() << std::endl;
             std::cout << std::endl;
         }
 
@@ -909,7 +909,7 @@ Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) const {
 
     return (child_chunk_id == INVALID) ? (static_cast<Tree_pos>(INVALID))
                                        : (static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) 
-                                                                + pointers_stack[child_chunk_id].get_num_occupied()));
+                                                                + pointers_stack[child_chunk_id].get_num_short_del_occ()));
 }
 
 /**
@@ -965,7 +965,7 @@ bool tree<X>::is_last_child(const Tree_pos& self_index) const {
         return false;
     }
 
-    return pointers_stack[self_chunk_id].get_num_occupied() == self_chunk_offset;
+    return pointers_stack[self_chunk_id].get_num_short_del_occ() == self_chunk_offset;
 
     // Now, to be the last child, all entries after this should be invalid
     // for (short offset = self_chunk_offset; offset < NUM_SHORT_DEL; offset++) {
@@ -1061,15 +1061,7 @@ Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
     // Find the last occupied in the prev sibling chunk
     return (prev_sibling == INVALID) ? INVALID 
           : static_cast<Tree_pos>((prev_sibling << CHUNK_SHIFT) 
-                                  + pointers_stack[prev_sibling].get_num_occupied());
-    // // TODOTODO
-    // if (prev_sibling != INVALID) {
-    //     for (short offset = NUM_SHORT_DEL - 1; offset >= 0; offset--) {
-    //         if (_contains_data(prev_sibling + offset)) {
-    //             return static_cast<Tree_pos>(prev_sibling + offset);
-    //         }
-    //     }
-    // }
+                                  + pointers_stack[prev_sibling].get_num_short_del_occ());
 }
 
 /**
@@ -1111,7 +1103,7 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
     }
 
     // Increment the number of occupied slots in the sibling chunk
-    pointers_stack[new_sib >> CHUNK_SHIFT].set_num_occupied(
+    pointers_stack[new_sib >> CHUNK_SHIFT].set_num_short_del_occ(
                                                 ((unsigned)new_sib & CHUNK_MASK)
                                             );
 
@@ -1186,7 +1178,7 @@ Tree_pos tree<X>::add_root(const X& data) {
     pointers_stack.emplace_back();
 
     // Set num occupied to 1
-    // pointers_stack[ROOT].set_num_occupied(0);
+    // pointers_stack[ROOT].set_num_short_del_occ(0);
 
     return (data_stack.size() - CHUNK_SIZE);
 }
@@ -1220,7 +1212,7 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
     pointers_stack[child_chunk_id].set_parent(new_parent_id);
 
     // Set num occupied to 0
-    pointers_stack[child_chunk_id].set_num_occupied(0);
+    pointers_stack[child_chunk_id].set_num_short_del_occ(0);
 
     return child_chunk_id << CHUNK_SHIFT;
 }
