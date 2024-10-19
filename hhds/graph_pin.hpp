@@ -20,7 +20,7 @@ public:
     entry_type = Entry_type::Pin;
   }
 
-  [[nodiscard]] bool is_sink  () const { return  sink; }
+  [[nodiscard]] bool is_sink() const { return sink; }
   [[nodiscard]] bool is_driver() const { return !sink; }
 
   [[nodiscard]] uint16_t get_portid() const { return portid; }
@@ -29,15 +29,17 @@ public:
     portid = p;
   }
 
-  [[nodiscard]] Oid get_overflow_id() const { // zero if no overflow
-    if(overflow_link)
+  [[nodiscard]] Oid get_overflow_id() const {  // zero if no overflow
+    if (overflow_link) {
       return ledge_or_overflow_or_set;
+    }
     return 0;
   }
 
-  [[nodiscard]] uint32_t get_set_id() const { // zero if no set
-    if(set_link)
+  [[nodiscard]] uint32_t get_set_id() const {  // zero if no set
+    if (set_link) {
       return ledge_or_overflow_or_set;
+    }
     return 0;
   }
 
@@ -45,7 +47,7 @@ public:
     I(self_id != other_id);
     if (sedge_0 == 0) {
       int64_t s    = other_id - self_id;
-      bool    fits = s > -(1<<10) && s < ((1<<10)-1); // 11 bits 2-complement
+      bool    fits = s > -(1 << 10) && s < ((1 << 10) - 1);  // 11 bits 2-complement
       if (fits) {
         sedge_0 = static_cast<int16_t>(s);
         return true;
@@ -171,8 +173,8 @@ private:
   Entry_type entry_type : 2;     // Free, Node, Pin, Overflow
   uint8_t    set_link : 1;       // set link, ledge otherwise  not set (overflow_link should be false)
   uint8_t    overflow_link : 1;  // When set, ledge points to overflow
-  uint8_t    sink    : 1;        // sink (!driver)
-  int16_t    sedge_0: 11;        // Short-edge (11 bits 2-complement)
+  uint8_t    sink : 1;           // sink (!driver)
+  int16_t    sedge_0 : 11;       // Short-edge (11 bits 2-complement)
   int16_t    portid;
   // node_pin 4:7
   uint32_t node_id;  // points to master node
@@ -182,4 +184,4 @@ private:
   uint32_t ledge_or_overflow_or_set;  // ledge is overflow if overflow set
 };
 
-}; // namespace hhds
+};  // namespace hhds

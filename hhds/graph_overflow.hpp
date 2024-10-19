@@ -25,7 +25,7 @@ public:
       int64_t s    = other_id - self_id;
       bool    fits = s > std::numeric_limits<int16_t>::min() && s < std::numeric_limits<int16_t>::max();
       if (fits) {
-        for(auto i=0u;i<sedge.size();++i) {
+        for (auto i = 0u; i < sedge.size(); ++i) {
           if (sedge[i] != 0) {
             continue;
           }
@@ -171,12 +171,12 @@ public:
 private:
   // Overflow (32 bytes) -- Always 32bytes aligned
   // Byte 0:1
-  uint8_t    n_sedges;  // number of sedges (7 max) 0xFF means free
-  uint8_t    n_ledges;  // number of ledges (4 max)
+  uint8_t n_sedges;  // number of sedges (7 max) 0xFF means free
+  uint8_t n_ledges;  // number of ledges (4 max)
   // sedges: 2:15
   std::array<int16_t, 7> sedge;
   // ledges: 16:32
   std::array<uint32_t, 4> ledge;
 };
 
-}; // namespace hhds
+};  // namespace hhds

@@ -10,7 +10,7 @@ git_repository(
 git_repository(
     name = "com_google_benchmark",
     remote = "https://github.com/google/benchmark.git",
-    tag = "v1.8.5",
+    tag = "v1.9.0",
 )
 
 # abseil
@@ -25,9 +25,9 @@ http_archive(
 http_archive(
     name = "com_google_perfetto",
     build_file = "perfetto.BUILD",
-    sha256 = "dfc9b645c020d7a7469bae73d7432545b8005411c8176f46f04875058df0aa97",
-    strip_prefix = "perfetto-46.0/sdk",
-    urls = ["https://github.com/google/perfetto/archive/refs/tags/v46.0.tar.gz"],
+    sha256 = "8d1c6bf44f1bdb098ab70cd60da3ce6b6e731e4eb21dd52b2527cbdcf85d984d",
+    strip_prefix = "perfetto-48.1/sdk",
+    urls = ["https://github.com/google/perfetto/archive/refs/tags/v48.1.tar.gz"],
 )
 
 # fmt
@@ -65,20 +65,20 @@ http_archive(
 # clang-tidy
 http_archive(
     name = "bazel_clang_tidy",
-    sha256 = "f0e2871f32652b2dbc54739b55b4c2ece88eb8189133f20e7c4327eb893994b2",
-    strip_prefix = "bazel_clang_tidy-bff5c59c843221b05ef0e37cef089ecc9d24e7da",
+    sha256 = "e1440a34d7abb720005d7ba1db4b50fbe93850fbb88c0e28f8865f35dd936245",
+    strip_prefix = "bazel_clang_tidy-f23d924918c581c68cd5cda5f12b4f8198ac0c35",
     urls = [
-        "https://github.com/erenon/bazel_clang_tidy/archive/bff5c59c843221b05ef0e37cef089ecc9d24e7da.zip"
+        "https://github.com/erenon/bazel_clang_tidy/archive/f23d924918c581c68cd5cda5f12b4f8198ac0c35.zip"
     ],
 )
 
 # Boost
 http_archive(
     name = "com_github_nelhage_rules_boost",
-    sha256 = "3950bc0c09a44869669bb2b5e83bdea42d8038231263c567fd80314ae3dfe117",
-    strip_prefix = "rules_boost-1d5cd42547905c0fea655275babfba8c0b07b753",
+    sha256 = "202b939727f10f7bb5b6bd76632793e6a3dc03f664114bed303036651cf3d737",
+    strip_prefix = "rules_boost-e23cc59f87d5049618472d6ce0ca0ed5ef0c23dc",
     urls = [
-      "https://github.com/nelhage/rules_boost/archive/1d5cd42547905c0fea655275babfba8c0b07b753.tar.gz",
+      "https://github.com/nelhage/rules_boost/archive/e23cc59f87d5049618472d6ce0ca0ed5ef0c23dc.tar.gz",
     ]
 )
 load("@com_github_nelhage_rules_boost//:boost/boost.bzl", "boost_deps")

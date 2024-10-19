@@ -11,5 +11,4 @@ using Bits_t               = int32_t;  // bits type (future use)
 constexpr int    Bits_bits = 17;
 constexpr Bits_t Bits_max  = ((1ULL << Bits_bits) - 1);
 
-}; // namespace hhds
-
+};  // namespace hhds
