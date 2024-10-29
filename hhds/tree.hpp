@@ -521,8 +521,9 @@ public:
     pre_order_iterator(Tree_pos start, tree<X>* tree) : current(start), tree_ptr(tree) {}
 
     pre_order_iterator& operator++() {
-      if (tree_ptr->get_first_child(current) != INVALID) {
-        current = tree_ptr->get_first_child(current);
+      auto next = tree_ptr->get_first_child(current);
+      if (next != INVALID) {
+        current = next;
       } else {
         // See if there is a sibling we can move to
         const auto nxt = tree_ptr->get_sibling_next(current);
