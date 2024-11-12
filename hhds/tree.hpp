@@ -693,26 +693,21 @@ public:
     using pointer           = Tree_pos*;
     using reference         = Tree_pos&;
 
-    post_order_iterator(Tree_pos start, tree<X>* tree) : current(start), tree_ptr(tree) {
-      // move to the leftmost leaf
-      while (!tree_ptr->pointers_stack[current >> CHUNK_SHIFT].get_is_leaf()) {
-        current = tree_ptr->get_first_child(current);
-      }
-    }
+    post_order_iterator(Tree_pos start, tree<X>* tree) : current(start), tree_ptr(tree) {}
 
     post_order_iterator& operator++() {
+      post_order_iterator temp = *this;
       if (tree_ptr->get_sibling_next(current) != INVALID) {
-        current = tree_ptr->get_sibling_next(current);
-        while (!tree_ptr->pointers_stack[current >> CHUNK_SHIFT].get_is_leaf()) {
-          current = tree_ptr->get_first_child(current);
+        auto next = tree_ptr->get_sibling_next(current);
+        while (tree_ptr->get_sibling_next(next) != INVALID) {
+          next = tree_ptr->get_first_child(next);
         }
+
+        current = next;
       } else {
         current = tree_ptr->get_parent(current);
-        if (current == ROOT) {
-          current = INVALID;
-        }
       }
-      return *this;
+      return temp;
     }
 
     bool operator==(const post_order_iterator& other) const { return current == other.current; }
@@ -747,27 +742,22 @@ public:
     using iterator_category = std::forward_iterator_tag;
     using value_type        = Tree_pos;
     using difference_type   = std::ptrdiff_t;
-    using pointer           = const Tree_pos*;
-    using reference         = const Tree_pos&;
+    using pointer           = Tree_pos*;
+    using reference         = Tree_pos&;
 
-    const_post_order_iterator(Tree_pos start, const tree<X>* tree) : current(start), tree_ptr(tree) {
-      // move to the leftmost leaf
-      while (!tree_ptr->pointers_stack[current >> CHUNK_SHIFT].get_is_leaf()) {
-        current = tree_ptr->get_first_child(current);
-      }
-    }
+    const_post_order_iterator(Tree_pos start, const tree<X>* tree) : current(start), tree_ptr(tree) {}
 
     const_post_order_iterator& operator++() {
+      // post_order_iterator temp = *this;
       if (tree_ptr->get_sibling_next(current) != INVALID) {
-        current = tree_ptr->get_sibling_next(current);
-        while (!tree_ptr->pointers_stack[current >> CHUNK_SHIFT].get_is_leaf()) {
-          current = tree_ptr->get_first_child(current);
+        auto next = tree_ptr->get_sibling_next(current);
+        while (tree_ptr->get_sibling_next(next) != INVALID) {
+          next = tree_ptr->get_first_child(next);
         }
+
+        current = next;
       } else {
         current = tree_ptr->get_parent(current);
-        if (current == ROOT) {
-          current = INVALID;
-        }
       }
       return *this;
     }
