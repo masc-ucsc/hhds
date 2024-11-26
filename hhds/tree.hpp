@@ -385,6 +385,7 @@ public:
     data_stack[idx] = data;
   }
 
+  // Use "X operator[](const Tree_pos& idx) const { return get_data(idx); }" to pass data as a const reference
   X operator[](const Tree_pos& idx) { return get_data(idx); }
 
   /**
@@ -660,9 +661,8 @@ public:
     bool operator==(const const_pre_order_iterator& other) const { return current == other.current; }
 
     bool operator!=(const const_pre_order_iterator& other) const { return current != other.current; }
-
-    const X& operator*() const { return tree_ptr->get_data(current); }
-    const X* operator->() const { return &tree_ptr->get_data(current); }
+    Tree_pos  operator*() const { return current; }
+    Tree_pos* operator->() const { return &current; }
   };
 
   class const_pre_order_range {
@@ -766,8 +766,8 @@ public:
 
     bool operator!=(const const_post_order_iterator& other) const { return current != other.current; }
 
-    const X& operator*() const { return tree_ptr->get_data(current); }
-    const X* operator->() const { return &tree_ptr->get_data(current); }
+    Tree_pos  operator*() const { return current; }
+    Tree_pos* operator->() const { return &current; }
   };
 
   class const_post_order_range {

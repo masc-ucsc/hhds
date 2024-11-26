@@ -73,7 +73,7 @@ void build_lh_tree(lh::tree<int>& lh_tree, int depth_val) {
     }
 }
 
-// Preorder traversal for hhds::tree
+// Preorder traversal for hhds::tree (Use "const hhds::tree<int>& tree" to pass tree as a const reference)
 void preorder_traversal_hhds(hhds::tree<int>& tree) {
     int cnt = 0;
     for (const auto& node : tree.pre_order()) {
