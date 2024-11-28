@@ -10,7 +10,7 @@ git_repository(
 git_repository(
     name = "com_google_benchmark",
     remote = "https://github.com/google/benchmark.git",
-    tag = "v1.9.0",
+    tag = "v1.9.1",
 )
 
 # abseil
