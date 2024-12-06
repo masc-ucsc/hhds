@@ -236,3 +236,11 @@ cc_binary(
         ":core",
     ],
 )
+
+cc_binary(
+    name = "forest_correctness",
+    srcs = ["tests/forest_correctness.cpp"],
+    deps = [
+        ":core",
+    ],
+)
