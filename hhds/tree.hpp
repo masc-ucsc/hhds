@@ -878,6 +878,9 @@ public:
         I(tree_ref < 0, "Invalid tree reference - must be negative");
         const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
         I(tree_idx < trees.size(), "Tree index out of range");
+        if (!trees[tree_idx]) {
+            throw std::runtime_error("Attempting to access deleted tree");
+        }
         return *trees[tree_idx];
     }
 
@@ -892,18 +895,19 @@ public:
         reference_counts[tree_idx]--;
     }
 
-    void delete_tree(Tree_pos tree_ref) {
+    bool delete_tree(Tree_pos tree_ref) {
         const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
-        if (reference_counts[tree_idx] == 0) {
-            trees[tree_idx].reset();
-            // Compact vectors if this was the last tree
-            if (tree_idx == trees.size() - 1) {
-                while (!trees.empty() && !trees.back()) {
-                    trees.pop_back();
-                    reference_counts.pop_back();
-                }
-            }
+        I(tree_idx < trees.size(), "Tree index out of range");
+        
+        if (reference_counts[tree_idx] > 0) {
+            return false;
         }
+        
+        if (trees[tree_idx]) {
+            trees[tree_idx].reset();
+            return true;
+        }
+        return false;
     }
 };
 
