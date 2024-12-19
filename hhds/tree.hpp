@@ -62,8 +62,6 @@ static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;  // Maximum number 
 static constexpr Short_delta MIN_SHORT_DELTA = -(1 << (SHORT_DELTA - 1));     // Minimum value for int16_t delta
 static constexpr Short_delta MAX_SHORT_DELTA = (1 << (SHORT_DELTA - 1)) - 1;  // Maximum value for int16_t delta
 
-int const_count =0;
-
 template <typename X>
 class Forest;
 
@@ -726,10 +724,6 @@ public:
     }
 
     const_pre_order_iterator& operator++() {
-      if (const_count == 0){
-        std::cout << "using const \n";
-        const_count++;  
-      }
       if (m_follow_subtrees && current_tree->forest_ptr) {
         auto& node = current_tree->pointers_stack[current >> CHUNK_SHIFT];
         if (node.has_subtree_ref()) {
