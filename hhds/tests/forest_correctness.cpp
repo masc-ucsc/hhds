@@ -81,7 +81,7 @@ void test_tree_traversal_with_subtrees() {
   
   // build trees
   auto child1 = main_tree.add_child(main_tree.get_root(), 2);
-  auto child2 = main_tree.add_child(main_tree.get_root(), 3);
+  main_tree.add_child(main_tree.get_root(), 3);  // child2
   
   sub_tree.add_child(sub_tree.get_root(), 11);
   sub_tree.add_child(sub_tree.get_root(), 12);
@@ -91,12 +91,25 @@ void test_tree_traversal_with_subtrees() {
   
   // test traversal with subtree following
   int count = 0;
-  for (auto node : main_tree.pre_order(main_tree.get_root(), true)) {
+  std::vector<int> visited_values;
+  std::cout << "Starting traversal...\n";
+  
+  auto range = main_tree.pre_order(main_tree.get_root(), true);
+  for (auto it = range.begin(); it != range.end(); ++it) {
+    int value = it.get_data();
+    visited_values.push_back(value);
+    std::cout << "Visiting node with value: " << value << std::endl;
     count++;
+    if (count > 10) { // Safety check
+      std::cout << "Possible infinite loop detected\n";
+      break;
+    }
   }
   
   // should visit: 1, 2, 10, 11, 12, 3
   I(count == 6, "Pre-order traversal with subtrees should visit 6 nodes");
+  I(visited_values == std::vector<int>{1, 2, 10, 11, 12, 3}, 
+    "Pre-order traversal with subtrees should visit nodes in the correct order");
 }
 
 int main() {

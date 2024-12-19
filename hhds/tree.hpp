@@ -17,6 +17,7 @@
 #include <queue>
 #include <stdexcept>
 #include <vector>
+#include <set>
 
 #include "fmt/format.h"
 #include "iassert.hpp"
@@ -600,43 +601,68 @@ public:
     using base::current;
     using base::tree_ptr;
     using base::m_follow_subtrees;
+    
+    std::set<Tree_pos> visited_subtrees;
+    tree<X>* current_tree; // Track which tree we're currently traversing
+    tree<X>* main_tree;    // Keep reference to main tree
+    Tree_pos return_to_node; // Node to return to after subtree traversal
 
   public:
     using iterator_category = std::forward_iterator_tag;
-    using value_type        = Tree_pos;
-    using difference_type   = std::ptrdiff_t;
-    using pointer           = Tree_pos*;
-    using reference         = Tree_pos&;
+    using value_type = Tree_pos;
+    using difference_type = std::ptrdiff_t;
+    using pointer = Tree_pos*;
+    using reference = Tree_pos&;
 
     pre_order_iterator(Tree_pos start, tree<X>* tree, bool follow_refs)
-      : base(start, tree, follow_refs) {}
+      : base(start, tree, follow_refs), current_tree(tree), main_tree(tree), return_to_node(INVALID) {}
+
+    X get_data() const {
+      return current_tree->get_data(current);
+    }
 
     pre_order_iterator& operator++() {
-      Tree_pos subtree_root = this->handle_subtree_ref(this->current);
-      if (subtree_root != INVALID) {
-        this->current = subtree_root;
-        return *this;
+      if (m_follow_subtrees && current_tree->forest_ptr) {
+        auto& node = current_tree->pointers_stack[current >> CHUNK_SHIFT];
+        if (node.has_subtree_ref()) {
+          Tree_pos ref = node.get_subtree_ref();
+          if (visited_subtrees.find(ref) == visited_subtrees.end()) {
+            visited_subtrees.insert(ref);
+            return_to_node = current;
+            current_tree = &(current_tree->forest_ptr->get_tree(ref));
+            this->current = ROOT;
+            return *this;
+          }
+        }
       }
-      if (!tree_ptr->pointers_stack[current >> CHUNK_SHIFT].get_is_leaf()) {
-        // node is not a leaf, move to first child
-        current = tree_ptr->get_first_child(current);
+
+      if (!current_tree->pointers_stack[current >> CHUNK_SHIFT].get_is_leaf()) {
+        current = current_tree->get_first_child(current);
       } else {
-        // node is a leaf, find next node
-        const auto nxt = tree_ptr->get_sibling_next(current);
+        const auto nxt = current_tree->get_sibling_next(current);
         if (nxt != INVALID) {
           current = nxt;
         } else {
-          // no more siblings, move to an ancestor's sibling
-          bool found  = false;
-          auto parent = tree_ptr->get_parent(current);
+          if (current_tree != main_tree) {
+            current_tree = main_tree;
+            current = current_tree->get_sibling_next(return_to_node);
+            return_to_node = INVALID;
+            if (current != INVALID) {
+              return *this;
+            }
+          }
+          
+          bool found = false;
+          auto parent = current_tree->get_parent(current);
+          
           while (parent != ROOT) {
-            const auto parent_sibling = tree_ptr->get_sibling_next(parent);
+            const auto parent_sibling = current_tree->get_sibling_next(parent);
             if (parent_sibling != INVALID) {
               current = parent_sibling;
-              found   = true;
+              found = true;
               break;
             }
-            parent = tree_ptr->get_parent(parent);
+            parent = current_tree->get_parent(parent);
           }
 
           if (!found) {
@@ -647,10 +673,8 @@ public:
       return *this;
     }
 
-    pre_order_iterator operator++(int) {
-      pre_order_iterator temp = *this;
-      ++(*this);
-      return temp;
+    Tree_pos operator*() const { 
+      return current; 
     }
   };
 
