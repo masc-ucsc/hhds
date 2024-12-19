@@ -12,7 +12,7 @@ int generate_random_int(std::default_random_engine& generator, int min, int max)
 }
 
 // Preorder traversal for hhds::tree (Use "const hhds::tree<int>& tree" to pass tree as a const reference)
-void preorder_traversal_hhds(hhds::tree<int>& tree, std::vector<int>& result) {
+void preorder_traversal_hhds( hhds::tree<int>& tree, std::vector<int>& result) {
   for (const auto& node : tree.pre_order()) {
     result.push_back(tree[node]);
   }
