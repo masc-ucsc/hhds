@@ -53,9 +53,8 @@ static constexpr int16_t NUM_SHORT_DEL = CHUNK_MASK;        // Number of int16_t
 static constexpr Tree_pos INVALID = 0;                 // This is invalid for all pointers other than parent
 static constexpr Tree_pos ROOT    = 1 << CHUNK_SHIFT;  // ROOT ID
 
-// byte size changes could be causing segmentation fault ?
-static constexpr int16_t CHUNK_BITS  = 41;  // adjusted from 50 to 49 to 41
-static constexpr int16_t SHORT_DELTA = 14;  // adjusted from 18 to 17 to 14
+static constexpr int CHUNK_BITS = 49;
+static constexpr int SHORT_DELTA = 17;
 
 static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;  // Maximum number of chunks in the tree
 
@@ -75,9 +74,6 @@ private:
   // Long child pointers
   Tree_pos first_child_l : CHUNK_BITS;
   Tree_pos last_child_l : CHUNK_BITS;
-
-  // new field for subtree reference
-  Tree_pos subtree_ref : CHUNK_BITS;
 
   // Track number of occupied int16_t delta pointers
   uint16_t num_short_del_occ : CHUNK_SHIFT;
@@ -119,7 +115,6 @@ public:
       , prev_sibling(INVALID)
       , first_child_l(INVALID)
       , last_child_l(INVALID)
-      , subtree_ref(INVALID)
       , num_short_del_occ(0)
       , is_leaf(true)
       , first_child_s(INVALID)
@@ -132,7 +127,6 @@ public:
       , prev_sibling(INVALID)
       , first_child_l(INVALID)
       , last_child_l(INVALID)
-      , subtree_ref(INVALID)
       , num_short_del_occ(0)
       , is_leaf(true)
       , first_child_s(INVALID)
@@ -155,28 +149,6 @@ public:
   // getter for is_leaf
   [[nodiscard]] bool get_is_leaf() const { return is_leaf; }
 
-  // getter for subtree_ref
-  [[nodiscard]] Tree_pos get_subtree_ref() const { return subtree_ref; }
-  [[nodiscard]] bool has_subtree_ref() const { return subtree_ref != INVALID; }
-  
-  // Setters
-  void set_parent(Tree_pos p) { parent = p; }
-  void set_next_sibling(Tree_pos ns) { next_sibling = ns; }
-  void set_prev_sibling(Tree_pos ps) { prev_sibling = ps; }
-  void set_first_child_l(Tree_pos fcl) { first_child_l = fcl; }
-  void set_last_child_l(Tree_pos lcl) { last_child_l = lcl; }
-  void set_subtree_ref(Tree_pos ref) { subtree_ref = ref; }
-
-  // Setters for int16_t child pointers
-  void set_first_child_s_at(int16_t index, Short_delta fcs) { _set_first_child_s(index, fcs); }
-  void set_last_child_s_at(int16_t index, Short_delta lcs) { _set_last_child_s(index, lcs); }
-
-  // Setter for num_short_del_occ
-  void set_num_short_del_occ(uint16_t num) { num_short_del_occ = num; }
-
-  // Setter for is_leaf
-  void set_is_leaf(bool leaf) { is_leaf = leaf; }
-
   // Operators
   constexpr bool operator==(const Tree_pointers& other) const {
     return parent == other.parent && next_sibling == other.next_sibling && prev_sibling == other.prev_sibling
@@ -186,8 +158,22 @@ public:
 
   constexpr bool operator!=(const Tree_pointers& other) const { return !(*this == other); }
   void           invalidate() { parent = INVALID; }
-  // :public
 
+  // Add setters
+  void set_parent(Tree_pos p) { parent = p; }
+  void set_next_sibling(Tree_pos n) { next_sibling = n; }
+  void set_prev_sibling(Tree_pos p) { prev_sibling = p; }
+  void set_first_child_l(Tree_pos f) { first_child_l = f; }
+  void set_last_child_l(Tree_pos l) { last_child_l = l; }
+  void set_num_short_del_occ(uint16_t n) { num_short_del_occ = n; }
+  void set_is_leaf(bool l) { is_leaf = l; }
+  void set_first_child_s_at(int16_t index, Short_delta value) { _set_first_child_s(index, value); }
+  void set_last_child_s_at(int16_t index, Short_delta value) { _set_last_child_s(index, value); }
+
+  // Helper methods for subtree references
+  [[nodiscard]] bool has_subtree_ref() const { return parent < 0; }
+  [[nodiscard]] Tree_pos get_subtree_ref() const { return parent; }
+  void set_subtree_ref(Tree_pos ref) { parent = ref; }
 };  // Tree_pointers class
 
 template <typename X>
@@ -474,7 +460,7 @@ public:
   protected:
     // Helper method to handle subtree references
     Tree_pos handle_subtree_ref(Tree_pos pos) {
-      if (m_follow_subtrees && tree_ptr->forest_ptr) {
+      if (m_follow_subtrees && tree_ptr->forest_ptr) { // only follow if flag is true
         auto& node = tree_ptr->pointers_stack[pos >> CHUNK_SHIFT];
         if (node.has_subtree_ref()) {
           Tree_pos ref = node.get_subtree_ref();
@@ -628,7 +614,7 @@ public:
         auto& node = current_tree->pointers_stack[current >> CHUNK_SHIFT];
         if (node.has_subtree_ref()) {
           Tree_pos ref = node.get_subtree_ref();
-          if (visited_subtrees.find(ref) == visited_subtrees.end()) {
+          if (ref < 0 && visited_subtrees.find(ref) == visited_subtrees.end()) {
             visited_subtrees.insert(ref);
             return_to_node = current;
             current_tree = &(current_tree->forest_ptr->get_tree(ref));
@@ -638,41 +624,51 @@ public:
         }
       }
 
-      if (!current_tree->pointers_stack[current >> CHUNK_SHIFT].get_is_leaf()) {
+      // first try to go to first child
+      if (!current_tree->is_leaf(current)) {
         current = current_tree->get_first_child(current);
-      } else {
-        const auto nxt = current_tree->get_sibling_next(current);
-        if (nxt != INVALID) {
-          current = nxt;
-        } else {
-          if (current_tree != main_tree) {
-            current_tree = main_tree;
-            current = current_tree->get_sibling_next(return_to_node);
-            return_to_node = INVALID;
-            if (current != INVALID) {
-              return *this;
-            }
-          }
-          
-          bool found = false;
-          auto parent = current_tree->get_parent(current);
-          
-          while (parent != ROOT) {
-            const auto parent_sibling = current_tree->get_sibling_next(parent);
-            if (parent_sibling != INVALID) {
-              current = parent_sibling;
-              found = true;
-              break;
-            }
-            parent = current_tree->get_parent(parent);
-          }
+        return *this;
+      }
 
-          if (!found) {
-            current = INVALID;
-          }
+      // if no children, try to go to next sibling
+      auto nxt = current_tree->get_sibling_next(current);
+      if (nxt != INVALID) {
+        current = nxt;
+        return *this;
+      }
+
+      // if no next sibling and we're in a subtree, return to main tree
+      if (current_tree != main_tree) {
+        current_tree = main_tree;
+        current = current_tree->get_sibling_next(return_to_node);
+        return_to_node = INVALID;
+        if (current != INVALID) {
+          return *this;
         }
       }
+
+      // if no next sibling, go up to parent's next sibling
+      auto parent = current_tree->get_parent(current);
+      while (parent != ROOT && parent != INVALID) {
+        auto parent_sibling = current_tree->get_sibling_next(parent);
+        if (parent_sibling != INVALID) {
+          current = parent_sibling;
+          return *this;
+        }
+        parent = current_tree->get_parent(parent);
+      }
+
+      // if we'e gone through all possibilities, mark as end
+      current = INVALID;
       return *this;
+    }
+
+    bool operator==(const pre_order_iterator& other) const { 
+      return current == other.current && current_tree == other.current_tree; 
+    }
+
+    bool operator!=(const pre_order_iterator& other) const { 
+      return !(*this == other); 
     }
 
     Tree_pos operator*() const { 
@@ -728,7 +724,7 @@ public:
         auto& node = current_tree->pointers_stack[current >> CHUNK_SHIFT];
         if (node.has_subtree_ref()) {
           Tree_pos ref = node.get_subtree_ref();
-          if (visited_subtrees.find(ref) == visited_subtrees.end()) {
+          if (ref < 0 && visited_subtrees.find(ref) == visited_subtrees.end()) {
             visited_subtrees.insert(ref);
             return_to_node = current;
             current_tree = &(current_tree->forest_ptr->get_tree(ref));
@@ -738,41 +734,55 @@ public:
         }
       }
 
-      if (!current_tree->pointers_stack[current >> CHUNK_SHIFT].get_is_leaf()) {
+      // first try to go to first child
+      if (!current_tree->is_leaf(current)) {
         current = current_tree->get_first_child(current);
-      } else {
-        const auto nxt = current_tree->get_sibling_next(current);
-        if (nxt != INVALID) {
-          current = nxt;
-        } else {
-          if (current_tree != main_tree) {
-            current_tree = main_tree;
-            current = current_tree->get_sibling_next(return_to_node);
-            return_to_node = INVALID;
-            if (current != INVALID) {
-              return *this;
-            }
-          }
-          
-          bool found = false;
-          auto parent = current_tree->get_parent(current);
-          
-          while (parent != ROOT) {
-            const auto parent_sibling = current_tree->get_sibling_next(parent);
-            if (parent_sibling != INVALID) {
-              current = parent_sibling;
-              found = true;
-              break;
-            }
-            parent = current_tree->get_parent(parent);
-          }
+        return *this;
+      }
 
-          if (!found) {
-            current = INVALID;
-          }
+      // if no children, try to go to next sibling
+      auto nxt = current_tree->get_sibling_next(current);
+      if (nxt != INVALID) {
+        current = nxt;
+        return *this;
+      }
+
+      // if no next sibling and we're in a subtree, return to main tree
+      if (current_tree != main_tree) {
+        current_tree = main_tree;
+        current = current_tree->get_sibling_next(return_to_node);
+        return_to_node = INVALID;
+        if (current != INVALID) {
+          return *this;
         }
       }
+
+      // if no next sibling, go up to parent's next sibling
+      auto parent = current_tree->get_parent(current);
+      while (parent != ROOT && parent != INVALID) {
+        auto parent_sibling = current_tree->get_sibling_next(parent);
+        if (parent_sibling != INVALID) {
+          current = parent_sibling;
+          return *this;
+        }
+        parent = current_tree->get_parent(parent);
+      }
+
+      // if we'e gone through all possibilities, mark as end
+      current = INVALID;
       return *this;
+    }
+
+    bool operator==(const const_pre_order_iterator& other) const { 
+      return current == other.current && current_tree == other.current_tree; 
+    }
+
+    bool operator!=(const const_pre_order_iterator& other) const { 
+      return !(*this == other); 
+    }
+
+    Tree_pos operator*() const { 
+      return current; 
     }
   };
 
@@ -923,6 +933,23 @@ public:
 
   const_post_order_range post_order(Tree_pos start = ROOT) const { 
     return const_post_order_range(start, this); 
+  }
+
+  // move helper methods inside tree class
+  [[nodiscard]] bool is_subtree_ref(Tree_pos pos) const {
+    return pos < 0;
+  }
+
+  [[nodiscard]] size_t get_subtree_index(Tree_pos pos) const {
+    return static_cast<size_t>(-pos - 1);
+  }
+
+  [[nodiscard]] Tree_pos make_subtree_ref(size_t subtree_index) const {
+    return static_cast<Tree_pos>(-(subtree_index + 1));
+  }
+
+  [[nodiscard]] Tree_pos get_subtree_ref(Tree_pos pos) const {
+    return pointers_stack[pos >> CHUNK_SHIFT].get_subtree_ref();
   }
 
   // :public
