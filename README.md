@@ -83,117 +83,64 @@ Once a tree is created, the common operation is to delete nodes, and at most
 insert phi nodes (SSA). This means that the insertion is for a few entries, not
 large subtrees.
 
+### Key Features
 
-The traversal is a topological sort equivalent where parents of leafs are
-visited first, and then to process them the leafs are accessed. In a way, the
-following is a typical AST traversal:
+- Efficient sibling traversal with next/previous pointers
+- Optimized for append operations rather than random insertions
+- Support for subtree references and sharing between trees via Forest container
+- Three traversal modes: pre-order, post-order, and sibling-order
+- Memory-efficient storage using chunks of 8 nodes
+- Delta-compressed child pointers for common cases
+- Tombstone deletion (IDs are not reused)
+- Leaf-focused operations (delete_leaf is optimized)
 
-```
-Index: first Child, parent
+### Data Structure Design
 
-01: 00,03 │   +── 1.1.1
-02: 00,03 │   |── 1.1.2
-03: 01,32 -── 1.1
-04: 00,06 │           +── 1.2.1.1.1
-05: 00,06 │           |── 1.2.1.1.2
-06: 04,13 │       +── 1.2.1.1
-07: 00,08 │           +── 1.2.1.2.1
-08: 07,13 │       |── 1.2.1.2
-09: 00,12 │           +── 1.2.1.3.1
-10: 00,12 │           |── 1.2.1.3.2
-11: 00,12 │           |── 1.2.1.3.3
-12: 09,13 │       |── 1.2.1.3
-13: 04,27 │   +── 1.2.1
-14: 00,16 │       +── 1.2.2.1
-15: 00,16 │       |── 1.2.2.2
-16: 14,27 │   ├── 1.2.2
-17: 00,19 │           +── 1.2.3.1.1
-18: 00,19 │           |── 1.2.3.1.2
-19: 17,23 │       +── 1.2.3.1
-20: 00,22 │           +── 1.2.3.2.1
-21: 00,22 │           |── 1.2.3.2.2
-22: 20,23 │       +── 1.2.3.2
-23: 19,27 │   |── 1.2.3
-24: 00,26 │       +── 1.2.4.1
-25: 00,26 │       |── 1.2.4.2
-26: 24,27 │   |── 1.2.4
-27: 13,32 ├── 1.2
-28: 00,30 │   |── 1.3.1
-29: 00,30 │   |── 1.3.2
-30: 00,32 ├── 1.3
-31: 00,32 ├── 1.4
-32: 00,00 | 1
-```
+The tree uses a chunked storage approach where nodes are stored in fixed-size chunks of 8 entries. Each chunk contains:
 
-An alternative data structure.
+- Long pointers (49-bit) for first/last child when needed
+- Delta-compressed short pointers (18-bit) for child references within nearby chunks
+- Next/Previous sibling pointers for efficient sibling traversal
+- Parent pointers for upward traversal
+- Leaf flag for quick leaf checks
+- Support for subtree references
 
-```
-Index: last_child, parent
-// 01: 16,00 | 1
-// 02: 00,01 -── 1.1
-// 03: 04,01 ├── 1.2
-// 04: 05,03 │   -── 1.2.1
-// 05: 00,04 │       -── 1.2.1.1
-// 06: 00,04 │       ├── 1.2.1.2
-// 07: 10,01 ├── 1.3
-// 08: 00,07 │   -── 1.3.1
-// 09: 00,07 │   ├── 1.3.2
-// 10: 13,07 │   ├── 1.3.3
-// 11: 00,10 │       -── 1.3.1.1
-// 12: 00,10 │       |── 1.3.1.2
-// 13: 15,10 │       |── 1.2.1.3
-// 14: 00,13 │           -── 1.2.1.3.1
-// 15: 00,13 │           -── 1.2.1.3.2
-// 16: 20,01 ├── 1.4
-// 17: 00,16 │   -── 1.4.1
-// 18: 19,16 │   ├── 1.4.2
-// 19: 00,18 │   │   -── 1.4.2.1
-// 20: 21,16 │   ├── 1.4.3
-// 21: 00,20 │   │   -── 1.4.3.1
+The structure is particularly optimized for:
+1. Append operations (adding siblings or children at the end)
+2. Leaf deletion
+3. Sibling traversal
+4. Child traversal for small families (< 8 children)
+
+### Traversal Support
+
+The tree provides three iterator types:
+```cpp
+// Pre-order traversal (parent then children)
+for(auto node : tree.pre_order(start_pos)) { ... }
+
+// Post-order traversal (children then parent) 
+for(auto node : tree.post_order(start_pos)) { ... }
+
+// Sibling-order traversal (iterate through siblings)
+for(auto node : tree.sibling_order(start_pos)) { ... }
 ```
 
-The previous data structure fits quite well with most AST (LiveHD) tree operations with the exception of two popular ones: get_next_sibling and add_child.
-
-An alternative data structure. The siblings are consecutive, the descendent from the siblings are after all the siblings.
-
-```
-Index: first_child, last_child, parent
-// 01: 02,05,00 | 1
-// 02: 00,00,01 -── 1.1
-// 03: 06,06,01 ├── 1.2
-// 04: 12,14,01 ├── 1.3
-// 05: 17,19,01 ├── 1.4
-// 06: 07,09,03 │   -── 1.2.1
-// 07: 00,00,06 │       -── 1.2.1.1
-// 08: 00,00,06 │       ├── 1.2.1.2
-// 09: 10,11,06 │       |── 1.2.1.3
-// 10: 00,00,09 │           -── 1.2.1.3.1
-// 11: 00,00,09 │           -── 1.2.1.3.2
-// 12: 15,16,04 │   -── 1.3.1
-// 13: 00,00,04 │   ├── 1.3.2
-// 14: 00,00,04 │   ├── 1.3.3
-// 15: 00,00,12 │       -── 1.3.1.1
-// 16: 00,00,12 │       |── 1.3.1.2
-// 17: 00,00,05 │   -── 1.4.1
-// 18: 20,21,05 │   ├── 1.4.2
-// 19: 00,00,05 │   ├── 1.4.3
-// 20: 00,00,18 │   │   -── 1.4.2.1
-// 21: 00,00,18 │   │   -── 1.4.3.1
+Each traversal mode also supports following subtree references via an optional flag:
+```cpp
+// Follow subtree references during traversal
+for(auto node : tree.pre_order(start_pos, true)) { ... }
 ```
 
-The previous structure handles everything quite fast with the exception of add_child
+### Forest Support
 
-add_child tends to add nodes close to the end. In which case, and append or just shifting a few nodes works fast.
+Trees can share subtrees via the Forest container:
+```cpp
+Forest<int> forest;
+Tree_pos subtree = forest.create_tree(root_data);
+tree.add_subtree_ref(node_pos, subtree);
+```
 
-Some solutions for random location add_child:
-
- -Support a small hashmap with "other children" that did not fit. Only insert starting from last_child, and change last_child to 0 to indicate that last children are in a hashmap.
-
- -Allow it BUT trigger a message to fix. This should be rare and easy to fix so that calls are not in that order
-
- -Chunk the vector to blocks of 16K entries. This allows smaller pointers (first_child,last_child, parent) using shorts (16bits). WHen a pointer needs to point to other table (16K entry max per table),
-it can have a all ones value (-1) to indicate that the following entry uses the 3 fields (16 bits) as pointer to the larger table (32 bits) and 16 bits as offset.
-
+The Forest manages reference counting and cleanup of shared subtrees.
 
 ### Related
 
@@ -202,5 +149,3 @@ Not same, but similar idea and different representation:
 Meyerovich, Leo A., Todd Mytkowicz, and Wolfram Schulte. "Data parallel programming for irregular tree computations." (2011).
 
 Vollmer, Michael, Sarah Spall, Buddhika Chamith, Laith Sakka, Chaitanya Koparkar, Milind Kulkarni, Sam Tobin-Hochstadt, and Ryan R. Newton. "Compiling tree transforms to operate on packed representations." (2017): 26.
-
-

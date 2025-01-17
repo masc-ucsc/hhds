@@ -54,7 +54,7 @@ static constexpr Tree_pos INVALID = 0;                 // This is invalid for al
 static constexpr Tree_pos ROOT    = 1 << CHUNK_SHIFT;  // ROOT ID
 
 static constexpr int CHUNK_BITS = 49;
-static constexpr int SHORT_DELTA = 17;
+static constexpr int SHORT_DELTA = 18;
 
 static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;  // Maximum number of chunks in the tree
 
