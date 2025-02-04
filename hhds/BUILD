@@ -44,81 +44,12 @@ cc_library(
     }),
 )
 
-# cc_test(
-#     name = "graph_bench",
-#     srcs = [
-#         "tests/graph_bench.cpp",
-#     ],
-#     deps = [
-#         ":hhds",
-#         "@com_google_benchmark//:benchmark",
-#         "@com_google_absl//absl/container:flat_hash_map",
-#         "@com_google_absl//absl/container:flat_hash_set",
-#     ],
-# )
-
-# cc_test(
-#     name = "graph_test",
-#     srcs = ["tests/graph_test.cpp"],
-#     deps = [
-#         ":hhds",
-#         "@boost//:graph",
-#         "@com_google_googletest//:gtest_main",
-#     ],
-# )
-
-# cc_test(
-#     name = "small_set_bench",
-#     srcs = [
-#         "tests/small_set_bench.cpp",
-#     ],
-#     deps = [
-#         ":rigtorp",
-#         "@fmt",
-#         "@iassert",
-#         "@emhash",
-#         "@com_google_benchmark//:benchmark",
-#         "@com_google_absl//absl/container:flat_hash_map",
-#         "@com_google_absl//absl/container:flat_hash_set",
-#     ],
-# )
-
-# cc_test(
-#     name = "tree_random_test",
-#     srcs = ["tests/tree_test.cpp"],
-#     deps = [
-#         "@com_google_benchmark//:benchmark",
-#         "@com_google_googletest//:gtest_main",
-#         ":core",
-#     ],
-# )
-
-# cc_test(
-#     name = "tree_chip_typical_test",
-#     srcs = ["tests/tree_chip_typical_tests.cpp"],
-#     deps = [
-#         "@com_google_benchmark//:benchmark",
-#         "@com_google_googletest//:gtest_main",
-#         ":core",
-#     ],
-# )
-
-# cc_test(
-#     name = "stress_tester",
-#     srcs = ["tests/stress_tester.cpp"],
-#     deps = [
-#         "@com_google_benchmark//:benchmark",
-#         "@com_google_googletest//:gtest_main",
-#         ":core",
-#     ],
-# )
-
 cc_test(
     name = "add_append_deep_bench",
     srcs = ["tests/add_append_bench/deep_tree_bench.cpp"],
     deps = [
-        "@com_google_benchmark//:benchmark",
-        "@com_google_googletest//:gtest_main",
+        "@google_benchmark//:benchmark",
+        "@googletest//:gtest_main",
         ":core",
     ],
 )
@@ -127,8 +58,8 @@ cc_test(
     name = "traversal_deep_bench",
     srcs = ["tests/traversal_bench/preorder_bench/deep_tree_bench.cpp"],
     deps = [
-        "@com_google_benchmark//:benchmark",
-        "@com_google_googletest//:gtest_main",
+        "@google_benchmark//:benchmark",
+        "@googletest//:gtest_main",
         ":core",
     ],
 )
@@ -137,8 +68,8 @@ cc_test(
     name = "traversal_wide_bench",
     srcs = ["tests/traversal_bench/preorder_bench/wide_tree_bench.cpp"],
     deps = [
-        "@com_google_benchmark//:benchmark",
-        "@com_google_googletest//:gtest_main",
+        "@google_benchmark//:benchmark",
+        "@googletest//:gtest_main",
         ":core",
     ],
 )
@@ -147,8 +78,8 @@ cc_test(
     name = "traversal_chip_typical_bench",
     srcs = ["tests/traversal_bench/preorder_bench/chip_typical_tree_bench.cpp"],
     deps = [
-        "@com_google_benchmark//:benchmark",
-        "@com_google_googletest//:gtest_main",
+        "@google_benchmark//:benchmark",
+        "@googletest//:gtest_main",
         ":core",
     ],
 )
@@ -157,8 +88,8 @@ cc_test(
     name = "traversal_chip_long_typical_bench",
     srcs = ["tests/traversal_bench/preorder_bench/chip_typical_long_tree_bench.cpp"],
     deps = [
-        "@com_google_benchmark//:benchmark",
-        "@com_google_googletest//:gtest_main",
+        "@google_benchmark//:benchmark",
+        "@googletest//:gtest_main",
         ":core",
     ],
 )
@@ -167,8 +98,8 @@ cc_test(
     name = "add_append_wide_bench",
     srcs = ["tests/add_append_bench/wide_tree_bench.cpp"],
     deps = [
-        "@com_google_benchmark//:benchmark",
-        "@com_google_googletest//:gtest_main",
+        "@google_benchmark//:benchmark",
+        "@googletest//:gtest_main",
         ":core",
     ],
 )
@@ -177,8 +108,8 @@ cc_test(
     name = "add_append_chip_typical_bench",
     srcs = ["tests/add_append_bench/chip_typical_tree_bench.cpp"],
     deps = [
-        "@com_google_benchmark//:benchmark",
-        "@com_google_googletest//:gtest_main",
+        "@google_benchmark//:benchmark",
+        "@googletest//:gtest_main",
         ":core",
     ],
 )
@@ -187,8 +118,8 @@ cc_test(
     name = "add_append_chip_typical_long_bench",
     srcs = ["tests/add_append_bench/chip_typical_long_tree_bench.cpp"],
     deps = [
-        "@com_google_benchmark//:benchmark",
-        "@com_google_googletest//:gtest_main",
+        "@google_benchmark//:benchmark",
+        "@googletest//:gtest_main",
         ":core",
     ],
 )
@@ -197,8 +128,8 @@ cc_test(
 #     name = "delete_chip_typical_bench",
 #     srcs = ["tests/delete_bench/delete_leaf_bench/chip_typical_tree_bench.cpp"],
 #     deps = [
-#         "@com_google_benchmark//:benchmark",
-#         "@com_google_googletest//:gtest_main",
+#         "@google_benchmark//:benchmark",
+#         "@googletest//:gtest_main",
 #         ":core",
 #     ],
 # )
