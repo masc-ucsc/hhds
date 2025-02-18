@@ -377,13 +377,13 @@ public:
   X& get_data(const Tree_pos& idx) {
     GI(_check_idx_exists(idx), data_stack[idx].has_value(), "Index out of range or no data at the index");
 
-    return data_stack[idx].value();
+    return *data_stack[idx];
   }
 
   const X& get_data(const Tree_pos& idx) const {
     GI(_check_idx_exists(idx), data_stack[idx].has_value(), "Index out of range or no data at the index");
 
-    return data_stack[idx].value();
+    return *data_stack[idx];
   }
 
   void set_data(const Tree_pos& idx, const X& data) {
@@ -393,7 +393,7 @@ public:
   }
 
   // Use "X operator[](const Tree_pos& idx) const { return get_data(idx); }" to pass data as a const reference
-  X operator[](const Tree_pos& idx) { return get_data(idx); }
+  X operator[](const Tree_pos& idx) { return *data_stack[idx]; }
 
   /**
    *  Debug API (Temp)
