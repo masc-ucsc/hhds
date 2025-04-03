@@ -13,11 +13,12 @@
 #include <functional>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <queue>
+#include <set>
 #include <stdexcept>
 #include <vector>
-#include <set>
 
 #include "fmt/format.h"
 #include "iassert.hpp"
