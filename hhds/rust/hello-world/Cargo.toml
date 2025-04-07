@@ -1,7 +1,6 @@
 [package]
-name = "hhds"
+name = "hello-world"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-libc = "0.2.171"

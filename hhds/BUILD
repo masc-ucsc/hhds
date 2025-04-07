@@ -178,12 +178,25 @@ cc_binary(
     ],
 )
 
+
+## rust_library
+# TODO:
+rust_library(
+    name = "core",
+    deps =[]
+    srcs = []
+    data = []
+    aliases = []
+
+
+)
+
 rust_binary(
     name = "hello_world_from_workspace_transient",
     srcs = ["src/main.rs"],
     edition = "2021",
-    deps = [],
     #deps = [
+    #    "@crates_in_workspace//:libc",
     #    "@crates_in_workspace//:anyhow",
     #],
 )
