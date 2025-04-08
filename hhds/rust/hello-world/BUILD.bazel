@@ -1,0 +1,9 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+rust_binary(
+    name = "hello-world",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2021",
+    deps = [],  # Add any crates here like "@crate_index//:serde"
+)
+

@@ -1,0 +1,5 @@
+[workspace]
+edition = "2021"
+resolved="2"
+members = ["hello-world"]
+

@@ -1,6 +1,8 @@
 # This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_doc")
 load("//tools:copt_default.bzl", "COPTS")
 
 config_setting(
@@ -174,4 +176,27 @@ cc_binary(
     deps = [
         ":core",
     ],
+)
+
+
+## rust_library
+# TODO:
+rust_library(
+    name = "core",
+    deps =[]
+    srcs = []
+    data = []
+    aliases = []
+
+
+)
+
+rust_binary(
+    name = "hello_world_from_workspace_transient",
+    srcs = ["src/main.rs"],
+    edition = "2021",
+    #deps = [
+    #    "@crates_in_workspace//:libc",
+    #    "@crates_in_workspace//:anyhow",
+    #],
 )

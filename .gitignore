@@ -62,3 +62,5 @@ kanata_log.??????
 callgrind.out.*
 *.prof
 *.dot
+
+*target/
