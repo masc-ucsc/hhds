@@ -1,0 +1,5 @@
+
+alias(
+    name = "hello-world",
+    actual = "//hello-world:hello-world",
+)
