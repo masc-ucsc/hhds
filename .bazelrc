@@ -1,3 +1,6 @@
+# Enable Bzlmod for every Bazel command
+common --enable_bzlmod
+
 # livehd specific bazel options
 build --output_filter='^//(core|pass|inou)'
 #build --output_filter="^//"

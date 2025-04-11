@@ -46,6 +46,7 @@ cscope*
 # No bazel
 bazel-*
 *.lock
+!Cargo.lock
 
 # No zip
 *.zip
