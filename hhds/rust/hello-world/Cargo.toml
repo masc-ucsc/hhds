@@ -4,8 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-<<<<<<< HEAD
-=======
 anyhow = "1.0.97"
 serde_json = "1.0.140"
->>>>>>> 49c0365bc7a75feb3f017d1296600bed77394d36

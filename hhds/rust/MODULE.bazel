@@ -3,18 +3,6 @@ rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(versions = ["1.75.0"])
 
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-<<<<<<< HEAD
-
-crate.from_cargo(
-    name = "crates",
-    cargo_lockfile = "//:Cargo.lock",
-    manifests = [
-    "//:Cargo.toml",
-    "//hello-world:Cargo.toml"
-    ],
-)
-use_repo(crate, "crates")
-=======
 use_repo(crate, "crate_index")
 
 crate.from_cargo(
@@ -27,5 +15,3 @@ crate.from_cargo(
     "//hello_lib:Cargo.toml",
     ],
 )
->>>>>>> 49c0365bc7a75feb3f017d1296600bed77394d36
-

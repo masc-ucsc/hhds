@@ -2,10 +2,6 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
-<<<<<<< HEAD:hhds/BUILD
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_doc")
-=======
->>>>>>> 49c0365bc7a75feb3f017d1296600bed77394d36:hhds/BUILD.bazel
 load("//tools:copt_default.bzl", "COPTS")
 
 config_setting(
@@ -179,27 +175,4 @@ cc_binary(
     deps = [
         ":core",
     ],
-)
-
-
-## rust_library
-# TODO:
-rust_library(
-    name = "core",
-    deps =[]
-    srcs = []
-    data = []
-    aliases = []
-
-
-)
-
-rust_binary(
-    name = "hello_world_from_workspace_transient",
-    srcs = ["src/main.rs"],
-    edition = "2021",
-    #deps = [
-    #    "@crates_in_workspace//:libc",
-    #    "@crates_in_workspace//:anyhow",
-    #],
 )
