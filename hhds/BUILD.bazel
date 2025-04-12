@@ -4,6 +4,8 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("//tools:copt_default.bzl", "COPTS")
 
+exports_files(["rust"])
+
 config_setting(
     name = "use_profiling",
     values = {"define": "profiling=1"},

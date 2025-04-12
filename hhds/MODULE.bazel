@@ -50,11 +50,12 @@ http_archive(
 )
 
 #Skylib
-#http_archive(
-#    name = "bazel_skylib",
-#    urls = ["https://github.com/bazelbuild/bazel-skylib/releases/download/1.0.0/bazel-skylib-1.0.0.tar.gz"],
-#    sha256 = "f7b2b61e6de49f602af263649604ec2460fcd8bdb9d4306a7bb9a5f74fc6e53e",
-#)
+http_archive(
+    name = "bazel_skylib",
+    urls = ["https://github.com/bazelbuild/bazel-skylib/releases/download/1.0.0/bazel-skylib-1.0.0.tar.gz"],
+    sha256 = "f7b2b61e6de49f602af263649604ec2460fcd8bdb9d4306a7bb9a5f74fc6e53e",
+)
+
 
 # Rust
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
@@ -65,11 +66,11 @@ use_repo(crate, "crate_index")
 
 crate.from_cargo(
     name = "crate_index",
-    cargo_lockfile = "//hhds/rust:Cargo.lock",
+    cargo_lockfile = "//:Cargo.lock",
     #cargo_toml = "//:Cargo.toml",
     manifests = [
-    "//hhds/rust:Cargo.toml",
-    "//hhds/rust/hello-world:Cargo.toml",
-    "//hhds/rust/hello_lib:Cargo.toml",
+    "//rust:Cargo.toml",
+    "//rust/hello-world:Cargo.toml",
+    "//rust/hello_lib:Cargo.toml",
     ],
 )

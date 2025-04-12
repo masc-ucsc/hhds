@@ -1,5 +1,9 @@
-
 alias(
     name = "hello-world",
-    actual = "//hello-world:hello-world",
+    actual = "//hhds/rust/hello-world:hello-world",
+)
+
+alias(
+    name = "hello_lib",
+    actual = "//hhds/rust/hello_lib:hello_lib",
 )

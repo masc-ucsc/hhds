@@ -23,5 +23,5 @@ jobs:
         key: bazel-${{ runner.os }}-build
 
     - name: Run Bazel build
-      run: cd hhds/rust && bazel build //:all --config=ci
+      run: bazel build //hhds/rust:all --config=ci
 
