@@ -10,6 +10,7 @@
 // 2-Remove main from there, do a unit test in tests/graph_test.cpp?
 // 3-Fix and use the constants from graph_sizing.hpp to avoid hardcode of 42, 22
 // 4-Use odd/even in pin/node so that add_ege can work for pin 0 (pin0==node_id)
+// 4.1-Missing to add node 1 and node 2 as input and output from graph at creation time.
 // 5-Add a better unit test for add_pin/node/edge for single graph. Make sure that it does not have bugs
 // 6-Add the graph_id class
 // 7-Allow edges between graphs add_edge(pin>0, pin<0) or add_edge(pin<0, pin>0)
