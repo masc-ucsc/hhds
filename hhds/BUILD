@@ -44,6 +44,28 @@ cc_library(
     }),
 )
 
+cc_library(
+    name    = "graph",
+    srcs    = ["graph.cpp"],
+    hdrs    = [
+      "graph.hpp",
+      "graph_sizing.hpp",
+      "hash_set3.hpp",
+    ],
+    copts   = COPTS + [
+        "-Wno-unused-parameter",
+        "-Wno-unused-variable",
+        "-Wno-shadow",
+        "-Wno-self-assign",
+        "-Wno-unused-private-field",
+    ],
+    includes = ["."],
+    deps    = [
+        "@emhash//:emhash",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 cc_test(
     name = "add_append_deep_bench",
     srcs = ["tests/add_append_bench/deep_tree_bench.cpp"],
@@ -174,4 +196,10 @@ cc_binary(
     deps = [
         ":core",
     ],
+)
+
+cc_binary(
+    name = "graph_bin",
+    srcs = ["graph_main.cpp"],    
+    deps = [":graph_lib"],
 )
