@@ -21,43 +21,63 @@ public:
   Pin();
   Pin(Nid master_nid_value, Port_id port_id_value);
 
-  [[nodiscard]] Nid                    get_master_nid() const;
+  [[nodiscard]] Nid                    get_master_nid() const;  // should be in node
   [[nodiscard]] Port_id                get_port_id() const;
-  auto                                 add_edge(Pid self_id, Pid other_id) -> bool;
-  [[nodiscard]] bool                   has_edges() const;
-  [[nodiscard]] std::array<int32_t, 4> get_sedges(Pid pid) const;
-  [[nodiscard]] Pid                    get_next_pin_id() const;
-  void                                 set_next_pin_id(Pid id);
+  auto                                 add_edge(Pid self_id, Pid other_id) -> bool;  // should be in node
+  [[nodiscard]] bool                   has_edges() const;                            // should be in node
+  [[nodiscard]] std::array<int64_t, 4> get_sedges(Pid pid) const;                    // should be in node
+  [[nodiscard]] Pid                    get_next_pin_id() const;                      // should be in node
+  void                                 set_next_pin_id(Pid id);                      // should be in node
 
 private:
   auto overflow_handling(Pid self_id, Pid other_id) -> bool;
 
-  Nid     master_nid : Nid_bits;
-  Port_id port_id : Port_bits;
-  int64_t sedge : 48;              // up to 4×12-bit “short edges”
-  Pid     next_pin_id : Nid_bits;  // linked list of pins on same node
-  uint8_t use_overflow : 1;
-  int64_t padding : 21;
+  Nid     master_nid : Nid_bits;   // 42 bits
+  Port_id port_id : Port_bits;     // 22 bits    => 64 bits (8 bytes)   // should not be in node
+  Pid     next_pin_id : Nid_bits;  // 42 bits
+  uint8_t use_overflow : 1;        // 1 bit      => 64 bits (8 bytes)
+  Nid     ledge0 : Nid_bits;       // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
+  Nid     ledge1 : Nid_bits;       // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
+  // adds upto a total of 191 bits => 24 bytes
+  union {
+    int64_t                sedges;  // 48 bits
+    emhash7::HashSet<Pid>* set;     // 8 bytes
+  } sedges_{.sedges = 0};           // Total: 8 bytes
+  // Total: 32 bytes
 };
+
+static_assert(sizeof(Pin) == 32, "Pin size mismatch");
 
 class __attribute__((packed)) Node {
 public:
   Node();
   explicit Node(Nid nid_value);
 
-  void               set_type(Type t);
-  [[nodiscard]] Nid  get_nid() const;
-  [[nodiscard]] Type get_type() const;
-  [[nodiscard]] Pid  get_next_pin_id() const;
-  void               set_next_pin_id(Pid id);
+  [[nodiscard]] Nid                    get_nid() const;
+  [[nodiscard]] Type                   get_type() const;
+  void                                 set_type(Type t);
+  [[nodiscard]] Pid                    get_next_pin_id() const;
+  void                                 set_next_pin_id(Pid id);
+  [[nodiscard]] std::array<int64_t, 4> get_sedges(Pid pid) const;
+  [[nodiscard]] bool                   has_edges() const;
+  auto                                 add_edge(Pid self_id, Pid other_id) -> bool;
 
 private:
   void clear_node();
+  auto overflow_handling(Pid self_id, Pid other_id) -> bool;
 
-  Nid  nid : 42;
-  Type type : 16;
-  Pid  next_pin_id : 42;
+  Nid     nid : 42;
+  Type    type : 16;
+  Pid     next_pin_id : 42;
+  uint8_t use_overflow : 1;
+  Nid     ledge0 : 42;
+  Nid     ledge1 : 42;
+  union {
+    int64_t                sedges;  // 48 bits
+    emhash7::HashSet<Pid>* set;     // 8 bytes
+  } sedges_{.sedges = 0};           // Total: 8 bytes
 };
+static_assert(sizeof(Node) == 32, "Node size mismatch");
 
 class __attribute__((packed)) Graph {
 public:
