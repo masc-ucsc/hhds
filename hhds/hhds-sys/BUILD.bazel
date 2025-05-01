@@ -1,0 +1,39 @@
+# This file is distributed under the BSD 3-Clause License. See LICENSE for details.
+
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("//tools:copt_default.bzl", "COPTS")
+
+load("@rules_rust//rust:defs.bzl", 
+	"rust_binary",
+	"rust_library",
+	"rust_test"
+)
+load("@rules_rust_bindgen//:defs.bzl",
+	"rust_bindgen_library",
+)
+
+# TODO: Aliases?
+#rust_bindgen_library(
+#	name = "hhds-sys",
+#	bindgen_flags = [
+#        "--allowlist-function", "forest.*",
+#       "--allowlist-function", "tree.*",
+#    ],
+#	edition = "2021",
+#	cc_lib = "//hhds:core",
+#	header = "//hhds:wrapper.hpp",
+#)
+
+rust_library(
+	name = "rust-hhds",
+	edition = "2021",
+	srcs = [ "src/lib.rs"],
+	deps = [ ":hhds-sys" ]
+)
+
+rust_test(
+	name = "rust-hhds-test",
+	crate = "rust-hhds"
+)
+

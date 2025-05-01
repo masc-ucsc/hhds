@@ -106,6 +106,8 @@ private:
     last_child_s |= ((__int128)value << (index * SHORT_DELTA));
   }
 
+  // :private
+
 public:
   /* DEFAULT CONSTRUCTOR */
   Tree_pointers()
@@ -1229,16 +1231,15 @@ inline Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
  * @return Tree_pos The absolute ID of the new sibling.
  * @throws std::out_of_range If the sibling index is out of range
  */
-//template <typename X>
-//Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
+template <typename X>
+Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
   /* POSSIBLE IMPROVEMENT -> PERFECTLY FORWARD THE DATA AND SIBLING ID*/
   // if (!_check_idx_exists(sibling_id)) {
   //     throw std::out_of_range("append_sibling: Sibling index out of range");
   // }
 
   // Directly go to the last sibling of the sibling_id
-  //TODO ;const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
-  /*
+  const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
   auto       new_sib   = get_last_child(parent_id);
 
   // If this chunk does not have more space, just add a new chunk
@@ -1263,8 +1264,7 @@ inline Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
   pointers_stack[new_sib >> CHUNK_SHIFT].set_num_short_del_occ(((unsigned)new_sib & CHUNK_MASK));
 
   return new_sib;
-  */
-//}
+}
 
 /**
  * @brief Insert a sibling after a node.
@@ -1275,7 +1275,6 @@ inline Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
  * @return Tree_pos The absolute ID of the new sibling.
  * @throws std::out_of_range If the sibling index is out of range
  */
-/*
 template <typename X>
 Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data) {
   // if (!_check_idx_exists(sibling_id)) {
@@ -1302,7 +1301,6 @@ Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data)
 
   return new_sib;
 }
-*/
 
 /**
  * @brief Add a root node to the tree.
