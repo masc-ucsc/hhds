@@ -583,18 +583,18 @@ public:
 
   // PRE-ORDER TRAVERSAL
   class pre_order_iterator : public traversal_iterator_base<pre_order_iterator> {
-  private:
-    using base = traversal_iterator_base<pre_order_iterator>;
-    using base::current;
-    using base::tree_ptr;
-    using base::m_follow_subtrees;
+  //private:
     
+
+  public:
     std::set<Tree_pos> visited_subtrees;
     tree<X>* current_tree; // Track which tree we're currently traversing
     tree<X>* main_tree;    // Keep reference to main tree
     Tree_pos return_to_node; // Node to return to after subtree traversal
-
-  public:
+    using base = traversal_iterator_base<pre_order_iterator>;
+    using base::current;
+    using base::tree_ptr;
+    using base::m_follow_subtrees;
     using iterator_category = std::forward_iterator_tag;
     using value_type = Tree_pos;
     using difference_type = std::ptrdiff_t;
@@ -715,7 +715,11 @@ public:
       : base(start, tree, follow_refs), current_tree(tree), main_tree(tree), return_to_node(INVALID) {}
 
     const X get_data() const {
-      return current_tree->get_data(current);
+	return current;
+      if (current_tree) {
+	      return current_tree->get_data(current);
+      }
+      return 5;
     }
 
     const_pre_order_iterator& operator++() {
@@ -1229,16 +1233,15 @@ inline Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
  * @return Tree_pos The absolute ID of the new sibling.
  * @throws std::out_of_range If the sibling index is out of range
  */
-//template <typename X>
-//Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
+template <typename X>
+Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
   /* POSSIBLE IMPROVEMENT -> PERFECTLY FORWARD THE DATA AND SIBLING ID*/
-  // if (!_check_idx_exists(sibling_id)) {
-  //     throw std::out_of_range("append_sibling: Sibling index out of range");
-  // }
+  if (!_check_idx_exists(sibling_id)) {
+       throw std::out_of_range("append_sibling: Sibling index out of range");
+   }
 
   // Directly go to the last sibling of the sibling_id
-  //TODO ;const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
-  /*
+  const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
   auto       new_sib   = get_last_child(parent_id);
 
   // If this chunk does not have more space, just add a new chunk
@@ -1263,8 +1266,7 @@ inline Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
   pointers_stack[new_sib >> CHUNK_SHIFT].set_num_short_del_occ(((unsigned)new_sib & CHUNK_MASK));
 
   return new_sib;
-  */
-//}
+}
 
 /**
  * @brief Insert a sibling after a node.
@@ -1275,7 +1277,6 @@ inline Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
  * @return Tree_pos The absolute ID of the new sibling.
  * @throws std::out_of_range If the sibling index is out of range
  */
-/*
 template <typename X>
 Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data) {
   // if (!_check_idx_exists(sibling_id)) {
@@ -1288,7 +1289,7 @@ Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data)
   }
 
   // Directly go to the next sibling of the sibling_id
-  const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
+  //TODO: const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
   auto       new_sib   = sibling_id;
 
   // Try to fir the sibling right after this, if the chunk has some space
@@ -1302,7 +1303,6 @@ Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data)
 
   return new_sib;
 }
-*/
 
 /**
  * @brief Add a root node to the tree.

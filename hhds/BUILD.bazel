@@ -4,10 +4,18 @@ load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("//tools:copt_default.bzl", "COPTS")
 #load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen") ## Investigate rust_bindgen vs rust_bindgen_lib
-load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen_library")
+load("@rules_rust//rust:defs.bzl", 
+	"rust_binary",
+	"rust_library",
+	"rust_test"
+)
+load("@rules_rust_bindgen//:defs.bzl",
+	"rust_bindgen_library",
+)
 
 exports_files(["rust"])
 exports_files(["tree.hpp"])
+exports_files(["wrapper.hpp"])
 
 config_setting(
     name = "use_profiling",
@@ -23,12 +31,20 @@ cc_library(
 )
 
 cc_library(
+    name = "iassert",
+    hdrs = ["iassert.hpp"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    include_prefix = "iassert",
+)
+
+cc_library(
     name = "core",
     srcs = glob(
-	["temptree.cpp", "tree.cpp", "wrapper.cpp"],
+	["tree.cpp", "wrapper.cpp"],
         exclude = ["*test*.cpp"],
     ),
-    hdrs = glob(["tree.hpp", "lhtree.hpp", "wrapper.hpp"],),
+    hdrs = glob(["tree.hpp", "lhtree.hpp", "wrapper.hpp"]),
     copts = COPTS,
     defines = select({
         ":use_profiling": [
@@ -40,7 +56,9 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "@fmt",
-        "@iassert",
+	#":iassert",
+	"@iassert//:iassert",
+	#"@iassert",
         "@emhash",
     ] + select({
         ":use_profiling": [
@@ -182,31 +200,31 @@ cc_binary(
     ],
 )
 
+## -- Rust portion
+
 rust_bindgen_library(
-    name ="bindgen-test",
-    bindgen_flags = [
-        "--allowlist-function=hhds::Tree_pointers::Tree_pointers",
-	"--blocklist-type=.*",
-#	"--clang", "/usr/bin/clang++",
-	#"-Wno-error",
-	#"#-Wno-unused-variable",
-    #    "--allowlist-function=simple_.*",
-	#"--allowlist-var=SIMPLE_.*",
-	#"-- --no-std",
+	name = "hhds-bindings",
+	#bindgen_flags = ["wrapper.hpp"],
+	bindgen_flags = [
+        "--allowlist-function", "forest.*",
+        "--allowlist-function", "tree.*",
     ],
-    clang_flags = [
-        "-x", "c++",
-	"-std=c++17",
-	"--sysroot=/usr",
-	"-isystem", "/usr/include",
-	"-isystem", "/usr/include/x86_64-linux-gnu",
-	"-isystem", "/usr/include/c++/12",  # Or 11 if 12 doesn't exist
-	"-isystem", "/usr/include/x86_64-linux-gnu/c++/12",  # Optional but safe
-	"-isystem", "/usr/lib/gcc/x86_64-linux-gnu/12/include",  # 🔥 This is key
-	"-isystem", "/usr/lib/llvm-14/lib/clang/14.0.0/include",  # For clang built-ins
-    ],
-    cc_lib = "//hhds:core",
-    edition = "2021",
-    header = "//hhds:tree.hpp",
+	edition = "2021",
+	cc_lib = "//hhds:core",
+	header = "wrapper.hpp",
 )
+
+rust_library(
+	name = "hhds-sys",
+	srcs = [
+	"rust-hhds/hhds-sys/src/lib.rs"
+	],
+)
+
+rust_binary(
+	name = "rust-hhds",
+	srcs = []
+)
+
+#rust_test()
 
