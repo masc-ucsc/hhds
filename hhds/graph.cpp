@@ -1,433 +1,344 @@
-//  This file is distributed under the BSD 3-Clause License. See LICENSE for details.
+#include <cassert>
+#include <iostream>
+#include <vector>
 
-#include "graph.hpp"
+#include "hash_set3.hpp"
 
-#include <algorithm>
-#include <iterator>
-#include <limits>
-#include <string>
+// TODO:
+// 1-Use namespace hhds like tree
+// 2-Remove main from there, do a unit test in tests/graph_test.cpp?
+// 3-Fix and use the constants from graph_sizing.hpp to avoid hardcode of 42, 22
+// 4-Use odd/even in pin/node so that add_ege can work for pin 0 (pin0==node_id)
+// 5-Add a better unit test for add_pin/node/edge for single graph. Make sure that it does not have bugs
+// 6-Add the graph_id class
+// 7-Allow edges between graphs add_edge(pin>0, pin<0) or add_edge(pin<0, pin>0)
+// 8-Benchmark against boost library for some example similar to hardware
+// 9-Iterator single graph (fast, fwd, bwd)
+// 10-Iterator hierarchical across graphs (fast, fwd, bwd)
 
-#include "fmt/format.h"
-#include "iassert.hpp"
-#include "likely.hpp"
+#if 0
+// FIXME:: this is todo 3
+#pragma once
 
-bool Graph::Master_entry::add_sedge(int16_t rel_id) {
-HERE:
-  FIrst insert in sedge, then the other places
-#if 1
-      if (n_edges < Num_sedges) {
-    I(sedge[n_edges] == 0);
-    sedge[n_edges] = rel_id;
-    inp_mask |= ((out ? 0 : 1) << n_edges);
+namespace hhds {
 
-    ++n_edges;
-    return true;
-  }
-#else
-      for (auto i = 0u; i < Num_sedges; ++i) {
-    if (sedge[i]) {
-      continue;
-    }
+using Nid                      = uint64_t;  // ports have a set order (a-b != b-a)
+constexpr int     Nid_bits     = 42;
+constexpr Port_ID Nid_invalid  = ((1 << Port_bits) - 1);
 
-    sedge[i] = rel_id;
-    ++n_edges;
-    inp_mask |= ((out ? 0 : 1) << i);
-    return true;
-  }
+using Port_id                  = uint32_t;  // ports have a set order (a-b != b-a)
+constexpr int     Port_bits    = 22;
+constexpr Port_id Port_invalid = ((1 << Port_bits) - 1);
+
+};  // namespace hhds
 #endif
 
-  if (is_node() && sedge2_or_portid == 0) {
-    sedge2_or_portid = rel_id;
-    I(n_edges == Num_sedges);
-    n_edges = Num_sedges + 1;
-    inp_mask |= ((out ? 0 : 1) << Num_sedges);
-    return true;
-  }
+constexpr int NUM_NODES         = 10;
+constexpr int NUM_TYPES         = 3;
+constexpr int MAX_PINS_PER_NODE = 10;
 
-  return false;
-}
+using Nid     = uint64_t;
+using Pid     = uint64_t;
+using Type    = uint16_t;
+using Port_id = uint32_t;
 
-bool Graph::Master_entry::add_ledge(uint32_t id, bool out) {
-  if (is_node() && ledge0_or_prev == 0) {
-    ledge0_or_prev = id;
-    ++n_edges;
-    inp_mask |= ((out ? 0 : 1) << (Num_sedges + 1));
-    return true;
-  }
+class __attribute__((packed)) Pin {
+private:
+  Nid     master_nid : 42;
+  Port_id port_id : 22;
+  int64_t sedge : 48;        // Short-edges (48 bits 2-complement)
+  Pid     next_pin_id : 42;  // Points to next pin of the same master_node
+  uint8_t use_overflow : 1;
+  int     padding : 21;
 
-  if (!overflow_link && ledge1_or_overflow == 0) {
-    ledge1_or_overflow = id;
-    ++n_edges;
-    inp_mask |= ((out ? 0 : 1) << (Num_sedges + 2));
-    return true;
-  }
+public:
+  Pin() : master_nid(0), port_id(0), sedge(0), next_pin_id(0), use_overflow(0) {}
+  Pin(Nid master_nid_value, Port_id port_id_value)
+      : master_nid(master_nid_value), port_id(port_id_value), sedge(0), next_pin_id(0), use_overflow(0) {}
 
-  return false;
-}
+  [[nodiscard]] auto get_master_nid() const -> Nid { return master_nid; }
+  [[nodiscard]] auto get_port_id() const -> Port_id { return port_id; }
+  [[nodiscard]] auto overflow_handling(Pid self_id, Pid other_id) -> bool {
+    int64_t                temp_sedge  = 0;
+    emhash7::HashSet<Pid>* temp_ledges = NULL;
 
-/* function that deletes values from the edge storage of an Entry16
- *
- * @params uint8_t rel_index
- * @returns 0 if success and 1 if empty
- */
-bool Graph::Master_entry::delete_edge(uint32_t self_id, uint32_t other_id, bool out) {
-  if (!out && !inp_mask) {
-    return false;  // no input in master
-  }
+    // If overflow is called first time:
+    //      1. Allocate memory for hashset.
+    //      2. Assign the hashset address to sedge.
+    //      3. Copy the sedges to the new hashset.
+    if (use_overflow == 0) {
+      temp_sedge = sedge;
 
-  int32_t rel_id    = other_id - self_id;
-  bool    short_rel = INT16_MIN < rel_id && rel_id < INT16_MAX;
+      sedge = reinterpret_cast<int64_t>(new emhash7::HashSet<Pid>());
 
-  if (short_rel) {
-    for (auto i = 0u; i < Num_sedges; ++i) {
-      if (sedge[i] != rel_id) {
-        continue;
-      }
+      temp_ledges = reinterpret_cast<emhash7::HashSet<Pid>*>(sedge);
+      for (int i = 0; i < 4; ++i) {
+        // Extract each 12-bit edge
+        int32_t edge = (temp_sedge >> (i * 12)) & 0xFFF;  // Get the 12 bits
 
-      if ((inp_mask & (1 << i)) == out) {
-        continue;
-      }
-
-      sedge[i] = 0;
-      --n_edges;
-      if (!out) {
-        inp_mask ^= (1 << i);
-      }
-
-      return true;
-    }
-    if (node_vertex && sedge2_or_portid == rel_id) {
-      if ((inp_mask & (1 << Num_sedges)) != out) {
-        sedge2_or_portid = 0;
-        --n_edges;
-        if (!out) {
-          inp_mask ^= (1 << Num_sedges);
+        // Check for sign extension (12-bit signed to 32-bit signed)
+        if (edge & 0x800) {    // If the sign bit is set
+          edge |= 0xFFFFF000;  // Sign extend to 32 bits
         }
 
+        if (edge != 0) {
+          temp_ledges->insert(self_id + edge);
+        }
+      }
+      use_overflow = 1;
+    } else {
+      if (sedge != 0) {
+        temp_ledges = reinterpret_cast<emhash7::HashSet<Pid>*>(sedge);
+      }
+    }
+    temp_ledges->insert(other_id);
+
+    return true;
+  }
+  auto add_edge(Pid self_id, Pid other_id) -> bool {
+    assert(self_id != other_id);
+    std::cout << "Adding edge between pins " << self_id << " and " << other_id << std::endl;
+
+    // If already in overflow, continue using the overflow hashset and not use sedge
+    if (use_overflow) {
+      std::cout << "Using overflow handling" << std::endl << std::endl;
+      return overflow_handling(self_id, other_id);
+    }
+
+    // Check if any of the 4th 12 bits is set
+    if ((sedge >> 3 * 12 & 0xFFF) != 0) {
+      std::cout << "Maximum sedges reached. Overflow handling" << std::endl << std::endl;
+      return overflow_handling(self_id, other_id);
+    }
+
+    // Typecast to avoid underflow
+    int64_t diff = static_cast<int32_t>(other_id) - static_cast<int32_t>(self_id);
+
+    // fits if diff is between -2048 to 2047
+    bool fits = diff > -(1 << 11) && diff < ((1 << 11) - 1);  // 12 bits 2-complement
+
+    if (!fits) {
+      std::cout << "Edge isnt short enough; diff=" << diff << "; Overflow handling" << std::endl << std::endl;
+      return overflow_handling(self_id, other_id);
+    }
+
+    // Try to add the edge to one of the 4 positions
+    for (int i = 0; i < 4; ++i) {
+      // Check if this edge position is available
+      if ((sedge & (0xFFFLL << (i * 12))) == 0) {  // 12 bits mask
+        // Store the new edge in the next available space in sedge
+        sedge |= (diff & 0xFFF) << (i * 12);  // Store each edge in 12 bits
+        std::cout << "Added edge: i:" << i << " diff=" << diff << std::endl << std::endl;
         return true;
       }
     }
-  }
-
-  if (node_vertex && ledge0_or_prev == other_id && (inp_mask & (1 << (Num_sedges + 1))) != out) {
-    ledge0_or_prev = 0;
-    --n_edges;
-    if (!out) {
-      inp_mask ^= (1 << (Num_sedges + 1));
-    }
 
     return true;
   }
+  [[nodiscard]] auto has_edges() const -> bool { return sedge != 0; }
 
-  if (!overflow_link && ledge1_or_overflow == other_id && (inp_mask & (1 << (Num_sedges + 2))) != out) {
-    ledge1_or_overflow = 0;
-    --n_edges;
-    if (!out) {
-      inp_mask ^= (1 << (Num_sedges + 2));
-    }
+  [[nodiscard]] auto get_sedges(Pid pid) const -> std::array<int32_t, 4> {
+    std::array<int32_t, 4> edges      = {0, 0, 0, 0};
+    int                    edge_count = 0;
 
-    return true;
-  }
-
-  return false;
-}
-
-std::pair<Graph_overflow *, uint32_t> Graph::allocate_overflow() {
-  uint32_t oid;
-  if (free_overflow_id == 0) {
-    oid = table.size();
-    table.emplace_back();  // 2 spaces for one overflow
-    table.emplace_back();
-  }
-
-  Graph_free_overflow *free_ent = (Graph_free_overflow *)&table[oid];
-
-  free_overflow_id = free_ent->next_ptr;
-  auto *ov         = free_ent->ref_overflow();
-  ov->clear();
-  return std::pair(ov, oid);
-}
-
-void Graph::add_edge_int(uint32_t self_id, uint32_t other_id) {
-  Graph_free &ent = table[self_id];
-
-  if (ent.is_node()) {
-    bool ok = ent.ref_node()->add_edge(self_id, other_id);
-    if (ok) {
-      return;
-    }
-  } else {
-    I(ent.is_pin());
-    bool ok = ent.ref_pin()->add_edge(self_id, other_id);
-    if (ok) {
-      return;
-    }
-  }
-
-HERE:
-  Switch the node / pin to overflow or set
-}
-
-void Graph::del_pin(uint32_t self_id) {}
-
-void Graph::del_node(uint32_t self_id) {
-  if (table[self_id].is_pin()) {
-    self_id = table[self_id].get_node_id();  // point to master
-  }
-
-HERE:
-  auto next_pin_id = table[self_id].next_pin_ptr;
-  del_pin(self_id);
-  while (next_pin_id) {
-    auto id = table[next_pin_id].next_pin_ptr;
-    del_pin(next_pin_id);
-    next_pin_id = id;
-  }
-}
-
-void Graph::del_edge_int(uint32_t self_id, uint32_t other_id) {
-  I(false);  // WARNING: trying to delete a node that does not exist!!
-}
-
-Graph::Graph(std::string_view n) : name(n) {
-  table.emplace_back();  // Reserve entry 0 as is_invalid
-  table.emplace_back();  // allocation must be 32 bytes aligned
-  I(table[0].is_free());
-
-  free_master_id   = 0;
-  free_overflow_id = 0;
-}
-
-uint32_t Graph::create_node() {
-  uint32_t id;
-
-  if (free_master_id) {
-  }
-
-  return id;
-}
-
-uint32_t Graph::create_pin(const uint32_t node_id, const Port_ID portid) {
-  I(node_id && node_id < table.size());
-
-  return id;
-}
-
-std::pair<size_t, size_t> Graph::get_num_pin_edges(uint32_t id) const {
-  I(!is_invalid(id));
-
-  size_t t_inp = 0;
-  size_t t_out = 0;
-
-  if (table[id].is_node()) {
-    const auto *node = ref_node(id);
-    t_out            = node->get_num_local_edges();
-
-    if (auto oid = node->get_overflow_id(); oid) {
-      t_out += otable[oid].get_num_local_edges();  // node only is a output pin
-    } else if (auto sid = node->get_set_id(); sid) {
-      t_out += stable[sid].size();  // node only is a output pin
-    }
-
-  } else {
-    const auto *pin = ref_pin(id);
-    auto        num = pin->get_num_local_edges();
-
-    if (auto oid = pin->get_overflow_id(); oid) {
-      num += otable[oid].get_num_local_edges();
-    } else if (auto sid = node->get_set_id(); sid) {
-      num += stable[sid].size();
-    }
-    if (pin->is_sink()) {
-      t_inp += num;
+    if (use_overflow) {
+      emhash7::HashSet<Pid>* ledges = reinterpret_cast<emhash7::HashSet<Pid>*>(sedge);
+      if (ledges->empty()) {
+        std::cout << "\t No overflow edges for this pin." << std::endl;
+        return edges;
+      }
+      std::cout << "\t Overflow edge(s):";
+      for (const auto& Tedge : *ledges) {
+        std::cout << " " << Tedge;
+      }
+      std::cout << std::endl;
     } else {
-      t_out += num;
+      for (int i = 0; i < 4; ++i) {
+        // Extract each 12-bit edge
+        int32_t edge = (sedge >> (i * 12)) & 0xFFF;  // Get the 12 bits
+
+        // Check for sign extension (12-bit signed to 32-bit signed)
+        if (edge & 0x800) {    // If the sign bit is set
+          edge |= 0xFFFFF000;  // Sign extend to 32 bits
+        }
+
+        if (edge != 0) {
+          edges[edge_count++] = pid + edge;
+        }
+      }
+    }
+    return edges;
+  }
+  [[nodiscard]] auto get_next_pin_id() const -> Pid { return next_pin_id; }
+  void               set_next_pin_id(Pid id) { next_pin_id = id; }
+};
+
+class __attribute__((packed)) Node {
+private:
+  Nid  nid : 42;
+  Type type : 16;
+  Pid  next_pin_id : 42;  // Points to the first pin of the node
+
+public:
+  // Default constructor
+  Node() : nid(0) { clear_node(); }  // Initialize with default values
+
+  Node(Nid nid_value) {
+    clear_node();
+    nid = nid_value;
+  }
+
+  void clear_node() {
+    bzero(this, sizeof(Node));  // set everything to zero
+    return;
+  }
+
+  void set_type(Type type) { type = type; }
+
+  [[nodiscard]] auto get_nid() const -> Nid { return nid; }
+
+  [[nodiscard]] auto get_type() const -> Type { return type; }
+  [[nodiscard]] auto get_next_pin_id() const -> Pid { return next_pin_id; }
+  void               set_next_pin_id(Pid id) { next_pin_id = id; }
+};
+
+// graph_class
+class __attribute__((packed)) Graph {
+public:
+  std::vector<Node> node_table;  // array of nodes
+  std::vector<Pin>  pin_table;   // array of Pins
+
+  Graph() { clear_graph(); }
+  void clear_graph() {
+    bzero(this, sizeof(Graph));    // set everything to zero
+    node_table.emplace_back(0);    // To avoid assertion for size=0
+    pin_table.emplace_back(0, 0);  // To avoid assertion for size=0
+    return;
+  }
+
+  [[nodiscard]] auto create_node() -> Nid {
+    Nid id = node_table.size();  // Generate new NodeID
+    assert(id);
+    node_table.emplace_back(id);
+    return id;
+  }
+  [[nodiscard]] auto create_pin(Nid nid, Port_id port_id) -> Pid {
+    Pid id = pin_table.size();  // Generate new PinID
+    assert(id);
+    pin_table.emplace_back(nid, port_id);
+    // ref_node(nid)->set_next_pin_ptr(ref_pin(id));
+    set_next_pin(nid, id);
+    return id;
+  }
+
+  [[nodiscard]] auto ref_node(Nid id) const -> Node* {
+    assert(id);
+    return (Node*)&node_table[id];
+  }
+  [[nodiscard]] auto ref_pin(Pid id) const -> Pin* {
+    assert(id);
+    return (Pin*)&pin_table[id];
+  }
+
+  void add_edge(Pid driver_id, Pid sink_id) const {
+    add_edge_int(driver_id, sink_id);
+    add_edge_int(sink_id, driver_id);
+  }
+  void add_edge_int(Pid self_id, Pid other_id) const {
+    // For now considering only Pins have edge(s)
+    bool ok = ref_pin(self_id)->add_edge(self_id, other_id);
+    if (ok) {
+      return;
+    }
+    std::cout << "add_edge_int failed: " << self_id << " " << other_id << std::endl;
+  }
+
+  void set_next_pin(Nid nid, Pid next_pin) {
+    if (ref_node(nid)->get_next_pin_id() == 0) {  // If Node does not have any pin
+      ref_node(nid)->set_next_pin_id(next_pin);   // Set first pin's pointer in node
+      return;
+    }
+    Pid next_pid = ref_node(nid)->get_next_pin_id();
+    // Move across all the existing pins and find the end of the list
+    while (pin_table[next_pid].get_next_pin_id()) {
+      next_pid = pin_table[next_pid].get_next_pin_id();
+    }
+    pin_table[next_pid].set_next_pin_id(next_pin);  // Set the next pin ptr to each pin
+    return;
+  }
+
+  // Visualize entire graph. This is just for development purpose
+  void display_graph() const {
+    for (Pid pid = 1; pid < pin_table.size(); ++pid) {
+      Pin* currPin = ref_pin(pid);
+      std::cout << "Pin ID: " << pid << std::endl;
+      std::cout << "\t Master Node ID: " << currPin->get_master_nid();
+      std::cout << "; Node Type: " << ref_node(currPin->get_master_nid())->get_type() << std::endl;
+      std::cout << "\t Port ID: " << currPin->get_port_id() << std::endl;
+
+      if (currPin->has_edges()) {  // Currently only sedges
+        std::array<int32_t, 4> edges = currPin->get_sedges(pid);
+        std::cout << "\t Short edge(s): ";
+        for (const auto& edge : edges) {
+          std::cout << edge << " ";
+        }
+        std::cout << std::endl;
+      }
+
+      std::cout << "\t Next Pid: " << currPin->get_next_pin_id() << std::endl;
+    }
+  }
+  void display_next_pin_of_node() {
+    for (Nid nid = 1; nid < node_table.size(); ++nid) {
+      Node* currNode = ref_node(nid);
+      std::cout << "Node ID: " << nid << std::endl;
+      std::cout << "\t First pin of node: " << currNode->get_next_pin_id() << std::endl;
+    }
+  }
+};
+
+static_assert(sizeof(Graph) == 48, "Graph size must be 48 bytes");
+static_assert(sizeof(Node) == 13, "Node size must be 13 bytes");
+static_assert(sizeof(Pin) == 22, "Pin size must be 22 bytes");
+
+int main() {
+  std::vector<Nid> node_id;
+  std::vector<Pid> pin_id;
+
+  std::srand(std::time(0));
+
+  Graph g1;
+
+  for (int i = 0; i < NUM_NODES; i++) {
+    // Create Nodes
+    Nid nid = g1.create_node();
+    node_id.push_back(nid);
+
+    // Add node type
+    g1.ref_node(nid)->set_type(nid % NUM_TYPES);
+
+    // Add pins to node as required
+    int rpins = std::rand() % MAX_PINS_PER_NODE + 1;
+    for (int i = 0; i < rpins; i++) {
+      Pid pid = g1.create_pin(nid, 1);
+      pin_id.push_back(pid);
     }
   }
 
-  return std::pair(t_inp, t_out);
-}
+  g1.add_edge(2, 3);
+  g1.add_edge(10, 20);
+  g1.add_edge(5, 1);
+  g1.add_edge(5, 7);
+  // g1.add_edge(4, 100000); //Should not fit for both pins, diff not in range
+  g1.add_edge(6, 5);
+  g1.add_edge(2, 5);
+  g1.add_edge(5, 13);  // Should overflow for 5, because 5 already has 4 sedge
+  g1.add_edge(5, 3);   // Should overflow for 5, because 5 already has 4 sedge
+  g1.add_edge(5, 4);   // Should overflow for 5, because 5 already has 4 sedge
+  g1.add_edge(10, 24);
 
-void Graph::Master_entry::dump(uint32_t self_id) const {
-  const auto [n_i, n_o] = get_num_local_edges();
-
-  if (node_vertex) {
-    fmt::print("node:{} bits:{} n_inputs:{} n_outputs:{} next:{} over:{}\n",
-               self_id,
-               bits,
-               n_i,
-               n_o,
-               next_pin_ptr,
-               get_overflow_id());
-  } else {
-    fmt::print("pin:{} portid:{} bits:{} n_inputs:{} n_outputs:{} next:{} over:{} node:{}\n",
-               self_id,
-               get_portid(),
-               bits,
-               n_i,
-               n_o,
-               next_pin_ptr,
-               get_overflow_id(),
-               ledge0_or_prev);
-  }
-
-  fmt::print("  edges:");
-  for (auto i = 0u; i < Num_sedges; ++i) {
-    if (sedge[i]) {
-      fmt::print(" {}", self_id + sedge[i]);
-    }
-  }
-  if (node_vertex && sedge2_or_portid) {
-    fmt::print(" {}", self_id + sedge2_or_portid);
-  }
-  if (node_vertex && ledge0_or_prev) {
-    fmt::print(" {}", ledge0_or_prev);
-  }
-  if (!overflow_link && ledge1_or_overflow) {
-    fmt::print(" {}", ledge1_or_overflow);
-  }
-  fmt::print("\n");
-}
-
-void Graph::Master_entry::delete_node(uint32_t self_id, std::vector<Master_entry> &mtable) {
-  for (auto i = 0u; i < Num_sedges; ++i) {
-    if (sedge[i] == 0) {
-      continue;
-    }
-
-    if (!(inp_mask & (1 << i))) {
-      auto id = self_id + sedge[i];
-      mtable[id].delete_edge(id, self_id, false);
-    }
-    sedge[i] = 0;
-  }
-  if (is_node() && sedge2_or_portid) {
-    if (!(inp_mask & (1 << Num_sedges))) {
-      auto id = self_id + sedge2_or_portid;
-      mtable[id].delete_edge(id, self_id, false);
-    }
-    sedge2_or_portid = 0;
-  }
-
-  if (is_node() && ledge0_or_prev) {
-    uint32_t tmp   = ledge0_or_prev;
-    ledge0_or_prev = 0;
-    if (!(inp_mask & (1 << (Num_sedges + 1)))) {
-      mtable[tmp].delete_edge(tmp, self_id, false);
-    }
-  }
-  if (!overflow_link && ledge1_or_overflow) {
-    uint32_t tmp       = ledge1_or_overflow;
-    ledge1_or_overflow = 0;
-    if (!(inp_mask & (1 << (Num_sedges + 2)))) {
-      mtable[tmp].delete_edge(tmp, self_id, false);
-    }
-  }
-}
-
-bool Graph::Overflow_entry::del_sedge(uint16_t id) {
-  auto it = std::lower_bound(sedges.begin(), sedges.begin() + n_sedges, id);
-  if (*it != id) {
-    return false;
-  }
-
-  --n_sedges;
-
-  int positions = sedges.end() - it - 1;
-  if (positions > 0) {  // no memmove for last element erase
-    memmove(it, it + 1, sizeof(uint16_t) * positions);
-  }
-
-  return true;
-}
-
-bool Graph::Overflow_entry::del_ledge(uint32_t id) {
-  auto it = std::lower_bound(ledges.begin(), ledges.begin() + n_ledges, id);
-  if (*it != id) {
-    return false;
-  }
-
-  --n_ledges;
-
-  int positions = ledges.end() - it - 1;
-  if (positions > 0) {  // no memmove for last element erase
-    memmove(it, it + 1, sizeof(uint32_t) * positions);
-  }
-
-  return true;
-}
-
-bool Graph::Overflow_entry::add_sedge(uint16_t id) {
-  auto it = std::lower_bound(sedges.begin(), sedges.begin() + n_sedges, id);
-  if (*it == id) {
-    return true;
-  }
-
-  if (n_sedges >= max_sedges) {
-    return false;
-  }
-
-  users.insert(it, id);
-  ++n_sedges;
-
-  return true;
-}
-
-bool Graph::Overflow_entry::add_ledge(uint32_t id) {
-  auto it = std::lower_bound(ledges.begin(), ledges.begin() + n_ledges, id);
-  if (*it == id) {
-    return true;
-  }
-
-  if (n_ledges >= max_ledges) {
-    return false;
-  }
-
-  users.insert(it, id);
-  ++n_ledges;
-
-  return true;
-}
-
-void Graph::Overflow_entry::dump(uint32_t self_id) const {
-  fmt::print("  over:{} n_ledges:{} n_sedges:{}\n", self_id, n_ledges, n_sedges);
-
-  fmt::print("    sedges:");
-  for (auto i = 0u; i < n_sedges; ++i) {
-    fmt::print(" {:>8}", self_id + sedges[i]);
-  }
-  fmt::print("\n");
-  fmt::print("    ledges:");
-  for (auto i = 0u; i < n_ledges; ++i) {
-    fmt::print(" {:>8}", ledges[i]);
-  }
-  fmt::print("\n");
-}
-
-void Graph::dump(uint32_t id) const {
-  I(!is_invalid(id));
-
-  table[id].dump(id);
-
-  auto over_id = table[id].get_overflow_id();
-  if (over_id) {
-    over_ptr->dump(over_id);
-  }
-}
-
-uint32_t Graph::fast_next(uint32_t id) const {
-  I(!is_invalid(id));
-
-  while (true) {
-    ++id;
-
-    if (id >= table.size()) {
-      return 0;
-    }
-    if (table[id].is_node()) {
-      return id;
-    }
-  }
+  g1.display_graph();
+  g1.display_next_pin_of_node();
 
   return 0;
 }
