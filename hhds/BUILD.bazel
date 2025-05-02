@@ -19,6 +19,7 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+
 cc_library(
     name = "core",
     srcs = glob(
@@ -136,6 +137,42 @@ cc_test(
 #         ":core",
 #     ],
 # )
+
+cc_library(
+    name = "graph_core",
+    srcs = glob(
+        ["graph.cpp"],
+        exclude = ["*graph*.cpp"],
+    ),
+    hdrs = glob(["graph.hpp", "graph_sizing.hpp"]),
+    copts = COPTS,
+    defines = select({
+        ":use_profiling": [
+            "HHDS_PROFILING=1",
+        ],
+        "//conditions:default": [],
+    }),
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@fmt",
+        "@iassert",
+        "@emhash",
+    ] + select({
+        ":use_profiling": [
+            "@com_google_perfetto//:perfetto",
+        ],
+        "//conditions:default": [],
+    }),
+)
+
+cc_binary(
+    name = "small_graph_test",
+    srcs = ["tests/small_graph_test.cpp"],
+    deps = [
+        ":graph_core",
+    ],
+)
 
 cc_binary(
     name = "deep_tree_correctness",
