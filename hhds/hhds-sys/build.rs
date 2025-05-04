@@ -13,7 +13,7 @@ fn main() {
     println!("cargo:rustc-link-search=native=../../bazel-bin/external");
     println!("cargo:rustc-link-search=native=../../bazel-bin/hhds"); // adjust to real path
     println!("cargo:rustc-link-lib=static=core"); // or dylib if it's .so
-    println!("cargo:rustc-link-search=native=../../bazel-bin/external/_main~_repo_rules~iassert");
+    println!("cargo:rustc-link-search=native=../../bazel-bin/hhds/iassert");
     println!("cargo:rustc-link-lib=static=iassert");
     println!("cargo:rustc-link-lib=dylib=stdc++");
     println!("cargo:rustc-link-lib=c++");

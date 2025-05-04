@@ -1,5 +1,5 @@
 [package]
-name = "bindgen-test"
+name = "hhds-sys"
 version = "0.1.0"
 edition = "2024"
 

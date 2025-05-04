@@ -63,15 +63,15 @@ hhds::Tree_pos insert_next_sibling(TreeIntHandle tree, hhds::Tree_pos sibling_id
 
 
 // Tree Iters
-PreOrdIterHandle get_pre_order_iterator(TreeIntHandle handle, bool follow_subtrees) {
+PreOrdIterHandle get_pre_order_iterator(TreeIntHandle handle, hhds::Tree_pos start, bool follow_subtrees) {
 	TreeInt* tree_ptr = static_cast<TreeInt *>(handle);
-	return new TreeInt::pre_order_iterator(hhds::ROOT, tree_ptr, follow_subtrees);
+	return new TreeInt::pre_order_iterator(start, tree_ptr, follow_subtrees);
 }
 
 PreOrdIterHandle increment_pre_order_iterator(PreOrdIterHandle handle) {
 	PreOrderIterInt* pre_iter_ptr = static_cast<PreOrderIterInt*>(handle);
-	++(pre_iter_ptr);
-	return pre_iter_ptr;
+	pre_iter_ptr->operator++();
+	return handle;
 }
 
 hhds::Tree_pos deref_pre_order_iterator(PreOrdIterHandle handle) {
@@ -80,32 +80,11 @@ hhds::Tree_pos deref_pre_order_iterator(PreOrdIterHandle handle) {
 }
 int get_data_pre_order_iter(PreOrdIterHandle handle) {
 	PreOrderIterInt* pre_iter_ptr = static_cast<PreOrderIterInt *>(handle);
-	if (!pre_iter_ptr) {
-		printf("Null iterator handle!\n");
-		return -1;
-	}
-	if (!pre_iter_ptr->current_tree) {
-		printf("Null current_tree!\n");
-		return -1;
-	}
-	if (pre_iter_ptr->current == hhds::INVALID) {
-		printf("Iterator at invalid!\n");
-		return -1;
-	}
 	return pre_iter_ptr->get_data();
 }
 
 // Tree Data Access
 int tree_get_data(TreeIntHandle tree_handle, hhds::Tree_pos idx) {
-	//TreeInt * tree = static_cast<TreeInt *>(tree);
-	/*
-	if (idx < 0 || idx >= tree->data_stack.size()) {
-		throw std::out_of_range(
-			"get_data: invalid index " << idx
-			<< ", size is " << tree->data_stack.size();
-				);
-	}
-	*/
 	return static_cast<TreeInt *>(tree_handle)->get_data(idx);
 }
 void tree_set_data(TreeIntHandle tree, hhds::Tree_pos idx, int data) {

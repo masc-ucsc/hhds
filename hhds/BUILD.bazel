@@ -36,6 +36,7 @@ cc_library(
     includes = ["."],
     visibility = ["//visibility:public"],
     include_prefix = "iassert",
+    linkstatic =True,
 )
 
 cc_library(
@@ -201,30 +202,6 @@ cc_binary(
 )
 
 ## -- Rust portion
-
-rust_bindgen_library(
-	name = "hhds-bindings",
-	#bindgen_flags = ["wrapper.hpp"],
-	bindgen_flags = [
-        "--allowlist-function", "forest.*",
-        "--allowlist-function", "tree.*",
-    ],
-	edition = "2021",
-	cc_lib = "//hhds:core",
-	header = "wrapper.hpp",
-)
-
-rust_library(
-	name = "hhds-sys",
-	srcs = [
-	"rust-hhds/hhds-sys/src/lib.rs"
-	],
-)
-
-rust_binary(
-	name = "rust-hhds",
-	srcs = []
-)
 
 #rust_test()
 

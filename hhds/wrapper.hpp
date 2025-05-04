@@ -36,7 +36,7 @@ void print_tree(TreeIntHandle tree, int deep);
 
 //Tree PreOrder Iterator
 using PreOrderIter = hhds::tree<int>::pre_order_iterator;
-PreOrdIterHandle get_pre_order_iterator(TreeIntHandle handle, bool follow_subtrees);
+PreOrdIterHandle get_pre_order_iterator(TreeIntHandle handle, hhds::Tree_pos start, bool follow_subtrees);
 PreOrdIterHandle increment_pre_order_iterator(PreOrdIterHandle handle);
 hhds::Tree_pos deref_pre_order_iterator(PreOrdIterHandle handle);
 int get_data_pre_order_iter(PreOrdIterHandle handle);

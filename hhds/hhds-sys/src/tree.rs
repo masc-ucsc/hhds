@@ -1,6 +1,6 @@
 use std::os::raw::{c_int, c_void};
 
-include!("../target/debug/build/bindgen-test-88895d99f6a8c150/out/bindings.rs");
+include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 pub struct Forest {
     handle: ForestIntHandle,
@@ -21,8 +21,8 @@ impl Forest {
         return Tree::new(unsafe { forest_int_get_tree(self.handle, tree_ref) });
     }
 
-    pub fn delete_tree(&self, tree_ref: hhds_Tree_pos) -> bool {
-        unsafe { forest_int_delete_tree(self.handle, tree_ref) }
+    pub fn delete_tree(&self, tree_ref: hhds_Tree_pos) ->  bool {
+        unsafe {forest_int_delete_tree(self.handle, tree_ref)}
     }
 }
 
@@ -43,50 +43,62 @@ impl Tree {
         unsafe { tree_get_data(self.handle, tree_ref) }
     }
 
-    pub fn add_child(&self, data: c_int) -> hhds_Tree_pos {
-        unsafe { add_child(self.handle, self.get_root(), data) }
+    pub fn add_child(&self, parent_idx: hhds_Tree_pos,data: c_int) -> hhds_Tree_pos {
+        unsafe {add_child(self.handle, parent_idx, data)}
     }
 
     pub fn add_subtree_ref(&self, node_pos: hhds_Tree_pos, subtree_ref: hhds_Tree_pos) {
-        unsafe { add_subtree_ref(self.handle, node_pos, subtree_ref) }
+        unsafe {add_subtree_ref(self.handle, node_pos, subtree_ref)}
     }
 
-    pub fn delete_leaf(&self, leaf_index: hhds_Tree_pos) {
-        unsafe { delete_leaf(self.handle, leaf_index) }
+    pub fn delete_leaf(&self, node_pos: hhds_Tree_pos) {
+        unsafe {delete_leaf(self.handle, node_pos)}
     }
 
-    pub fn pre_ord_iter(&self) -> PreOrderIterator {
-        PreOrderIterator::new(&self)
+    pub fn delete_subtree(&self, subtree_root: hhds_Tree_pos) {
+        unsafe {delete_subtree(self.handle, subtree_root)}
     }
+
+    pub fn pre_ord_iter(&self, follow_subtrees:bool) -> PreOrderIterator {
+        PreOrderIterator::new(&self, follow_subtrees)
+    }
+
 }
 
 pub struct PreOrderIterator {
-    handle: *mut c_void,
+    pub handle: *mut c_void,
 }
 impl PreOrderIterator {
-    pub fn new(tree: &Tree) -> Self {
+    pub fn new(tree: &Tree, follow_subtrees:bool) -> Self {
         Self {
-            handle: unsafe { get_pre_order_iterator(tree.handle, false) },
+            handle: unsafe { get_pre_order_iterator(tree.handle, tree.get_root(), follow_subtrees) },
         }
     }
 
     pub fn deref(&self) -> i64 {
-        return unsafe { deref_pre_order_iterator(self.handle) };
+        return unsafe { deref_pre_order_iterator(self.handle)};
     }
 
     pub fn get_data(&self) -> c_int {
-        unsafe { get_data_pre_order_iter(self.handle) }
+        unsafe {get_data_pre_order_iter(self.handle)}
     }
 }
+
+/*
+ * Currently this iterates and returns reference IDs.
+ * Need to call get_data() before every iteration to get data of specified reference.
+ *
+ * **CHANGED** Now returns just data from iteration.
+ */
 impl Iterator for PreOrderIterator {
-    type Item = hhds_Tree_pos;
+    type Item = c_int;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let val = match unsafe { deref_pre_order_iterator(self.handle) } {
-            0 => None,
-            val => Some(val),
+        let val = match unsafe {deref_pre_order_iterator(self.handle)} {
+            val if val <= 0 => return None,
+            _ => Some(self.get_data())
         };
-        self.handle = unsafe { increment_pre_order_iterator(self.handle) };
+        self.handle = unsafe {increment_pre_order_iterator(self.handle)};
         return val;
     }
 }
