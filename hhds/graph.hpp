@@ -8,16 +8,16 @@
 #include "graph_sizing.hpp"
 
 // TODO:
-// 1-Use namespace hhds like tree -  In Progress
-// 2-Remove main from there, do a unit test in tests/graph_test.cpp? - In Progress
-// 3-Fix and use the constants from graph_sizing.hpp to avoid hardcode of 42, 22 - In progress - Inquiry
-// 4-Use odd/even in pin/node so that add_edge can work for pin 0 (pin0==node_id)
-// 5-Add a better unit test for add_pin/node/edge for single graph. Make sure that it does not have bugs
-// 6-Add the graph_id class
-// 7-Allow edges between graphs add_edge(pin>0, pin<0) or add_edge(pin<0, pin>0)
-// 8-Benchmark against boost library for some example similar to hardware
-// 9-Iterator single graph (fast, fwd, bwd)
-// 10-Iterator hierarchical across graphs (fast, fwd, bwd)
+// -[x] 1-Use namespace hhds like tree 
+// -[x] 2-Remove main from there, do a unit test in tests/graph_test.cpp?
+// -[x?] 3-Fix and use the constants from graph_sizing.hpp to avoid hardcode of 42, 22 - In progress - Inquiry
+// -[x?] 4-Use odd/even in pin/node so that add_edge can work for pin 0 (pin0==node_id)
+// -[x*] 5-Add a better unit test for add_pin/node/edge for single graph. Make sure that it does not have bugs
+// -[] 6-Add the graph_id class
+// -[] 7-Allow edges between graphs add_edge(pin>0, pin<0) or add_edge(pin<0, pin>0)
+// -[] 8-Benchmark against boost library for some example similar to hardware
+// -[] 9-Iterator single graph (fast, fwd, bwd)
+// -[] 10-Iterator hierarchical across graphs (fast, fwd, bwd)
 namespace hhds {
 
     //using Nid     = uint64_t;// ports have a set order (a-b != b-a)
@@ -180,7 +180,7 @@ namespace hhds {
         return;
       }
     
-      void set_type(Type type) { type = type; }
+      void set_type(Type new_type) { type = new_type; }
     
       [[nodiscard]] auto get_nid() const -> Nid { return nid; }
     

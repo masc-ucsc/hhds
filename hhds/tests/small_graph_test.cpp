@@ -6,6 +6,72 @@ constexpr int NUM_NODES         = 10;
 constexpr int NUM_TYPES         = 3;
 constexpr int MAX_PINS_PER_NODE = 10;
 
+void test_node_operations() {
+
+    // test creating nodes
+    hhds::Node n1 = hhds::Node();
+    hhds::Node n2 = hhds::Node(4);
+
+    // Verify IDs and members
+    I(n1.get_nid() == 0, "Default node should be 0.");
+    I(n1.get_type() == 0, "Default type should be 0.");
+    I(n1.get_next_pin_id() == 0, "Default type should be 0.");
+    I(n2.get_nid() == 4, "Node should be assigned 4.");
+
+    // Verify setters work
+    n1.set_type(1);
+    I(n1.get_type() == 1, "Node type should be 1.");
+    n1.set_next_pin_id(20);
+    I(n1.get_next_pin_id() == 20, "Next node id should be 20");
+
+    // Clear node works
+    n1.clear_node();
+    I(n1.get_nid() == 0, "Node should be cleared (0).");
+}
+
+void test_pin_operations() {
+    bool has_edges;
+    hhds::Pin p1 = hhds::Pin();
+    hhds::Pin p2 = hhds::Pin();
+    I(p1.get_master_nid() == 0, "Default master nid for p1 should be 0.");
+    has_edges = p1.has_edges();
+    I(!has_edges, "Initial pin should not have edges.");
+    bool added_edge = p1.add_edge(1, 2);
+    I(added_edge, "Adding an edge should always return true");
+    has_edges = p1.has_edges();
+    I(has_edges, "Pin should have edges after added edge");
+    std::array<int32_t, 4>  edges = p1.get_sedges(1);
+    std::cout << edges[0] << edges[1] << edges[2] << edges[3] << std::endl;
+    std::array<int32_t, 4> expected = {2, 0, 0, 0};
+    I(edges == expected, "something");
+
+    // add up to 4 edges then 1 more
+    for (int i = 3; i < 6; i++) {
+        p1.add_edge(1, i);
+    }
+    expected = {2, 3, 4, 5};
+    I(p1.get_sedges(1) == expected, "sometihng");
+    p1.add_edge(1, 6);
+    edges = p1.get_sedges(1);
+    std::cout << edges[0] << edges[1] << edges[2] << edges[3] << edges[4] << std::endl;
+    I(p1.get_sedges(1) == expected, "sometihng");
+    /*
+    */
+
+}
+/*
+void test_single_graph_pin() {
+    std::vector<hhds::Nid> node_id;
+    std::vector<hhds::Pid> pin_id;
+
+    hhds::Graph g1;
+    hhds::Nid nid = g1.create_node();
+    I(g1.node_table[0] == 0, "First node should be 0");
+    I(g1.node_table[1] == 3, "Second node should be 3");
+}
+
+*/
+
 void trivial_ops() {
     std::vector<hhds::Nid> node_id;
     std::vector<hhds::Pid> pin_id;
@@ -48,6 +114,15 @@ void trivial_ops() {
 }
 
 int main() {
+    std::cout <<"\nStarting Node operations unit test...\n\n";
+  
+    test_node_operations();
+    std::cout << "Node operations test passed\n";
+
+    std::cout <<"\nStarting Node operations unit test...\n\n";
+  
+    test_pin_operations();
+    std::cout << "Node operations test passed\n";
 
     std::cout <<"\nStarting basic graph...\n\n";
   
