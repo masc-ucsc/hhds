@@ -172,7 +172,7 @@ public:
   // Helper methods for subtree references
   [[nodiscard]] bool has_subtree_ref() const { return parent < 0; }
   [[nodiscard]] Tree_pos get_subtree_ref() const { return parent; }
-  void set_subtree_ref(Tree_pos ref) { parent = ref; }
+  void set_subtree_ref(Tree_pos ref) { this->parent = ref; }
 };  // Tree_pointers class
 
 template <typename X>
@@ -609,20 +609,15 @@ public:
     }
 
     pre_order_iterator& operator++() {
-      printf("\n-----\n");
-      printf("here\n");
-      printf("current: %d\n", current_tree->get_data(this->current));
       if (m_follow_subtrees && current_tree->forest_ptr) {
-        printf("why?!?\n");
         auto& node = current_tree->pointers_stack[this->current >> CHUNK_SHIFT];
         
         if (node.has_subtree_ref()) {
           Tree_pos ref = node.get_subtree_ref();
-          
           if (ref < 0 && visited_subtrees.find(ref) == visited_subtrees.end()) {
             visited_subtrees.insert(ref);
-            return_to_node = this->current;
-            current_tree = &(current_tree->forest_ptr->get_tree(ref));
+            this->return_to_node = this->current;
+            this->current_tree = &(current_tree->forest_ptr->get_tree(ref));
             this->current = ROOT;
             return *this;
           }
@@ -630,14 +625,12 @@ public:
       }
 
       // first try to go to first child
-      printf("first child\n");
       if (!current_tree->is_leaf(this->current)) {
         this->current = current_tree->get_first_child(this->current);
         return *this;
       }
 
       // if no children, try to go to next sibling
-      printf("first sib\n");
       auto nxt = current_tree->get_sibling_next(this->current);
       if (nxt != INVALID) {
         this->current = nxt;
@@ -645,20 +638,17 @@ public:
       }
 
       // if no next sibling and we're in a subtree, return to main tree
-      printf("return to main\n");
       if (current_tree != main_tree) {
-        current_tree = main_tree;
+        this->current_tree = main_tree;
         this->current = current_tree->get_sibling_next(return_to_node);
-        return_to_node = INVALID;
+        this->return_to_node = INVALID;
         if (this->current != INVALID) {
           return *this;
         }
       }
 
       // if no next sibling, go up to parent's next sibling
-      printf("parent next sib\n");
       auto parent = current_tree->get_parent(this->current);
-      printf("%ld\n", parent);
       while (parent != ROOT && parent != INVALID) {
         if (!m_follow_subtrees && parent <= 0) {
             this->current = INVALID;
@@ -673,7 +663,6 @@ public:
       }
 
       // if we've gone through all possibilities, mark as end
-      printf("hit\n");
       this->current = INVALID;
       return *this;
     }
@@ -1194,7 +1183,8 @@ inline Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) const {
   }
 
   // Check if the next sibling is within the same chunk, at idx + 1
-  const auto curr_chunk_id     = (sibling_id >> CHUNK_SHIFT);
+  // We do not accept negative id.
+  const auto curr_chunk_id     = (sibling_id <= 0) ? 0 : (sibling_id >> CHUNK_SHIFT);
   const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
   if (curr_chunk_offset < CHUNK_MASK and _contains_data((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1)) {
     return static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1);
@@ -1382,7 +1372,6 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
   const auto child_chunk_id = _create_space(data);
   const auto new_parent_id  = _try_fit_child_ptr(parent_index, child_chunk_id << CHUNK_SHIFT);
 
-  printf("%ld\n", new_parent_id);
   pointers_stack[child_chunk_id].set_parent(new_parent_id);
 
   // Set num occupied to 0

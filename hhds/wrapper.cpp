@@ -106,8 +106,7 @@ void forest_int_free(ForestIntHandle forest) {
 
 TreeIntHandle forest_int_get_tree(ForestIntHandle forest, hhds::Tree_pos tree_ref) {
 	ForestInt* f = static_cast<ForestInt *>(forest);
-	TreeInt* tree = new TreeInt(f->get_tree(tree_ref));
-	return static_cast<TreeIntHandle>(tree);
+	return static_cast<TreeIntHandle>(&(f->get_tree(tree_ref)));
 }
 
 hhds::Tree_pos forest_int_create_tree(ForestIntHandle forest, int root_data) {
