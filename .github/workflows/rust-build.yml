@@ -32,7 +32,7 @@ jobs:
       run: bazel build //hhds:all
 
     - name: Clone iassert repo
-      run: git clone https://github.com/masc-ucsc/iassert.git hhds/
+      run: git clone https://github.com/masc-ucsc/iassert.git hhds/iassert
 
     - name: Build iassert
       run: bazel build //hhds/iassert:all
