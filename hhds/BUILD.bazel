@@ -3,8 +3,19 @@
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("//tools:copt_default.bzl", "COPTS")
+#load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen") ## Investigate rust_bindgen vs rust_bindgen_lib
+load("@rules_rust//rust:defs.bzl", 
+	"rust_binary",
+	"rust_library",
+	"rust_test"
+)
+load("@rules_rust_bindgen//:defs.bzl",
+	"rust_bindgen_library",
+)
 
 exports_files(["rust"])
+exports_files(["tree.hpp"])
+exports_files(["wrapper.hpp"])
 
 config_setting(
     name = "use_profiling",
@@ -20,12 +31,21 @@ cc_library(
 )
 
 cc_library(
+    name = "iassert",
+    hdrs = ["iassert.hpp"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    include_prefix = "iassert",
+    linkstatic =True,
+)
+
+cc_library(
     name = "core",
     srcs = glob(
-        ["tree.cpp"],
+	["tree.cpp", "wrapper.cpp"],
         exclude = ["*test*.cpp"],
     ),
-    hdrs = glob(["tree.hpp", "lhtree.hpp"],),
+    hdrs = glob(["tree.hpp", "lhtree.hpp", "wrapper.hpp"]),
     copts = COPTS,
     defines = select({
         ":use_profiling": [
@@ -37,7 +57,9 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "@fmt",
-        "@iassert",
+	#":iassert",
+	"@iassert//:iassert",
+	#"@iassert",
         "@emhash",
     ] + select({
         ":use_profiling": [
@@ -178,3 +200,8 @@ cc_binary(
         ":core",
     ],
 )
+
+## -- Rust portion
+
+#rust_test()
+

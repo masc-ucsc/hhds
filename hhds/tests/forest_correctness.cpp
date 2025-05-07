@@ -47,7 +47,6 @@ void test_subtree_references() {
   // verify reference counting - should return false and not delete
   bool deleted = forest.delete_tree(sub_tree_ref);
   I(!deleted, "Should not be able to delete tree with references");
-  
   // tree should still be accessible
   auto& still_there = forest.get_tree(sub_tree_ref);
   I(still_there.get_data(still_there.get_root()) == 2, "Referenced tree should still exist");
@@ -272,7 +271,7 @@ void test_edge_cases() {
 
 int main() {
   std::cout << "\nStarting forest correctness tests...\n\n";
-  
+ 
   test_basic_forest_operations();
   std::cout << "Basic forest operations test passed\n";
   

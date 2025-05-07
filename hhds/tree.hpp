@@ -2,6 +2,7 @@
 #pragma once
 
 // tree.hpp
+#include <ostream>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -106,8 +107,6 @@ private:
     last_child_s |= ((__int128)value << (index * SHORT_DELTA));
   }
 
-  // :private
-
 public:
   /* DEFAULT CONSTRUCTOR */
   Tree_pointers()
@@ -167,14 +166,14 @@ public:
   void set_first_child_l(Tree_pos f) { first_child_l = f; }
   void set_last_child_l(Tree_pos l) { last_child_l = l; }
   void set_num_short_del_occ(uint16_t n) { num_short_del_occ = n; }
-  void set_is_leaf(bool l) { is_leaf = l; }
+  void set_is_leaf(bool l) { this->is_leaf = l; }
   void set_first_child_s_at(int16_t index, Short_delta value) { _set_first_child_s(index, value); }
   void set_last_child_s_at(int16_t index, Short_delta value) { _set_last_child_s(index, value); }
 
   // Helper methods for subtree references
   [[nodiscard]] bool has_subtree_ref() const { return parent < 0; }
   [[nodiscard]] Tree_pos get_subtree_ref() const { return parent; }
-  void set_subtree_ref(Tree_pos ref) { parent = ref; }
+  void set_subtree_ref(Tree_pos ref) { this->parent = ref; }
 };  // Tree_pointers class
 
 template <typename X>
@@ -585,18 +584,18 @@ public:
 
   // PRE-ORDER TRAVERSAL
   class pre_order_iterator : public traversal_iterator_base<pre_order_iterator> {
-  private:
-    using base = traversal_iterator_base<pre_order_iterator>;
-    using base::current;
-    using base::tree_ptr;
-    using base::m_follow_subtrees;
+  //private:
     
+
+  public:
     std::set<Tree_pos> visited_subtrees;
     tree<X>* current_tree; // Track which tree we're currently traversing
     tree<X>* main_tree;    // Keep reference to main tree
     Tree_pos return_to_node; // Node to return to after subtree traversal
-
-  public:
+    using base = traversal_iterator_base<pre_order_iterator>;
+    using base::current;
+    using base::tree_ptr;
+    using base::m_follow_subtrees;
     using iterator_category = std::forward_iterator_tag;
     using value_type = Tree_pos;
     using difference_type = std::ptrdiff_t;
@@ -607,18 +606,19 @@ public:
       : base(start, tree, follow_refs), current_tree(tree), main_tree(tree), return_to_node(INVALID) {}
 
     X get_data() const {
-      return current_tree->get_data(current);
+      return current_tree->get_data(this->current);
     }
 
     pre_order_iterator& operator++() {
       if (m_follow_subtrees && current_tree->forest_ptr) {
-        auto& node = current_tree->pointers_stack[current >> CHUNK_SHIFT];
+        auto& node = current_tree->pointers_stack[this->current >> CHUNK_SHIFT];
+        
         if (node.has_subtree_ref()) {
           Tree_pos ref = node.get_subtree_ref();
           if (ref < 0 && visited_subtrees.find(ref) == visited_subtrees.end()) {
             visited_subtrees.insert(ref);
-            return_to_node = current;
-            current_tree = &(current_tree->forest_ptr->get_tree(ref));
+            this->return_to_node = this->current;
+            this->current_tree = &(current_tree->forest_ptr->get_tree(ref));
             this->current = ROOT;
             return *this;
           }
@@ -626,41 +626,45 @@ public:
       }
 
       // first try to go to first child
-      if (!current_tree->is_leaf(current)) {
-        current = current_tree->get_first_child(current);
+      if (!current_tree->is_leaf(this->current)) {
+        this->current = current_tree->get_first_child(this->current);
         return *this;
       }
 
       // if no children, try to go to next sibling
-      auto nxt = current_tree->get_sibling_next(current);
+      auto nxt = current_tree->get_sibling_next(this->current);
       if (nxt != INVALID) {
-        current = nxt;
+        this->current = nxt;
         return *this;
       }
 
       // if no next sibling and we're in a subtree, return to main tree
       if (current_tree != main_tree) {
-        current_tree = main_tree;
-        current = current_tree->get_sibling_next(return_to_node);
-        return_to_node = INVALID;
-        if (current != INVALID) {
+        this->current_tree = main_tree;
+        this->current = current_tree->get_sibling_next(return_to_node);
+        this->return_to_node = INVALID;
+        if (this->current != INVALID) {
           return *this;
         }
       }
 
       // if no next sibling, go up to parent's next sibling
-      auto parent = current_tree->get_parent(current);
+      auto parent = current_tree->get_parent(this->current);
       while (parent != ROOT && parent != INVALID) {
+        if (!m_follow_subtrees && parent <= 0) {
+            this->current = INVALID;
+            return *this;
+        }
         auto parent_sibling = current_tree->get_sibling_next(parent);
         if (parent_sibling != INVALID) {
-          current = parent_sibling;
+          this->current = parent_sibling;
           return *this;
         }
         parent = current_tree->get_parent(parent);
       }
 
-      // if we'e gone through all possibilities, mark as end
-      current = INVALID;
+      // if we've gone through all possibilities, mark as end
+      this->current = INVALID;
       return *this;
     }
 
@@ -673,7 +677,7 @@ public:
     }
 
     Tree_pos operator*() const { 
-      return current; 
+      return this->current; 
     }
   };
 
@@ -717,7 +721,11 @@ public:
       : base(start, tree, follow_refs), current_tree(tree), main_tree(tree), return_to_node(INVALID) {}
 
     const X get_data() const {
-      return current_tree->get_data(current);
+	return current;
+      if (current_tree) {
+	      return current_tree->get_data(current);
+      }
+      return 5;
     }
 
     const_pre_order_iterator& operator++() {
@@ -736,41 +744,41 @@ public:
       }
 
       // first try to go to first child
-      if (!current_tree->is_leaf(current)) {
-        current = current_tree->get_first_child(current);
+      if (!current_tree->is_leaf(this->current)) {
+        this->current = current_tree->get_first_child(this->current);
         return *this;
       }
 
       // if no children, try to go to next sibling
-      auto nxt = current_tree->get_sibling_next(current);
+      auto nxt = current_tree->get_sibling_next(this->current);
       if (nxt != INVALID) {
-        current = nxt;
+        this->current = nxt;
         return *this;
       }
 
       // if no next sibling and we're in a subtree, return to main tree
       if (current_tree != main_tree) {
         current_tree = main_tree;
-        current = current_tree->get_sibling_next(return_to_node);
+        this->current = current_tree->get_sibling_next(return_to_node);
         return_to_node = INVALID;
-        if (current != INVALID) {
+        if (this->current != INVALID) {
           return *this;
         }
       }
 
       // if no next sibling, go up to parent's next sibling
-      auto parent = current_tree->get_parent(current);
+      auto parent = current_tree->get_parent(this->current);
       while (parent != ROOT && parent != INVALID) {
         auto parent_sibling = current_tree->get_sibling_next(parent);
         if (parent_sibling != INVALID) {
-          current = parent_sibling;
+          this->current = parent_sibling;
           return *this;
         }
         parent = current_tree->get_parent(parent);
       }
 
       // if we'e gone through all possibilities, mark as end
-      current = INVALID;
+      this->current = INVALID;
       return *this;
     }
 
@@ -1030,7 +1038,8 @@ inline Tree_pos tree<X>::get_parent(const Tree_pos& curr_index) const {
  *
  * @param leaf_index The absolute ID of the node.
  * @return true If the node is a leaf node.
- *
+ ng 3 tests
+INFO: Analyzed 16 targets (0 packages loaded, 0 targets configured).                          │test test_b*
  * @assert If the index is out of range
  */
 template <typename X>
@@ -1175,7 +1184,8 @@ inline Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) const {
   }
 
   // Check if the next sibling is within the same chunk, at idx + 1
-  const auto curr_chunk_id     = (sibling_id >> CHUNK_SHIFT);
+  // We do not accept negative id.
+  const auto curr_chunk_id     = (sibling_id <= 0) ? 0 : (sibling_id >> CHUNK_SHIFT);
   const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
   if (curr_chunk_offset < CHUNK_MASK and _contains_data((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1)) {
     return static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1);
@@ -1234,9 +1244,9 @@ inline Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
 template <typename X>
 Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
   /* POSSIBLE IMPROVEMENT -> PERFECTLY FORWARD THE DATA AND SIBLING ID*/
-  // if (!_check_idx_exists(sibling_id)) {
-  //     throw std::out_of_range("append_sibling: Sibling index out of range");
-  // }
+  if (!_check_idx_exists(sibling_id)) {
+       throw std::out_of_range("append_sibling: Sibling index out of range");
+   }
 
   // Directly go to the last sibling of the sibling_id
   const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
@@ -1287,7 +1297,7 @@ Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data)
   }
 
   // Directly go to the next sibling of the sibling_id
-  const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
+  //TODO: const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
   auto       new_sib   = sibling_id;
 
   // Try to fir the sibling right after this, if the chunk has some space

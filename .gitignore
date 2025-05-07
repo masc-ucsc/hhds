@@ -65,3 +65,5 @@ callgrind.out.*
 *.dot
 
 *target/
+
+iassert/
