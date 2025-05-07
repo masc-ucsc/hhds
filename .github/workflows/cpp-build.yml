@@ -25,7 +25,7 @@ jobs:
     - name: Install required libraries
       run: |
         sudo apt-get update
-        sudo apt-get install -y libtinfo5
+        sudo apt-get install -y libtinfo6
 
     - name: Run Bazel build
       run: bazel build //hhds:all
