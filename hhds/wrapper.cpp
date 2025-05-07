@@ -1,7 +1,7 @@
 #include "tree.hpp"
 #include "wrapper.hpp"
 #include "iassert.hpp"
-#include <stdexcept>
+//#include <stdexcept>
 
 using ForestInt = hhds::Forest<int>;
 using TreeInt = hhds::tree<int>;
