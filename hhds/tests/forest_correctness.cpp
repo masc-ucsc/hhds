@@ -68,6 +68,49 @@ void test_subtree_references() {
   I(caught_exception, "Should not be able to access deleted tree");
 }
 
+void test_basic_tree_traversal_with_subtrees() {
+  hhds::Forest<int> forest;
+  
+  // create main tree and subtree
+  auto main_tree_ref = forest.create_tree(1);
+  auto sub_tree_ref = forest.create_tree(10);
+  
+  auto& main_tree = forest.get_tree(main_tree_ref);
+  auto& sub_tree = forest.get_tree(sub_tree_ref);
+  
+  // build trees
+  //auto child1 = main_tree.add_child(main_tree.get_root(), 2);
+  //main_tree.add_child(main_tree.get_root(), 3);  // No need to store child2
+  
+  //sub_tree.add_child(sub_tree.get_root(), 11);
+  //sub_tree.add_child(sub_tree.get_root(), 12);
+  
+  // add subtree reference
+  //main_tree.add_subtree_ref(child1, sub_tree_ref);
+  
+  // test traversal with subtree following
+  int count = 0;
+  std::vector<int> visited_values;
+  
+  auto range = main_tree.pre_order(main_tree.get_root(), true);
+  auto iter = range.begin();
+  printf("%d\n", *iter);
+  printf("%d\n", *(++iter));
+  printf("%d\n", *(++iter));
+  printf("%d\n", *(++iter));
+  //printf("%d\n", (++iter).get_data());
+  //for (auto it = range.begin(); it != range.end(); ++it) {
+    //visited_values.push_back(it.get_data());
+    //count++;
+  //}
+  
+  // should visit: 1, 2, 10, 11, 12, 3
+  //I(count == 6, "Pre-order traversal with subtrees should visit 6 nodes");
+  
+  //std::vector<int> expected = {1, 2, 10, 11, 12, 3};
+  //I(visited_values == expected, 
+  //  "Pre-order traversal with subtrees should visit nodes in the correct order");
+}
 void test_tree_traversal_with_subtrees() {
   hhds::Forest<int> forest;
   
@@ -270,6 +313,12 @@ void test_edge_cases() {
 }
 
 int main() {
+
+  std::cout <<"\nStarting basic traversal...\n\n";
+
+  test_basic_tree_traversal_with_subtrees();
+  std::cout << "Basic traversal operations test passed\n";
+
   std::cout << "\nStarting forest correctness tests...\n\n";
  
   test_basic_forest_operations();

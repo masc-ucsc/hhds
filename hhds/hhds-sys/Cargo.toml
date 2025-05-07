@@ -5,6 +5,9 @@ edition = "2021"
 
 [dependencies]
 bindgen = "0.71.1"
+<<<<<<< HEAD
 
 [build-dependencies]
 bindgen = "0.71.1"
+=======
+>>>>>>> 2b687e2446f2dc1273ceb8383546183e7105e23d
