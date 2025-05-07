@@ -22,10 +22,17 @@ jobs:
         path: ~/.cache/bazel
         key: bazel-${{ runner.os }}-build
 
+    - name: Dependency quick fix
+      run: |
+        wget http://mirrors.kernel.org/ubuntu/pool/main/n/ncurses/libtinfo5_6.2-0ubuntu2_amd64.deb
+        sudo apt install ./libtinfo5_6.2-0ubuntu2_amd64.deb
+
     - name: Install required libraries
       run: |
         sudo apt-get update
         sudo apt-get install -y libtinfo6
+
+
 
     - name: Run Bazel build
       run: bazel build //hhds:all
