@@ -47,7 +47,6 @@ void test_subtree_references() {
   // verify reference counting - should return false and not delete
   bool deleted = forest.delete_tree(sub_tree_ref);
   I(!deleted, "Should not be able to delete tree with references");
-  
   // tree should still be accessible
   auto& still_there = forest.get_tree(sub_tree_ref);
   I(still_there.get_data(still_there.get_root()) == 2, "Referenced tree should still exist");
@@ -67,26 +66,6 @@ void test_subtree_references() {
     caught_exception = true;
   }
   I(caught_exception, "Should not be able to access deleted tree");
-}
-
-void test_tree_traversal() {
-  hhds::Forest<int> forest;
-  
-  // create main tree and subtree
-  auto main_tree_ref = forest.create_tree(1);
-  
-  auto& main_tree = forest.get_tree(main_tree_ref);
-  
-  // test traversal with subtree following
-  int count = 0;
-  std::vector<int> visited_values;
-  auto range = main_tree.pre_order(main_tree.get_root(), true);
-  auto it = range.begin();
-  printf("%d\n", it.get_data());
-  printf("%d\n", *it);
-  ++it;
-  //printf("%d\n", it.get_data());
-  printf("%d\n", *it);
 }
 
 void test_tree_traversal_with_subtrees() {
@@ -304,10 +283,10 @@ int main() {
   
   std::cout << "\nStarting large-scale tests...\n";
   
-  //test_complex_forest_operations();
+  test_complex_forest_operations();
   std::cout << "Complex forest operations test passed\n";
   
-  //test_edge_cases();
+  test_edge_cases();
   std::cout << "Edge cases test passed\n";
   
   std::cout << "\nAll forest correctness tests passed successfully!\n";

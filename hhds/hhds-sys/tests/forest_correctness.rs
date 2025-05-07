@@ -88,7 +88,6 @@ pub fn test_tree_traversal_with_subtrees() {
     // Test main tree traversal with following subtrees
     visited_values.clear();
     for i in main_tree.pre_ord_iter(true) {
-        println!("{}", i);
         visited_values.push(i);
     }
     assert_eq!(visited_values, vec![1, 2, 10, 11, 12, 3]);

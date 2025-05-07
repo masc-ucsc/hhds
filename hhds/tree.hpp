@@ -2,6 +2,7 @@
 #pragma once
 
 // tree.hpp
+#include <ostream>
 #include <sys/stat.h>
 #include <sys/types.h>
 
