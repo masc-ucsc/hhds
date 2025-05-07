@@ -4,5 +4,4 @@
 
 pub mod tree;
 // TODO: pub mod graph
-use tree::Forest;
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));

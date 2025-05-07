@@ -6,6 +6,12 @@ pub struct Forest {
     handle: ForestIntHandle,
 }
 
+impl Default for Forest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Forest {
     pub fn new() -> Self {
         Self {
@@ -14,11 +20,11 @@ impl Forest {
     }
 
     pub fn create_tree(&self, val: c_int) -> hhds_Tree_pos {
-        return unsafe { forest_int_create_tree(self.handle, val) };
+        unsafe { forest_int_create_tree(self.handle, val) }
     }
 
     pub fn get_tree(&self, tree_ref: hhds_Tree_pos) -> Tree {
-        return Tree::new(unsafe { forest_int_get_tree(self.handle, tree_ref) });
+        Tree::new(unsafe { forest_int_get_tree(self.handle, tree_ref) })
     }
 
     pub fn delete_tree(&self, tree_ref: hhds_Tree_pos) -> bool {
@@ -60,7 +66,7 @@ impl Tree {
     }
 
     pub fn pre_ord_iter(&self, follow_subtrees: bool) -> PreOrderIterator {
-        PreOrderIterator::new(&self, follow_subtrees)
+        PreOrderIterator::new(self, follow_subtrees)
     }
 }
 
@@ -77,7 +83,7 @@ impl PreOrderIterator {
     }
 
     pub fn deref(&self) -> i64 {
-        return unsafe { deref_pre_order_iterator(self.handle) };
+        unsafe { deref_pre_order_iterator(self.handle) }
     }
 
     pub fn get_data(&self) -> c_int {
@@ -100,6 +106,6 @@ impl Iterator for PreOrderIterator {
             _ => Some(self.get_data()),
         };
         self.handle = unsafe { increment_pre_order_iterator(self.handle) };
-        return val;
+        val
     }
 }
