@@ -31,6 +31,12 @@ jobs:
     - name: Run Bazel build
       run: bazel build //hhds:all
 
+    - name: Dependency Install
+      run: |
+        sudo apt-get update
+        sudo apt-get install libfmt-dev -y
+
+
     - name: Clone iassert repo
       run: git clone https://github.com/masc-ucsc/iassert.git hhds/iassert
 
