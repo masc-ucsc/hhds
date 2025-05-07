@@ -60,23 +60,23 @@ http_archive(
 #)
 
 # Rust
-rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
-rust.toolchain(versions = ["1.75.0"])
-register_toolchains("@rules_rust_bindgen//:default_bindgen_toolchain")
+#rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+#rust.toolchain(versions = ["1.75.0"])
+#register_toolchains("@rules_rust_bindgen//:default_bindgen_toolchain")
 
-crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-use_repo(crate, "crate_index")
+#crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+#use_repo(crate, "crate_index")
 
-crate.from_cargo(
-    name = "crate_index",
-    cargo_lockfile = "//hhds/rust:Cargo.lock",
+#crate.from_cargo(
+#    name = "crate_index",
+#    cargo_lockfile = "//hhds/rust:Cargo.lock",
     #cargo_toml = "//:Cargo.toml",
-    manifests = [
-    "//hhds/rust:Cargo.toml",
-    "//hhds/rust/hello-world:Cargo.toml",
-    "//hhds/rust/hello_lib:Cargo.toml",
-    ],
-)
+#    manifests = [
+#    "//hhds/rust:Cargo.toml",
+#    "//hhds/rust/hello-world:Cargo.toml",
+#    "//hhds/rust/hello_lib:Cargo.toml",
+#    ],
+#)
 
 
 ## llvm

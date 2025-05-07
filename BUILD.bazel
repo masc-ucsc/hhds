@@ -1,6 +1,6 @@
 load("@bazel_skylib//rules:native_binary.bzl", "native_binary")
 load("@rules_cc//cc:defs.bzl", "cc_import")
-load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen_toolchain")
+#load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen_toolchain")
 
 #native_binary(
 #    name = "clang",
