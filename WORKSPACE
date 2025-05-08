@@ -6,9 +6,9 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 http_archive(
     name = "com_google_perfetto",
     build_file = "perfetto.BUILD",
-    sha256 = "0871a92a162ac5655b7d724f9359b15a75c4e92472716edbc4227a64a4680be4",
-    strip_prefix = "perfetto-49.0/sdk",
-    urls = ["https://github.com/google/perfetto/archive/refs/tags/v49.0.tar.gz"],
+    sha256 = "c2230d04790eb50231a58616a3f1ff6dcf772d8e220333a7711605f99c5c6db9",
+    strip_prefix = "perfetto-50.1/sdk",
+    urls = ["https://github.com/google/perfetto/archive/refs/tags/v50.1.tar.gz"],
 )
 
 # emhash
