@@ -25,10 +25,10 @@ http_archive(
 # iassert
 http_archive(
     name = "iassert",
-    sha256 = "c6bf66a76d5a1de57c45dba137c9b51ab3b4f3a31e5de9e3c3496d7d36a128f8",
-    strip_prefix = "iassert-5c18eb082262532f621a23023f092f4119a44968",
+    sha256 = "9479439270fc42c58a3959d7aa5ecd207ebf0bbe9210e1d17b426530f0b096b2",
+    strip_prefix = "iassert-c2136ed8809ec1addbc48eb836c58d5b895e3f2b",
     urls = [
-        "https://github.com/masc-ucsc/iassert/archive/5c18eb082262532f621a23023f092f4119a44968.zip",
+        "https://github.com/masc-ucsc/iassert/archive/c2136ed8809ec1addbc48eb836c58d5b895e3f2b.zip",
     ],
 )
 
