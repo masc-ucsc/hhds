@@ -198,8 +198,8 @@ cc_binary(
     ],
 )
 
-cc_binary(
-    name = "graph_bin",
-    srcs = ["graph_main.cpp"],    
-    deps = [":graph_lib"],
-)
+# cc_binary(
+#     name = "graph_bin",
+#     srcs = ["graph_main.cpp"],
+#     deps = [":graph_lib"],
+# )
