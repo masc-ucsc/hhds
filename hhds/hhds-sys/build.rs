@@ -38,6 +38,7 @@ fn main() {
         .allowlist_function("add_.*") // setters - add
         .allowlist_function("delete.*")
         .allowlist_function(".*pre_order_iterator.*")
+        .allowlist_function(".*post_order_iterator.*")
         // Tell cargo to invalidate the built crate whenever any of the
         // included header files changed.
         //.allowlist_type("ForestIntHandle")

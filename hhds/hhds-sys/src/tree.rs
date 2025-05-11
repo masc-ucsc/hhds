@@ -109,3 +109,41 @@ impl Iterator for PreOrderIterator {
         val
     }
 }
+
+pub struct PostOrderIterator {
+    pub handle: *mut c_void,
+}
+
+impl PostOrderIterator {
+    pub fn new(tree: &Tree, follow_subtrees: bool) -> Self {
+        Self {
+            handle: unsafe {
+                get_post_order_iterator(tree.handle, tree.get_root(), follow_subtrees)
+            },
+        }
+    }
+
+    pub fn deref(&self) -> i64 {
+        unsafe { deref_post_order_iterator(self.handle) }
+    }
+
+    pub fn get_data(&self) -> c_int {
+        unsafe { get_data_post_order_iter(self.handle) }
+    }
+}
+
+/*
+ * Iterator returns data from iter.
+ */
+impl Iterator for PostOrderIterator {
+    type Item = c_int;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let val = match unsafe { deref_post_order_iterator(self.handle) } {
+            val if val <= 0 => return None,
+            _ => Some(self.get_data()),
+        };
+        self.handle = unsafe { increment_post_order_iterator(self.handle) };
+        val
+    }
+}

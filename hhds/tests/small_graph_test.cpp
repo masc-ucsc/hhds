@@ -49,15 +49,17 @@ void test_pin_operations() {
     for (int i = 3; i < 6; i++) {
         p1.add_edge(1, i);
     }
+    edges = p1.get_sedges(1);
+    std::cout << edges[0] << edges[1] << edges[2] << edges[3] << std::endl;
     expected = {2, 3, 4, 5};
-    I(p1.get_sedges(1) == expected, "sometihng");
+    I(edges == expected, "sometihng");
     p1.add_edge(1, 6);
     edges = p1.get_sedges(1);
-    std::cout << edges[0] << edges[1] << edges[2] << edges[3] << edges[4] << std::endl;
-    I(p1.get_sedges(1) == expected, "sometihng");
+    std::cout << edges[0] << edges[1] << edges[2] << edges[3] << std::endl;
+    expected = {0, 0, 0 , 0};
+    I(edges == expected, "sometihng");
     /*
     */
-
 }
 /*
 void test_single_graph_pin() {

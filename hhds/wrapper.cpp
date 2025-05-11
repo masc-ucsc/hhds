@@ -6,6 +6,7 @@
 using ForestInt = hhds::Forest<int>;
 using TreeInt = hhds::tree<int>;
 using PreOrderIterInt = typename hhds::tree<int>::pre_order_iterator;
+using PostOrderIterInt = typename hhds::tree<int>::post_order_iterator;
 // --- Tree ---
 
 template class hhds::tree<int>; // This explicitly instantiates the template for int
@@ -62,7 +63,7 @@ hhds::Tree_pos insert_next_sibling(TreeIntHandle tree, hhds::Tree_pos sibling_id
 
 
 
-// Tree Iters
+// Tree PreOrderIterator
 PreOrdIterHandle get_pre_order_iterator(TreeIntHandle handle, hhds::Tree_pos start, bool follow_subtrees) {
 	TreeInt* tree_ptr = static_cast<TreeInt *>(handle);
 	return new TreeInt::pre_order_iterator(start, tree_ptr, follow_subtrees);
@@ -81,6 +82,26 @@ hhds::Tree_pos deref_pre_order_iterator(PreOrdIterHandle handle) {
 int get_data_pre_order_iter(PreOrdIterHandle handle) {
 	PreOrderIterInt* pre_iter_ptr = static_cast<PreOrderIterInt *>(handle);
 	return pre_iter_ptr->get_data();
+}
+// Tree PostOrderIterator
+PostOrdIterHandle get_post_order_iterator(TreeIntHandle handle, hhds::Tree_pos start, bool follow_subtrees) {
+	TreeInt* tree_ptr = static_cast<TreeInt *>(handle);
+	return new TreeInt::post_order_iterator(start, tree_ptr, follow_subtrees);
+}
+
+PostOrdIterHandle increment_post_order_iterator(PostOrdIterHandle handle) {
+	PostOrderIterInt* post_iter_ptr = static_cast<PostOrderIterInt*>(handle);
+	post_iter_ptr->operator++();
+	return handle;
+}
+
+hhds::Tree_pos deref_post_order_iterator(PostOrdIterHandle handle) {
+	PostOrderIterInt* post_iter_ptr = static_cast<PostOrderIterInt *>(handle);
+	return post_iter_ptr->operator*();
+}
+int get_data_post_order_iter(PostOrdIterHandle handle) {
+	PostOrderIterInt* post_iter_ptr = static_cast<PostOrderIterInt *>(handle);
+	return post_iter_ptr->get_data();
 }
 
 // Tree Data Access
