@@ -5,3 +5,11 @@ edition = "2021"
 
 [build-dependencies]
 bindgen = "0.71.1"
+
+[dependencies]
+criterion = "0.5.1"
+rand = "0.9.1"
+
+[[bench]]
+name = "deep_tree_bench"
+harness = false

@@ -13,10 +13,14 @@ template class hhds::tree<int>; // This explicitly instantiates the template for
 template class hhds::Forest<int>; // This explicitly instantiates the template for int
 
 // --- Tree
-TreeIntHandle tree_int_new(ForestIntHandle forest) {
-    ForestInt* typed_forest = static_cast<ForestInt*>(forest);
-    return static_cast<TreeIntHandle>(new TreeInt(typed_forest));
+TreeIntHandle tree_int_new_empty() {
+    return static_cast<TreeIntHandle>(new TreeInt());
 }
+
+// TreeIntHandle tree_int_new_forest(ForestIntHandle forest) {
+//     ForestInt* typed_forest = static_cast<ForestInt*>(forest);
+//     return static_cast<TreeIntHandle>(new TreeInt(typed_forest));
+// }
 void tree_int_free(TreeIntHandle tree) {
 	delete static_cast<TreeInt *>(tree);
 }

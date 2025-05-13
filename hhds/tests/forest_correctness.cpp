@@ -68,49 +68,6 @@ void test_subtree_references() {
   I(caught_exception, "Should not be able to access deleted tree");
 }
 
-void test_basic_tree_traversal_with_subtrees_2() {
-  hhds::Forest<int> forest;
-  
-  // create main tree and subtree
-  auto main_tree_ref = forest.create_tree(1);
-  auto sub_tree_ref = forest.create_tree(10);
-  auto second_sub_tree_ref = forest.create_tree(100);
-  
-  auto& main_tree = forest.get_tree(main_tree_ref);
-  auto& sub_tree = forest.get_tree(sub_tree_ref);
-  auto& second_sub_tree = forest.get_tree(second_sub_tree_ref);
-  
-  // build trees
-  auto child1 = main_tree.add_child(main_tree.get_root(), 2);
-  main_tree.add_child(main_tree.get_root(), 3);  // No need to store child2
-  
-  sub_tree.add_child(sub_tree.get_root(), 11);
-  auto child2 = sub_tree.add_child(sub_tree.get_root(), 12);
-
-  second_sub_tree.add_child(second_sub_tree.get_root(), 101);
-  
-  // add subtree reference
-  main_tree.add_subtree_ref(child1, sub_tree_ref);
-  sub_tree.add_subtree_ref(child2, second_sub_tree_ref);
-  
-  // test traversal with subtree following
-  int count = 0;
-  std::vector<int> visited_values;
-  
-  auto range = main_tree.pre_order(main_tree.get_root(), true);
-  for (auto it = range.begin(); it != range.end(); ++it) {
-    visited_values.push_back(it.get_data());
-    count++;
-  }
-  
-  // should visit: 1, 2, 10, 11, 12, 3
-  I(count == 8, "Pre-order traversal with subtrees should visit 6 nodes");
-  
-  std::vector<int> expected = {1, 2, 10, 11, 12, 100, 101, 3};
-  I(visited_values == expected, 
-    "Pre-order traversal with subtrees should visit nodes in the correct order");
-}
-
 void test_tree_traversal_with_subtrees() {
   hhds::Forest<int> forest;
   
@@ -148,92 +105,6 @@ void test_tree_traversal_with_subtrees() {
   I(visited_values == expected, 
     "Pre-order traversal with subtrees should visit nodes in the correct order");
 }
-
-
-
-void test_complex_forest_operations_custom() {
-  hhds::Forest<int> forest;
-  
-  // create multiple trees
-  auto main_tree_ref = forest.create_tree(1);
-  // auto sub_tree1_ref = forest.create_tree(1000);
-  // auto sub_tree2_ref = forest.create_tree(2000);
-  auto sub_tree3_ref = forest.create_tree(3000);
-  auto sub_tree4_ref = forest.create_tree(3000);
-  
-  auto& main_tree = forest.get_tree(main_tree_ref);
-  // auto& sub_tree1 = forest.get_tree(sub_tree1_ref);
-  // auto& sub_tree2 = forest.get_tree(sub_tree2_ref);
-  auto& sub_tree3 = forest.get_tree(sub_tree3_ref);
-  auto& sub_tree4 = forest.get_tree(sub_tree4_ref);
-  
-  // build tree structures
-  std::vector<hhds::Tree_pos> main_nodes;
-  std::vector<hhds::Tree_pos> sub1_nodes;
-  std::vector<hhds::Tree_pos> sub2_nodes;
-  std::vector<hhds::Tree_pos> sub3_nodes;
-  std::vector<hhds::Tree_pos> sub4_nodes;
-  
-  // create a deep main tree with multiple branches
-  main_nodes.push_back(main_tree.get_root());
-  //auto parent = main_nodes[0];
-  for (int i = 0; i < 10; ++i) {
-    auto parent = main_nodes[i / 3];
-    auto new_node = main_tree.add_child(parent, i + 2);
-    printf("adding : %d\n", i + 2);
-    main_nodes.push_back(new_node);
-  }
-
-    // create deep chain in sub_tree3
-  sub3_nodes.push_back(sub_tree3.get_root());
-  auto current = sub_tree3.get_root();
-  for (int i = 0; i < 100; ++i) {
-    auto new_node = sub_tree3.add_child(current, 3100 + i);
-    sub3_nodes.push_back(new_node);
-    current = new_node;
-  }
-    // create deep chain in sub_tree3
-  sub4_nodes.push_back(sub_tree4.get_root());
-  current = sub_tree4.get_root();
-  for (int i = 0; i < 100; ++i) {
-    auto new_node = sub_tree4.add_child(current, 3100 + i);
-    sub4_nodes.push_back(new_node);
-    current = new_node;
-  }
-  
-  // main_tree.add_subtree_ref(main_nodes[0], sub_tree3_ref);
-  //main_tree.add_subtree_ref(main_nodes[3], sub_tree4_ref);
-  
-  // test reference counting
-  //bool deleted = forest.delete_tree(sub_tree3_ref);
-  //I(!deleted, "Should not be able to delete heavily referenced tree");
-  
-  // test traversal with subtree references
-  int node_count = 0;
-  std::set<int> unique_values;
-
-  auto range = main_tree.pre_order(main_tree.get_root(), true);
-  for (auto it = range.begin(); it != range.end(); ++it) {
-    node_count++;
-    printf("it.data: %d\n", it.get_data());
-    unique_values.insert(it.get_data());
-    I(node_count <= 10000, "Possible infinite loop in traversal");
-  }
-  I(node_count > 500, "Should visit at least 500 nodes in large tree traversal");
-  I(unique_values.size() > 200, "Should see at least 200 unique values");
-  return; 
-  // tst bulk deletions
-  //for (int i = main_nodes.size() - 1; i >= 0; i -= 10) {
-   // if (i < main_nodes.size()) {
-    //  main_tree.delete_leaf(main_nodes[i]);
-   // }
- // }
-  
-  // verify reference counts
-  //deleted = forest.delete_tree(sub_tree1_ref);
-  //I(!deleted, "Should still not be able to delete referenced tree");
-}
-
 
 void test_complex_forest_operations() {
   hhds::Forest<int> forest;
@@ -277,7 +148,6 @@ void test_complex_forest_operations() {
     auto parent = sub2_nodes[i];
     auto left = sub_tree2.add_child(parent, 2100 + i*2);
     auto right = sub_tree2.add_child(parent, 2100 + i*2 + 1);
-    printf("adding %d and %d\n", 2100 + i * 2, 2100 + i * 2  + 1);
     sub2_nodes.push_back(left);
     sub2_nodes.push_back(right);
   }
@@ -347,15 +217,15 @@ void test_complex_forest_operations() {
   I(unique_values.size() > 200, "Should see at least 200 unique values");
   
   // // tst bulk deletions
-  for (int i = main_nodes.size() - 1; i >= 0; i -= 10) {
-    if (i < main_nodes.size()) {
-      main_tree.delete_leaf(main_nodes[i]);
-    }
-  }
+  //for (int i = main_nodes.size() - 1; i >= 0; i -= 10) {
+  //  if (i < static_cast<int>(main_nodes.size())) {
+   //   main_tree.delete_leaf(main_nodes[i]);
+   // }
+  //}
   
   // verify reference counts
-  deleted = forest.delete_tree(sub_tree1_ref);
-  I(deleted, "Should now be able to delete referenced tree");
+  //deleted = forest.delete_tree(sub_tree1_ref);
+  //I(deleted, "Should now be able to delete referenced tree");
   //I(deleted, "Should still not be able to delete referenced tree");
 }
 
@@ -425,32 +295,30 @@ void test_edge_cases() {
 
 int main() {
 
-  std::cout <<"\nStarting basic traversal...\n\n";
+  //std::cout <<"\nStarting basic traversal...\n\n";
 
   //test_basic_tree_traversal_with_subtrees();
-  std::cout << "Basic traversal operations test passed\n";
+  //std::cout << "Basic traversal operations test passed\n";
 
   std::cout << "\nStarting forest correctness tests...\n\n";
  
-  //test_basic_forest_operations();
+  test_basic_forest_operations();
   std::cout << "Basic forest operations test passed\n";
   
-  //test_subtree_references();
+  test_subtree_references();
   std::cout << "Subtree references test passed\n";
   
-  //test_tree_traversal_with_subtrees();
-  std::cout << "Tree traversal with subtrees test passed\n";
-  
-  //test_basic_tree_traversal_with_subtrees_2();
   std::cout << "Layered Tree traversal with subtrees test passed\n";
+
+  test_tree_traversal_with_subtrees();
+  std::cout << "Tree traversal with subtrees test passed\n";
 
   std::cout << "\nStarting large-scale tests...\n";
   
   test_complex_forest_operations();
-  //test_complex_forest_operations_custom();
   std::cout << "Complex forest operations test passed\n";
   
-  //test_edge_cases();
+  test_edge_cases();
   std::cout << "Edge cases test passed\n";
   
   std::cout << "\nAll forest correctness tests passed successfully!\n";

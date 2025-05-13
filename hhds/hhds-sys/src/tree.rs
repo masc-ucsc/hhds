@@ -41,12 +41,21 @@ impl Tree {
         Self { handle: tree_ref }
     }
 
+    pub fn new_no_ref() -> Self {
+        let handle = unsafe { tree_int_new_empty() };
+        Self { handle }
+    }
+
     pub fn get_root(&self) -> hhds_Tree_pos {
         unsafe { get_root(self.handle) }
     }
 
     pub fn get_data(&self, tree_ref: hhds_Tree_pos) -> c_int {
         unsafe { tree_get_data(self.handle, tree_ref) }
+    }
+
+    pub fn add_root(&self, data: i32) -> hhds_Tree_pos {
+        unsafe { add_root(self.handle, data) }
     }
 
     pub fn add_child(&self, parent_idx: hhds_Tree_pos, data: c_int) -> hhds_Tree_pos {

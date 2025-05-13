@@ -230,7 +230,6 @@ private:
 
     // Add the single pointer node for all CHUNK_SIZE entries
     pointers_stack.emplace_back();
-
     return pointers_stack.size() - 1;
   }
 
@@ -279,10 +278,8 @@ private:
     /* BASE CASE OF THE RECURSION */
     // If parent has long ptr access, this is easy
     if ((parent_id & CHUNK_MASK) == 0) {
-      //printf("using long ptr\n");
       pointers_stack[parent_id >> CHUNK_SHIFT].set_last_child_l(child_id >> CHUNK_SHIFT);
       if (pointers_stack[parent_id >> CHUNK_SHIFT].get_first_child_l() == INVALID) {
-        //printf("first child l is invalid, setting\n");
         pointers_stack[parent_id >> CHUNK_SHIFT].set_first_child_l(child_id >> CHUNK_SHIFT);
       }
 
@@ -296,7 +293,6 @@ private:
     const auto parent_chunk_id     = (parent_id >> CHUNK_SHIFT);
     const auto parent_chunk_offset = (parent_id & CHUNK_MASK);
     if (_fits_in_short_del(parent_chunk_id, child_id >> CHUNK_SHIFT)) {
-      //printf("fits in short del\n");
       // Adjust the child pointers
       pointers_stack[parent_chunk_id].set_last_child_s_at(parent_chunk_offset - 1, (child_id >> CHUNK_SHIFT) - parent_chunk_id);
 
@@ -717,11 +713,6 @@ public:
         LOG_DEBUG("we are in a subtree");
         Tree_pos r_node;
         LOG_DEBUG("stack size {}", this->prev_trees.size());
-        printf("stack: []");
-        for (int i = 0; i < static_cast<int>(this->prev_trees.size()); i++) {
-          printf("%ld ", this->prev_trees[i]);
-        }
-        printf("]\n");
         if (this->prev_trees.size() <= 1) {
           LOG_DEBUG("hit we reached the top of stack");
           this->current_tree = this->main_tree;
@@ -1181,7 +1172,6 @@ inline Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) const {
     child_chunk_id = pointers_stack[chunk_id].get_last_child_l();
     LOG_DEBUG("get_last_child - child_chunk_id {}", child_chunk_id);
   }
-
   return (child_chunk_id == INVALID)
              ? (static_cast<Tree_pos>(INVALID))
              : (static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) + pointers_stack[child_chunk_id].get_num_short_del_occ()));
@@ -1387,7 +1377,6 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
     data_stack[new_sib] = data;
     LOG_CREAT_DEBUG("append_sibling - datastack at {} with {}", new_sib, data);
   }
-
   const auto first_sib     = get_first_child(parent_id);
   const auto new_parent_id = _try_fit_child_ptr(parent_id, new_sib);
   if (new_parent_id != parent_id) {
@@ -1488,10 +1477,9 @@ Tree_pos tree<X>::add_root(const X& data) {
  */
 template <typename X>
 Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
-  // if (!_check_idx_exists(parent_index)) {
-  //     throw std::out_of_range("add_child: Parent index out of range: " + std::to_string(parent_index));
-  // }
-  //printf(" -- adding child -- \n");
+  if (!_check_idx_exists(parent_index)) {
+       throw std::out_of_range("add_child: Parent index out of range: " + std::to_string(parent_index));
+   }
   // This is not the first child being added
   const auto last_child_id = get_last_child(parent_index);
   LOG_CREAT_DEBUG("child id: {} data {}", last_child_id, data);
@@ -1499,7 +1487,6 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
     return append_sibling(last_child_id, data);
   } else {
     LOG_CREAT_DEBUG("last child INVALID for {}", data);
-
   }
 
   // Try to fit this child pointer
@@ -1661,8 +1648,6 @@ void tree<X>::delete_subtree(const Tree_pos& subtree_root) {
 template <typename X>
 void tree<X>::add_subtree_ref(const Tree_pos& node_pos, Tree_pos subtree_ref) {
   I(subtree_ref < 0, "Subtree reference must be negative");
-  //printf("node_pos in add_subtree_ref %ld\n", node_pos);
-  //printf("val ; %d\n", this->get_data(node_pos));
   this->pointers_stack[node_pos >> CHUNK_SHIFT].set_subtree_ref(subtree_ref);
   if (forest_ptr) {
     forest_ptr->add_reference(subtree_ref);
