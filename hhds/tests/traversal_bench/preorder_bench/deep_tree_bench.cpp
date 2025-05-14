@@ -212,11 +212,11 @@ BENCHMARK(test_deep_tree_1000_hhds);
 //BENCHMARK(test_deep_tree_1000_lh);
 BENCHMARK(test_deep_tree_10000_hhds);
 //BENCHMARK(test_deep_tree_10000_lh);
-BENCHMARK(test_deep_tree_100000_hhds);
+//BENCHMARK(test_deep_tree_100000_hhds);
 //BENCHMARK(test_deep_tree_100000_lh);
-BENCHMARK(test_deep_tree_1000000_hhds);
+//BENCHMARK(test_deep_tree_1000000_hhds);
 //BENCHMARK(test_deep_tree_1000000_lh);
-BENCHMARK(test_deep_tree_10000000_hhds);
+//BENCHMARK(test_deep_tree_10000000_hhds);
 //BENCHMARK(test_deep_tree_10000000_lh);
 
 // Run the benchmarks

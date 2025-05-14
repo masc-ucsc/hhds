@@ -11,7 +11,7 @@ fn create_rng() -> StdRng {
     StdRng::seed_from_u64(micros)
 }
 fn generate_random_int(rng: &mut StdRng, min: i32, max: i32) -> i32 {
-    rng.gen_range(min..=max)
+    rng.random_range(min..max)
 }
 
 fn build_tree(rng: &mut StdRng, tree: &Tree, num_nodes: u32) {
@@ -56,7 +56,6 @@ fn test_deep_tree(c: &mut Criterion) {
     //bench_tree_traversal(c, 1_000_000);
     //bench_tree_traversal(c, 10_000_000);
 }
-
 
 criterion_group!(benches, test_deep_tree);
 criterion_main!(benches);
