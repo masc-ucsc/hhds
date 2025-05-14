@@ -115,14 +115,18 @@ impl Iterator for PreOrderIterator {
     fn next(&mut self) -> Option<Self::Item> {
         if self.initial {
             self.initial = false;
-            return Some(Self {handle: self.handle, initial: false});
+            return Some(Self {
+                handle: self.handle,
+                initial: false,
+            });
         }
         self.handle = unsafe { increment_pre_order_iterator(self.handle) };
         return match unsafe { deref_pre_order_iterator(self.handle) } {
             val if val <= 0 => None,
-            _val => {
-                Some(Self {handle: self.handle, initial: false})
-            },
+            _val => Some(Self {
+                handle: self.handle,
+                initial: false,
+            }),
         };
     }
 }

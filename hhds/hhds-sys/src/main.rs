@@ -10,7 +10,7 @@ fn create_rng() -> StdRng {
     StdRng::seed_from_u64(micros)
 }
 fn generate_random_int(rng: &mut StdRng, min: i32, max: i32) -> i32 {
-    rng.gen_range(min..=max)
+    rng.random_range(min..max)
 }
 
 fn build_tree(rng: &mut StdRng, tree: &Tree, num_nodes: u32) {
@@ -22,9 +22,9 @@ fn build_tree(rng: &mut StdRng, tree: &Tree, num_nodes: u32) {
 }
 
 fn pre_order_traversal(tree: &Tree) {
-    let mut cnt = 0;
+    let mut _cnt = 0;
     for _node in tree.pre_ord_iter(true) {
-        cnt += 1;
+        _cnt += 1;
     }
 }
 
