@@ -1,4 +1,4 @@
-name: Bazel CPP Tests
+name: Bazel CPP Benchmarks
 
 on:
   push:
