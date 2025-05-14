@@ -205,19 +205,19 @@ void test_deep_tree_10000000_lh(benchmark::State& state) {
 
 // Benchmark registration
 BENCHMARK(test_deep_tree_10_hhds);
-BENCHMARK(test_deep_tree_10_lh);
+//BENCHMARK(test_deep_tree_10_lh);
 BENCHMARK(test_deep_tree_100_hhds);
-BENCHMARK(test_deep_tree_100_lh);
+//BENCHMARK(test_deep_tree_100_lh);
 BENCHMARK(test_deep_tree_1000_hhds);
-BENCHMARK(test_deep_tree_1000_lh);
+//BENCHMARK(test_deep_tree_1000_lh);
 BENCHMARK(test_deep_tree_10000_hhds);
-BENCHMARK(test_deep_tree_10000_lh);
+//BENCHMARK(test_deep_tree_10000_lh);
 BENCHMARK(test_deep_tree_100000_hhds);
-BENCHMARK(test_deep_tree_100000_lh);
+//BENCHMARK(test_deep_tree_100000_lh);
 BENCHMARK(test_deep_tree_1000000_hhds);
-BENCHMARK(test_deep_tree_1000000_lh);
+//BENCHMARK(test_deep_tree_1000000_lh);
 BENCHMARK(test_deep_tree_10000000_hhds);
-BENCHMARK(test_deep_tree_10000000_lh);
+//BENCHMARK(test_deep_tree_10000000_lh);
 
 // Run the benchmarks
 BENCHMARK_MAIN();
