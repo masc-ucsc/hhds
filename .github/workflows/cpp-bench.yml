@@ -1,0 +1,32 @@
+name: Bazel CPP Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Bazelisk
+      uses: bazelbuild/setup-bazelisk@v3
+
+    - name: Mount Bazel cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/bazel
+        key: bazel-${{ runner.os }}-build
+
+    - name: Install required libraries
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libtinfo6
+
+    - name: Run HHDS tests 
+      run: bazel test //hhds:traversal_deep_bench
+

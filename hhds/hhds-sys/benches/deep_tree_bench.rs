@@ -33,7 +33,7 @@ fn pre_order_traversal(tree: &Tree) {
 fn bench_tree_traversal(c: &mut Criterion, num_nodes: u32) {
     let mut group = c.benchmark_group("TreeTraversal");
 
-    group.measurement_time(std::time::Duration::from_secs(45));
+    group.measurement_time(std::time::Duration::from_secs(60));
     group.bench_function(format!("preorder_{}_nodes", num_nodes), |b| {
         let mut rng = create_rng();
         let tree = Tree::new_no_ref();
@@ -52,8 +52,9 @@ fn test_deep_tree(c: &mut Criterion) {
     bench_tree_traversal(c, 100);
     bench_tree_traversal(c, 1000);
     bench_tree_traversal(c, 10_000);
-    bench_tree_traversal(c, 100_000);
-    bench_tree_traversal(c, 10_000_000);
+    //bench_tree_traversal(c, 100_000);
+    //bench_tree_traversal(c, 1_000_000);
+    //bench_tree_traversal(c, 10_000_000);
 }
 
 

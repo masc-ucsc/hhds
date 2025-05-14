@@ -73,21 +73,21 @@ pub fn test_tree_traversal_with_subtrees() {
     // Test subtree traversal without following subtrees
     let mut visited_values: Vec<i32> = Vec::new();
     for i in sub_tree.pre_ord_iter(true) {
-        visited_values.push(i);
+        visited_values.push(i.get_data());
     }
     assert_eq!(visited_values, vec![10, 11, 12]);
 
     // Test main tree traversal without following subtrees
     visited_values.clear();
     for i in main_tree.pre_ord_iter(false) {
-        visited_values.push(i);
+        visited_values.push(i.get_data());
     }
     assert_eq!(visited_values, vec![1, 2, 3]);
 
     // Test main tree traversal with following subtrees
     visited_values.clear();
     for i in main_tree.pre_ord_iter(true) {
-        visited_values.push(i);
+        visited_values.push(i.get_data());
     }
     assert_eq!(visited_values.len(), 6);
     assert_eq!(visited_values, vec![1, 2, 10, 11, 12, 3]);
@@ -159,7 +159,7 @@ pub fn test_complex_forest_operations() {
     let mut unique_values = std::collections::HashSet::new();
     let mut count = 0;
     for i in main_tree.pre_ord_iter(true) {
-        unique_values.insert(i);
+        unique_values.insert(i.get_data());
         count += 1;
         assert!(count <= 10_000);
     }
