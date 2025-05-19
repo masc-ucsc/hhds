@@ -1,582 +1,209 @@
-//  This file is distributed under the BSD 3-Clause License. See LICENSE for details.
-
 #include "graph.hpp"
 
-#include <random>
-#include <string>
-#include <vector>
+#include <cassert>
+#include <iostream>
 
-#include "boost/graph/adjacency_list.hpp"
-#include "boost/graph/graph_utility.hpp"
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
-#include "lrand.hpp"
-#include "perf_tracing.hpp"
+using namespace hhds;
 
-class Setup_graph_core : public ::testing::Test {
-protected:
-  void SetUp() override {}
+void test_node_to_node() {
+  Graph g;
+  Nid   n1  = g.create_node();
+  Nid   n2  = g.create_node();
+  Vid   src = (static_cast<Vid>(n1) << 2) | (1ULL << 1);
+  Vid   dst = (static_cast<Vid>(n2) << 2);
+  g.add_edge(src, dst);
 
-  void TearDown() override {
-    // Graph_library::sync_all();
-  }
-};
+  auto sed = g.ref_node(n1)->get_edges(n1);
+  assert(sed[0] == n2 && "test_node_to_node failed: sedges[0] != dst");
 
-TEST_F(Setup_graph_core, trivial_ops) {
-  Lrand<int>  rnum;
-  Lrand<bool> rbool;
-
-  Graph_core gc("lgdb_graph_core_test", "trivial_ops");
-
-  EXPECT_TRUE(gc.is_invalid(0));
-  EXPECT_TRUE(gc.is_invalid(33));
-  EXPECT_TRUE(gc.is_invalid(30));
-
-  std::vector<uint32_t> pin_id;
-  std::vector<uint32_t> node_id;
-
-  auto mid = gc.create_node();
-  EXPECT_NE(mid, 0);
-  EXPECT_FALSE(gc.is_invalid(mid));
-  EXPECT_FALSE(gc.is_pin(mid));
-  EXPECT_TRUE(gc.is_node(mid));
-
-  for (int i = 0; i < 200; ++i) {
-    if (rbool.any()) {
-      auto id = gc.create_pin(mid, pin_id.size() + 1);
-      EXPECT_NE(id, 0);
-      EXPECT_FALSE(gc.is_invalid(id));
-      EXPECT_TRUE(gc.is_pin(id));
-      EXPECT_FALSE(gc.is_node(id));
-      pin_id.emplace_back(id);
-    } else {
-      auto id = gc.create_node();
-      EXPECT_NE(id, 0);
-      EXPECT_FALSE(gc.is_invalid(id));
-      EXPECT_FALSE(gc.is_pin(id));
-      EXPECT_TRUE(gc.is_node(id));
-      node_id.emplace_back(id);
-    }
-  }
-
-  for (auto i = 0u; i < pin_id.size(); ++i) {
-    auto id = pin_id[i];
-    EXPECT_NE(id, 0);
-    EXPECT_FALSE(gc.is_invalid(id));
-    EXPECT_TRUE(gc.is_pin(id));
-    EXPECT_FALSE(gc.is_node(id));
-    EXPECT_EQ(gc.get_node(id), mid);
-    EXPECT_EQ(gc.get_portid(id), i + 1);
-  }
-
-  for (auto id : node_id) {
-    EXPECT_NE(id, 0);
-    EXPECT_FALSE(gc.is_invalid(id));
-    EXPECT_FALSE(gc.is_pin(id));
-    EXPECT_TRUE(gc.is_node(id));
-  }
+  auto sed2 = g.ref_node(n2)->get_edges(n2);
+  assert(sed2[0] == n1 && "test_node_to_node failed: sedges[0] != src");
+  std::cout << "test_node_to_node passed\n";
 }
 
-TEST_F(Setup_graph_core, trivial_ops_insert1) {
-  Graph_core gc("lgdb_graph_core_test", "trivial_ops_insert");
+void test_pin_to_pin() {
+  Graph g;
+  Nid   n  = g.create_node();
+  Pid   p1 = g.create_pin(n, 0);
+  Pid   p2 = g.create_pin(n, 1);
+  // p1, p2 already have bit0=1 (pin); set bit1=1 for driver on p1
+  Vid src = p1 << 2;
+  Vid dst = p2 << 2;
+  src     = src | 3;
+  dst     = dst | 1;
+  g.add_edge(src, dst);
 
-  auto m1 = gc.create_node();
+  auto sed = g.ref_pin(p1)->get_edges(p1);
+  assert(sed[0] == p2 && "test_pin_to_pin failed: sedges[0] != dst");
 
-  std::vector<uint32_t> nodes;
+  auto sed2 = g.ref_pin(p2)->get_edges(p2);
+  assert(sed2[0] == p1 && "test_pin_to_pin failed: sedges[0] != src");
 
-  for (auto i = 0u; i < 1'000; ++i) {
-    auto m = gc.create_node();
-    nodes.emplace_back(m);
-  }
-  std::shuffle(nodes.begin(), nodes.end(), std::knuth_b());
-
-  auto n = 0u;
-  for (const auto &m : nodes) {
-    gc.add_edge(m1, m);
-    // fmt::print("ADDING {}\n",m);
-    // gc.dump(m1);
-    ++n;
-    EXPECT_EQ(gc.get_num_pin_outputs(m1), n);
-    EXPECT_EQ(gc.get_num_pin_inputs(m), 1);
-  }
-
-  auto m2 = gc.create_node();
-  auto m3 = gc.create_node();
-
-  for (auto i = 0u; i < 1'000; ++i) {
-    auto m = gc.create_node();
-    gc.add_edge(m2, m);
-    gc.add_edge(m, m3);
-    // fmt::print("ADDING {}\n",m);
-    // gc.dump(m2);
-    ++n;
-    EXPECT_EQ(gc.get_num_pin_outputs(m2), i + 1);
-    EXPECT_EQ(gc.get_num_pin_inputs(m3), i + 1);
-    EXPECT_EQ(gc.get_num_pin_inputs(m), 1);
-    EXPECT_EQ(gc.get_num_pin_outputs(m), 1);
-  }
+  std::cout << "test_pin_to_pin passed\n";
 }
 
-TEST_F(Setup_graph_core, trivial_ops_insert2) {
-  Graph_core gc("lgdb_graph_core_test", "trivial_ops_insert");
+void test_node_to_pin() {
+  Graph g;
+  Nid   n = g.create_node();
+  Pid   p = g.create_pin(n, 0);
+  // node source: bit0=0, bit1=1; pin target p already has bit0=1, we leave bit1=0 indicating sink
+  Vid src = n << 2;
+  Vid dst = p << 2;
 
-  auto m1 = gc.create_node();
-  auto m2 = gc.create_node();
-  auto m3 = gc.create_node();
+  src = src | 2;
+  dst = dst | 1;
+  g.add_edge(src, dst);
 
-  EXPECT_FALSE(gc.has_edges(m1));
-  EXPECT_FALSE(gc.has_edges(m2));
-  EXPECT_FALSE(gc.has_edges(m3));
+  auto sed = g.ref_node(n)->get_edges(n);
+  assert(sed[0] == p && "test_node_to_pin failed: sedges[0] != dst");
 
-  EXPECT_EQ(gc.get_num_pin_inputs(m1), 0);
-  EXPECT_EQ(gc.get_num_pin_outputs(m1), 0);
-  EXPECT_EQ(gc.get_num_pin_inputs(m2), 0);
-  EXPECT_EQ(gc.get_num_pin_outputs(m2), 0);
-  EXPECT_EQ(gc.get_num_pin_inputs(m3), 0);
-  EXPECT_EQ(gc.get_num_pin_outputs(m3), 0);
-
-  gc.add_edge(m1, m3);
-
-  EXPECT_TRUE(gc.has_edges(m1));
-  EXPECT_FALSE(gc.has_edges(m2));
-  EXPECT_TRUE(gc.has_edges(m3));
-
-  EXPECT_EQ(gc.get_num_pin_inputs(m1), 0);
-  EXPECT_EQ(gc.get_num_pin_outputs(m1), 1);  // --
-  EXPECT_EQ(gc.get_num_pin_inputs(m2), 0);
-  EXPECT_EQ(gc.get_num_pin_outputs(m2), 0);
-  EXPECT_EQ(gc.get_num_pin_inputs(m3), 1);  // --
-  EXPECT_EQ(gc.get_num_pin_outputs(m3), 0);
-
-  std::vector<uint32_t> nodes;
-  for (auto i = 0; i < 149; ++i) {
-    auto m = gc.create_node();
-    nodes.emplace_back(m);
-    gc.add_edge(m1, m);
-    EXPECT_EQ(gc.get_num_pin_outputs(m1), i + 2);  // --
-  }
-
-  for (auto i = 0; i < 70000; ++i) {  // lots of nodes to force long edges
-    gc.create_node();
-  }
-
-  for (auto i = 0; i < 150; ++i) {
-    auto m = gc.create_node();
-    nodes.emplace_back(m);
-    gc.add_edge(m1, m);
-    EXPECT_EQ(gc.get_num_pin_outputs(m1), i + 151);  // --
-  }
-
-  for (auto i = nodes.size() - 1; i > 0; --i) {
-    gc.add_edge(nodes[i], m3);  // add in reverse order
-  }
-  gc.add_edge(nodes[0], m3);  // add in reverse order
-
-  // gc.dump(m1);
-
-  EXPECT_EQ(gc.get_num_pin_inputs(m1), 0);
-  EXPECT_EQ(gc.get_num_pin_outputs(m1), 300);  // --
-  EXPECT_EQ(gc.get_num_pin_inputs(m2), 0);
-  EXPECT_EQ(gc.get_num_pin_outputs(m2), 0);
-  EXPECT_EQ(gc.get_num_pin_inputs(m3), 300);  // --
-  EXPECT_EQ(gc.get_num_pin_outputs(m3), 0);
+  auto sed2 = g.ref_pin(p)->get_edges(p);
+  assert(sed2[0] == n && "test_node_to_pin failed: sedges[0] != src");
+  std::cout << "test_node_to_pin passed\n";
 }
 
-TEST_F(Setup_graph_core, delete_edge) {
-  Graph_core gc("lgdb_graph_core_test", "delete_edge");
+void test_pin_to_node() {
+  Graph g;
+  Nid   n = g.create_node();
+  Pid   p = g.create_pin(n, 0);
+  // pin source: bit0=1, set bit1=1 for driver; node target: bit0=0, bit1=0
+  Vid src = p << 2;
+  src     = src | 3;
+  Vid dst = n << 2;
+  dst     = dst | 0;
+  g.add_edge(src, dst);
 
-  auto m1 = gc.create_node();
-  auto m2 = gc.create_node();
+  auto sed = g.ref_pin(p)->get_edges(p);
+  assert(sed[0] == n && "test_pin_to_node failed: sedges[0] != dst");
 
-  EXPECT_EQ(gc.get_num_pin_outputs(m1), 0);
-  EXPECT_EQ(gc.get_num_pin_inputs(m2), 0);
+  auto sed2 = g.ref_node(n)->get_edges(n);
+  assert(sed2[0] == p && "test_pin_to_node failed: sedges[0] != src");
 
-  gc.add_edge(m1, m2);
-
-  EXPECT_EQ(gc.get_num_pin_outputs(m1), 1);
-  EXPECT_EQ(gc.get_num_pin_inputs(m2), 1);
-
-  gc.del_edge(m1, m2);
-
-  EXPECT_EQ(gc.get_num_pin_outputs(m1), 0);
-  EXPECT_EQ(gc.get_num_pin_inputs(m2), 0);
-
-  Lrand<bool> rbool;
-
-  std::vector<uint32_t> nodes;
-  for (auto i = 0; i < 20000; ++i) {
-    auto m = gc.create_node();
-    nodes.emplace_back(m);
-  }
-  std::shuffle(nodes.begin(), nodes.end(), std::knuth_b());
-
-  std::vector<uint32_t> sink_nodes;
-  std::vector<uint32_t> driver_nodes;
-  for (const auto &m : nodes) {
-    if (rbool.any()) {
-      sink_nodes.emplace_back(m);
-      gc.add_edge(m1, m);
-    } else {
-      driver_nodes.emplace_back(m);
-      gc.add_edge(m, m1);
-    }
-  }
-
-  EXPECT_EQ(gc.get_num_pin_outputs(m1), sink_nodes.size());
-  EXPECT_EQ(gc.get_num_pin_inputs(m1), driver_nodes.size());
-
-  std::shuffle(sink_nodes.begin(), sink_nodes.end(), std::knuth_b());
-  std::shuffle(driver_nodes.begin(), driver_nodes.end(), std::knuth_b());
-
-  // gc.dump(m1);
-
-  while (true) {
-    if (sink_nodes.empty() && driver_nodes.empty()) {
-      break;
-    }
-
-    auto do_sink = rbool.any() && !sink_nodes.empty();
-
-    if (do_sink || driver_nodes.empty()) {
-      auto m = sink_nodes.back();
-      sink_nodes.pop_back();
-      // fmt::print("DELETING sink node:{}\n", m);
-      gc.del_edge(m1, m);
-      // gc.dump(m1);
-    } else {
-      I(!driver_nodes.empty());
-      auto m = driver_nodes.back();
-      driver_nodes.pop_back();
-      // fmt::print("DELETING driver node:{}\n", m);
-      gc.del_edge(m, m1);
-      // gc.dump(m1);
-    }
-    // EXPECT_EQ(gc.get_num_pin_outputs(m1),   sink_nodes.size());
-    // EXPECT_EQ(gc.get_num_pin_inputs (m1), driver_nodes.size());
-  }
-
-  EXPECT_EQ(gc.get_num_pin_outputs(m1), 0);
-  EXPECT_EQ(gc.get_num_pin_inputs(m1), 0);
+  std::cout << "test_pin_to_node passed\n";
 }
 
-TEST_F(Setup_graph_core, fully_connected_gc) {
-  constexpr std::size_t num_nodes = 1024;
+void test_overflow_handling() {
+  Graph g;
+  Nid   n1 = g.create_node();
+  Nid   n2 = g.create_node();
+  Nid   n3 = g.create_node();
+  Nid   n4 = g.create_node();
+  Nid   n5 = g.create_node();
 
-  std::vector<uint32_t> nodes;
+  Pid p1 = g.create_pin(n1, 0);
+  Pid p2 = g.create_pin(n2, 1);
+  Pid p3 = g.create_pin(n3, 0);
+  Pid p4 = g.create_pin(n4, 1);
 
-  nodes.resize(num_nodes);
+  // first edge
+  Vid src  = p1 << 2;
+  Vid dst  = p2 << 2;
+  src      = src | 3;
+  dst      = dst | 1;
+  Vid dst1 = dst;
+  g.add_edge(src, dst);
 
-  Graph_core gc("lgdb_graph_core_test", "fully_connected");
+  // second edge
+  src      = p1 << 2;
+  dst      = p3 << 2;
+  src      = src | 3;
+  dst      = dst | 1;
+  Vid dst2 = dst;
+  g.add_edge(src, dst);
 
-  for (size_t i = 0u; i < num_nodes; ++i) {
-    nodes[i] = gc.create_node();
-    EXPECT_EQ(gc.get_num_pin_inputs(nodes[i]), 0);
-    EXPECT_EQ(gc.get_num_pin_outputs(nodes[i]), 0);
-    for (size_t j = 0u; j < i; ++j) {
-      gc.add_edge(nodes[j], nodes[i]);
-      EXPECT_EQ(gc.get_num_pin_inputs(nodes[i]), j + 1);
-      EXPECT_EQ(gc.get_num_pin_outputs(nodes[i]), 0);
-      EXPECT_EQ(gc.get_num_pin_inputs(nodes[j]), j);
-      EXPECT_EQ(gc.get_num_pin_outputs(nodes[j]), i - j);
-    }
-  }
+  // third edge
+  src      = p1 << 2;
+  dst      = p4 << 2;
+  src      = src | 3;
+  dst      = dst | 1;
+  Vid dst3 = dst;
+  g.add_edge(src, dst);
 
-  for (auto i = 0u; i < num_nodes; ++i) {
-    EXPECT_EQ(gc.get_num_pin_outputs(nodes[i]), num_nodes - 1 - i);
-    for (size_t j = i + 1; j < num_nodes; ++j) {
-      gc.del_edge(nodes[i], nodes[j]);
-    }
-    EXPECT_EQ(gc.get_num_pin_inputs(nodes[i]), 0);
-    EXPECT_EQ(gc.get_num_pin_outputs(nodes[i]), 0);
-  }
+  // fourth edge
+  src      = p1 << 2;
+  dst      = n3 << 2;
+  src      = src | 3;
+  dst      = dst | 0;
+  Vid dst4 = dst;
+  g.add_edge(src, dst);
+
+  // fifth edge
+  src      = p1 << 2;
+  dst      = n4 << 2;
+  src      = src | 3;
+  dst      = dst | 0;
+  Vid dst5 = dst;
+  g.add_edge(src, dst);
+
+  // sixth edge
+  src      = p1 << 2;
+  dst      = n2 << 2;
+  src      = src | 3;
+  dst      = dst | 0;
+  Vid dst6 = dst;
+  g.add_edge(src, dst);
+
+  auto sed = g.ref_pin(p1)->get_edges(p1);
+  assert(sed[0] == p2 && "test_overflow_handling failed: sedges[0] != p2");
+  assert(sed[1] == p3 && "test_overflow_handling failed: sedges[1] != p3");
+  assert(sed[2] == p4 && "test_overflow_handling failed: sedges[2] != p4");
+  assert(sed[3] == n3 && "test_overflow_handling failed: sedges[3] != n3");
+  assert(sed[4] == dst5 && "test_overflow_handling failed: sedges[4] != dst4");
+  assert(sed[5] == dst6 && "test_overflow_handling failed: sedges[5] != dst5");
+
+  auto sed2 = g.ref_pin(p2)->get_edges(p2);
+  assert(sed2[0] == p1 && "test_overflow_handling failed: sedges[0] != src");
+
+  auto sed3 = g.ref_pin(p3)->get_edges(p3);
+  assert(sed3[0] == p1 && "test_overflow_handling failed: sedges[0] != src");
+
+  auto sed4 = g.ref_pin(p4)->get_edges(p4);
+  assert(sed4[0] == p1 && "test_overflow_handling failed: sedges[0] != src");
+
+  auto sed5 = g.ref_node(n3)->get_edges(n3);
+  assert(sed5[0] == p1 && "test_overflow_handling failed: sedges[0] != src");
+
+  auto sed6 = g.ref_node(n4)->get_edges(n4);
+  assert(sed6[0] == p1 && "test_overflow_handling failed: sedges[0] != src");
+
+  auto sed7 = g.ref_node(n2)->get_edges(n2);
+  assert(sed7[0] == p1 && "test_overflow_handling failed: sedges[0] != src");
+
+  // seventh edge
+  src      = p1 << 2;
+  dst      = n5 << 2;
+  src      = src | 3;
+  dst      = dst | 0;
+  Vid dst7 = dst;
+  g.add_edge(src, dst);
+  Pin* tempP1 = g.ref_pin(p1);
+
+  // check if the overflow handling is done correctly
+  assert(tempP1->check_overflow() == true && "test_overflow_handling failed: use_overflow != true");
+  sed                       = g.ref_pin(p1)->get_edges(p1);
+  std::vector<Vid> expected = {dst1, dst2, dst3, dst4, dst5, dst6, dst7};
+  std::sort(expected.begin(), expected.end());
+  assert(sed[0] == expected[0] && "test_overflow_handling failed: sedges[0] != dst1");
+  assert(sed[1] == expected[1] && "test_overflow_handling failed: sedges[1] != dst2");
+  assert(sed[2] == expected[2] && "test_overflow_handling failed: sedges[2] != dst3");
+  assert(sed[3] == expected[3] && "test_overflow_handling failed: sedges[3] != dst4");
+  assert(sed[4] == expected[4] && "test_overflow_handling failed: sedges[4] != dst5");
+  assert(sed[5] == expected[5] && "test_overflow_handling failed: sedges[5] != dst6");
+  assert(sed[6] == expected[6] && "test_overflow_handling failed: sedges[6] != dst7");
+
+  auto sed8 = g.ref_node(n5)->get_edges(n5);
+  assert(sed8[0] == p1 && "test_overflow_handling failed: sedges[0] != src");
+
+  std::cout << "test_overflow_handling passed\n";
 }
 
-TEST_F(Setup_graph_core, fully_connected_boost) {
-  constexpr std::size_t num_nodes = 1024;
-
-  std::vector<uint32_t> nodes;
-
-  nodes.resize(num_nodes);
-
-  // create a boost mutable (adjecency_list)
-  boost::adjacency_list<boost::vecS, boost::vecS, boost::bidirectionalS, boost::no_property, boost::no_property> g;
-
-  for (size_t i = 0u; i < num_nodes; ++i) {
-    nodes[i] = boost::add_vertex(g);
-
-    EXPECT_EQ(boost::in_degree(nodes[i], g), 0);
-    EXPECT_EQ(boost::out_degree(nodes[i], g), 0);
-    for (size_t j = 0u; j < i; ++j) {
-      boost::add_edge(nodes[j], nodes[i], g);
-      EXPECT_EQ(boost::in_degree(nodes[i], g), j + 1);
-      EXPECT_EQ(boost::out_degree(nodes[i], g), 0);
-      EXPECT_EQ(boost::in_degree(nodes[j], g), j);
-      EXPECT_EQ(boost::out_degree(nodes[j], g), i - j);
-    }
-  }
-
-  for (auto i = 0u; i < num_nodes; ++i) {
-    EXPECT_EQ(boost::out_degree(nodes[i], g), num_nodes - 1 - i);
-    for (size_t j = i + 1; j < num_nodes; ++j) {
-      boost::remove_edge(nodes[i], nodes[j], g);
-    }
-    EXPECT_EQ(boost::out_degree(nodes[i], g), 0);
-    EXPECT_EQ(boost::in_degree(nodes[i], g), 0);
-  }
-}
-
-TEST_F(Setup_graph_core, fully_connected_del_node) {
-  constexpr std::size_t num_nodes = 1024;
-
-  std::vector<uint32_t> nodes;
-
-  nodes.resize(num_nodes);
-
-  Graph_core gc("lgdb_graph_core_test", "fully_connected");
-
-  for (size_t i = 0u; i < num_nodes; ++i) {
-    nodes[i] = gc.create_node();
-    if (rand() & 3) {
-      nodes[i] = gc.create_pin(nodes[i], rand() & 1023);
-    }
-    EXPECT_EQ(gc.get_num_pin_inputs(nodes[i]), 0);
-    EXPECT_EQ(gc.get_num_pin_outputs(nodes[i]), 0);
-    for (size_t j = 0u; j < i; ++j) {
-      gc.add_edge(nodes[j], nodes[i]);
-      EXPECT_EQ(gc.get_num_pin_inputs(nodes[i]), j + 1);
-      EXPECT_EQ(gc.get_num_pin_outputs(nodes[i]), 0);
-      EXPECT_EQ(gc.get_num_pin_inputs(nodes[j]), j);
-      EXPECT_EQ(gc.get_num_pin_outputs(nodes[j]), i - j);
-    }
-  }
-
-  for (auto i = 0u; i < num_nodes; ++i) {
-    EXPECT_EQ(gc.get_num_pin_outputs(nodes[i]), num_nodes - 1 - i);
-    gc.del_node(nodes[i]);
-    EXPECT_EQ(gc.get_num_pin_outputs(nodes[i]), 0);
-    EXPECT_EQ(gc.get_num_pin_inputs(nodes[i]), 0);
-  }
-}
-
-// For benchmarking
-#define BENCH_SIZE 1'000'000u
-// FOR testing (not benchmarking)
-// #define BENCH_SIZE 100'000u
-
-TEST_F(Setup_graph_core, bench_boost) {
-  for (auto sz = 100u; sz < BENCH_SIZE; sz = sz * 10) {  // test1
-
-    TRACE_EVENT("core", nullptr, [sz](perfetto::EventContext ctx) {
-      ctx.event()->set_name("test1_boost_insert_" + std::to_string(sz));
-    });
-
-    boost::adjacency_list<boost::vecS,
-                          boost::vecS,
-                          boost::bidirectionalS,
-                          boost::no_property,
-                          boost::no_property>
-        g;  // create a boost mutable (adjecency_list)
-
-    auto m1 = boost::add_vertex(g);
-    for (auto i = 0u; i < sz; ++i) {
-      auto m = boost::add_vertex(g);
-      boost::add_edge(m1, m, g);
-    }
-
-    EXPECT_EQ(boost::out_degree(m1, g), sz);
-  }
-
-  for (auto sz = 100u; sz < BENCH_SIZE; sz = sz * 10) {  // test2
-
-    TRACE_EVENT("core", nullptr, [sz](perfetto::EventContext ctx) {
-      ctx.event()->set_name("test2_boost_delete_" + std::to_string(sz));
-    });
-
-    boost::adjacency_list<boost::vecS,
-                          boost::vecS,
-                          boost::bidirectionalS,
-                          boost::no_property,
-                          boost::no_property>
-        g;  // create a boost mutable (adjecency_list)
-
-    auto                  m1 = boost::add_vertex(g);
-    std::vector<uint32_t> nodes;
-    for (auto i = 0u; i < sz; ++i) {
-      auto m = boost::add_vertex(g);
-      nodes.emplace_back(m);
-      boost::add_edge(m1, m, g);
-    }
-
-    EXPECT_EQ(boost::out_degree(m1, g), sz);
-
-    for (const auto &m : nodes) {
-      boost::remove_edge(m1, m, g);
-    }
-
-    EXPECT_EQ(boost::out_degree(m1, g), 0);
-  }
-
-  for (auto sz = 100u; sz < BENCH_SIZE; sz = sz * 10) {  // test1
-
-    TRACE_EVENT("core", nullptr, [sz](perfetto::EventContext ctx) {
-      ctx.event()->set_name("test1_boost_chain_" + std::to_string(sz));
-    });
-
-    boost::adjacency_list<boost::vecS,
-                          boost::vecS,
-                          boost::bidirectionalS,
-                          boost::no_property,
-                          boost::no_property>
-        g;  // create a boost mutable (adjecency_list)
-
-    auto m_first = boost::add_vertex(g);
-    auto m1      = m_first;
-
-    for (auto i = 0u; i < sz; ++i) {
-      auto m = boost::add_vertex(g);
-      boost::add_edge(m1, m, g);
-      m1 = m;
-    }
-
-    EXPECT_EQ(boost::out_degree(m_first, g), 1);
-    EXPECT_EQ(boost::in_degree(m1, g), 1);
-  }
-}
-
-TEST_F(Setup_graph_core, bench_gc) {
-  for (auto sz = 100u; sz < BENCH_SIZE; sz = sz * 10) {
-    TRACE_EVENT("core", nullptr, [sz](perfetto::EventContext ctx) {
-      ctx.event()->set_name("test1_gc_insert_" + std::to_string(sz));
-    });
-
-    Graph_core gc("lgdb_graph_core_test", "bench_test1");
-
-    auto m1 = gc.create_node();
-
-    for (auto i = 0u; i < sz; ++i) {
-      auto m = gc.create_node();
-      gc.add_edge(m1, m);
-    }
-
-    EXPECT_EQ(gc.get_num_pin_outputs(m1), sz);
-  }
-
-  for (auto sz = 100u; sz < BENCH_SIZE; sz = sz * 10) {
-    TRACE_EVENT("core", nullptr, [sz](perfetto::EventContext ctx) {
-      ctx.event()->set_name("test2_gc_delete_" + std::to_string(sz));
-    });
-
-    Graph_core gc("lgdb_graph_core_test", "bench_test1");
-
-    auto m1 = gc.create_node();
-
-    std::vector<uint32_t> nodes;
-    for (auto i = 0u; i < sz; ++i) {
-      auto m = gc.create_node();
-      nodes.emplace_back(m);
-      gc.add_edge(m1, m);
-    }
-
-    EXPECT_EQ(gc.get_num_pin_outputs(m1), sz);
-
-    for (const auto &m : nodes) {
-      gc.del_edge(m1, m);
-    }
-
-    EXPECT_EQ(gc.get_num_pin_outputs(m1), 0);
-  }
-
-  for (auto sz = 100u; sz < BENCH_SIZE; sz = sz * 10) {
-    TRACE_EVENT("core", nullptr, [sz](perfetto::EventContext ctx) {
-      ctx.event()->set_name("test1_gc_chain_" + std::to_string(sz));
-    });
-
-    Graph_core gc("lgdb_graph_core_test", "bench_test2");
-
-    auto m_first = gc.create_node();
-    auto m1      = m_first;
-
-    for (auto i = 0u; i < sz; ++i) {
-      auto m = gc.create_node();
-      gc.add_edge(m1, m);
-      m1 = m;
-    }
-
-    EXPECT_EQ(gc.get_num_pin_outputs(m_first), 1);
-    EXPECT_EQ(gc.get_num_pin_inputs(m1), 1);
-  }
-}
-
-TEST_F(Setup_graph_core, bench_lgraph) {
-  // This is to show the full Lgraph overhead (it should be close to Graph_core
-  // once it replaced node_internal)
-
-  auto *lib = Graph_library::instance("lgdb_graph_core");
-
-  for (auto sz = 100u; sz < BENCH_SIZE; sz = sz * 10) {
-    TRACE_EVENT("core", nullptr, [sz](perfetto::EventContext ctx) {
-      ctx.event()->set_name("test1_lg_insert_" + std::to_string(sz));
-    });
-
-    auto *lg = lib->create_lgraph("lg_test1", "test");
-
-    auto m1 = lg->create_node(Ntype_op::CompileErr);  // CompileErr to allow arbitrary edges without checks
-    auto p1 = m1.get_driver_pin();
-
-    for (auto i = 0u; i < sz; ++i) {
-      auto m = lg->create_node(Ntype_op::CompileErr);  // CompileErr to allow arbitrary edges without checks
-
-      lg->add_edge(p1, m.get_sink_pin());
-    }
-
-    EXPECT_EQ(m1.get_num_out_edges(), sz);
-  }
-
-  for (auto sz = 100u; sz < BENCH_SIZE; sz = sz * 10) {
-    TRACE_EVENT("core", nullptr, [sz](perfetto::EventContext ctx) {
-      ctx.event()->set_name("test2_lg_delete_" + std::to_string(sz));
-    });
-
-    auto *lg = lib->create_lgraph("lg_test1", "test");
-
-    auto m1 = lg->create_node(Ntype_op::CompileErr);  // CompileErr to allow arbitrary edges without checks
-    auto p1 = m1.get_driver_pin();
-
-    std::vector<Node_pin> pins;
-    for (auto i = 0u; i < sz; ++i) {
-      auto m = lg->create_node(Ntype_op::CompileErr);  // CompileErr to allow arbitrary edges without checks
-      auto p = m.get_sink_pin();
-      pins.emplace_back(p);
-      lg->add_edge(p1, p);
-    }
-
-    EXPECT_EQ(m1.get_num_out_edges(), sz);
-
-    for (auto &p : pins) {
-      p1.del(p);
-    }
-
-    EXPECT_EQ(m1.get_num_out_edges(), 0);
-  }
-
-  for (auto sz = 100u; sz < BENCH_SIZE; sz = sz * 10) {
-    TRACE_EVENT("core", nullptr, [sz](perfetto::EventContext ctx) {
-      ctx.event()->set_name("test2_lg_chain_" + std::to_string(sz));
-    });
-
-    auto *lg = lib->create_lgraph("lg_test2", "test");
-
-    auto m1 = lg->create_node(Ntype_op::CompileErr);  // CompileErr to allow arbitrary edges without checks
-    auto p1 = m1.get_driver_pin();
-
-    for (auto i = 0u; i < sz; ++i) {
-      auto m = lg->create_node(Ntype_op::CompileErr);  // CompileErr to allow arbitrary edges without checks
-      auto p = m.get_sink_pin();
-      lg->add_edge(p1, p);
-      p1 = m.setup_driver_pin();
-    }
-
-    EXPECT_EQ(m1.get_num_out_edges(), 1);
-    EXPECT_EQ(p1.get_node().get_num_inp_edges(), 1);
-  }
+int main() {
+  std::cout << "Running graph tests...\n";
+  test_node_to_node();
+  test_pin_to_pin();
+  test_node_to_pin();
+  test_pin_to_node();
+  test_overflow_handling();
+  std::cout << "All graph tests passed.\n";
+  return 0;
 }
