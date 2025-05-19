@@ -8,6 +8,7 @@ static constexpr int Port_bits = 22;
 
 using Nid     = uint64_t;
 using Pid     = uint64_t;
+using Vid     = uint64_t;
 using Type    = uint16_t;
 using Port_id = uint32_t;
 

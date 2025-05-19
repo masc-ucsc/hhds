@@ -33,127 +33,150 @@ Port_id Pin::get_port_id() const { return port_id; }
 Pid     Pin::get_next_pin_id() const { return next_pin_id; }
 void    Pin::set_next_pin_id(Pid id) { next_pin_id = id; }
 
-auto Pin::overflow_handling(Pid self_id, Pid other_id) -> bool {
+auto Pin::overflow_handling(Pid self_id, Vid other_id) -> bool {
   if (use_overflow) {
     sedges_.set->insert(other_id);
     return true;
   }
+  auto*              hs        = new emhash7::HashSet<Vid>();
+  constexpr int      SHIFT     = 14;
+  constexpr uint64_t SLOT_MASK = (1ULL << SHIFT) - 1;
 
-  int64_t diff = static_cast<int64_t>(other_id) - static_cast<int64_t>(self_id);
-  if (-(1 << 11) <= diff && diff < (1 << 11)) {
-    for (int i = 0; i < 4; ++i) {
-      int64_t mask = 0xFFFLL << (i * 12);
-      if ((sedges_.sedges & mask) == 0) {
-        sedges_.sedges |= (diff & 0xFFFLL) << (i * 12);
-        return true;
-      }
-    }
-  }
-
-  if (ledge0 == 0) {
-    ledge0 = other_id;
-    return true;
-  }
-  if (ledge1 == 0) {
-    ledge1 = other_id;
-    return true;
-  }
-  auto* hs = new emhash7::HashSet<Pid>();
   for (int i = 0; i < 4; ++i) {
-    int64_t slot = (sedges_.sedges >> (i * 12)) & 0xFFF;
-    if (slot) {
-      if (slot & 0x800) {
-        slot |= 0xFFFFF000;
-      }
-      hs->insert(self_id + slot);
+    uint64_t raw = (sedges_.sedges >> (i * SHIFT)) & SLOT_MASK;
+    if (!raw) {
+      continue;
     }
+
+    bool is_driver = raw & (1ULL << 1);
+    bool is_pin    = raw & (1ULL << 0);
+    bool neg       = raw & (1ULL << 13);
+
+    uint64_t mag  = (raw >> 2) & ((1ULL << 11) - 1);
+    int64_t  diff = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+
+    Nid actual_self = self_id >> 2;
+    Vid nid         = static_cast<Vid>(actual_self - diff);
+    Vid target      = (nid << 2) | (is_driver ? 2 : 0) | (is_pin ? 1 : 0);
+    hs->insert(target);
   }
-  hs->insert(ledge0);
-  hs->insert(ledge1);
-  sedges_.set    = hs;
-  use_overflow   = 1;
+  if (ledge0) {
+    hs->insert(ledge0);
+  }
+  if (ledge1) {
+    hs->insert(ledge1);
+  }
+  use_overflow   = true;
   sedges_.sedges = 0;
-  ledge0         = 0;
-  ledge1         = 0;
+  sedges_.set    = hs;
+  ledge0 = ledge1 = 0;
 
   hs->insert(other_id);
+  if (sedges_.set == nullptr) {
+    return false;
+  }
   return true;
 }
 
-auto Pin::add_edge(Pid self_id, Pid other_id) -> bool {
-  assert(self_id != other_id);
-  std::cout << "Adding edge " << self_id << "↔" << other_id << "\n";
-
+auto Pin::add_edge(Pid self_id, Vid other_id) -> bool {
   if (use_overflow) {
-    std::cout << " overflow branch\n\n";
+    return overflow_handling(self_id, other_id);
+  }
+  Nid actual_self  = self_id >> 2;
+  Vid actual_other = other_id >> 2;
+
+  int64_t  diff  = static_cast<int64_t>(actual_self) - static_cast<int64_t>(actual_other);
+  bool     isNeg = diff < 0;
+  uint64_t mag   = static_cast<uint64_t>(isNeg ? -diff : diff);
+
+  constexpr uint64_t MAX_MAG = (1ULL << 11) - 1;
+  if (mag > MAX_MAG) {
     return overflow_handling(self_id, other_id);
   }
 
-  int64_t diff = static_cast<int64_t>(other_id) - static_cast<int64_t>(self_id);
-  if (-(1 << 11) <= diff && diff < (1 << 11)) {
-    for (int i = 0; i < 4; ++i) {
-      int64_t mask = 0xFFFLL << (i * 12);
-      if ((sedges_.sedges & mask) == 0) {
-        sedges_.sedges |= (diff & 0xFFFLL) << (i * 12);
-        std::cout << " added short edge at slot " << i << "\n\n";
-        return true;
-      }
+  uint64_t e = (mag & MAX_MAG) << 2;
+  e |= (other_id & 2) ? (1ULL << 1) : 0;
+  e |= (other_id & 1) ? (1ULL << 0) : 0;
+  if (isNeg) {
+    e |= (1ULL << 13);
+  }
+  constexpr int      SHIFT = 14;
+  constexpr uint64_t SLOT  = (1ULL << SHIFT) - 1;
+  for (int i = 0; i < 4; ++i) {
+    uint64_t mask = SLOT << (i * SHIFT);
+    if ((sedges_.sedges & mask) == 0) {
+      sedges_.sedges |= (e & SLOT) << (i * SHIFT);
+      return true;
     }
   }
-
   if (ledge0 == 0) {
     ledge0 = other_id;
-    std::cout << " placed far-edge in ledge0\n\n";
     return true;
   }
   if (ledge1 == 0) {
     ledge1 = other_id;
-    std::cout << " placed far-edge in ledge1\n\n";
     return true;
   }
 
-  std::cout << " overflow via set\n\n";
   return overflow_handling(self_id, other_id);
 }
 
-bool Pin::has_edges() const { return use_overflow != 0 || sedges_.sedges != 0; }
+auto Pin::get_edges(Pid pid) const -> std::vector<int64_t> {
+  std::vector<int64_t> edges{};
+  int                  cnt = 0;
 
-auto Pin::get_sedges(Pid pid) const -> std::array<int64_t, 4> {
-  std::array<int64_t, 4> edges{};
-  int                    cnt = 0;
   if (use_overflow) {
-    for (auto v : *sedges_.set) {
-      if (cnt < 4) {
-        edges[cnt++] = v;
-      }
+    if (sedges_.set == nullptr) {
+      return edges;
     }
+    for (auto v : *sedges_.set) {
+      edges.emplace_back(v);
+    }
+    std::sort(edges.begin(), edges.end());
+
     return edges;
   }
 
   int64_t packed = sedges_.sedges;
   for (int i = 0; i < 4; ++i) {
-    int64_t e = (packed >> (i * 12)) & 0xFFF;
-    // sign-extend 12→32 bits:
-    if (e & 0x800) {
-      e |= 0xFFFFF000;
+    int64_t e = (packed >> (i * 14)) & ((1ULL << 14) - 1);
+    if (e == 0) {
+      continue;
     }
-    if (e) {
-      edges[cnt++] = pid + e;
-      if (cnt == 4) {
-        return edges;
-      }
+    // check if the 13th bit is set => negative delta
+    // if negative delta, then add with nid else subtract
+    if (e & (1ULL << 13)) {
+      // unset the 13th bit
+      e &= ~(1ULL << 13);
+      e = (pid + (e >> 2));
+    } else {
+      e = (pid - (e >> 2));
     }
+    edges.emplace_back(e);
   }
-
-  // 3) If there’s room, include ledge0 / ledge1:
-  if (ledge0 && cnt < 4) {
-    edges[cnt++] = ledge0;
+  if (ledge0) {
+    edges.emplace_back(ledge0);
   }
-  if (ledge1 && cnt < 4) {
-    edges[cnt++] = ledge1;
+  if (ledge1) {
+    edges.emplace_back(ledge1);
   }
-
   return edges;
+}
+
+bool Pin::has_edges() const {
+  if (use_overflow) {
+    return true;
+  }
+  if (sedges_.sedges != 0) {
+    return true;
+  }
+  if (ledge0 != 0) {
+    return true;
+  }
+  if (ledge1 != 0) {
+    return true;
+  }
+  return false;
 }
 
 Node::Node() { clear_node(); }
@@ -170,81 +193,102 @@ Type Node::get_type() const { return type; }
 Pid  Node::get_next_pin_id() const { return next_pin_id; }
 void Node::set_next_pin_id(Pid id) { next_pin_id = id; }
 
-bool Node::overflow_handling(Pid self_id, Pid other_id) {
+auto Node::overflow_handling(Nid self_id, Vid other_id) -> bool {
   if (use_overflow) {
     sedges_.set->insert(other_id);
     return true;
   }
 
-  int64_t diff = static_cast<int64_t>(other_id) - static_cast<int64_t>(self_id);
-  if (-(1 << 11) <= diff && diff < (1 << 11)) {
-    for (int i = 0; i < 4; ++i) {
-      int64_t mask = 0xFFFLL << (i * 12);
-      if ((sedges_.sedges & mask) == 0) {
-        sedges_.sedges |= (diff & 0xFFFLL) << (i * 12);
-        return true;
-      }
-    }
-  }
+  auto*              hs        = new emhash7::HashSet<Vid>();
+  constexpr int      SHIFT     = 14;
+  constexpr uint64_t SLOT_MASK = (1ULL << SHIFT) - 1;
 
-  if (ledge0 == 0) {
-    ledge0 = other_id;
-    return true;
-  }
-  if (ledge1 == 0) {
-    ledge1 = other_id;
-    return true;
-  }
-
-  auto* hs = new emhash7::HashSet<Pid>();
   for (int i = 0; i < 4; ++i) {
-    int64_t slot = (sedges_.sedges >> (i * 12)) & 0xFFF;
-    if (slot) {
-      if (slot & 0x800) {
-        slot |= 0xFFFFF000;
-      }
-      hs->insert(self_id + slot);
+    uint64_t raw = (sedges_.sedges >> (i * SHIFT)) & SLOT_MASK;
+    if (!raw) {
+      continue;
     }
+    bool is_driver = raw & 2;
+    bool is_pin    = raw & 1;
+
+    bool     neg  = raw & (1ULL << 13);
+    uint64_t mag  = (raw >> 2) & ((1ULL << 11) - 1);
+    int64_t  diff = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+
+    Nid actual_self = static_cast<Nid>(self_id >> 2);
+    Vid target      = static_cast<Vid>(actual_self + diff);
+    target          = (target << 2);
+    if (is_driver) {
+      target |= 2;
+    }
+    if (is_pin) {
+      target |= 1;
+    }
+    hs->insert(target);
   }
 
-  hs->insert(ledge0);
-  hs->insert(ledge1);
+  if (ledge0) {
+    hs->insert(ledge0);
+  }
+  if (ledge1) {
+    hs->insert(ledge1);
+  }
 
+  use_overflow   = 1;
   sedges_.sedges = 0;
+  sedges_.set    = hs;
   ledge0 = ledge1 = 0;
-
-  sedges_.set  = hs;
-  use_overflow = 1;
 
   hs->insert(other_id);
   return true;
 }
 
-auto Node::add_edge(Pid self_id, Pid other_id) -> bool {
-  assert(self_id != other_id);
-
+auto Node::add_edge(Nid self_id, Vid other_id) -> bool {
   if (use_overflow) {
     return overflow_handling(self_id, other_id);
   }
 
-  int64_t diff = static_cast<int64_t>(other_id) - static_cast<int64_t>(self_id);
-  if (-(1 << 11) <= diff && diff < (1 << 11)) {
-    for (int i = 0; i < 4; ++i) {
-      int64_t mask = 0xFFFLL << (i * 12);
-      if ((sedges_.sedges & mask) == 0) {
-        sedges_.sedges |= (diff & 0xFFFLL) << (i * 12);
-        return true;
-      }
+  Nid     actual_self  = self_id >> 2;
+  Vid     actual_other = other_id >> 2;
+  int64_t diff         = static_cast<int64_t>(actual_self) - static_cast<int64_t>(actual_other);
+
+  bool     isNeg = diff < 0;
+  uint64_t mag   = static_cast<uint64_t>(isNeg ? -diff : diff);
+
+  constexpr uint64_t MAX_MAG = (1ULL << 11) - 1;
+  if (mag > MAX_MAG) {
+    if (ledge0 == 0) {
+      ledge0 = other_id;
+      return true;
     }
+    if (ledge1 == 0) {
+      ledge1 = other_id;
+      return true;
+    }
+    return overflow_handling(self_id, other_id);
   }
 
-  if (ledge0 == 0) {
-    ledge0 = other_id;
-    return true;
+  uint64_t e = 0;
+  if (isNeg) {
+    e |= 1ULL << 13;
   }
-  if (ledge1 == 0) {
-    ledge1 = other_id;
-    return true;
+  e |= mag << 2;
+  if (other_id & 2) {
+    uint64_t temp2 = 1ULL << 1;
+    e              = e | 2;
+  }
+  if (other_id & 1) {
+    uint64_t temp1 = 1ULL << 0;
+    e              = e | 1;
+  }
+  constexpr int      SHIFT = 14;
+  constexpr uint64_t SLOT  = (1ULL << SHIFT) - 1;
+  for (int i = 0; i < 4; ++i) {
+    uint64_t mask = SLOT << (i * SHIFT);
+    if ((sedges_.sedges & mask) == 0) {
+      sedges_.sedges |= (e & SLOT) << (i * SHIFT);
+      return true;
+    }
   }
 
   return overflow_handling(self_id, other_id);
@@ -266,14 +310,14 @@ bool Node::has_edges() const {
   return false;
 }
 
-auto Node::get_sedges(Pid pid) const -> std::array<int64_t, 4> {
-  std::array<int64_t, 4> edges{};
-  int                    cnt = 0;
+auto Node::get_edges(Nid nid) const -> std::vector<int64_t> {
+  std::vector<int64_t> edges{};
+  int                  cnt = 0;
 
   if (use_overflow) {
     for (auto v : *sedges_.set) {
       if (cnt < 4) {
-        edges[cnt++] = v;
+        edges.emplace_back(v);
       }
     }
     return edges;
@@ -281,22 +325,27 @@ auto Node::get_sedges(Pid pid) const -> std::array<int64_t, 4> {
 
   int64_t packed = sedges_.sedges;
   for (int i = 0; i < 4; ++i) {
-    int32_t e = (packed >> (i * 12)) & 0xFFF;
-    if (e & 0x800) {
-      e |= 0xFFFFF000;
+    int64_t e = (packed >> (i * 14)) & ((1ULL << 14) - 1);
+    if (e == 0) {
+      continue;
     }
-    if (e && cnt < 4) {
-      edges[cnt++] = pid + e;
+    // check if the 13th bit is set => negative delta
+    // if negative delta, then add with nid else subtract
+    if (e & (1ULL << 13)) {
+      // unset the 13th bit
+      e &= ~(1ULL << 13);
+      e = (nid + (e >> 2));
+    } else {
+      e = (nid - (e >> 2));
     }
+    edges.emplace_back(e);
   }
-
-  if (ledge0 && cnt < 4) {
-    edges[cnt++] = ledge0;
+  if (ledge0) {
+    edges.emplace_back(ledge0);
   }
-  if (ledge1 && cnt < 4) {
-    edges[cnt++] = ledge1;
+  if (ledge1) {
+    edges.emplace_back(ledge1);
   }
-
   return edges;
 }
 
@@ -325,9 +374,11 @@ auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
   return id;
 }
 
-void Graph::add_edge(Pid d, Pid s) {
-  add_edge_int(d, s);
-  add_edge_int(s, d);
+void Graph::add_edge(Vid driver_id, Vid sink_id) {
+  assert(driver_id & 2);
+  assert(!(sink_id & 2));
+  add_edge_int(driver_id, sink_id);
+  add_edge_int(sink_id, driver_id);
 }
 
 auto Graph::ref_node(Nid id) const -> Node* {
@@ -340,9 +391,28 @@ auto Graph::ref_pin(Pid id) const -> Pin* {
   return (Pin*)&pin_table[id];
 }
 
-void Graph::add_edge_int(Pid self_id, Pid other_id) {
-  if (!ref_pin(self_id)->add_edge(self_id, other_id)) {
-    std::cout << "add_edge_int failed: " << self_id << " " << other_id << "\n";
+void Graph::add_edge_int(Vid self_id, Vid other_id) {
+  bool self_type;
+  Vid  actual_self  = self_id >> 2;
+  Vid  actual_other = other_id >> 2;
+  if ((self_id & 1)) {
+    self_type = true;
+  } else {
+    self_type = false;
+  }
+
+  // if both are of same type => ensure their actua values are different
+  if ((self_id & 1) == (other_id & 1)) {
+    assert(actual_self != actual_other);
+  }
+
+  // calling respective class instances
+  if (!self_type) {
+    auto* node = ref_node(actual_self);
+    node->add_edge(self_id, other_id);
+  } else {
+    auto* pin = ref_pin(actual_self);
+    pin->add_edge(self_id, other_id);
   }
 }
 
@@ -364,7 +434,7 @@ void Graph::display_graph() const {
     auto p = ref_pin(pid);
     std::cout << "Pin " << pid << "  node=" << p->get_master_nid() << " port=" << p->get_port_id() << "\n";
     if (p->has_edges()) {
-      auto sed = p->get_sedges(pid);
+      auto sed = p->get_edges(pid);
       std::cout << "  edges:";
       for (auto e : sed) {
         if (e) {

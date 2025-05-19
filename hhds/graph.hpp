@@ -21,16 +21,17 @@ public:
   Pin();
   Pin(Nid master_nid_value, Port_id port_id_value);
 
-  [[nodiscard]] Nid                    get_master_nid() const;  // should be in node
-  [[nodiscard]] Port_id                get_port_id() const;
-  auto                                 add_edge(Pid self_id, Pid other_id) -> bool;  // should be in node
-  [[nodiscard]] bool                   has_edges() const;                            // should be in node
-  [[nodiscard]] std::array<int64_t, 4> get_sedges(Pid pid) const;                    // should be in node
-  [[nodiscard]] Pid                    get_next_pin_id() const;                      // should be in node
-  void                                 set_next_pin_id(Pid id);                      // should be in node
+  [[nodiscard]] Nid                  get_master_nid() const;  // should be in node
+  [[nodiscard]] Port_id              get_port_id() const;
+  auto                               add_edge(Pid self_id, Pid other_id) -> bool;     // should be in node
+  [[nodiscard]] bool                 has_edges() const;                               // should be in node
+  [[nodiscard]] std::vector<int64_t> get_edges(Pid pid) const;                        // should be in node
+  [[nodiscard]] Pid                  get_next_pin_id() const;                         // should be in node
+  void                               set_next_pin_id(Pid id);                         // should be in node
+  [[nodiscard]] bool                 check_overflow() const { return use_overflow; }  // should be in node
 
 private:
-  auto overflow_handling(Pid self_id, Pid other_id) -> bool;
+  auto overflow_handling(Pid self_id, Vid other_id) -> bool;
 
   Nid     master_nid : Nid_bits;   // 42 bits
   Port_id port_id : Port_bits;     // 22 bits    => 64 bits (8 bytes)   // should not be in node
@@ -53,18 +54,19 @@ public:
   Node();
   explicit Node(Nid nid_value);
 
-  [[nodiscard]] Nid                    get_nid() const;
-  [[nodiscard]] Type                   get_type() const;
-  void                                 set_type(Type t);
-  [[nodiscard]] Pid                    get_next_pin_id() const;
-  void                                 set_next_pin_id(Pid id);
-  [[nodiscard]] std::array<int64_t, 4> get_sedges(Pid pid) const;
-  [[nodiscard]] bool                   has_edges() const;
-  auto                                 add_edge(Pid self_id, Pid other_id) -> bool;
+  [[nodiscard]] Nid                  get_nid() const;
+  [[nodiscard]] Type                 get_type() const;
+  void                               set_type(Type t);
+  [[nodiscard]] Pid                  get_next_pin_id() const;
+  void                               set_next_pin_id(Pid id);
+  [[nodiscard]] std::vector<int64_t> get_edges(Nid nid) const;
+  [[nodiscard]] bool                 has_edges() const;
+  auto                               add_edge(Pid self_id, Pid other_id) -> bool;
+  [[nodiscard]] bool                 check_overflow() const { return use_overflow; }
 
 private:
   void clear_node();
-  auto overflow_handling(Pid self_id, Pid other_id) -> bool;
+  auto overflow_handling(Nid self_id, Vid other_id) -> bool;
 
   Nid     nid : 42;
   Type    type : 16;

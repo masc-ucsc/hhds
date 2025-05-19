@@ -146,6 +146,12 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "graph_test",
+    srcs = ["tests/graph_test.cpp"],
+    deps = [":graph"],
+)
+
 # cc_test(
 #     name = "delete_chip_typical_bench",
 #     srcs = ["tests/delete_bench/delete_leaf_bench/chip_typical_tree_bench.cpp"],
