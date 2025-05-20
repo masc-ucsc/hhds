@@ -36,14 +36,15 @@ private:
   Nid     master_nid : Nid_bits;   // 42 bits
   Port_id port_id : Port_bits;     // 22 bits    => 64 bits (8 bytes)   // should not be in node
   Pid     next_pin_id : Nid_bits;  // 42 bits
-  uint8_t use_overflow : 1;        // 1 bit      => 64 bits (8 bytes)
   Nid     ledge0 : Nid_bits;       // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
   Nid     ledge1 : Nid_bits;       // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
+  uint8_t use_overflow : 1;        // 1 bit      => 64 bits (8 bytes)
+
   // adds upto a total of 191 bits => 24 bytes
   union {
     int64_t                sedges;  // 48 bits
     emhash7::HashSet<Pid>* set;     // 8 bytes
-  } sedges_{.sedges = 0};           // Total: 8 bytes
+  } sedges_;                        // Total: 8 bytes
   // Total: 32 bytes
 };
 
@@ -68,16 +69,17 @@ private:
   void clear_node();
   auto overflow_handling(Nid self_id, Vid other_id) -> bool;
 
-  Nid     nid : 42;
+  Nid     nid : Nid_bits;
   Type    type : 16;
-  Pid     next_pin_id : 42;
+  Pid     next_pin_id : Nid_bits;
+  Nid     ledge0 : Nid_bits;
+  Nid     ledge1 : Nid_bits;
   uint8_t use_overflow : 1;
-  Nid     ledge0 : 42;
-  Nid     ledge1 : 42;
+  uint8_t padding : 7;
   union {
     int64_t                sedges;  // 48 bits
     emhash7::HashSet<Pid>* set;     // 8 bytes
-  } sedges_{.sedges = 0};           // Total: 8 bytes
+  } sedges_;                        // Total: 8 bytes
 };
 static_assert(sizeof(Node) == 32, "Node size mismatch");
 

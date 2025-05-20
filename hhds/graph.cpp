@@ -23,10 +23,10 @@
 
 namespace hhds {
 
-Pin::Pin() : master_nid(0), port_id(0), next_pin_id(0), use_overflow(0), ledge0(0), ledge1(0), sedges_{.sedges = 0} {}
+Pin::Pin() : master_nid(0), port_id(0), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.set = nullptr} {}
 
 Pin::Pin(Nid mn, Port_id pid)
-    : master_nid(mn), port_id(pid), next_pin_id(0), use_overflow(0), ledge0(0), ledge1(0), sedges_{.sedges = 0} {}
+    : master_nid(mn), port_id(pid), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.set = nullptr} {}
 
 Nid     Pin::get_master_nid() const { return master_nid; }
 Port_id Pin::get_port_id() const { return port_id; }
