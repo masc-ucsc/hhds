@@ -207,10 +207,13 @@ void test_overflow_handling() {
   assert(tempP1->check_overflow() == true && "test_overflow_handling failed: use_overflow != true");
   auto sed_overflow = g.ref_pin(p1)->get_edges(p1);
 
-  auto it_overflow = sed_overflow.begin();
-  for (auto& edge : expected_set) {
-    assert(*it_overflow == edge && "test_overflow_handling failed: sedges mismatch after overflow");
-    ++it_overflow;
+  emhash7::HashSet<Vid> actual_overflow_set;
+  for (auto it = sed_overflow.begin(); it != sed_overflow.end(); ++it) {
+    actual_overflow_set.insert(*it);
+  }
+  assert(actual_overflow_set.size() == expected_set.size() && "test_overflow_handling failed: size mismatch after overflow");
+  for (const auto& expected : expected_set) {
+    assert(actual_overflow_set.count(expected) && "test_overflow_handling failed: missing expected edge after overflow");
   }
 
   auto sed8 = g.ref_node(n5)->get_edges(n5);
