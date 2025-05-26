@@ -153,10 +153,13 @@ void test_overflow_handling() {
   assert(sed.begin() != sed.end() && "test_overflow_handling failed: no edges found");
   emhash7::HashSet<Vid> expected_set = {p2, p3, p4, n3, n4, n2};
 
-  auto it = sed.begin();
-  for (auto& edge : expected_set) {
-    assert(*it == edge && "test_overflow_handling failed: sedges mismatch");
-    ++it;
+  emhash7::HashSet<Vid> actual_set;
+  for (auto it = sed.begin(); it != sed.end(); ++it) {
+    actual_set.insert(*it);
+  }
+  assert(actual_set.size() == expected_set.size() && "test_overflow_handling failed: size mismatch");
+  for (const auto& expected : expected_set) {
+    assert(actual_set.count(expected) && "test_overflow_handling failed: missing expected edge");
   }
 
   auto sed2 = g.ref_pin(p2)->get_edges(p2);
