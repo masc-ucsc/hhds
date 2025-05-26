@@ -21,14 +21,40 @@ public:
   Pin();
   Pin(Nid master_nid_value, Port_id port_id_value);
 
-  [[nodiscard]] Nid                  get_master_nid() const;  // should be in node
-  [[nodiscard]] Port_id              get_port_id() const;
-  auto                               add_edge(Pid self_id, Pid other_id) -> bool;     // should be in node
-  [[nodiscard]] bool                 has_edges() const;                               // should be in node
-  [[nodiscard]] std::vector<int64_t> get_edges(Pid pid) const;                        // should be in node
-  [[nodiscard]] Pid                  get_next_pin_id() const;                         // should be in node
-  void                               set_next_pin_id(Pid id);                         // should be in node
-  [[nodiscard]] bool                 check_overflow() const { return use_overflow; }  // should be in node
+  [[nodiscard]] Nid       get_master_nid() const;  // should be in node
+  [[nodiscard]] Port_id   get_port_id() const;
+  auto                    add_edge(Pid self_id, Pid other_id) -> bool;     // should be in node
+  [[nodiscard]] bool      has_edges() const;                               // should be in node
+  [[nodiscard]] Pid       get_next_pin_id() const;                         // should be in node
+  void                    set_next_pin_id(Pid id);                         // should be in node
+  [[nodiscard]] bool      check_overflow() const { return use_overflow; }  // should be in node
+  static constexpr size_t MAX_EDGES = 8;
+
+  class EdgeRange {
+  public:
+    using iterator = typename emhash7::HashSet<Pid>::const_iterator;
+    EdgeRange(const Pin* pin, Pid pid) noexcept;
+    EdgeRange(EdgeRange&& o) noexcept;
+    ~EdgeRange() noexcept;
+
+    // disable copy
+    EdgeRange(const EdgeRange&)            = delete;
+    EdgeRange& operator=(const EdgeRange&) = delete;
+
+    iterator begin() const noexcept { return set_->begin(); }
+    iterator end() const noexcept { return set_->end(); }
+
+  private:
+    const Pin*             pin_;
+    Pid                    pid_;
+    emhash7::HashSet<Vid>* set_;
+    bool                   own_;
+
+    static emhash7::HashSet<Pid>* acquire_set() noexcept;
+    static void                   release_set(emhash7::HashSet<Pid>*) noexcept;
+    static void                   populate_set(const Pin*, emhash7::HashSet<Pid>&, Pid) noexcept;
+  };
+  [[nodiscard]] auto get_edges(Pid pid) const noexcept -> EdgeRange;  // should be in node
 
 private:
   auto overflow_handling(Pid self_id, Vid other_id) -> bool;
@@ -55,15 +81,40 @@ public:
   Node();
   explicit Node(Nid nid_value);
 
-  [[nodiscard]] Nid                  get_nid() const;
-  [[nodiscard]] Type                 get_type() const;
-  void                               set_type(Type t);
-  [[nodiscard]] Pid                  get_next_pin_id() const;
-  void                               set_next_pin_id(Pid id);
-  [[nodiscard]] std::vector<int64_t> get_edges(Nid nid) const;
-  [[nodiscard]] bool                 has_edges() const;
-  auto                               add_edge(Pid self_id, Pid other_id) -> bool;
-  [[nodiscard]] bool                 check_overflow() const { return use_overflow; }
+  [[nodiscard]] Nid  get_nid() const;
+  [[nodiscard]] Type get_type() const;
+  void               set_type(Type t);
+  [[nodiscard]] Pid  get_next_pin_id() const;
+  void               set_next_pin_id(Pid id);
+  [[nodiscard]] bool has_edges() const;
+  auto               add_edge(Pid self_id, Pid other_id) -> bool;
+  [[nodiscard]] bool check_overflow() const { return use_overflow; }
+
+  static constexpr size_t MAX_EDGES = 8;
+
+  class EdgeRange {
+  public:
+    using iterator = typename emhash7::HashSet<Pid>::const_iterator;
+    EdgeRange(const Node* node, Nid nid) noexcept;
+    EdgeRange(EdgeRange&& o) noexcept;
+    ~EdgeRange() noexcept;
+    // disable copy
+    EdgeRange(const EdgeRange&)            = delete;
+    EdgeRange& operator=(const EdgeRange&) = delete;
+    iterator   begin() const noexcept { return set_->begin(); }
+    iterator   end() const noexcept { return set_->end(); }
+
+  private:
+    const Node*                   node_;
+    Nid                           nid_;
+    emhash7::HashSet<Pid>*        set_;
+    bool                          own_;
+    static emhash7::HashSet<Pid>* acquire_set() noexcept;
+    static void                   release_set(emhash7::HashSet<Pid>*) noexcept;
+    static void                   populate_set(const Node*, emhash7::HashSet<Pid>&, Nid) noexcept;
+  };
+
+  [[nodiscard]] auto get_edges(Nid nid) const noexcept -> EdgeRange;
 
 private:
   void clear_node();
