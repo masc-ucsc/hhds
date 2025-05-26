@@ -121,47 +121,103 @@ auto Pin::add_edge(Pid self_id, Vid other_id) -> bool {
   return overflow_handling(self_id, other_id);
 }
 
-auto Pin::get_edges(Pid pid) const -> std::vector<int64_t> {
-  std::vector<int64_t> edges{};
-  int                  cnt = 0;
-
-  if (use_overflow) {
-    if (sedges_.set == nullptr) {
-      return edges;
+Pin::EdgeRange::EdgeRange(const Pin* pin, Pid pid) noexcept : pin_(pin), pid_(pid), set_(nullptr), own_(false) {
+  if (pin->use_overflow) {
+    // set_ = pin->sedges_.set;
+    set_ = acquire_set();
+    set_->clear();
+    for (auto raw : *pin->sedges_.set) {
+      bool is_driver = raw & (1ULL << 1);
+      bool is_pin    = raw & (1ULL << 0);
+      Vid  actual_id = raw >> 2;  // get the actual Node ID
+      actual_id      = actual_id << 1;
+      if (is_pin) {
+        actual_id = actual_id | 1;  // set the pin bit
+      }
+      set_->insert(actual_id);
     }
-    for (auto v : *sedges_.set) {
-      edges.emplace_back(v);
-    }
-    std::sort(edges.begin(), edges.end());
-
-    return edges;
+  } else {
+    set_ = acquire_set();
+    own_ = true;
+    set_->clear();
+    populate_set(pin, *set_, pid);
   }
+}
 
-  int64_t packed = sedges_.sedges;
-  for (int i = 0; i < 4; ++i) {
-    int64_t e = (packed >> (i * 14)) & ((1ULL << 14) - 1);
+Pin::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : pin_(o.pin_), pid_(o.pid_), set_(o.set_), own_(o.own_) {
+  o.pin_ = nullptr;
+  o.set_ = nullptr;
+}
+
+Pin::EdgeRange::~EdgeRange() noexcept {
+  if (own_) {
+    release_set(set_);
+  }
+}
+
+emhash7::HashSet<Pid>* Pin::EdgeRange::acquire_set() noexcept {
+  static thread_local std::vector<emhash7::HashSet<Pid>*> pool;
+  if (!pool.empty()) {
+    emhash7::HashSet<Pid>* set = pool.back();
+    pool.pop_back();
+    return set;
+  } else {
+    auto* set = new emhash7::HashSet<Pid>();
+    set->reserve(MAX_EDGES);
+    return set;
+  }
+}
+
+void Pin::EdgeRange::release_set(emhash7::HashSet<Pid>* set) noexcept {
+  static thread_local std::vector<emhash7::HashSet<Pid>*> pool;
+  pool.push_back(set);
+}
+
+void Pin::EdgeRange::populate_set(const Pin* pin, emhash7::HashSet<Pid>& set, Pid pid) noexcept {
+  constexpr uint64_t SLOT_MASK = (1ULL << 14) - 1;
+  uint64_t           packed    = pin->sedges_.sedges;
+  for (int i = 0; i < 4; i++) {
+    uint64_t e = (packed >> (i * 14)) & SLOT_MASK;
     if (e == 0) {
       continue;
     }
-    // check if the 13th bit is set => negative delta
-    // if negative delta, then add with nid else subtract
-    if (e & (1ULL << 13)) {
-      // unset the 13th bit
-      e &= ~(1ULL << 13);
-      e = (pid + (e >> 2));
+    bool isNeg = e & (1ULL << 13);
+    bool isPin = e & 1;
+    e &= ~(1ULL << 13);  // unset the 13th bit
+    if (isNeg) {
+      e = ((pid >> 1) + (e >> 2));
     } else {
-      e = (pid - (e >> 2));
+      e = ((pid >> 1) - (e >> 2));
     }
-    edges.emplace_back(e);
+    e = e << 1;  // shift to make it a Vid
+    if (isPin) {
+      e = e | 1;  // set the pin bit
+    }
+    set.insert(e);
   }
-  if (ledge0) {
-    edges.emplace_back(ledge0);
+  if (pin->ledge0) {
+    bool is_pin  = pin->ledge0 & 1;
+    Vid  ledge0_ = pin->ledge0 >> 1;
+    if (is_pin) {
+      ledge0_ = ledge0_ | 1;
+    } else {
+      ledge0_ = ledge0_ & ~1;
+    }
+    set.insert(ledge0_);
   }
-  if (ledge1) {
-    edges.emplace_back(ledge1);
+  if (pin->ledge1) {
+    bool is_pin  = pin->ledge1 & 1;
+    Vid  ledge1_ = pin->ledge1 >> 1;
+    if (is_pin) {
+      ledge1_ = ledge1_ | 1;
+    } else {
+      ledge1_ = ledge1_ & ~1;
+    }
+    set.insert(ledge1_);
   }
-  return edges;
 }
+
+auto Pin::get_edges(Pid pid) const noexcept -> EdgeRange { return EdgeRange(this, pid); }
 
 bool Pin::has_edges() const {
   if (use_overflow) {
@@ -310,44 +366,102 @@ bool Node::has_edges() const {
   return false;
 }
 
-auto Node::get_edges(Nid nid) const -> std::vector<int64_t> {
-  std::vector<int64_t> edges{};
-  int                  cnt = 0;
-
-  if (use_overflow) {
-    for (auto v : *sedges_.set) {
-      if (cnt < 4) {
-        edges.emplace_back(v);
+Node::EdgeRange::EdgeRange(const Node* node, Nid nid) noexcept : node_(node), nid_(nid), set_(nullptr), own_(false) {
+  if (node->use_overflow) {
+    set_ = acquire_set();
+    set_->clear();
+    for (auto raw : *node->sedges_.set) {
+      bool is_driver = raw & (1ULL << 1);
+      bool is_pin    = raw & (1ULL << 0);
+      Vid  actual_id = raw >> 2;  // get the actual Node ID
+      actual_id      = actual_id << 1;
+      if (is_pin) {
+        actual_id = actual_id | 1;  // set the pin bit
       }
+      set_->insert(actual_id);
     }
-    return edges;
+  } else {
+    set_ = acquire_set();
+    own_ = true;
+    set_->clear();
+    populate_set(node, *set_, nid);
   }
+}
 
-  int64_t packed = sedges_.sedges;
-  for (int i = 0; i < 4; ++i) {
-    int64_t e = (packed >> (i * 14)) & ((1ULL << 14) - 1);
+Node::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : node_(o.node_), nid_(o.nid_), set_(o.set_), own_(o.own_) {
+  o.node_ = nullptr;
+  o.set_  = nullptr;
+}
+
+Node::EdgeRange::~EdgeRange() noexcept {
+  if (own_) {
+    release_set(set_);
+  }
+}
+
+emhash7::HashSet<Nid>* Node::EdgeRange::acquire_set() noexcept {
+  static thread_local std::vector<emhash7::HashSet<Nid>*> pool;
+  if (!pool.empty()) {
+    emhash7::HashSet<Nid>* set = pool.back();
+    pool.pop_back();
+    return set;
+  } else {
+    auto* set = new emhash7::HashSet<Nid>();
+    set->reserve(MAX_EDGES);
+    return set;
+  }
+}
+
+void Node::EdgeRange::release_set(emhash7::HashSet<Nid>* set) noexcept {
+  static thread_local std::vector<emhash7::HashSet<Nid>*> pool;
+  pool.push_back(set);
+}
+void Node::EdgeRange::populate_set(const Node* node, emhash7::HashSet<Nid>& set, Nid nid) noexcept {
+  constexpr uint64_t SLOT_MASK = (1ULL << 14) - 1;
+  uint64_t           packed    = node->sedges_.sedges;
+  for (int i = 0; i < 4; i++) {
+    uint64_t e = (packed >> (i * 14)) & SLOT_MASK;
     if (e == 0) {
       continue;
     }
-    // check if the 13th bit is set => negative delta
-    // if negative delta, then add with nid else subtract
-    if (e & (1ULL << 13)) {
-      // unset the 13th bit
-      e &= ~(1ULL << 13);
-      e = (nid + (e >> 2));
+    bool isNeg = e & (1ULL << 13);
+    bool isPin = e & 1;
+    e &= ~(1ULL << 13);  // unset the 13th bit
+    if (isNeg) {
+      e = ((nid >> 1) + (e >> 2));
     } else {
-      e = (nid - (e >> 2));
+      e = ((nid >> 1) - (e >> 2));
     }
-    edges.emplace_back(e);
+    e = e << 1;  // shift to make it a Vid
+    if (isPin) {
+      e = e | 1;  // set the pin bit
+    }
+
+    set.insert(e);
   }
-  if (ledge0) {
-    edges.emplace_back(ledge0);
+  if (node->ledge0) {
+    bool is_pin  = node->ledge0 & 1;
+    Vid  ledge0_ = node->ledge0 >> 1;
+    if (is_pin) {
+      ledge0_ = ledge0_ | 1;
+    } else {
+      ledge0_ = ledge0_ & ~1;
+    }
+    set.insert(ledge0_);
   }
-  if (ledge1) {
-    edges.emplace_back(ledge1);
+  if (node->ledge1) {
+    bool is_pin  = node->ledge1 & 1;
+    Vid  ledge1_ = node->ledge1 >> 1;
+    if (is_pin) {
+      ledge1_ = ledge1_ | 1;
+    } else {
+      ledge1_ = ledge1_ & ~1;
+    }
+    set.insert(ledge1_);
   }
-  return edges;
 }
+
+auto Node::get_edges(Nid nid) const noexcept -> EdgeRange { return EdgeRange(this, nid); }
 
 Graph::Graph() { clear_graph(); }
 
@@ -363,7 +477,7 @@ auto Graph::create_node() -> Nid {
   Nid id = node_table.size();
   assert(id);
   node_table.emplace_back(id);
-  return id;
+  return id << 1 | 0;
 }
 
 auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
@@ -371,24 +485,51 @@ auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
   assert(id);
   pin_table.emplace_back(nid, pid);
   set_next_pin(nid, id);
-  return id;
+  return id << 1 | 1;
 }
 
 void Graph::add_edge(Vid driver_id, Vid sink_id) {
-  assert(driver_id & 2);
-  assert(!(sink_id & 2));
+  bool driver_type, sink_type;
+  if (driver_id & 1) {
+    // driver is pin
+    driver_type = true;
+  } else {
+    // driver is node
+    driver_type = false;
+  }
+  if (sink_id & 1) {
+    // sink is pin
+    sink_type = true;
+  } else {
+    // sink is node
+    sink_type = false;
+  }
+
+  driver_id = driver_id | 1;
+  sink_id   = sink_id & ~1;
+  driver_id = driver_id << 1;
+  sink_id   = sink_id << 1;
+  if (driver_type) {
+    driver_id = driver_id | 1;
+  }
+  if (sink_type) {
+    sink_id = sink_id | 1;
+  }
+
   add_edge_int(driver_id, sink_id);
   add_edge_int(sink_id, driver_id);
 }
 
 auto Graph::ref_node(Nid id) const -> Node* {
-  assert(id < node_table.size());
-  return (Node*)&node_table[id];
+  Nid actual_id = id >> 1;
+  assert(actual_id < node_table.size());
+  return (Node*)&node_table[actual_id];
 }
 
 auto Graph::ref_pin(Pid id) const -> Pin* {
-  assert(id < pin_table.size());
-  return (Pin*)&pin_table[id];
+  Pid actual_id = id >> 1;
+  assert(actual_id < pin_table.size());
+  return (Pin*)&pin_table[actual_id];
 }
 
 void Graph::add_edge_int(Vid self_id, Vid other_id) {
@@ -405,19 +546,23 @@ void Graph::add_edge_int(Vid self_id, Vid other_id) {
   if ((self_id & 1) == (other_id & 1)) {
     assert(actual_self != actual_other);
   }
-
+  Vid ref_self = actual_self << 1;
+  if (self_type) {
+    ref_self = ref_self | 1;
+  }
   // calling respective class instances
   if (!self_type) {
-    auto* node = ref_node(actual_self);
+    auto* node = ref_node(ref_self);
     node->add_edge(self_id, other_id);
   } else {
-    auto* pin = ref_pin(actual_self);
+    auto* pin = ref_pin(ref_self);
     pin->add_edge(self_id, other_id);
   }
 }
 
 void Graph::set_next_pin(Nid nid, Pid next_pin) {
-  auto node = &node_table[nid];
+  Nid  actual_nid = nid >> 1;
+  auto node       = &node_table[actual_nid];
   if (node->get_next_pin_id() == 0) {
     node->set_next_pin_id(next_pin);
     return;
