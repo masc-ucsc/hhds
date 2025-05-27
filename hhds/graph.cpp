@@ -122,6 +122,7 @@ auto Pin::add_edge(Pid self_id, Vid other_id) -> bool {
 }
 
 Pin::EdgeRange::EdgeRange(const Pin* pin, Pid pid) noexcept : pin_(pin), pid_(pid), set_(nullptr), own_(false) {
+
   if (pin->use_overflow) {
     // set_ = pin->sedges_.set;
     set_ = acquire_set();
@@ -155,25 +156,25 @@ Pin::EdgeRange::~EdgeRange() noexcept {
   }
 }
 
-emhash7::HashSet<Pid>* Pin::EdgeRange::acquire_set() noexcept {
-  static thread_local std::vector<emhash7::HashSet<Pid>*> pool;
+emhash7::HashSet<Vid>* Pin::EdgeRange::acquire_set() noexcept {
+  static thread_local std::vector<emhash7::HashSet<Vid>*> pool;
   if (!pool.empty()) {
-    emhash7::HashSet<Pid>* set = pool.back();
+    emhash7::HashSet<Vid>* set = pool.back();
     pool.pop_back();
     return set;
   } else {
-    auto* set = new emhash7::HashSet<Pid>();
+    auto* set = new emhash7::HashSet<Vid>();
     set->reserve(MAX_EDGES);
     return set;
   }
 }
 
-void Pin::EdgeRange::release_set(emhash7::HashSet<Pid>* set) noexcept {
-  static thread_local std::vector<emhash7::HashSet<Pid>*> pool;
+void Pin::EdgeRange::release_set(emhash7::HashSet<Vid>* set) noexcept {
+  static thread_local std::vector<emhash7::HashSet<Vid>*> pool;
   pool.push_back(set);
 }
 
-void Pin::EdgeRange::populate_set(const Pin* pin, emhash7::HashSet<Pid>& set, Pid pid) noexcept {
+void Pin::EdgeRange::populate_set(const Pin* pin, emhash7::HashSet<Vid>& set, Pid pid) noexcept {
   constexpr uint64_t SLOT_MASK = (1ULL << 14) - 1;
   uint64_t           packed    = pin->sedges_.sedges;
   for (int i = 0; i < 4; i++) {

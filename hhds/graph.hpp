@@ -32,7 +32,7 @@ public:
 
   class EdgeRange {
   public:
-    using iterator = typename emhash7::HashSet<Pid>::const_iterator;
+    using iterator = typename emhash7::HashSet<Vid>::const_iterator;
     EdgeRange(const Pin* pin, Pid pid) noexcept;
     EdgeRange(EdgeRange&& o) noexcept;
     ~EdgeRange() noexcept;
@@ -50,9 +50,9 @@ public:
     emhash7::HashSet<Vid>* set_;
     bool                   own_;
 
-    static emhash7::HashSet<Pid>* acquire_set() noexcept;
-    static void                   release_set(emhash7::HashSet<Pid>*) noexcept;
-    static void                   populate_set(const Pin*, emhash7::HashSet<Pid>&, Pid) noexcept;
+    static emhash7::HashSet<Vid>* acquire_set() noexcept;
+    static void                   release_set(emhash7::HashSet<Vid>*) noexcept;
+    static void                   populate_set(const Pin*, emhash7::HashSet<Vid>&, Pid) noexcept;
   };
   [[nodiscard]] auto get_edges(Pid pid) const noexcept -> EdgeRange;  // should be in node
 
@@ -69,7 +69,7 @@ private:
   // adds upto a total of 191 bits => 24 bytes
   union {
     int64_t                sedges;  // 48 bits
-    emhash7::HashSet<Pid>* set;     // 8 bytes
+    emhash7::HashSet<Vid>* set;     // 8 bytes
   } sedges_;                        // Total: 8 bytes
   // Total: 32 bytes
 };
@@ -94,7 +94,7 @@ public:
 
   class EdgeRange {
   public:
-    using iterator = typename emhash7::HashSet<Pid>::const_iterator;
+    using iterator = typename emhash7::HashSet<Vid>::const_iterator;
     EdgeRange(const Node* node, Nid nid) noexcept;
     EdgeRange(EdgeRange&& o) noexcept;
     ~EdgeRange() noexcept;
@@ -107,11 +107,11 @@ public:
   private:
     const Node*                   node_;
     Nid                           nid_;
-    emhash7::HashSet<Pid>*        set_;
+    emhash7::HashSet<Vid>*        set_;
     bool                          own_;
-    static emhash7::HashSet<Pid>* acquire_set() noexcept;
-    static void                   release_set(emhash7::HashSet<Pid>*) noexcept;
-    static void                   populate_set(const Node*, emhash7::HashSet<Pid>&, Nid) noexcept;
+    static emhash7::HashSet<Vid>* acquire_set() noexcept;
+    static void                   release_set(emhash7::HashSet<Vid>*) noexcept;
+    static void                   populate_set(const Node*, emhash7::HashSet<Vid>&, Nid) noexcept;
   };
 
   [[nodiscard]] auto get_edges(Nid nid) const noexcept -> EdgeRange;
@@ -129,12 +129,12 @@ private:
   uint8_t padding : 7;
   union {
     int64_t                sedges;  // 48 bits
-    emhash7::HashSet<Pid>* set;     // 8 bytes
+    emhash7::HashSet<Vid>* set;     // 8 bytes
   } sedges_;                        // Total: 8 bytes
 };
 static_assert(sizeof(Node) == 32, "Node size mismatch");
 
-class __attribute__((packed)) Graph {
+class Graph {
 public:
   Graph();
   void clear_graph();

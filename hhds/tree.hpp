@@ -14,6 +14,7 @@
 #include <iostream>
 #include <iterator>
 #include <optional>
+#include <memory>
 #include <queue>
 #include <set>
 #include <stdexcept>
