@@ -37,13 +37,13 @@ jobs:
         mv build-support/tree-sitter.bazel tree-sitter/BUILD.bazel
         mv build-support/tree-sitter-cpp.bazel tree-sitter-cpp/BUILD.bazel
 
-    - name: Bazel build representative
-      run: bazel build --sandbox_debug --verbose_failures //hhds:build_representative_bench
-      working-directory: ${{ github.workspace }}
+      # - name: Bazel build representative
+      # run: bazel build --sandbox_debug --verbose_failures //hhds:build_representative_bench
+      # working-directory: ${{ github.workspace }}
 
-    - name: List Bazel Sandbox Contents
-      run: |
-        find /home/runner/.cache/bazel/ -type d -name 'execroot' -exec find {} \; | head -n 1000
+      #    - name: List Bazel Sandbox Contents
+      #run: |
+      #  find /home/runner/.cache/bazel/ -type d -name 'execroot' -exec find {} \; | head -n 1000
 
 
     - name: Run Bazel build

@@ -1,9 +1,10 @@
 name: Rust Build
 
 on:
-  workflow_run:
-    workflows: ["Bazel Build"]
-
+  push:
+    branches: [ main ]
+  pull_request:
+    
 jobs:
   build:
     runs-on: ubuntu-latest

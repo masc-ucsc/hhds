@@ -16,6 +16,7 @@ cc_import(
     #shared_library = ":libtree-sitter.so",
     static_library = ":libtree-sitter.a",
     hdrs = glob(["tree-sitter/src/*.h"]),
+    includes = ["lib/include", "lib/src"],
     visibility = ["//visibility:public"],
 )
 

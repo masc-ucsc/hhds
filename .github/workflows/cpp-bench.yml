@@ -3,6 +3,8 @@ name: Bazel CPP Benchmarks
 on:
   workflow_run:
     workflows: ["Bazel Build"]
+    types:
+      - completed
 
 jobs:
   build:

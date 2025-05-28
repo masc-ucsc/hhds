@@ -135,25 +135,28 @@ cc_test(
         ":core",
     ],
 )
-cc_test(
-    name = "build_representative_bench",
-    srcs = ["tests/creation_bench/representative_tree_bench.cpp"],
-    deps = [
-        "//tree-sitter:libtree_sitter",
-        "//tree-sitter-cpp:libtree_sitter_cpp",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
-        ":core",
-    ],
-    data = ["wrapper.cpp", "tree.cpp", "SelectionDAG.cpp"],
-    #includes = [
-	#"tree-sitter/lib/include/tree_sitter/api.h",
-    #    "tree-sitter/lib/include",
-    #    "tree-sitter-cpp/src",
-    #],
-   # linkopts = ["-Wl,-rpath, $ORIGIN/tree-sitter-cpp"],
-    #$ORIGIN/../../../tree-sitter-cpp"],
-)
+
+#TODO: Support representative for github workflow
+
+#cc_test(
+#    name = "build_representative_bench",
+#    srcs = ["tests/creation_bench/representative_tree_bench.cpp"],
+#    deps = [
+#        "//tree-sitter:libtree_sitter",
+#        "//tree-sitter-cpp:libtree_sitter_cpp",
+#        "@google_benchmark//:benchmark",
+#        "@googletest//:gtest_main",
+#        ":core",
+#    ],
+#    data = ["wrapper.cpp", "tree.cpp", "SelectionDAG.cpp"],
+#includes = [
+#"tree-sitter/lib/include/tree_sitter/api.h",
+#    "tree-sitter/lib/include",
+#    "tree-sitter-cpp/src",
+#],
+# linkopts = ["-Wl,-rpath, $ORIGIN/tree-sitter-cpp"],
+#$ORIGIN/../../../tree-sitter-cpp"],
+#)
 
 cc_test(
     name = "add_append_wide_bench",
@@ -222,24 +225,27 @@ cc_library(
         "//conditions:default": [],
     }),
 )
-cc_test(
-    name = "traversal_representative_bench",
-    srcs = ["tests/traversal_bench/preorder_bench/representative_tree_bench.cpp"],
-    deps = [
-        "//tree-sitter:libtree_sitter",
-        "//tree-sitter-cpp:libtree_sitter_cpp",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
-        ":core",
-    ],
-    data = ["wrapper.cpp", "tree.cpp", "SelectionDAG.cpp"],
-    includes = [
-	"tree-sitter/lib/include/tree_sitter/api.h",
-        "tree-sitter/lib/include",
-        "tree-sitter-cpp/src",
-    ],
-    #linkopts = ["-Wl,-rpath,$ORIGIN/../../../tree-sitter-cpp"],
-)
+
+
+#TODO: Support representative for github workflow
+#cc_test(
+#    name = "traversal_representative_bench",
+#    srcs = ["tests/traversal_bench/preorder_bench/representative_tree_bench.cpp"],
+#    deps = [
+#        "//tree-sitter:libtree_sitter",
+#        "//tree-sitter-cpp:libtree_sitter_cpp",
+#        "@google_benchmark//:benchmark",
+#        "@googletest//:gtest_main",
+#        ":core",
+#    ],
+#    data = ["wrapper.cpp", "tree.cpp", "SelectionDAG.cpp"],
+#    includes = [
+#	"tree-sitter/lib/include/tree_sitter/api.h",
+#        "tree-sitter/lib/include",
+#        "tree-sitter-cpp/src",
+#    ],
+#linkopts = ["-Wl,-rpath,$ORIGIN/../../../tree-sitter-cpp"],
+#)
 
 
 cc_binary(
