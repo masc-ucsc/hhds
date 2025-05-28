@@ -12,7 +12,7 @@ typedef void* PostOrdIterHandle;
 
 
 // --- Tree ---
-TreeIntHandle tree_int_new(ForestIntHandle forest);
+TreeIntHandle tree_int_new_empty();
 void tree_int_free(TreeIntHandle tree);
 
 // Getters

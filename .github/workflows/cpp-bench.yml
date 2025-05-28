@@ -1,9 +1,10 @@
-name: Bazel CPP Tests
+name: Bazel CPP Benchmarks
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
+  workflow_run:
+    workflows: ["Bazel Build"]
+    types:
+      - completed
 
 jobs:
   build:
@@ -37,7 +38,6 @@ jobs:
         mv build-support/tree-sitter.bazel tree-sitter/BUILD.bazel
         mv build-support/tree-sitter-cpp.bazel tree-sitter-cpp/BUILD.bazel
 
-
     - name: Run HHDS tests 
-      run: bazel test //hhds:all
+      run: bazel test //hhds:traversal_deep_bench
 
