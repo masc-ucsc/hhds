@@ -151,9 +151,9 @@ void test_overflow_handling() {
 
   auto sed = g.ref_pin(p1)->get_edges(p1);
   assert(sed.begin() != sed.end() && "test_overflow_handling failed: no edges found");
-  emhash7::HashSet<Vid> expected_set = {p2, p3, p4, n3, n4, n2};
+  ankerl::unordered_dense::set<Vid> expected_set = {p2, p3, p4, n3, n4, n2};
 
-  emhash7::HashSet<Vid> actual_set;
+  ankerl::unordered_dense::set<Vid> actual_set;
   for (auto it = sed.begin(); it != sed.end(); ++it) {
     actual_set.insert(*it);
   }
@@ -207,7 +207,7 @@ void test_overflow_handling() {
   assert(tempP1->check_overflow() == true && "test_overflow_handling failed: use_overflow != true");
   auto sed_overflow = g.ref_pin(p1)->get_edges(p1);
 
-  emhash7::HashSet<Vid> actual_overflow_set;
+  ankerl::unordered_dense::set<Vid> actual_overflow_set;
   for (auto it = sed_overflow.begin(); it != sed_overflow.end(); ++it) {
     actual_overflow_set.insert(*it);
   }

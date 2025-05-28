@@ -51,6 +51,7 @@ cc_library(
       "graph.hpp",
       "graph_sizing.hpp",
       "hash_set3.hpp",
+      "unordered_dense.hpp",
     ],
     copts   = COPTS + [
         "-Wno-unused-parameter",

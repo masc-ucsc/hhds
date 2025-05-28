@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "graph_sizing.hpp"
-#include "hash_set3.hpp"
+#include "unordered_dense.hpp"
 
 namespace hhds {
 
@@ -32,7 +32,7 @@ public:
 
   class EdgeRange {
   public:
-    using iterator = typename emhash7::HashSet<Vid>::const_iterator;
+    using iterator = typename ankerl::unordered_dense::set<Vid>::const_iterator;
     EdgeRange(const Pin* pin, Pid pid) noexcept;
     EdgeRange(EdgeRange&& o) noexcept;
     ~EdgeRange() noexcept;
@@ -47,12 +47,12 @@ public:
   private:
     const Pin*             pin_;
     Pid                    pid_;
-    emhash7::HashSet<Vid>* set_;
+    ankerl::unordered_dense::set<Vid>* set_;
     bool                   own_;
 
-    static emhash7::HashSet<Vid>* acquire_set() noexcept;
-    static void                   release_set(emhash7::HashSet<Vid>*) noexcept;
-    static void                   populate_set(const Pin*, emhash7::HashSet<Vid>&, Pid) noexcept;
+    static ankerl::unordered_dense::set<Vid>* acquire_set() noexcept;
+    static void                   release_set(ankerl::unordered_dense::set<Vid>*) noexcept;
+    static void                   populate_set(const Pin*, ankerl::unordered_dense::set<Vid>&, Pid) noexcept;
   };
   [[nodiscard]] auto get_edges(Pid pid) const noexcept -> EdgeRange;  // should be in node
 
@@ -69,7 +69,7 @@ private:
   // adds upto a total of 191 bits => 24 bytes
   union {
     int64_t                sedges;  // 48 bits
-    emhash7::HashSet<Vid>* set;     // 8 bytes
+    ankerl::unordered_dense::set<Vid>* set;     // 8 bytes
   } sedges_;                        // Total: 8 bytes
   // Total: 32 bytes
 };
@@ -94,7 +94,7 @@ public:
 
   class EdgeRange {
   public:
-    using iterator = typename emhash7::HashSet<Vid>::const_iterator;
+    using iterator = typename ankerl::unordered_dense::set<Vid>::const_iterator;
     EdgeRange(const Node* node, Nid nid) noexcept;
     EdgeRange(EdgeRange&& o) noexcept;
     ~EdgeRange() noexcept;
@@ -107,11 +107,11 @@ public:
   private:
     const Node*                   node_;
     Nid                           nid_;
-    emhash7::HashSet<Vid>*        set_;
+    ankerl::unordered_dense::set<Vid>*        set_;
     bool                          own_;
-    static emhash7::HashSet<Vid>* acquire_set() noexcept;
-    static void                   release_set(emhash7::HashSet<Vid>*) noexcept;
-    static void                   populate_set(const Node*, emhash7::HashSet<Vid>&, Nid) noexcept;
+    static ankerl::unordered_dense::set<Vid>* acquire_set() noexcept;
+    static void                   release_set(ankerl::unordered_dense::set<Vid>*) noexcept;
+    static void                   populate_set(const Node*, ankerl::unordered_dense::set<Vid>&, Nid) noexcept;
   };
 
   [[nodiscard]] auto get_edges(Nid nid) const noexcept -> EdgeRange;
@@ -129,7 +129,7 @@ private:
   uint8_t padding : 7;
   union {
     int64_t                sedges;  // 48 bits
-    emhash7::HashSet<Vid>* set;     // 8 bytes
+    ankerl::unordered_dense::set<Vid>* set;     // 8 bytes
   } sedges_;                        // Total: 8 bytes
 };
 static_assert(sizeof(Node) == 32, "Node size mismatch");

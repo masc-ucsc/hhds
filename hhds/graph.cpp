@@ -38,7 +38,7 @@ auto Pin::overflow_handling(Pid self_id, Vid other_id) -> bool {
     sedges_.set->insert(other_id);
     return true;
   }
-  auto*              hs        = new emhash7::HashSet<Vid>();
+  auto*              hs        = new ankerl::unordered_dense::set<Vid>();
   constexpr int      SHIFT     = 14;
   constexpr uint64_t SLOT_MASK = (1ULL << SHIFT) - 1;
 
@@ -61,10 +61,10 @@ auto Pin::overflow_handling(Pid self_id, Vid other_id) -> bool {
     hs->insert(target);
   }
   if (ledge0) {
-    hs->insert(ledge0);
+    hs->insert(static_cast<Vid>(ledge0));
   }
   if (ledge1) {
-    hs->insert(ledge1);
+    hs->insert(static_cast<Vid>(ledge1));
   }
   use_overflow   = true;
   sedges_.sedges = 0;
@@ -156,25 +156,25 @@ Pin::EdgeRange::~EdgeRange() noexcept {
   }
 }
 
-emhash7::HashSet<Vid>* Pin::EdgeRange::acquire_set() noexcept {
-  static thread_local std::vector<emhash7::HashSet<Vid>*> pool;
+ankerl::unordered_dense::set<Vid>* Pin::EdgeRange::acquire_set() noexcept {
+  static thread_local std::vector<ankerl::unordered_dense::set<Vid>*> pool;
   if (!pool.empty()) {
-    emhash7::HashSet<Vid>* set = pool.back();
+    ankerl::unordered_dense::set<Vid>* set = pool.back();
     pool.pop_back();
     return set;
   } else {
-    auto* set = new emhash7::HashSet<Vid>();
+    auto* set = new ankerl::unordered_dense::set<Vid>();
     set->reserve(MAX_EDGES);
     return set;
   }
 }
 
-void Pin::EdgeRange::release_set(emhash7::HashSet<Vid>* set) noexcept {
-  static thread_local std::vector<emhash7::HashSet<Vid>*> pool;
+void Pin::EdgeRange::release_set(ankerl::unordered_dense::set<Vid>* set) noexcept {
+  static thread_local std::vector<ankerl::unordered_dense::set<Vid>*> pool;
   pool.push_back(set);
 }
 
-void Pin::EdgeRange::populate_set(const Pin* pin, emhash7::HashSet<Vid>& set, Pid pid) noexcept {
+void Pin::EdgeRange::populate_set(const Pin* pin, ankerl::unordered_dense::set<Vid>& set, Pid pid) noexcept {
   constexpr uint64_t SLOT_MASK = (1ULL << 14) - 1;
   uint64_t           packed    = pin->sedges_.sedges;
   for (int i = 0; i < 4; i++) {
@@ -256,7 +256,7 @@ auto Node::overflow_handling(Nid self_id, Vid other_id) -> bool {
     return true;
   }
 
-  auto*              hs        = new emhash7::HashSet<Vid>();
+  auto*              hs        = new ankerl::unordered_dense::set<Vid>();
   constexpr int      SHIFT     = 14;
   constexpr uint64_t SLOT_MASK = (1ULL << SHIFT) - 1;
 
@@ -285,10 +285,10 @@ auto Node::overflow_handling(Nid self_id, Vid other_id) -> bool {
   }
 
   if (ledge0) {
-    hs->insert(ledge0);
+    hs->insert(static_cast<Vid>(ledge0));
   }
   if (ledge1) {
-    hs->insert(ledge1);
+    hs->insert(static_cast<Vid>(ledge1));
   }
 
   use_overflow   = 1;
@@ -400,24 +400,24 @@ Node::EdgeRange::~EdgeRange() noexcept {
   }
 }
 
-emhash7::HashSet<Nid>* Node::EdgeRange::acquire_set() noexcept {
-  static thread_local std::vector<emhash7::HashSet<Nid>*> pool;
+ankerl::unordered_dense::set<Nid>* Node::EdgeRange::acquire_set() noexcept {
+  static thread_local std::vector<ankerl::unordered_dense::set<Nid>*> pool;
   if (!pool.empty()) {
-    emhash7::HashSet<Nid>* set = pool.back();
+    ankerl::unordered_dense::set<Nid>* set = pool.back();
     pool.pop_back();
     return set;
   } else {
-    auto* set = new emhash7::HashSet<Nid>();
+    auto* set = new ankerl::unordered_dense::set<Nid>();
     set->reserve(MAX_EDGES);
     return set;
   }
 }
 
-void Node::EdgeRange::release_set(emhash7::HashSet<Nid>* set) noexcept {
-  static thread_local std::vector<emhash7::HashSet<Nid>*> pool;
+void Node::EdgeRange::release_set(ankerl::unordered_dense::set<Nid>* set) noexcept {
+  static thread_local std::vector<ankerl::unordered_dense::set<Nid>*> pool;
   pool.push_back(set);
 }
-void Node::EdgeRange::populate_set(const Node* node, emhash7::HashSet<Nid>& set, Nid nid) noexcept {
+void Node::EdgeRange::populate_set(const Node* node, ankerl::unordered_dense::set<Nid>& set, Nid nid) noexcept {
   constexpr uint64_t SLOT_MASK = (1ULL << 14) - 1;
   uint64_t           packed    = node->sedges_.sedges;
   for (int i = 0; i < 4; i++) {
