@@ -146,11 +146,13 @@ cc_test(
         ":core",
     ],
     data = ["wrapper.cpp", "tree.cpp", "SelectionDAG.cpp"],
-    includes = [
-        "tree-sitter/lib/include",
-        "tree-sitter-cpp/src",
-    ],
-    linkopts = ["-Wl,-rpath,$ORIGIN/../../../tree-sitter-cpp"],
+    #includes = [
+	#"tree-sitter/lib/include/tree_sitter/api.h",
+    #    "tree-sitter/lib/include",
+    #    "tree-sitter-cpp/src",
+    #],
+   # linkopts = ["-Wl,-rpath, $ORIGIN/tree-sitter-cpp"],
+    #$ORIGIN/../../../tree-sitter-cpp"],
 )
 
 cc_test(
@@ -232,10 +234,11 @@ cc_test(
     ],
     data = ["wrapper.cpp", "tree.cpp", "SelectionDAG.cpp"],
     includes = [
+	"tree-sitter/lib/include/tree_sitter/api.h",
         "tree-sitter/lib/include",
         "tree-sitter-cpp/src",
     ],
-    linkopts = ["-Wl,-rpath,$ORIGIN/../../../tree-sitter-cpp"],
+    #linkopts = ["-Wl,-rpath,$ORIGIN/../../../tree-sitter-cpp"],
 )
 
 

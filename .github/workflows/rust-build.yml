@@ -1,9 +1,8 @@
 name: Rust Build
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
+  workflow_run:
+    workflows: ["Bazel Build"]
 
 jobs:
   build:
