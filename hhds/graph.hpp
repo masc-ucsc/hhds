@@ -210,7 +210,7 @@ namespace hhds {
         return id;
       }
       [[nodiscard]] auto create_pin(Nid nid, Port_id port_id) -> Pid {
-        Pid id = pin_table.size() * 2;  // Generate new PinID
+        Pid id = pin_table.size() * 2;  // Generate new PinID (Even)
         assert(id);
         pin_table.emplace_back(nid, port_id);
         // ref_node(nid)->set_next_pin_ptr(ref_pin(id));
@@ -221,11 +221,11 @@ namespace hhds {
       [[nodiscard]] auto ref_node(Nid id) const -> Node* {
         assert(id);
         assert(id - 1);
-        return (Node*)&node_table[(id - 1) / 2];
+        return (Node*)&node_table[(id - 1) / 2]; // (Odd)
       }
       [[nodiscard]] auto ref_pin(Pid id) const -> Pin* {
         assert(id);
-        return (Pin*)&pin_table[id / 2];
+        return (Pin*)&pin_table[id / 2]; // (Even)
       }
     
       void add_edge(Pid driver_id, Pid sink_id) const {

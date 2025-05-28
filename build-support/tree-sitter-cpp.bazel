@@ -1,0 +1,25 @@
+cc_import(
+    name = "libtree_sitter_cpp",
+    #shared_library = "//tree-sitter-cpp:build_tree_sitter_cpp",
+   # shared_library = ":libtree-sitter-cpp.so",
+    static_library = ":libtree-sitter-cpp.a",
+    hdrs = glob(["tree-sitter-cpp/src/*.h"]),
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "build_tree_sitter_cpp",
+    #outs = ["libtree-sitter-cpp.so"],
+    outs = ["libtree-sitter-cpp.a"],
+    srcs = glob(["src/**", "Makefile"]),
+    tools = ["//tree-sitter-cpp:."],
+    #cp $(location //tree-sitter-cpp:.)/libtree-sitter-cpp.so $@
+    cmd = """
+    make -C $(location //tree-sitter-cpp:.)
+    cp $(location //tree-sitter-cpp:.)/libtree-sitter-cpp.a $@
+    """,
+    output_to_bindir = 1,
+    local = 1,
+)
+
+

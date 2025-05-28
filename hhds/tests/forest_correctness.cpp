@@ -3,7 +3,9 @@
 #include "hhds/tree.hpp"
 #include "iassert.hpp"
 
+#include <thread>
 #include <iostream>
+#include <chrono>
 
 void test_basic_forest_operations() {
   hhds::Forest<int> forest;
@@ -161,43 +163,10 @@ void test_complex_forest_operations() {
     current = new_node;
   }
 
-  // printf("main tree --\n");
-  // auto range1 = main_tree.pre_order(main_tree.get_root(), true);
-  // for (auto it = range1.begin(); it != range1.end(); ++it) {
-  //   printf("%d\n", it.get_data());
-  // }
-  // printf("sub1 tree --\n");
-  // range1 = sub_tree1.pre_order(sub_tree1.get_root(), true);
-  // for (auto it = range1.begin(); it != range1.end(); ++it) {
-  //   printf("%d\n", it.get_data());
-  // }
-  // printf("sub2 tree --\n");
-  // range1 = sub_tree2.pre_order(sub_tree2.get_root(), true);
-  // for (auto it = range1.begin(); it != range1.end(); ++it) {
-  //   printf("%d\n", it.get_data());
-  // }
-  // printf("sub2 tree --\n");
-  // range1 = sub_tree3.pre_order(sub_tree3.get_root(), true);
-  // for (auto it = range1.begin(); it != range1.end(); ++it) {
-  //   printf("%d\n", it.get_data());
-  // }
-  // printf("-----------\n");
-  // create complex reference patterns
   main_tree.add_subtree_ref(main_nodes[0], sub_tree1_ref);
-  // for (int i = 0; i < main_nodes.size(); i += 10) {
-  //   main_tree.add_subtree_ref(main_nodes[i], sub_tree1_ref);
-  // }
-  
   sub_tree1.add_subtree_ref(sub1_nodes[0], sub_tree2_ref);
-  // for (int i = 0; i < sub1_nodes.size(); i += 5) {
-  //   sub_tree1.add_subtree_ref(sub1_nodes[i], sub_tree2_ref);
-  // }
-  
   sub_tree2.add_subtree_ref(sub2_nodes[0], sub_tree3_ref);
-  // for (int i = 0; i < sub2_nodes.size(); i += 3) {
-  //   sub_tree2.add_subtree_ref(sub2_nodes[i], sub_tree3_ref);
-  // }
-  
+
   // test reference counting
   bool deleted = forest.delete_tree(sub_tree3_ref);
   I(!deleted, "Should not be able to delete heavily referenced tree");
@@ -299,7 +268,7 @@ int main() {
 
   //test_basic_tree_traversal_with_subtrees();
   //std::cout << "Basic traversal operations test passed\n";
-
+  test_basic_forest_operations();
   std::cout << "\nStarting forest correctness tests...\n\n";
  
   test_basic_forest_operations();

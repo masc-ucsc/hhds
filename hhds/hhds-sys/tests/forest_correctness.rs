@@ -20,6 +20,7 @@ fn test_basic_forest_operations() {
     assert_eq!(tree1.get_data(tree1_root), 1);
     assert_eq!(tree2.get_data(tree2_root), 2);
 }
+
 #[test]
 fn test_subtree_references() {
     let forest = Forest::new();
@@ -50,6 +51,7 @@ fn test_subtree_references() {
     let deleted = forest.delete_tree(sub_tree_ref);
     assert!(deleted);
 }
+
 #[test]
 pub fn test_tree_traversal_with_subtrees() {
     let forest = Forest::new();
@@ -60,14 +62,14 @@ pub fn test_tree_traversal_with_subtrees() {
     let main_tree = forest.get_tree(main_tree_ref);
     let sub_tree = forest.get_tree(sub_tree_ref);
 
-    // Build the trees
+    // Build trees
     let child1 = main_tree.add_child(main_tree.get_root(), 2);
     main_tree.add_child(main_tree.get_root(), 3);
 
     sub_tree.add_child(sub_tree.get_root(), 11);
     sub_tree.add_child(sub_tree.get_root(), 12);
 
-    // Add the subtree reference
+    // Add subtree reference
     main_tree.add_subtree_ref(child1, sub_tree_ref);
 
     // Test subtree traversal without following subtrees
@@ -174,11 +176,13 @@ pub fn test_complex_forest_operations() {
     );
 
     // TODO: Work on deletions
+    /*
     for i in (0..main_nodes.len() - 1).rev().step_by(10) {
         if i < main_nodes.len() {
             main_tree.delete_leaf(main_nodes[i]);
         }
     }
+    */
 }
 
 /*

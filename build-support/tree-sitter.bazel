@@ -1,0 +1,36 @@
+
+
+#cc_library(
+#    name = "tree_sitter",
+#    hdrs = glob([
+#        "lib/include/tree-sitter/**/*.h",
+#        "lib/src/*.h",
+#        ]),
+#    includes = ["lib/include", "lib/src"],
+#    srcs = glob(["lib/src/*.c"]),
+#    visibility = ["//visibility:public"],
+#)
+
+cc_import(
+    name = "libtree_sitter",
+    #shared_library = ":libtree-sitter.so",
+    static_library = ":libtree-sitter.a",
+    hdrs = glob(["tree-sitter/src/*.h"]),
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "tree_sitter_make",
+    srcs = glob(["Makefile", "lib/**"]),
+    outs = ["libtree-sitter.a"],
+    #outs = ["libtree-sitter.a"],
+    #cp $(location //tree-sitter:.)/libtree-sitter.so $@
+    cmd = """
+    make -C $(location //tree-sitter:.) 
+    cp $(location //tree-sitter:.)/libtree-sitter.a $@
+    """,
+    tools = ["@bazel_tools//tools/bash/runfiles", "//tree-sitter:."],
+    local = 1,
+    visibility = ["//visibility:public"],
+)
+

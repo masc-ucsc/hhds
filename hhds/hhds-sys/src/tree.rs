@@ -33,10 +33,11 @@ impl Forest {
 }
 
 pub struct Tree {
-    pub handle: *mut c_void,
+    handle: *mut c_void,
 }
 
 impl Tree {
+    // Internal function for Forest
     fn new(tree_ref: *mut c_void) -> Self {
         Self { handle: tree_ref }
     }
@@ -83,6 +84,7 @@ pub struct PreOrderIterator {
     pub handle: *mut c_void,
     initial: bool,
 }
+
 impl PreOrderIterator {
     pub fn new(tree: &Tree, follow_subtrees: bool) -> Self {
         Self {
@@ -104,12 +106,9 @@ impl PreOrderIterator {
 
 /*
  * Currently this iterates and returns reference IDs.
- * Need to call get_data() before every iteration to get data of specified reference.
- *
+ * Need to call get_data() before every iteration to return data of specified reference.
  */
 impl Iterator for PreOrderIterator {
-    //type Item = c_int;
-    //type Item = hhds_Tree_pos;
     type Item = Self;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -121,16 +120,17 @@ impl Iterator for PreOrderIterator {
             });
         }
         self.handle = unsafe { increment_pre_order_iterator(self.handle) };
-        return match unsafe { deref_pre_order_iterator(self.handle) } {
+        match unsafe { deref_pre_order_iterator(self.handle) } {
             val if val <= 0 => None,
             _val => Some(Self {
                 handle: self.handle,
                 initial: false,
             }),
-        };
+        }
     }
 }
 
+// TODO: PostOrder Not implemented
 pub struct PostOrderIterator {
     pub handle: *mut c_void,
 }
@@ -153,9 +153,6 @@ impl PostOrderIterator {
     }
 }
 
-/*
- * Iterator returns data from iter.
- */
 impl Iterator for PostOrderIterator {
     type Item = c_int;
 

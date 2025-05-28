@@ -1,6 +1,8 @@
 
 # HHDS: Hardware Hierarchical Dynamic Structure
 
+> [!Note]
+> Currently Iassert, tree-sitter, tree-sitter-cpp are hard-coded. They are required repos to be installed in order for certain tests and builds to complete.
 
 This repository contains a highly optimized graph and tree data structure. The
 structure is optimized for handling graphs/trees structures typically found in

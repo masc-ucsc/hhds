@@ -3,13 +3,57 @@ name = "hhds-sys"
 version = "0.1.0"
 edition = "2021"
 
+[profile.release]
+opt-level = 3             # Keep at 3 for max speed
+lto = true
+codegen-units = 1
+debug = false
+strip = true
+panic = "abort"
+overflow-checks = false
+
+[profile.bench]
+inherits = "release"
+debug = true
+
 [build-dependencies]
 bindgen = "0.71.1"
 
-[dependencies]
-criterion = "0.5.1"
+[dev-dependencies]
 rand = "0.9.1"
+criterion = {version = "0.5.1", default-features = false }
+tree-sitter = {version = "0.25.4", features = ["std"]}
+tree-sitter-rust = "0.24"
+tree-sitter-cpp = "0.23.4"
+anyhow = "1.0.98"
 
 [[bench]]
-name = "deep_tree_bench"
+name = "wide_traversal_bench"
+path = "benches/traversal/wide_tree_bench.rs"
 harness = false
+
+[[bench]]
+name = "deep_traversal_bench"
+path = "benches/traversal/deep_tree_bench.rs"
+harness = false
+
+[[bench]]
+name = "representative_traversal_bench"
+path = "benches/traversal/representative_tree_bench.rs"
+harness = false
+
+[[bench]]
+name = "deep_build_bench"
+path = "benches/creation/deep_tree_bench.rs"
+harness = false
+
+[[bench]]
+name = "wide_build_bench"
+path = "benches/creation/wide_tree_bench.rs"
+harness = false
+
+[[bench]]
+name = "representative_build_bench"
+path = "benches/creation/representative_tree_bench.rs"
+harness = false
+
