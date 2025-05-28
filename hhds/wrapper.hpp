@@ -8,10 +8,11 @@ typedef void* ForestIntHandle;
 typedef void* TreeIntHandle;
 typedef void* SiblingOrderIterHandle;
 typedef void* PreOrdIterHandle;
+typedef void* PostOrdIterHandle;
 
 
 // --- Tree ---
-TreeIntHandle tree_int_new(ForestIntHandle forest);
+TreeIntHandle tree_int_new_empty();
 void tree_int_free(TreeIntHandle tree);
 
 // Getters
@@ -34,6 +35,12 @@ int tree_get_data(TreeIntHandle tree, hhds::Tree_pos idx);
 void tree_set_data(TreeIntHandle tree, hhds::Tree_pos idx, int data);
 void print_tree(TreeIntHandle tree, int deep);
 
+//Tree Sibling Iterator TODO: Not implemented
+using SiblingOrderIter = hhds::tree<int>::sibling_order_iterator;
+void *get_sibling_order_iterator(TreeIntHandle handle);
+bool sibling_iterator_equal(void * iter1, void* iter2);
+hhds::Tree_pos sibling_iterator_deref(void* iter);
+
 //Tree PreOrder Iterator
 using PreOrderIter = hhds::tree<int>::pre_order_iterator;
 PreOrdIterHandle get_pre_order_iterator(TreeIntHandle handle, hhds::Tree_pos start, bool follow_subtrees);
@@ -41,12 +48,14 @@ PreOrdIterHandle increment_pre_order_iterator(PreOrdIterHandle handle);
 hhds::Tree_pos deref_pre_order_iterator(PreOrdIterHandle handle);
 int get_data_pre_order_iter(PreOrdIterHandle handle);
 
+//Tree PostOrder Iterator
+using PostOrderIter = hhds::tree<int>::post_order_iterator;
+PreOrdIterHandle get_post_order_iterator(TreeIntHandle handle, hhds::Tree_pos start, bool follow_subtrees);
+PreOrdIterHandle increment_post_order_iterator(PreOrdIterHandle handle);
+hhds::Tree_pos deref_post_order_iterator(PreOrdIterHandle handle);
+int get_data_post_order_iter(PreOrdIterHandle handle);
 
-//Tree Sibling Iterator
-using SiblingOrderIter = hhds::tree<int>::sibling_order_iterator;
-void *get_sibling_order_iterator(TreeIntHandle handle);
-bool sibling_iterator_equal(void * iter1, void* iter2);
-hhds::Tree_pos sibling_iterator_deref(void* iter);
+
 
 // --- Forest ---
 ForestIntHandle forest_int_new();

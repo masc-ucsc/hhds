@@ -52,6 +52,7 @@ bool compare_vectors(const std::vector<T>& vec1, const std::vector<T>& vec2) {
 // Test 1: Very Deep Tree (Tens of Millions of Nodes)
 void test_deep_tree() {
   std::default_random_engine generator(42);
+  //int                        num_nodes = 10'000'000;  // Use a smaller number for testing
   int                        num_nodes = 10'000'000;  // Use a smaller number for testing
 
   hhds::tree<int> hhds_tree;

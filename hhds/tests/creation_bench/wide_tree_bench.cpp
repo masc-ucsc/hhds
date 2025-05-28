@@ -34,28 +34,6 @@ void build_lh_tree(lh::tree<int>& lh_tree, int num_nodes) {
     }
 }
 
-// Preorder traversal for hhds::tree (Use "const hhds::tree<int>& tree" to pass tree as a const reference)
-void preorder_traversal_hhds(hhds::tree<int>& tree) {
-    int cnt = 0;
-    for (const auto& node : tree.pre_order()) {
-        // result.push_back(tree[node]);
-        cnt++;
-    }
-    benchmark::DoNotOptimize(cnt);
-}
-
-// Preorder traversal for lh::tree
-void preorder_traversal_lhtree(lh::tree<int>& tree) {
-    auto root_index = lh::Tree_index(0, 0);
-    int cnt = 0;
-    typename lh::tree<int>::Tree_depth_preorder_iterator it(root_index, &tree);
-    for (auto node_it = it.begin(); node_it != it.end(); ++node_it) {
-        // result.push_back(tree.get_data(*node_it));
-        cnt++;
-    }
-    benchmark::DoNotOptimize(cnt);
-}
-
 // Tree that is 10 nodes wide
 void test_wide_tree_10_hhds(benchmark::State& state) {
     int num_nodes = 10;
@@ -75,108 +53,96 @@ void test_wide_tree_10_lh(benchmark::State& state) {
 // Tree that is 100 nodes wide
 void test_wide_tree_100_hhds(benchmark::State& state) {
     int num_nodes = 100;
+    for (auto _ : state) {
     hhds::tree<int> hhds_tree;
     build_hhds_tree(hhds_tree, num_nodes);
-    for (auto _ : state) {
-        preorder_traversal_hhds(hhds_tree);
     }
 }
 void test_wide_tree_100_lh(benchmark::State& state) {
     int num_nodes = 100;
+    for (auto _ : state) {
     lh::tree<int> lh_tree;
     build_lh_tree(lh_tree, num_nodes);
-    for (auto _ : state) {
-        preorder_traversal_lhtree(lh_tree);
     }
 }
 
 // Tree that is 1000 nodes wide
 void test_wide_tree_1000_hhds(benchmark::State& state) {
-    hhds::tree<int> hhds_tree;
     int num_nodes = 1000;
-    build_hhds_tree(hhds_tree, num_nodes);
     for (auto _ : state) {
-        preorder_traversal_hhds(hhds_tree);
+	hhds::tree<int> hhds_tree;
+	build_hhds_tree(hhds_tree, num_nodes);
     }
 }
 void test_wide_tree_1000_lh(benchmark::State& state) {
     lh::tree<int> lh_tree;
     int num_nodes = 1000;
-    build_lh_tree(lh_tree, num_nodes);
     for (auto _ : state) {
-        preorder_traversal_lhtree(lh_tree);
+      build_lh_tree(lh_tree, num_nodes);
     }
 }
 
 // Tree that is 10000 nodes wide
 void test_wide_tree_10000_hhds(benchmark::State& state) {
     int num_nodes = 10000;
+    for (auto _ : state) {
     hhds::tree<int> hhds_tree;
     build_hhds_tree(hhds_tree, num_nodes);
-    for (auto _ : state) {
-        preorder_traversal_hhds(hhds_tree);
     }
 }
 void test_wide_tree_10000_lh(benchmark::State& state) {
     int num_nodes = 10000;
+    for (auto _ : state) {
     lh::tree<int> lh_tree;
     build_lh_tree(lh_tree, num_nodes);
-    for (auto _ : state) {
-        preorder_traversal_lhtree(lh_tree);
     }
 }
 
 // Tree that is 100000 nodes wide
 void test_wide_tree_100000_hhds(benchmark::State& state) {
     int num_nodes = 100000;
-    hhds::tree<int> hhds_tree;
-    build_hhds_tree(hhds_tree, num_nodes);
     for (auto _ : state) {
-        preorder_traversal_hhds(hhds_tree);
+    hhds::tree<int> hhds_tree;
+	    build_hhds_tree(hhds_tree, num_nodes);
     }
 }
 void test_wide_tree_100000_lh(benchmark::State& state) {
     int num_nodes = 100000;
-    lh::tree<int> lh_tree;
-    build_lh_tree(lh_tree, num_nodes);
     for (auto _ : state) {
-        preorder_traversal_lhtree(lh_tree);
+    lh::tree<int> lh_tree;
+	    build_lh_tree(lh_tree, num_nodes);
     }
 }
 
 // Tree that is 1000000 nodes wide
 void test_wide_tree_1000000_hhds(benchmark::State& state) {
     int num_nodes = 1000000;
+    for (auto _ : state) {
     hhds::tree<int> hhds_tree;
     build_hhds_tree(hhds_tree, num_nodes);
-    for (auto _ : state) {
-        preorder_traversal_hhds(hhds_tree);
     }
 }
 void test_wide_tree_1000000_lh(benchmark::State& state) {
     int num_nodes = 1000000;
+    for (auto _ : state) {
     lh::tree<int> lh_tree;
     build_lh_tree(lh_tree, num_nodes);
-    for (auto _ : state) {
-        preorder_traversal_lhtree(lh_tree);
     }
 }
 
 // Tree that is 10000000 nodes wide
 void test_wide_tree_10000000_hhds(benchmark::State& state) {
     int num_nodes = 10000000;
+    for (auto _ : state) {
     hhds::tree<int> hhds_tree;
     build_hhds_tree(hhds_tree, num_nodes);
-    for (auto _ : state) {
-        preorder_traversal_hhds(hhds_tree);
     }
 }
 void test_wide_tree_10000000_lh(benchmark::State& state) {
     int num_nodes = 10000000;
+    for (auto _ : state) {
     lh::tree<int> lh_tree;
     build_lh_tree(lh_tree, num_nodes);
-    for (auto _ : state) {
-        preorder_traversal_lhtree(lh_tree);
     }
 }
 
