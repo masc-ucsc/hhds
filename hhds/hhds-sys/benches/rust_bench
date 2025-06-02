@@ -1,0 +1,54 @@
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+TreeTraversal/preorder_10_nodes
+                        time:   [489.25 ns 489.84 ns 490.50 ns]
+                        change: [-1.0573% -0.6768% -0.3085%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 15 outliers among 100 measurements (15.00%)
+  2 (2.00%) low severe
+  6 (6.00%) low mild
+  5 (5.00%) high mild
+  2 (2.00%) high severe
+
+TreeTraversal/preorder_100_nodes
+                        time:   [4.3819 µs 4.5052 µs 4.6397 µs]
+                        change: [+15.184% +18.107% +21.080%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+TreeTraversal/preorder_100_nodes #2
+                        time:   [3.9533 µs 4.0112 µs 4.0792 µs]
+                        change: [-12.337% -10.164% -7.8009%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  2 (2.00%) high mild
+  2 (2.00%) high severe
+
+TreeTraversal/preorder_1000_nodes
+                        time:   [44.342 µs 45.907 µs 47.608 µs]
+                        change: [+3.8118% +7.7435% +11.710%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 12 outliers among 100 measurements (12.00%)
+  6 (6.00%) high mild
+  6 (6.00%) high severe
+
+TreeTraversal/preorder_10000_nodes
+                        time:   [410.62 µs 417.88 µs 426.33 µs]
+                        change: [+18.207% +21.726% +24.817%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 10 outliers among 100 measurements (10.00%)
+  4 (4.00%) high mild
+  6 (6.00%) high severe
+
+TreeTraversal/preorder_100000_nodes
+                        time:   [4.1375 ms 4.2828 ms 4.4277 ms]
+                        change: [+7.2158% +9.1516% +11.412%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 15 outliers among 100 measurements (15.00%)
+  4 (4.00%) high mild
+  11 (11.00%) high severe
+

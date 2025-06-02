@@ -1,15 +1,18 @@
-//  This file is distributed under the BSD 3-Clause License. See LICENSE for details.
-#include <limits>
 #pragma once
+#include <cstdint>
 
 namespace hhds {
-    using Port_id                  = uint32_t;  // ports have a set order (a-b != b-a)
-    //constexpr int     Port_bits    = 22;
-    constexpr int Port_bits = std::numeric_limits<Port_id>::digits - 10; // Inquiry
-    constexpr Port_id Port_invalid = ((1 << Port_bits) - 1);
 
-    using Nid                      = uint64_t;  // ports have a set order (a-b != b-a)
-    constexpr int Nid_bits = std::numeric_limits<Nid>::digits - 22;
-    //constexpr int     Nid_bits     = 42;
-    constexpr Port_id Nid_invalid  = ((1 << Port_bits) - 1);
-}
+static constexpr int Nid_bits  = 42;
+static constexpr int Port_bits = 22;
+
+using Nid     = uint64_t;
+using Pid     = uint64_t;
+using Vid     = uint64_t;
+using Type    = uint16_t;
+using Port_id = uint32_t;
+
+static constexpr Nid     Nid_invalid  = (static_cast<Nid>(1) << Nid_bits) - 1;
+static constexpr Port_id Port_invalid = (static_cast<Port_id>(1) << Port_bits) - 1;
+
+}  // namespace hhds

@@ -1,7 +1,7 @@
 // test.cpp
 #include "tree.hpp"
 
-static_assert(sizeof(hhds::Tree_pointers)==64);
+static_assert(sizeof(hhds::Tree_pointers) == 64);
 
 #if 0
 int main() {

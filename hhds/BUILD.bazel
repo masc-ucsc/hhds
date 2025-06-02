@@ -67,6 +67,29 @@ cc_library(
     }),
 )
 
+cc_library(
+    name    = "graph",
+    srcs    = ["graph.cpp"],
+    hdrs    = [
+      "graph.hpp",
+      "graph_sizing.hpp",
+      "hash_set3.hpp",
+      "unordered_dense.hpp",
+    ],
+    copts   = COPTS + [
+        "-Wno-unused-parameter",
+        "-Wno-unused-variable",
+        "-Wno-shadow",
+        "-Wno-self-assign",
+        "-Wno-unused-private-field",
+    ],
+    includes = ["."],
+    deps    = [
+        "@emhash//:emhash",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 cc_test(
     name = "add_append_deep_bench",
     srcs = ["tests/add_append_bench/deep_tree_bench.cpp"],
@@ -188,6 +211,12 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "graph_test",
+    srcs = ["tests/graph_test.cpp"],
+    deps = [":graph"],
+)
+
 # cc_test(
 #     name = "delete_chip_typical_bench",
 #     srcs = ["tests/delete_bench/delete_leaf_bench/chip_typical_tree_bench.cpp"],
@@ -198,33 +227,33 @@ cc_test(
 #     ],
 # )
 
-cc_library(
-    name = "graph_core",
-    srcs = glob(
-        ["graph.cpp"],
-        exclude = ["*graph*.cpp"],
-    ),
-    hdrs = glob(["graph.hpp", "graph_sizing.hpp"]),
-    copts = COPTS,
-    defines = select({
-        ":use_profiling": [
-            "HHDS_PROFILING=1",
-        ],
-        "//conditions:default": [],
-    }),
-    includes = ["."],
-    visibility = ["//visibility:public"],
-    deps = [
-        "@fmt",
-        "@iassert",
-        "@emhash",
-    ] + select({
-        ":use_profiling": [
-            "@com_google_perfetto//:perfetto",
-        ],
-        "//conditions:default": [],
-    }),
-)
+#cc_library(
+#    name = "graph_core",
+#    srcs = glob(
+#        ["graph.cpp"],
+#        exclude = ["*graph*.cpp"],
+#    ),
+#    hdrs = glob(["graph.hpp", "graph_sizing.hpp"]),
+#    copts = COPTS,
+#    defines = select({
+#        ":use_profiling": [
+#            "HHDS_PROFILING=1",
+#        ],
+#        "//conditions:default": [],
+#    }),
+#    includes = ["."],
+#    visibility = ["//visibility:public"],
+#    deps = [
+#        "@fmt",
+#        "@iassert",
+#        "@emhash",
+#    ] + select({
+#        ":use_profiling": [
+#            "@com_google_perfetto//:perfetto",
+#        ],
+#        "//conditions:default": [],
+#    }),
+#)
 
 
 #TODO: Support representative for github workflow
@@ -248,13 +277,13 @@ cc_library(
 #)
 
 
-cc_binary(
-    name = "small_graph_test",
-    srcs = ["tests/small_graph_test.cpp"],
-    deps = [
-        ":graph_core",
-    ],
-)
+#cc_binary(
+#    name = "small_graph_test",
+#    srcs = ["tests/small_graph_test.cpp"],
+#    deps = [
+#        ":graph_core",
+#    ],
+#)
 
 cc_binary(
     name = "scale_test",
@@ -305,3 +334,8 @@ cc_binary(
     ],
 )
 
+# cc_binary(
+#     name = "graph_bin",
+#     srcs = ["graph_main.cpp"],
+#     deps = [":graph_lib"],
+# )
