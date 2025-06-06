@@ -12,7 +12,60 @@ load("@rules_rust_bindgen//:defs.bzl",
 	"rust_bindgen_library",
 )
 
-exports_files(["rust"])
+
+# -- Rust interface configuration & rules --
+
+load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl",
+     "rust_binary",
+    "rust_library",
+    "rust_test",
+    "rustfmt_test"
+)
+
+rust_library(
+    name = "hhds_sys",
+    srcs = [
+	"hhds_sys/src/lib.rs",
+	"hhds_sys/src/bindings.rs",
+	"hhds_sys/src/tree.rs"
+    ],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "hhds-sys-test",
+    srcs = [
+	"hhds_sys/src/bindings.rs",
+	"hhds_sys/tests/forest_correctness.rs",
+    ],
+    crate_root = "hhds_sys/tests/forest_correctness.rs",
+    deps = [":core", ":hhds_sys"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+)
+
+rust_binary(
+    name = "hhds_sys_example",
+    srcs = [
+	"hhds_sys/src/main.rs",
+    ],
+    deps = [":core", ":hhds_sys"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+)
+
+
+#rustfmt_test(
+#    name = "rustfmt_check",
+#    targets = ["//hello-world:hello-world"],
+#    visibility = ["//visibility:public"],
+#)
+
+
+# -- CPP configuration & rules  --
+
 exports_files(["tree.hpp"])
 exports_files(["wrapper.hpp"])
 
@@ -28,7 +81,6 @@ cc_library(
     includes = ["."],
     visibility = ["//visibility:public"],
 )
-
 
 cc_library(
     name = "iassert",

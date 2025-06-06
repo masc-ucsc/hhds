@@ -5,6 +5,7 @@
 # For more details, please check https://github.com/bazelbuild/bazel/issues/18958
 ###############################################################################
 
+
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 git_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
 
@@ -19,7 +20,6 @@ bazel_dep(name = "rules_rust", version = "0.59.2")
 http_archive(
     name = "com_google_perfetto",
     url = "https://github.com/google/perfetto/archive/refs/tags/v49.0.tar.gz",
-    #build_file = "//:perfetto.BUILD",
     sha256 = "0871a92a162ac5655b7d724f9359b15a75c4e92472716edbc4227a64a4680be4",
     strip_prefix = "perfetto-49.0/sdk",
 )
@@ -57,20 +57,29 @@ http_archive(
 )
 
 
-# Rust
-#rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
-#rust.toolchain(versions = ["1.75.0"])
 
-#crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-#use_repo(crate, "crate_index")
+# -- Rust configuration --
 
-#crate.from_cargo(
-#    name = "crate_index",
-#    cargo_lockfile = "//:Cargo.lock",
-    #cargo_toml = "//:Cargo.toml",
-#    manifests = [
-#    "//rust:Cargo.toml",
-#    "//rust/hello-world:Cargo.toml",
-#    "//rust/hello_lib:Cargo.toml",
-#    ],
-#)
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(edition = "2021")
+use_repo(
+    rust,
+    "rust_toolchains",
+)
+
+register_toolchains("@rust_toolchains//:all")
+
+crate = use_extension(
+    "@rules_rust//crate_universe:extension.bzl",
+    "crate",
+)
+
+crate.from_cargo(
+    name = "crates_from_cargo_workspace",
+    cargo_lockfile = "//hhds/hhds_sys:Cargo.lock",
+    manifests = ["//hhds/hhds_sys:Cargo.toml"],
+)
+
+use_repo(crate, "crates_from_cargo_workspace")
+use_repo(crate, "crate_index")
+

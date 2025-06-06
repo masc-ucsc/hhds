@@ -1,6 +1,6 @@
 use std::os::raw::{c_int, c_void};
 
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+include!("bindings.rs");
 
 pub struct Forest {
     handle: ForestIntHandle,

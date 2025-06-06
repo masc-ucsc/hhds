@@ -1,6 +1,6 @@
 use hhds_sys::tree::Forest;
 
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+include!("../src/bindings.rs");
 
 #[test]
 fn test_basic_forest_operations() {

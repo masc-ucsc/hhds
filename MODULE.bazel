@@ -1,3 +1,7 @@
+module(
+    name = "hhds",
+    version = "0.2.0",
+)
 
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 git_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
@@ -14,13 +18,6 @@ bazel_dep(name = "rules_rust", version = "0.59.2")
 bazel_dep(name = "rules_rust_bindgen", version = "0.57.1")
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
 
-#module(
-#    name = "hhds",
-#    version = "0.2.0",
-#)
-
-
-
 # tree-sitter
 git_repository(
 	name = "tree_sitter_cpp",
@@ -32,7 +29,6 @@ git_repository(
 http_archive(
     name = "com_google_perfetto",
     url = "https://github.com/google/perfetto/archive/refs/tags/v49.0.tar.gz",
-    #build_file = "//:perfetto.BUILD",
     sha256 = "0871a92a162ac5655b7d724f9359b15a75c4e92472716edbc4227a64a4680be4",
     strip_prefix = "perfetto-49.0/sdk",
 )
@@ -62,43 +58,22 @@ http_archive(
     urls = ["https://github.com/erenon/bazel_clang_tidy/archive/db677011c7363509a288a9fb3bf0a50830bbf791.zip"],
 )
 
-#Skylib
-#http_archive(
-#    name = "bazel_skylib",
-#    urls = ["https://github.com/bazelbuild/bazel-skylib/releases/download/1.0.0/bazel-skylib-1.0.0.tar.gz"],
-#    sha256 = "f7b2b61e6de49f602af263649604ec2460fcd8bdb9d4306a7bb9a5f74fc6e53e",
-#)
 
-# Rust
-#rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
-#rust.toolchain(versions = ["1.75.0"])
-#register_toolchains("@rules_rust_bindgen//:default_bindgen_toolchain")
+# Rust configuration
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.from_cargo(
+	name = "crates_from_cargo_workspace",
+	cargo_lockfile = "//hhds/hhds_sys:Cargo.lock",
+	manifests = ["//hhds/hhds_sys:Cargo.toml"],
+)
 
-#crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-#use_repo(crate, "crate_index")
+crate.from_cargo(
+    name = "crate_index",
+    cargo_lockfile = "//hhds/hhds_sys:Cargo.lock",
+    manifests = [
+	    "//hhds/hhds_sys:Cargo.toml",
+    ],
+)
+use_repo(crate, "crates_from_cargo_workspace")
+use_repo(crate, "crate_index")
 
-#crate.from_cargo(
-#    name = "crate_index",
-#    cargo_lockfile = "//hhds/rust:Cargo.lock",
-    #cargo_toml = "//:Cargo.toml",
-#    manifests = [
-#    "//hhds/rust:Cargo.toml",
-#    "//hhds/rust/hello-world:Cargo.toml",
-#    "//hhds/rust/hello_lib:Cargo.toml",
-#    ],
-#)
-
-
-## llvm
-#bazel_dep(name = "toolchains_llvm", version = "1.4.0")
-
-# Configure and register the toolchain.
-#llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
-#llvm.toolchain(
-#   llvm_version = "16.0.0",
-#)
-
-#use_repo(llvm, "llvm_toolchain")
-# use_repo(llvm, "llvm_toolchain_llvm") # if you depend on specific tools in scripts
-
-#register_toolchains("@llvm_toolchain//:all")

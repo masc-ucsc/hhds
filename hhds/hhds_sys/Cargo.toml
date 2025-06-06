@@ -1,5 +1,5 @@
 [package]
-name = "hhds-sys"
+name = "hhds_sys"
 version = "0.1.0"
 edition = "2021"
 

@@ -4,4 +4,4 @@
 
 pub mod tree;
 // TODO: pub mod graph
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+include!("bindings.rs");
