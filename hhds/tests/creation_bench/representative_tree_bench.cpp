@@ -12,9 +12,7 @@
 #include "tree.hpp"
 #include "lhtree.hpp"
 
-auto now = std::chrono::high_resolution_clock::now();
-auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-std::default_random_engine generator(microseconds);
+thread_local std::default_random_engine generator(42); // Fixed seed for reproducibility
 
 // Utility function to generate a random int within a range
 int generate_random_int(std::default_random_engine& generator, int min, int max) {
