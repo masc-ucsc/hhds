@@ -1,0 +1,6 @@
+#[build]
+#rustflags = ["-C", "target-cpu=native", "-C", "target-feature=+fast-math"]
+[build]
+rustflags = ["-C", "llvm-args=-enable-unsafe-fp-math"]
+
+

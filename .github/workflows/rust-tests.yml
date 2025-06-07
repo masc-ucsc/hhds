@@ -1,0 +1,50 @@
+name: Rust Interface Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Bazelisk
+      uses: bazelbuild/setup-bazelisk@v3
+
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Mount Bazel cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/bazel
+        key: bazel-${{ runner.os }}-build
+
+    - name: Run Bazel build
+      run: bazel build //hhds:all
+
+    - name: Dependency Install
+      run: |
+        sudo apt-get update
+        sudo apt-get install libfmt-dev libbz2-dev libc++-dev libc++abi-dev -y
+
+
+    - name: Clone iassert repo
+      run: git clone https://github.com/masc-ucsc/iassert.git hhds/iassert
+
+    - name: Build iassert
+      run: bazel build //hhds/iassert:all
+
+    - name: Build Rust project
+      run: |
+        cd hhds/hhds-sys
+        cargo test
+

@@ -1,3 +1,6 @@
+# Enable Bzlmod for every Bazel command
+common --enable_bzlmod
+
 # livehd specific bazel options
 build --output_filter='^//(core|pass|inou)'
 #build --output_filter="^//"
@@ -6,6 +9,7 @@ build --cxxopt="-std=c++17" --force_pic --build_tag_filters="-fixme"
 # test --cache_test_results=no
 
 # Use Clang
+build --compiler=clang
 build:clang --action_env=CC=clang
 build:clang --action_env=CXX=clang++
 #build:clang --linkopt -fuse-ld=lld
@@ -111,3 +115,5 @@ build:clang-tidy --output_groups=report
 # Optionally override the .clang-tidy config file target
 build:clang-tidy --@bazel_clang_tidy//:clang_tidy_config=//:clang_tidy_config
 
+build:ci --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
+build:ci --output_groups=+rustfmt_checks

@@ -46,6 +46,7 @@ cscope*
 # No bazel
 bazel-*
 *.lock
+!Cargo.lock
 
 # No zip
 *.zip
@@ -62,3 +63,7 @@ kanata_log.??????
 callgrind.out.*
 *.prof
 *.dot
+
+*target/
+
+iassert/

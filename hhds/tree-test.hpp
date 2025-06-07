@@ -2,7 +2,6 @@
 #pragma once
 
 // tree.hpp
-#include <ostream>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -16,7 +15,6 @@
 #include <iterator>
 #include <memory>
 #include <optional>
-#include <memory>
 #include <queue>
 #include <set>
 #include <stdexcept>
@@ -24,29 +22,6 @@
 
 #include "fmt/format.h"
 #include "iassert.hpp"
-
-// Logging control
-#define ENABLE_LOGGING 0
-#define ENABLE_CREATION_LOGGING 0
-
-// Logging macros
-#if ENABLE_CREATION_LOGGING
-    #define LOG_CREAT_DEBUG(...) do { fmt::print("[DEBUG] {}:{} - ", __FILE__, __LINE__); fmt::print(__VA_ARGS__); fmt::print("\n"); } while(0)
-#else
-    #define LOG_CREAT_DEBUG(...) 
-#endif
-
-#if ENABLE_LOGGING
-    #define LOG_DEBUG(...) do { fmt::print("[DEBUG] {}:{} - ", __FILE__, __LINE__); fmt::print(__VA_ARGS__); fmt::print("\n"); } while(0)
-    #define LOG_INFO(...) do { fmt::print("[INFO] {}:{} - ", __FILE__, __LINE__); fmt::print(__VA_ARGS__); fmt::print("\n"); } while(0)
-    #define LOG_WARN(...) do { fmt::print("[WARN] {}:{} - ", __FILE__, __LINE__); fmt::print(__VA_ARGS__); fmt::print("\n"); } while(0)
-    #define LOG_ERROR(...) do { fmt::print("[ERROR] {}:{} - ", __FILE__, __LINE__); fmt::print(__VA_ARGS__); fmt::print("\n"); } while(0)
-#else
-    #define LOG_DEBUG(...) 
-    #define LOG_INFO(...) 
-    #define LOG_WARN(...) 
-    #define LOG_ERROR(...) 
-#endif
 
 namespace hhds {
 /** NOTES for future contributors:
@@ -79,7 +54,7 @@ static constexpr int16_t NUM_SHORT_DEL = CHUNK_MASK;        // Number of int16_t
 static constexpr Tree_pos INVALID = 0;                 // This is invalid for all pointers other than parent
 static constexpr Tree_pos ROOT    = 1 << CHUNK_SHIFT;  // ROOT ID
 
-static constexpr int CHUNK_BITS  = 49;
+static constexpr int CHUNK_BITS = 49;
 static constexpr int SHORT_DELTA = 18;
 
 static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;  // Maximum number of chunks in the tree
@@ -130,6 +105,8 @@ private:
     last_child_s &= ~((__int128)((static_cast<__int128>(1) << SHORT_DELTA) - 1) << (index * SHORT_DELTA));
     last_child_s |= ((__int128)value << (index * SHORT_DELTA));
   }
+
+  // :private
 
 public:
   /* DEFAULT CONSTRUCTOR */
@@ -190,14 +167,14 @@ public:
   void set_first_child_l(Tree_pos f) { first_child_l = f; }
   void set_last_child_l(Tree_pos l) { last_child_l = l; }
   void set_num_short_del_occ(uint16_t n) { num_short_del_occ = n; }
-  void set_is_leaf(bool l) { this->is_leaf = l; }
+  void set_is_leaf(bool l) { is_leaf = l; }
   void set_first_child_s_at(int16_t index, Short_delta value) { _set_first_child_s(index, value); }
   void set_last_child_s_at(int16_t index, Short_delta value) { _set_last_child_s(index, value); }
 
   // Helper methods for subtree references
-  [[nodiscard]] bool     has_subtree_ref() const { return parent < 0; }
+  [[nodiscard]] bool has_subtree_ref() const { return parent < 0; }
   [[nodiscard]] Tree_pos get_subtree_ref() const { return parent; }
-  void                   set_subtree_ref(Tree_pos ref) { parent = ref; }
+  void set_subtree_ref(Tree_pos ref) { parent = ref; }
 };  // Tree_pointers class
 
 template <typename X>
@@ -209,7 +186,7 @@ private:
   /* The tree pointers and data stored separately */
   std::vector<Tree_pointers>    pointers_stack;
   std::vector<std::optional<X>> data_stack;
-  Forest<X>*                    forest_ptr;
+  Forest<X>* forest_ptr;
 
   /* Special functions for sanity */
   [[nodiscard]] inline bool _check_idx_exists(const Tree_pos& idx) const noexcept {
@@ -230,6 +207,7 @@ private:
 
     // Add the single pointer node for all CHUNK_SIZE entries
     pointers_stack.emplace_back();
+
     return pointers_stack.size() - 1;
   }
 
@@ -377,7 +355,7 @@ public:
   [[nodiscard]] Tree_pos get_sibling_next(const Tree_pos& sibling_id) const;
   [[nodiscard]] Tree_pos get_sibling_prev(const Tree_pos& sibling_id) const;
   [[nodiscard]] bool     is_leaf(const Tree_pos& leaf_index) const;
-  [[nodiscard]] Tree_pos get_root() const { return ROOT; }
+  [[nodiscard]] Tree_pos get_root() const {return ROOT;}
 
   /**
    *  Update based API (Adds and Deletes from the tree)
@@ -462,28 +440,28 @@ public:
   template <typename Derived>
   class traversal_iterator_base {
   protected:
-    Tree_pos       current;
+    Tree_pos current;
     const tree<X>* tree_ptr;
-    bool           m_follow_subtrees;
+    bool m_follow_subtrees;
 
   public:
     using iterator_category = std::forward_iterator_tag;
-    using value_type        = Tree_pos;
-    using difference_type   = std::ptrdiff_t;
-    using pointer           = Tree_pos*;
-    using reference         = Tree_pos&;
+    using value_type = Tree_pos;
+    using difference_type = std::ptrdiff_t;
+    using pointer = Tree_pos*;
+    using reference = Tree_pos&;
 
     traversal_iterator_base(Tree_pos start, const tree<X>* tree, bool follow_refs)
-        : current(start), tree_ptr(tree), m_follow_subtrees(follow_refs) {}
+      : current(start), tree_ptr(tree), m_follow_subtrees(follow_refs) {}
 
-    bool     operator==(const traversal_iterator_base& other) const { return current == other.current; }
-    bool     operator!=(const traversal_iterator_base& other) const { return current != other.current; }
+    bool operator==(const traversal_iterator_base& other) const { return current == other.current; }
+    bool operator!=(const traversal_iterator_base& other) const { return current != other.current; }
     Tree_pos operator*() const { return current; }
 
   protected:
     // Helper method to handle subtree references
     Tree_pos handle_subtree_ref(Tree_pos pos) {
-      if (m_follow_subtrees && tree_ptr->forest_ptr) {  // only follow if flag is true
+      if (m_follow_subtrees && tree_ptr->forest_ptr) { // only follow if flag is true
         auto& node = tree_ptr->pointers_stack[pos >> CHUNK_SHIFT];
         if (node.has_subtree_ref()) {
           Tree_pos ref = node.get_subtree_ref();
@@ -501,8 +479,8 @@ public:
   private:
     using base = traversal_iterator_base<sibling_order_iterator>;
     using base::current;
-    using base::m_follow_subtrees;
     using base::tree_ptr;
+    using base::m_follow_subtrees;
 
   public:
     using iterator_category = std::forward_iterator_tag;
@@ -511,7 +489,8 @@ public:
     using pointer           = Tree_pos*;
     using reference         = Tree_pos&;
 
-    sibling_order_iterator(Tree_pos start, tree<X>* tree, bool follow_refs) : base(start, tree, follow_refs) {}
+    sibling_order_iterator(Tree_pos start, tree<X>* tree, bool follow_refs)
+      : base(start, tree, follow_refs) {}
 
     sibling_order_iterator& operator++() {
       Tree_pos subtree_root = this->handle_subtree_ref(this->current);
@@ -538,36 +517,35 @@ public:
   private:
     Tree_pos m_start;
     tree<X>* m_tree_ptr;
-    bool     m_follow_subtrees;
+    bool m_follow_subtrees;
 
   public:
     sibling_order_range(Tree_pos start, tree<X>* tree, bool follow_subtrees = false)
-        : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
+      : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
 
     sibling_order_iterator begin() { return sibling_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
-
+    
     sibling_order_iterator end() { return sibling_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
-  sibling_order_range sibling_order(Tree_pos start, bool follow_subtrees = false) {
-    return sibling_order_range(start, this, follow_subtrees);
-  }
+  sibling_order_range sibling_order(Tree_pos start, bool follow_subtrees = false) {return sibling_order_range(start, this, follow_subtrees); }
 
   class const_sibling_order_iterator : public traversal_iterator_base<const_sibling_order_iterator> {
   private:
     using base = traversal_iterator_base<const_sibling_order_iterator>;
     using base::current;
-    using base::m_follow_subtrees;
     using base::tree_ptr;
+    using base::m_follow_subtrees;
 
   public:
     using iterator_category = std::forward_iterator_tag;
-    using value_type        = Tree_pos;
-    using difference_type   = std::ptrdiff_t;
-    using pointer           = const Tree_pos*;
-    using reference         = const Tree_pos&;
+    using value_type = Tree_pos;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const Tree_pos*;
+    using reference = const Tree_pos&;
 
-    const_sibling_order_iterator(Tree_pos start, const tree<X>* tree, bool follow_refs) : base(start, tree, follow_refs) {}
+    const_sibling_order_iterator(Tree_pos start, const tree<X>* tree, bool follow_refs)
+      : base(start, tree, follow_refs) {}
 
     const_sibling_order_iterator& operator++() {
       Tree_pos subtree_root = this->handle_subtree_ref(this->current);
@@ -586,183 +564,161 @@ public:
 
   class const_sibling_order_range {
   private:
-    Tree_pos       m_start;
+    Tree_pos m_start;
     const tree<X>* m_tree_ptr;
-    bool           m_follow_subtrees;
+    bool m_follow_subtrees;
 
   public:
     const_sibling_order_range(Tree_pos start, const tree<X>* tree, bool follow_subtrees = false)
-        : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
+      : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
 
-    const_sibling_order_iterator begin() const { return const_sibling_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
-
-    const_sibling_order_iterator end() const { return const_sibling_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
+    const_sibling_order_iterator begin() const { 
+      return const_sibling_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); 
+    }
+    
+    const_sibling_order_iterator end() const { 
+      return const_sibling_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); 
+    }
   };
 
   const_sibling_order_range sibling_order(Tree_pos start) const { return const_sibling_order_range(start, this); }
 
   // PRE-ORDER TRAVERSAL
   class pre_order_iterator : public traversal_iterator_base<pre_order_iterator> {
-  //private:
-    
-
-  public:
-    std::set<Tree_pos> visited_subtrees;
-    tree<X>* current_tree; // Track which tree we're currently traversing
-    tree<X>* main_tree;    // Keep reference to main tree (NOTE: This won't work for multiple layers of trees)
-    std::vector<Tree_pos>prev_trees;
-    Tree_pos return_to_node; // Node to return to after subtree traversal
-    std::vector<Tree_pos> return_to_nodes;
+  private:
     using base = traversal_iterator_base<pre_order_iterator>;
     using base::current;
+    using base::tree_ptr;
     using base::m_follow_subtrees;
+    
+    std::set<Tree_pos> visited_subtrees;
+    tree<X>* current_tree; // Track which tree we're currently traversing
+    tree<X>* main_tree;    // Keep reference to main tree
+    Tree_pos return_to_node; // Node to return to after subtree traversal
+
+  public:
     using iterator_category = std::forward_iterator_tag;
-    using value_type        = Tree_pos;
-    using difference_type   = std::ptrdiff_t;
-    using pointer           = Tree_pos*;
-    using reference         = Tree_pos&;
+    using value_type = Tree_pos;
+    using difference_type = std::ptrdiff_t;
+    using pointer = Tree_pos*;
+    using reference = Tree_pos&;
 
     pre_order_iterator(Tree_pos start, tree<X>* tree, bool follow_refs)
-        : base(start, tree, follow_refs), current_tree(tree), main_tree(tree), return_to_node(INVALID) {}
+      : base(start, tree, follow_refs), current_tree(tree), main_tree(tree), return_to_node(INVALID) {}
 
-    X get_data() const { return current_tree->get_data(current); }
+    X get_data() const {
+      return current_tree->get_data(current);
+    }
 
     pre_order_iterator& operator++() {
       if (m_follow_subtrees && current_tree->forest_ptr) {
-        auto& node = this->current_tree->pointers_stack[this->current >> CHUNK_SHIFT];
+        auto& node = current_tree->pointers_stack[current >> CHUNK_SHIFT];
         if (node.has_subtree_ref()) {
           Tree_pos ref = node.get_subtree_ref();
           if (ref < 0 && visited_subtrees.find(ref) == visited_subtrees.end()) {
             visited_subtrees.insert(ref);
             return_to_node = current;
-            prev_trees.push_back(ref);
-            return_to_nodes.push_back(current);
             current_tree = &(current_tree->forest_ptr->get_tree(ref));
-            current = ROOT;
+            this->current = ROOT;
             return *this;
           }
         }
       }
 
       // first try to go to first child
-      if (!current_tree->is_leaf(this->current)) {
-        auto new_cur = current_tree->get_first_child(this->current);
-        if (new_cur != INVALID)  {
-          this->current =  new_cur;
+      if (!current_tree->is_leaf(current)) {
+        current = current_tree->get_first_child(current);
+        return *this;
+      }
+
+      // if no children, try to go to next sibling
+      auto nxt = current_tree->get_sibling_next(current);
+      if (nxt != INVALID) {
+        current = nxt;
+        return *this;
+      }
+
+      // if no next sibling and we're in a subtree, return to main tree
+      if (current_tree != main_tree) {
+        current_tree = main_tree;
+        current = current_tree->get_sibling_next(return_to_node);
+        return_to_node = INVALID;
+        if (current != INVALID) {
           return *this;
         }
       }
 
-      // if no children, try to go to next sibling
-      auto nxt = current_tree->get_sibling_next(this->current);
-      if (nxt != INVALID) {
-        this->current = nxt;
-        return *this;
-      }
-
-
-      auto parent = current_tree->get_parent(this->current);
+      // if no next sibling, go up to parent's next sibling
+      auto parent = current_tree->get_parent(current);
       while (parent != ROOT && parent != INVALID) {
-        if (m_follow_subtrees && parent <= 0) {
-            this->current = INVALID;
-            return *this;
-        }
-        if (!m_follow_subtrees && parent <= 0) {
-            this->current = INVALID;
-            return *this;
-        }
         auto parent_sibling = current_tree->get_sibling_next(parent);
         if (parent_sibling != INVALID) {
-          this->current = parent_sibling;
+          current = parent_sibling;
           return *this;
         }
         parent = current_tree->get_parent(parent);
       }
 
-            // if no next sibling and we're in a subtree, return to main tree -- let's instead check if nested subtrees
-      if (current_tree != main_tree) {
-        Tree_pos r_node;
-        if (this->prev_trees.size() <= 1) {
-          this->current_tree = this->main_tree;
-          r_node = this->return_to_nodes.back();
-          this->return_to_nodes.pop_back();
-        } else {
-          this->prev_trees.pop_back();
-          this->current_tree = &(this->current_tree->forest_ptr->get_tree(this->prev_trees.back()));
-          r_node = this->return_to_nodes.back();
-          this->return_to_nodes.pop_back();
-        }
-        if (!current_tree->is_leaf(r_node)) {
-          auto new_cur = current_tree->get_first_child(r_node);
-          if (new_cur != INVALID)  {
-            this->current =  new_cur;
-            this->return_to_node = INVALID;
-            return *this;
-          }
-        }
-
-        this->current = current_tree->get_sibling_next(r_node);
-        if (this->current != INVALID) {
-          this->return_to_node = INVALID;
-          return *this;
-        }
-      }
-
+      // if we'e gone through all possibilities, mark as end
       current = INVALID;
       return *this;
     }
 
-    bool operator==(const pre_order_iterator& other) const {
+    bool operator==(const pre_order_iterator& other) const { 
       return current == other.current && current_tree == other.current_tree; 
     }
 
-    bool operator!=(const pre_order_iterator& other) const { return !(*this == other); }
+    bool operator!=(const pre_order_iterator& other) const { 
+      return !(*this == other); 
+    }
 
-    Tree_pos operator*() const { return current; }
+    Tree_pos operator*() const { 
+      return current; 
+    }
   };
 
   class pre_order_range {
   private:
     Tree_pos m_start;
     tree<X>* m_tree_ptr;
-    bool     m_follow_subtrees;
+    bool m_follow_subtrees;
 
   public:
     pre_order_range(Tree_pos start, tree<X>* tree, bool follow_subtrees = false)
-        : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
+      : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
 
     pre_order_iterator begin() { return pre_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
 
     pre_order_iterator end() { return pre_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
-  pre_order_range pre_order(Tree_pos start = ROOT, bool follow_subtrees = false) {
-    return pre_order_range(start, this, follow_subtrees);
-  }
+  pre_order_range pre_order(Tree_pos start = ROOT, bool follow_subtrees = false) {return pre_order_range(start, this, follow_subtrees); }
 
   class const_pre_order_iterator : public traversal_iterator_base<const_pre_order_iterator> {
   private:
     using base = traversal_iterator_base<const_pre_order_iterator>;
     using base::current;
-    using base::m_follow_subtrees;
     using base::tree_ptr;
-
+    using base::m_follow_subtrees;
+    
     std::set<Tree_pos> visited_subtrees;
-    const tree<X>*     current_tree;
-    const tree<X>*     main_tree;
-    Tree_pos           return_to_node;
+    const tree<X>* current_tree;
+    const tree<X>* main_tree;
+    Tree_pos return_to_node;
 
   public:
     using iterator_category = std::forward_iterator_tag;
-    using value_type        = Tree_pos;
-    using difference_type   = std::ptrdiff_t;
-    using pointer           = const Tree_pos*;
-    using reference         = const Tree_pos&;
+    using value_type = Tree_pos;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const Tree_pos*;
+    using reference = const Tree_pos&;
 
     const_pre_order_iterator(Tree_pos start, const tree<X>* tree, bool follow_refs)
-        : base(start, tree, follow_refs), current_tree(tree), main_tree(tree), return_to_node(INVALID) {}
+      : base(start, tree, follow_refs), current_tree(tree), main_tree(tree), return_to_node(INVALID) {}
 
-    const X get_data() const { return current_tree->get_data(current); }
+    const X get_data() const {
+      return current_tree->get_data(current);
+    }
 
     const_pre_order_iterator& operator++() {
       if (m_follow_subtrees && current_tree->forest_ptr) {
@@ -772,74 +728,82 @@ public:
           if (ref < 0 && visited_subtrees.find(ref) == visited_subtrees.end()) {
             visited_subtrees.insert(ref);
             return_to_node = current;
-            current_tree   = &(current_tree->forest_ptr->get_tree(ref));
-            this->current  = ROOT;
+            current_tree = &(current_tree->forest_ptr->get_tree(ref));
+            this->current = ROOT;
             return *this;
           }
         }
       }
 
       // first try to go to first child
-      if (!current_tree->is_leaf(this->current)) {
-        this->current = current_tree->get_first_child(this->current);
+      if (!current_tree->is_leaf(current)) {
+        current = current_tree->get_first_child(current);
         return *this;
       }
 
       // if no children, try to go to next sibling
-      auto nxt = current_tree->get_sibling_next(this->current);
+      auto nxt = current_tree->get_sibling_next(current);
       if (nxt != INVALID) {
-        this->current = nxt;
+        current = nxt;
         return *this;
       }
 
       // if no next sibling and we're in a subtree, return to main tree
       if (current_tree != main_tree) {
-        current_tree   = main_tree;
-        current        = current_tree->get_sibling_next(return_to_node);
+        current_tree = main_tree;
+        current = current_tree->get_sibling_next(return_to_node);
         return_to_node = INVALID;
-        if (this->current != INVALID) {
+        if (current != INVALID) {
           return *this;
         }
       }
 
       // if no next sibling, go up to parent's next sibling
-      auto parent = current_tree->get_parent(this->current);
+      auto parent = current_tree->get_parent(current);
       while (parent != ROOT && parent != INVALID) {
         auto parent_sibling = current_tree->get_sibling_next(parent);
         if (parent_sibling != INVALID) {
-          this->current = parent_sibling;
+          current = parent_sibling;
           return *this;
         }
         parent = current_tree->get_parent(parent);
       }
 
       // if we'e gone through all possibilities, mark as end
-      this->current = INVALID;
+      current = INVALID;
       return *this;
     }
 
-    bool operator==(const const_pre_order_iterator& other) const {
-      return current == other.current && current_tree == other.current_tree;
+    bool operator==(const const_pre_order_iterator& other) const { 
+      return current == other.current && current_tree == other.current_tree; 
     }
 
-    bool operator!=(const const_pre_order_iterator& other) const { return !(*this == other); }
+    bool operator!=(const const_pre_order_iterator& other) const { 
+      return !(*this == other); 
+    }
 
-    Tree_pos operator*() const { return current; }
+    Tree_pos operator*() const { 
+      return current; 
+    }
   };
 
   class const_pre_order_range {
   private:
-    Tree_pos       m_start;
+    Tree_pos m_start;
     const tree<X>* m_tree_ptr;
-    bool           m_follow_subtrees;
+    bool m_follow_subtrees;
 
   public:
     const_pre_order_range(Tree_pos start, const tree<X>* tree, bool follow_subtrees = false)
-        : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
+      : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
 
-    const_pre_order_iterator begin() const { return const_pre_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
+    const_pre_order_iterator begin() const { 
+      return const_pre_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); 
+    }
 
-    const_pre_order_iterator end() const { return const_pre_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
+    const_pre_order_iterator end() const { 
+      return const_pre_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); 
+    }
   };
 
   const_pre_order_range pre_order(Tree_pos start = ROOT) const { return const_pre_order_range(start, this); }
@@ -849,8 +813,8 @@ public:
   private:
     using base = traversal_iterator_base<post_order_iterator>;
     using base::current;
-    using base::m_follow_subtrees;
     using base::tree_ptr;
+    using base::m_follow_subtrees;
 
   public:
     using iterator_category = std::forward_iterator_tag;
@@ -859,11 +823,8 @@ public:
     using pointer           = Tree_pos*;
     using reference         = Tree_pos&;
 
-    post_order_iterator(Tree_pos start, tree<X>* tree, bool follow_refs) : base(start, tree, follow_refs) {}
-
-    X get_data() const {
-      return tree_ptr->get_data(this->current);
-    }
+    post_order_iterator(Tree_pos start, tree<X>* tree, bool follow_refs)
+      : base(start, tree, follow_refs) {}
 
     post_order_iterator& operator++() {
       Tree_pos subtree_root = this->handle_subtree_ref(this->current);
@@ -896,27 +857,25 @@ public:
   private:
     Tree_pos m_start;
     tree<X>* m_tree_ptr;
-    bool     m_follow_subtrees;
+    bool m_follow_subtrees;
 
   public:
     post_order_range(Tree_pos start, tree<X>* tree, bool follow_subtrees = false)
-        : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
+      : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
 
     post_order_iterator begin() { return post_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
 
     post_order_iterator end() { return post_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
-  post_order_range post_order(Tree_pos start = ROOT, bool follow_subtrees = false) {
-    return post_order_range(start, this, follow_subtrees);
-  }
+  post_order_range post_order(Tree_pos start = ROOT, bool follow_subtrees = false) {return post_order_range(start, this, follow_subtrees); }
 
   class const_post_order_iterator : public traversal_iterator_base<const_post_order_iterator> {
   private:
     using base = traversal_iterator_base<const_post_order_iterator>;
     using base::current;
-    using base::m_follow_subtrees;
     using base::tree_ptr;
+    using base::m_follow_subtrees;
 
   public:
     using iterator_category = std::forward_iterator_tag;
@@ -925,7 +884,8 @@ public:
     using pointer           = const Tree_pos*;
     using reference         = const Tree_pos&;
 
-    const_post_order_iterator(Tree_pos start, const tree<X>* tree, bool follow_refs) : base(start, tree, follow_refs) {}
+    const_post_order_iterator(Tree_pos start, const tree<X>* tree, bool follow_refs)
+      : base(start, tree, follow_refs) {}
 
     const_post_order_iterator& operator++() {
       Tree_pos subtree_root = this->handle_subtree_ref(this->current);
@@ -950,34 +910,48 @@ public:
 
     bool operator!=(const const_post_order_iterator& other) const { return current != other.current; }
 
-    Tree_pos operator*() const { return current; }
+    Tree_pos  operator*() const { return current; }
   };
 
   class const_post_order_range {
   private:
-    Tree_pos       m_start;
+    Tree_pos m_start;
     const tree<X>* m_tree_ptr;
-    bool           m_follow_subtrees;
+    bool m_follow_subtrees;
 
   public:
     const_post_order_range(Tree_pos start, const tree<X>* tree, bool follow_subtrees = false)
-        : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
+      : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
 
-    const_post_order_iterator begin() const { return const_post_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
+    const_post_order_iterator begin() const { 
+      return const_post_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); 
+    }
 
-    const_post_order_iterator end() const { return const_post_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
+    const_post_order_iterator end() const { 
+      return const_post_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); 
+    }
   };
 
-  const_post_order_range post_order(Tree_pos start = ROOT) const { return const_post_order_range(start, this); }
+  const_post_order_range post_order(Tree_pos start = ROOT) const { 
+    return const_post_order_range(start, this); 
+  }
 
   // move helper methods inside tree class
-  [[nodiscard]] bool is_subtree_ref(Tree_pos pos) const { return pos < 0; }
+  [[nodiscard]] bool is_subtree_ref(Tree_pos pos) const {
+    return pos < 0;
+  }
 
-  [[nodiscard]] size_t get_subtree_index(Tree_pos pos) const { return static_cast<size_t>(-pos - 1); }
+  [[nodiscard]] size_t get_subtree_index(Tree_pos pos) const {
+    return static_cast<size_t>(-pos - 1);
+  }
 
-  [[nodiscard]] Tree_pos make_subtree_ref(size_t subtree_index) const { return static_cast<Tree_pos>(-(subtree_index + 1)); }
+  [[nodiscard]] Tree_pos make_subtree_ref(size_t subtree_index) const {
+    return static_cast<Tree_pos>(-(subtree_index + 1));
+  }
 
-  [[nodiscard]] Tree_pos get_subtree_ref(Tree_pos pos) const { return pointers_stack[pos >> CHUNK_SHIFT].get_subtree_ref(); }
+  [[nodiscard]] Tree_pos get_subtree_ref(Tree_pos pos) const {
+    return pointers_stack[pos >> CHUNK_SHIFT].get_subtree_ref();
+  }
 
   // :public
 
@@ -986,53 +960,53 @@ public:
 template <typename X>
 class Forest {
 private:
-  std::vector<std::unique_ptr<tree<X>>> trees;
-  std::vector<size_t>                   reference_counts;
+    std::vector<std::unique_ptr<tree<X>>> trees;
+    std::vector<size_t> reference_counts;
 
 public:
-  Tree_pos create_tree(const X& root_data) {
-    trees.push_back(std::make_unique<tree<X>>(this));
-    reference_counts.push_back(0);
-    const auto tree_idx = trees.size() - 1;
-    trees[tree_idx]->add_root(root_data);
-    return -static_cast<Tree_pos>(tree_idx) - 1;
-  }
-
-  tree<X>& get_tree(Tree_pos tree_ref) {
-    I(tree_ref < 0, "Invalid tree reference - must be negative");
-    const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
-    I(tree_idx < trees.size(), "Tree index out of range");
-    if (!trees[tree_idx]) {
-      throw std::runtime_error("Attempting to access deleted tree");
-    }
-    return *trees[tree_idx];
-  }
-
-  void add_reference(Tree_pos tree_ref) {
-    const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
-    reference_counts[tree_idx]++;
-  }
-
-  void remove_reference(Tree_pos tree_ref) {
-    const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
-    I(reference_counts[tree_idx] > 0, "Reference count already zero");
-    reference_counts[tree_idx]--;
-  }
-
-  bool delete_tree(Tree_pos tree_ref) {
-    const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
-    I(tree_idx < trees.size(), "Tree index out of range");
-
-    if (reference_counts[tree_idx] > 0) {
-      return false;
+    Tree_pos create_tree(const X& root_data) {
+        trees.push_back(std::make_unique<tree<X>>(this));
+        reference_counts.push_back(0);
+        const auto tree_idx = trees.size() - 1;
+        trees[tree_idx]->add_root(root_data);
+        return -static_cast<Tree_pos>(tree_idx) - 1;
     }
 
-    if (trees[tree_idx]) {
-      trees[tree_idx].reset();
-      return true;
+    tree<X>& get_tree(Tree_pos tree_ref) {
+        I(tree_ref < 0, "Invalid tree reference - must be negative");
+        const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
+        I(tree_idx < trees.size(), "Tree index out of range");
+        if (!trees[tree_idx]) {
+            throw std::runtime_error("Attempting to access deleted tree");
+        }
+        return *trees[tree_idx];
     }
-    return false;
-  }
+
+    void add_reference(Tree_pos tree_ref) {
+        const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
+        reference_counts[tree_idx]++;
+    }
+
+    void remove_reference(Tree_pos tree_ref) {
+        const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
+        I(reference_counts[tree_idx] > 0, "Reference count already zero");
+        reference_counts[tree_idx]--;
+    }
+
+    bool delete_tree(Tree_pos tree_ref) {
+        const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
+        I(tree_idx < trees.size(), "Tree index out of range");
+        
+        if (reference_counts[tree_idx] > 0) {
+            return false;
+        }
+        
+        if (trees[tree_idx]) {
+            trees[tree_idx].reset();
+            return true;
+        }
+        return false;
+    }
 };
 
 // ---------------------------------- TEMPLATE IMPLEMENTATION ---------------------------------- //
@@ -1056,6 +1030,7 @@ inline Tree_pos tree<X>::get_parent(const Tree_pos& curr_index) const {
  *
  * @param leaf_index The absolute ID of the node.
  * @return true If the node is a leaf node.
+ *
  * @assert If the index is out of range
  */
 template <typename X>
@@ -1089,6 +1064,7 @@ inline Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) const {
     // The first entry will always have the chunk id of the child
     child_chunk_id = pointers_stack[chunk_id].get_last_child_l();
   }
+
   return (child_chunk_id == INVALID)
              ? (static_cast<Tree_pos>(INVALID))
              : (static_cast<Tree_pos>((child_chunk_id << CHUNK_SHIFT) + pointers_stack[child_chunk_id].get_num_short_del_occ()));
@@ -1146,6 +1122,7 @@ inline bool tree<X>::is_last_child(const Tree_pos& self_index) const {
   if (pointers_stack[self_chunk_id].get_next_sibling() != INVALID) {
     return false;
   }
+
   return pointers_stack[self_chunk_id].get_num_short_del_occ() == self_chunk_offset;
 
   // Now, to be the last child, all entries after this should be invalid
@@ -1198,8 +1175,7 @@ inline Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) const {
   }
 
   // Check if the next sibling is within the same chunk, at idx + 1
-  // We do not accept negative id.
-  const auto curr_chunk_id     = (sibling_id <= 0) ? 0 : (sibling_id >> CHUNK_SHIFT);
+  const auto curr_chunk_id     = (sibling_id >> CHUNK_SHIFT);
   const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
   if (curr_chunk_offset < CHUNK_MASK and _contains_data((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1)) {
     return static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1);
@@ -1258,9 +1234,9 @@ inline Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
 template <typename X>
 Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
   /* POSSIBLE IMPROVEMENT -> PERFECTLY FORWARD THE DATA AND SIBLING ID*/
-  if (!_check_idx_exists(sibling_id)) {
-       throw std::out_of_range("append_sibling: Sibling index out of range");
-   }
+  // if (!_check_idx_exists(sibling_id)) {
+  //     throw std::out_of_range("append_sibling: Sibling index out of range");
+  // }
 
   // Directly go to the last sibling of the sibling_id
   const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
@@ -1277,6 +1253,7 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
     new_sib++;
     data_stack[new_sib] = data;
   }
+
   const auto first_sib     = get_first_child(parent_id);
   const auto new_parent_id = _try_fit_child_ptr(parent_id, new_sib);
   if (new_parent_id != parent_id) {
@@ -1284,7 +1261,8 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
   }
 
   // Increment the number of occupied slots in the sibling chunk
-  pointers_stack[new_sib >> CHUNK_SHIFT].set_num_short_del_occ((((unsigned)new_sib) & CHUNK_MASK));
+  pointers_stack[new_sib >> CHUNK_SHIFT].set_num_short_del_occ(((unsigned)new_sib & CHUNK_MASK));
+
   return new_sib;
 }
 
@@ -1309,7 +1287,7 @@ Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data)
   }
 
   // Directly go to the next sibling of the sibling_id
-  //TODO: const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
+  const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
   auto       new_sib   = sibling_id;
 
   // Try to fir the sibling right after this, if the chunk has some space
@@ -1365,24 +1343,26 @@ Tree_pos tree<X>::add_root(const X& data) {
  *
  * @param parent_index The absolute ID of the parent node.
  * @param data The data to be stored in the new sibling.
- *last_child_s_if the new child.
+ *
+ * @return Tree_pos The absolute ID of the new child.
  * @throws std::out_of_range If the parent index is out of range
  */
 template <typename X>
 Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
-  if (!_check_idx_exists(parent_index)) {
-       throw std::out_of_range("add_child: Parent index out of range: " + std::to_string(parent_index));
-   }
+  // if (!_check_idx_exists(parent_index)) {
+  //     throw std::out_of_range("add_child: Parent index out of range: " + std::to_string(parent_index));
+  // }
+
   // This is not the first child being added
   const auto last_child_id = get_last_child(parent_index);
   if (last_child_id != INVALID) {
     return append_sibling(last_child_id, data);
-  } else {
   }
 
   // Try to fit this child pointer
   const auto child_chunk_id = _create_space(data);
   const auto new_parent_id  = _try_fit_child_ptr(parent_index, child_chunk_id << CHUNK_SHIFT);
+
   pointers_stack[child_chunk_id].set_parent(new_parent_id);
 
   // Set num occupied to 0
@@ -1405,14 +1385,14 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
  */
 template <typename X>
 void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
-  if (!_check_idx_exists(leaf_index)) {
-      throw std::out_of_range("delete_leaf: Leaf index out of range");
-  }
+  // if (!_check_idx_exists(leaf_index)) {
+  //     throw std::out_of_range("delete_leaf: Leaf index out of range");
+  // }
 
   // // Check if the leaf actually is a leaf
-  if (get_first_child(leaf_index) != INVALID) {
-      throw std::logic_error("delete_leaf: Index is not a leaf");
-  }
+  // if (get_first_child(leaf_index) != INVALID) {
+  //     throw std::logic_error("delete_leaf: Index is not a leaf");
+  // }
 
   auto& node = pointers_stack[leaf_index >> CHUNK_SHIFT];
   if (node.has_subtree_ref() && forest_ptr) {
@@ -1484,7 +1464,6 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
     // check if parent has no more children
     if (get_first_child(parent_index) == INVALID) {
       pointers_stack[parent_index >> CHUNK_SHIFT].set_is_leaf(true);
-      pointers_stack[parent_index >> CHUNK_SHIFT].set_first_child_l(INVALID);
     }
   }
 }
@@ -1498,9 +1477,9 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
  */
 template <typename X>
 void tree<X>::delete_subtree(const Tree_pos& subtree_root) {
-  if (!_check_idx_exists(subtree_root)) {
-      throw std::out_of_range("delete_subtree: Subtree root index out of range");
-  }
+  // if (!_check_idx_exists(subtree_root)) {
+  //     throw std::out_of_range("delete_subtree: Subtree root index out of range");
+  // }
 
   // Vector to store the nodes in reverse level order
   std::vector<Tree_pos> nodes_to_delete;
@@ -1521,12 +1500,10 @@ void tree<X>::delete_subtree(const Tree_pos& subtree_root) {
   }
 
   // Delete nodes in reverse order to ensure leaves are deleted first
-  auto i = 0;
   for (auto it = nodes_to_delete.rbegin(); it != nodes_to_delete.rend(); ++it) {
     if (is_leaf(*it)) {
       delete_leaf(*it);
     }
-    i++;
   }
   for (auto node : pre_order(subtree_root)) {
     auto& node_ptr = pointers_stack[node >> CHUNK_SHIFT];
@@ -1539,10 +1516,11 @@ void tree<X>::delete_subtree(const Tree_pos& subtree_root) {
 template <typename X>
 void tree<X>::add_subtree_ref(const Tree_pos& node_pos, Tree_pos subtree_ref) {
   I(subtree_ref < 0, "Subtree reference must be negative");
-  this->pointers_stack[node_pos >> CHUNK_SHIFT].set_subtree_ref(subtree_ref);
+  pointers_stack[node_pos >> CHUNK_SHIFT].set_subtree_ref(subtree_ref);
   if (forest_ptr) {
     forest_ptr->add_reference(subtree_ref);
   }
 }
 
 }  // namespace hhds
+

@@ -1,5 +1,5 @@
 //  This file is distributed under the BSD 3-Clause License. See LICENSE for details.
-#pragma once
+//#pragma once
 
 // tree.hpp
 #include <sys/stat.h>
@@ -52,9 +52,9 @@ static constexpr Tree_pos ROOT    = 1 << CHUNK_SHIFT;  // ROOT ID
 static constexpr short CHUNK_BITS  = 43;  // Number of chunks in a tree node
 static constexpr short SHORT_DELTA = 21;  // Amount of short delta allowed
 
-static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;  // Maximum number of nodes in the tree
+//static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;  // Maximum number of nodes in the tree
 
-static constexpr Short_delta MIN_SHORT_DELTA = -(1 << (SHORT_DELTA - 1));     // Minimum value for short delta
+//static constexpr Short_delta MIN_SHORT_DELTA = -(1 << (SHORT_DELTA - 1));     // Minimum value for short delta
 static constexpr Short_delta MAX_SHORT_DELTA = (1 << (SHORT_DELTA - 1)) - 1;  // Maximum value for short delta
 
 class __attribute__((packed, aligned(64))) Tree_pointers {
@@ -498,7 +498,7 @@ public:
     bool operator!=(const sibling_order_iterator& other) const { return current != other.current; }
 
     Tree_pos  operator*() const { return current; }
-    Tree_pos* operator->() const { return &current; }
+    const Tree_pos* operator->() const { return &current; }
   };
 
   class sibling_order_range {
@@ -624,7 +624,7 @@ public:
     bool operator!=(const pre_order_iterator& other) const { return current != other.current; }
 
     Tree_pos  operator*() const { return current; }
-    Tree_pos* operator->() const { return &current; }
+    const Tree_pos* operator->() const { return &current; }
   };
 
   class pre_order_range {
@@ -737,7 +737,7 @@ public:
     bool operator!=(const post_order_iterator& other) const { return current != other.current; }
 
     Tree_pos  operator*() const { return current; }
-    Tree_pos* operator->() const { return &current; }
+    const Tree_pos* operator->() const { return &current; }
   };
 
   class post_order_range {
@@ -1134,7 +1134,7 @@ Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data)
   }
 
   // Directly go to the next sibling of the sibling_id
-  const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
+  //const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
   auto       new_sib   = sibling_id;
 
   // Try to fir the sibling right after this, if the chunk has some space
