@@ -8,7 +8,15 @@ fn main() {
         .next()
         .unwrap_or(String::from("10"))
         .parse()
-        .unwrap();
+        .unwrap_or_else(|_| {
+            eprintln!("Invalid number format, using default of 10");
+            10
+        });
+
+    if num_nodes == 0 {
+        eprintln!("Number of nodes must be greater than 0");
+        return;
+    }
     let tree = Tree::new_no_ref();
     let root = tree.add_root(1);
     let mut current = root;
