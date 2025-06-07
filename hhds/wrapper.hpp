@@ -17,7 +17,7 @@ void tree_int_free(TreeIntHandle tree);
 
 // Getters
 hhds::Tree_pos get_parent(TreeIntHandle tree, hhds::Tree_pos cur_index);
-hhds::Tree_pos get_last_child(hhds::Tree_pos parent_index);
+hhds::Tree_pos get_last_child(TreeIntHandle tree, hhds::Tree_pos parent_index);
 hhds::Tree_pos get_first_child(TreeIntHandle tree, hhds::Tree_pos parent_index);
 hhds::Tree_pos get_root(TreeIntHandle tree);
 
