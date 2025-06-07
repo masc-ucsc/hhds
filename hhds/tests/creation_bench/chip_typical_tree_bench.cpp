@@ -25,20 +25,18 @@ void build_hhds_tree(hhds::tree<int>& hhds_tree, int depth_val) {
     int id = 1;
     for (int depth = 0; depth < depth_val; ++depth) {
         std::vector<hhds::Tree_pos> hhds_next_level;
-        std::vector<std::vector<int>> level_data;
+        std::vector<hhds::Tree_pos> hhds_next_level;
 
         for (auto hhds_node : hhds_current_level) {
             int num_children = generate_random_int(generator, 1, 7);
-            std::vector<int> children_data;
 
             for (int i = 0; i < num_children; ++i) {
                 int data = id++;
                 auto added = hhds_tree.add_child(hhds_node, data);
 
                 hhds_next_level.push_back(added);
-                children_data.push_back(data);
             }
-            level_data.push_back(children_data);
+        }
         }
 
         hhds_current_level = hhds_next_level;
