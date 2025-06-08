@@ -9,7 +9,7 @@ bazel_dep(name = "googletest", version = "1.17.0")
 bazel_dep(name = "google_benchmark", version = "1.9.4")
 bazel_dep(name = "fmt", version = "11.2.0")
 
-bazel_dep(name = "abseil-cpp", version = "20250127.1") # 20240722.0.bcr.2")
+bazel_dep(name = "abseil-cpp", version = "20250512.0") # 20240722.0.bcr.2")
 bazel_dep(name = "rules_rust", version = "0.61.0")
 bazel_dep(name = "rules_rust_bindgen", version = "0.61.0")
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
