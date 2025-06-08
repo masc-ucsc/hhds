@@ -17,7 +17,7 @@ inherits = "release"
 debug = true
 
 [build-dependencies]
-bindgen = "0.71.1"
+bindgen = "0.72.0"
 
 [dev-dependencies]
 rand = "0.9.1"
