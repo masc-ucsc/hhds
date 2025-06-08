@@ -49,8 +49,6 @@ int              get_data_pre_order_iter(PreOrdIterHandle handle);
 
 // Tree PostOrder Iterator
 using PostOrderIter = hhds::tree<int>::post_order_iterator;
-// PreOrdIterHandle get_post_order_iterator(TreeIntHandle handle, hhds::Tree_pos start, bool follow_subtrees);
-// PreOrdIterHandle increment_post_order_iterator(PreOrdIterHandle handle);
 PostOrdIterHandle get_post_order_iterator(TreeIntHandle handle, hhds::Tree_pos start, bool follow_subtrees);
 PostOrdIterHandle increment_post_order_iterator(PostOrdIterHandle handle);
 hhds::Tree_pos    deref_post_order_iterator(PreOrdIterHandle handle);

@@ -252,6 +252,7 @@ void test_edge_cases() {
     tree.add_child(tree.get_root(), i * 20);
   }
 
+
   // test traversal
   int           count = 0;
   std::set<int> unique_values;
@@ -300,6 +301,7 @@ int main() {
   test_complex_forest_operations();
   std::cout << "Complex forest operations test passed\n";
 
+  //TODO: Error with edge_case test
   test_edge_cases();
   std::cout << "Edge cases test passed\n";
 
