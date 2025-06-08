@@ -2,7 +2,6 @@
 #pragma once
 
 // tree.hpp
-#include <ostream>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -16,7 +15,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
-#include <memory>
+#include <ostream>
 #include <queue>
 #include <set>
 #include <stdexcept>
@@ -26,26 +25,51 @@
 #include "iassert.hpp"
 
 // Logging control
-#define ENABLE_LOGGING 0
+#define ENABLE_LOGGING          0
 #define ENABLE_CREATION_LOGGING 0
 
 // Logging macros
 #if ENABLE_CREATION_LOGGING
-    #define LOG_CREAT_DEBUG(...) do { fmt::print("[DEBUG] {}:{} - ", __FILE__, __LINE__); fmt::print(__VA_ARGS__); fmt::print("\n"); } while(0)
+#define LOG_CREAT_DEBUG(...)                            \
+  do {                                                  \
+    fmt::print("[DEBUG] {}:{} - ", __FILE__, __LINE__); \
+    fmt::print(__VA_ARGS__);                            \
+    fmt::print("\n");                                   \
+  } while (0)
 #else
-    #define LOG_CREAT_DEBUG(...) 
+#define LOG_CREAT_DEBUG(...)
 #endif
 
 #if ENABLE_LOGGING
-    #define LOG_DEBUG(...) do { fmt::print("[DEBUG] {}:{} - ", __FILE__, __LINE__); fmt::print(__VA_ARGS__); fmt::print("\n"); } while(0)
-    #define LOG_INFO(...) do { fmt::print("[INFO] {}:{} - ", __FILE__, __LINE__); fmt::print(__VA_ARGS__); fmt::print("\n"); } while(0)
-    #define LOG_WARN(...) do { fmt::print("[WARN] {}:{} - ", __FILE__, __LINE__); fmt::print(__VA_ARGS__); fmt::print("\n"); } while(0)
-    #define LOG_ERROR(...) do { fmt::print("[ERROR] {}:{} - ", __FILE__, __LINE__); fmt::print(__VA_ARGS__); fmt::print("\n"); } while(0)
+#define LOG_DEBUG(...)                                  \
+  do {                                                  \
+    fmt::print("[DEBUG] {}:{} - ", __FILE__, __LINE__); \
+    fmt::print(__VA_ARGS__);                            \
+    fmt::print("\n");                                   \
+  } while (0)
+#define LOG_INFO(...)                                  \
+  do {                                                 \
+    fmt::print("[INFO] {}:{} - ", __FILE__, __LINE__); \
+    fmt::print(__VA_ARGS__);                           \
+    fmt::print("\n");                                  \
+  } while (0)
+#define LOG_WARN(...)                                  \
+  do {                                                 \
+    fmt::print("[WARN] {}:{} - ", __FILE__, __LINE__); \
+    fmt::print(__VA_ARGS__);                           \
+    fmt::print("\n");                                  \
+  } while (0)
+#define LOG_ERROR(...)                                  \
+  do {                                                  \
+    fmt::print("[ERROR] {}:{} - ", __FILE__, __LINE__); \
+    fmt::print(__VA_ARGS__);                            \
+    fmt::print("\n");                                   \
+  } while (0)
 #else
-    #define LOG_DEBUG(...) 
-    #define LOG_INFO(...) 
-    #define LOG_WARN(...) 
-    #define LOG_ERROR(...) 
+#define LOG_DEBUG(...)
+#define LOG_INFO(...)
+#define LOG_WARN(...)
+#define LOG_ERROR(...)
 #endif
 
 namespace hhds {
@@ -603,15 +627,14 @@ public:
 
   // PRE-ORDER TRAVERSAL
   class pre_order_iterator : public traversal_iterator_base<pre_order_iterator> {
-  //private:
-    
+    // private:
 
   public:
-    std::set<Tree_pos> visited_subtrees;
-    tree<X>* current_tree; // Track which tree we're currently traversing
-    tree<X>* main_tree;    // Keep reference to main tree (NOTE: This won't work for multiple layers of trees)
-    std::vector<Tree_pos>prev_trees;
-    Tree_pos return_to_node; // Node to return to after subtree traversal
+    std::set<Tree_pos>    visited_subtrees;
+    tree<X>*              current_tree;  // Track which tree we're currently traversing
+    tree<X>*              main_tree;     // Keep reference to main tree (NOTE: This won't work for multiple layers of trees)
+    std::vector<Tree_pos> prev_trees;
+    Tree_pos              return_to_node;  // Node to return to after subtree traversal
     std::vector<Tree_pos> return_to_nodes;
     using base = traversal_iterator_base<pre_order_iterator>;
     using base::current;
@@ -638,7 +661,7 @@ public:
             prev_trees.push_back(ref);
             return_to_nodes.push_back(current);
             current_tree = &(current_tree->forest_ptr->get_tree(ref));
-            current = ROOT;
+            current      = ROOT;
             return *this;
           }
         }
@@ -647,8 +670,8 @@ public:
       // first try to go to first child
       if (!current_tree->is_leaf(this->current)) {
         auto new_cur = current_tree->get_first_child(this->current);
-        if (new_cur != INVALID)  {
-          this->current =  new_cur;
+        if (new_cur != INVALID) {
+          this->current = new_cur;
           return *this;
         }
       }
@@ -660,16 +683,15 @@ public:
         return *this;
       }
 
-
       auto parent = current_tree->get_parent(this->current);
       while (parent != ROOT && parent != INVALID) {
         if (m_follow_subtrees && parent <= 0) {
-            this->current = INVALID;
-            return *this;
+          this->current = INVALID;
+          return *this;
         }
         if (!m_follow_subtrees && parent <= 0) {
-            this->current = INVALID;
-            return *this;
+          this->current = INVALID;
+          return *this;
         }
         auto parent_sibling = current_tree->get_sibling_next(parent);
         if (parent_sibling != INVALID) {
@@ -679,23 +701,23 @@ public:
         parent = current_tree->get_parent(parent);
       }
 
-            // if no next sibling and we're in a subtree, return to main tree -- let's instead check if nested subtrees
+      // if no next sibling and we're in a subtree, return to main tree -- let's instead check if nested subtrees
       if (current_tree != main_tree) {
         Tree_pos r_node;
         if (this->prev_trees.size() <= 1) {
           this->current_tree = this->main_tree;
-          r_node = this->return_to_nodes.back();
+          r_node             = this->return_to_nodes.back();
           this->return_to_nodes.pop_back();
         } else {
           this->prev_trees.pop_back();
           this->current_tree = &(this->current_tree->forest_ptr->get_tree(this->prev_trees.back()));
-          r_node = this->return_to_nodes.back();
+          r_node             = this->return_to_nodes.back();
           this->return_to_nodes.pop_back();
         }
         if (!current_tree->is_leaf(r_node)) {
           auto new_cur = current_tree->get_first_child(r_node);
-          if (new_cur != INVALID)  {
-            this->current =  new_cur;
+          if (new_cur != INVALID) {
+            this->current        = new_cur;
             this->return_to_node = INVALID;
             return *this;
           }
@@ -713,7 +735,7 @@ public:
     }
 
     bool operator==(const pre_order_iterator& other) const {
-      return current == other.current && current_tree == other.current_tree; 
+      return current == other.current && current_tree == other.current_tree;
     }
 
     bool operator!=(const pre_order_iterator& other) const { return !(*this == other); }
@@ -861,9 +883,7 @@ public:
 
     post_order_iterator(Tree_pos start, tree<X>* tree, bool follow_refs) : base(start, tree, follow_refs) {}
 
-    X get_data() const {
-      return tree_ptr->get_data(this->current);
-    }
+    X get_data() const { return tree_ptr->get_data(this->current); }
 
     post_order_iterator& operator++() {
       Tree_pos subtree_root = this->handle_subtree_ref(this->current);
@@ -1259,8 +1279,8 @@ template <typename X>
 Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
   /* POSSIBLE IMPROVEMENT -> PERFECTLY FORWARD THE DATA AND SIBLING ID*/
   if (!_check_idx_exists(sibling_id)) {
-       throw std::out_of_range("append_sibling: Sibling index out of range");
-   }
+    throw std::out_of_range("append_sibling: Sibling index out of range");
+  }
 
   // Directly go to the last sibling of the sibling_id
   const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
@@ -1309,8 +1329,8 @@ Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data)
   }
 
   // Directly go to the next sibling of the sibling_id
-  //TODO: const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
-  auto       new_sib   = sibling_id;
+  // TODO: const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
+  auto new_sib = sibling_id;
 
   // Try to fir the sibling right after this, if the chunk has some space
   if ((new_sib & CHUNK_MASK) != CHUNK_MASK && !_contains_data(new_sib + 1)) {
@@ -1371,8 +1391,8 @@ Tree_pos tree<X>::add_root(const X& data) {
 template <typename X>
 Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
   if (!_check_idx_exists(parent_index)) {
-       throw std::out_of_range("add_child: Parent index out of range: " + std::to_string(parent_index));
-   }
+    throw std::out_of_range("add_child: Parent index out of range: " + std::to_string(parent_index));
+  }
   // This is not the first child being added
   const auto last_child_id = get_last_child(parent_index);
   if (last_child_id != INVALID) {
@@ -1406,12 +1426,12 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
 template <typename X>
 void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
   if (!_check_idx_exists(leaf_index)) {
-      throw std::out_of_range("delete_leaf: Leaf index out of range");
+    throw std::out_of_range("delete_leaf: Leaf index out of range");
   }
 
   // // Check if the leaf actually is a leaf
   if (get_first_child(leaf_index) != INVALID) {
-      throw std::logic_error("delete_leaf: Index is not a leaf");
+    throw std::logic_error("delete_leaf: Index is not a leaf");
   }
 
   auto& node = pointers_stack[leaf_index >> CHUNK_SHIFT];
@@ -1499,7 +1519,7 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
 template <typename X>
 void tree<X>::delete_subtree(const Tree_pos& subtree_root) {
   if (!_check_idx_exists(subtree_root)) {
-      throw std::out_of_range("delete_subtree: Subtree root index out of range");
+    throw std::out_of_range("delete_subtree: Subtree root index out of range");
   }
 
   // Vector to store the nodes in reverse level order
@@ -1521,12 +1541,10 @@ void tree<X>::delete_subtree(const Tree_pos& subtree_root) {
   }
 
   // Delete nodes in reverse order to ensure leaves are deleted first
-  auto i = 0;
   for (auto it = nodes_to_delete.rbegin(); it != nodes_to_delete.rend(); ++it) {
     if (is_leaf(*it)) {
       delete_leaf(*it);
     }
-    i++;
   }
   for (auto node : pre_order(subtree_root)) {
     auto& node_ptr = pointers_stack[node >> CHUNK_SHIFT];

@@ -490,6 +490,9 @@ auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
 }
 
 void Graph::add_edge(Vid driver_id, Vid sink_id) {
+  assert(driver_id & 1);
+  assert(!(sink_id & 1));
+
   bool driver_type, sink_type;
   if (driver_id & 1) {
     // driver is pin
