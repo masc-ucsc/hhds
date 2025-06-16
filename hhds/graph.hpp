@@ -45,14 +45,14 @@ public:
     iterator end() const noexcept { return set_->end(); }
 
   private:
-    const Pin*             pin_;
-    Pid                    pid_;
+    // Pid                                pid_;
+    const Pin*                         pin_;
     ankerl::unordered_dense::set<Vid>* set_;
-    bool                   own_;
+    bool                               own_;
 
     static ankerl::unordered_dense::set<Vid>* acquire_set() noexcept;
-    static void                   release_set(ankerl::unordered_dense::set<Vid>*) noexcept;
-    static void                   populate_set(const Pin*, ankerl::unordered_dense::set<Vid>&, Pid) noexcept;
+    static void                               release_set(ankerl::unordered_dense::set<Vid>*) noexcept;
+    static void                               populate_set(const Pin*, ankerl::unordered_dense::set<Vid>&, Pid) noexcept;
   };
   [[nodiscard]] auto get_edges(Pid pid) const noexcept -> EdgeRange;  // should be in node
 
@@ -68,9 +68,9 @@ private:
 
   // adds upto a total of 191 bits => 24 bytes
   union {
-    int64_t                sedges;  // 48 bits
+    int64_t                            sedges;  // 48 bits
     ankerl::unordered_dense::set<Vid>* set;     // 8 bytes
-  } sedges_;                        // Total: 8 bytes
+  } sedges_;                                    // Total: 8 bytes
   // Total: 32 bytes
 };
 
@@ -105,13 +105,13 @@ public:
     iterator   end() const noexcept { return set_->end(); }
 
   private:
-    const Node*                   node_;
-    Nid                           nid_;
+    // Nid                                       nid_;
+    const Node*                               node_;
     ankerl::unordered_dense::set<Vid>*        set_;
-    bool                          own_;
+    bool                                      own_;
     static ankerl::unordered_dense::set<Vid>* acquire_set() noexcept;
-    static void                   release_set(ankerl::unordered_dense::set<Vid>*) noexcept;
-    static void                   populate_set(const Node*, ankerl::unordered_dense::set<Vid>&, Nid) noexcept;
+    static void                               release_set(ankerl::unordered_dense::set<Vid>*) noexcept;
+    static void                               populate_set(const Node*, ankerl::unordered_dense::set<Vid>&, Nid) noexcept;
   };
 
   [[nodiscard]] auto get_edges(Nid nid) const noexcept -> EdgeRange;
@@ -128,9 +128,9 @@ private:
   uint8_t use_overflow : 1;
   uint8_t padding : 7;
   union {
-    int64_t                sedges;  // 48 bits
+    int64_t                            sedges;  // 48 bits
     ankerl::unordered_dense::set<Vid>* set;     // 8 bytes
-  } sedges_;                        // Total: 8 bytes
+  } sedges_;                                    // Total: 8 bytes
 };
 static_assert(sizeof(Node) == 32, "Node size mismatch");
 
