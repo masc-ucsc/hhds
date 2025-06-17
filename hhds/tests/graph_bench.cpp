@@ -8,7 +8,7 @@
 static void BM_create_flops_100K(benchmark::State& state) {
   for (auto _ : state) {
     for (int j = 0; j < state.range(0); ++j) {
-      Graph gc("lg_create_chain", "create_chain");
+      hhds::Graph gc;
 
       auto inputs = gc.create_node();
       auto clk_id = gc.create_pin(inputs, 1);
@@ -21,7 +21,6 @@ static void BM_create_flops_100K(benchmark::State& state) {
       auto last_id     = gc.create_node();
       auto last_clk_id = gc.create_pin(last_id, 1);  // clk
       auto last_rst_id = gc.create_pin(last_id, 2);  // reset
-      gc.set_type(last_id, 33);                      // made up type id
 
       gc.add_edge(clk_id, last_clk_id);
       gc.add_edge(rst_id, last_rst_id);
@@ -31,7 +30,6 @@ static void BM_create_flops_100K(benchmark::State& state) {
         auto new_id     = gc.create_node();
         auto new_clk_id = gc.create_pin(new_id, 1);  // clk
         auto new_rst_id = gc.create_pin(new_id, 2);  // reset
-        gc.set_type(new_id, 33);                     // made up type id
 
         (void)new_clk_id;
         (void)new_rst_id;
@@ -56,7 +54,7 @@ static void BM_create_flops_100Kemhash(benchmark::State& state) {
       emhash8::HashSet<uint32_t> clk_set;
       emhash8::HashSet<uint32_t> rst_set;
 
-      Graph gc("lg_create_chain", "create_chain");
+      hhds::Graph gc;
 
       auto inputs = gc.create_node();
       auto clk_id = gc.create_pin(inputs, 1);
@@ -69,7 +67,6 @@ static void BM_create_flops_100Kemhash(benchmark::State& state) {
       auto last_id     = gc.create_node();
       auto last_clk_id = gc.create_pin(last_id, 1);  // clk
       auto last_rst_id = gc.create_pin(last_id, 2);  // reset
-      gc.set_type(last_id, 33);                      // made up type id
 
       (void)clk_id;
       (void)rst_id;
@@ -81,7 +78,6 @@ static void BM_create_flops_100Kemhash(benchmark::State& state) {
         auto new_id     = gc.create_node();
         auto new_clk_id = gc.create_pin(new_id, 1);  // clk
         auto new_rst_id = gc.create_pin(new_id, 2);  // reset
-        gc.set_type(new_id, 33);                     // made up type id
 
         //(void)new_clk_id;
         //(void)new_rst_id;
@@ -105,7 +101,7 @@ static void BM_create_flops_100Kabsl(benchmark::State& state) {
       absl::flat_hash_set<uint32_t> clk_set;
       absl::flat_hash_set<uint32_t> rst_set;
 
-      Graph gc("lg_create_chain", "create_chain");
+      hhds::Graph gc;
 
       auto inputs = gc.create_node();
       auto clk_id = gc.create_pin(inputs, 1);
@@ -118,7 +114,6 @@ static void BM_create_flops_100Kabsl(benchmark::State& state) {
       auto last_id     = gc.create_node();
       auto last_clk_id = gc.create_pin(last_id, 1);  // clk
       auto last_rst_id = gc.create_pin(last_id, 2);  // reset
-      gc.set_type(last_id, 33);                      // made up type id
 
       (void)clk_id;
       (void)rst_id;
@@ -130,7 +125,6 @@ static void BM_create_flops_100Kabsl(benchmark::State& state) {
         auto new_id     = gc.create_node();
         auto new_clk_id = gc.create_pin(new_id, 1);  // clk
         auto new_rst_id = gc.create_pin(new_id, 2);  // reset
-        gc.set_type(new_id, 33);                     // made up type id
 
         //(void)new_clk_id;
         //(void)new_rst_id;
@@ -152,7 +146,7 @@ static void BM_create_flops_100Kabsl(benchmark::State& state) {
 static void BM_create_chain_100K(benchmark::State& state) {
   for (auto _ : state) {
     for (int j = 0; j < state.range(0); ++j) {
-      Graph gc("lg_create_chain", "create_chain");
+      hhds::Graph gc;
 
       auto first_id = gc.create_node();
       auto last_id  = first_id;
@@ -172,10 +166,12 @@ static void BM_create_chain_100K(benchmark::State& state) {
   state.counters["speed"] = benchmark::Counter(state.iterations() * state.range(0), benchmark::Counter::kIsRate);
 }
 
+#if 0
+  // FIXME: This should work, but still not there
 static void BM_delete_chain_100K(benchmark::State& state) {
   for (auto _ : state) {
     for (int j = 0; j < state.range(0); ++j) {
-      Graph gc("lg_create_chain", "create_chain");
+      hhds::Graph gc;
 
       auto first_id = gc.create_node();
       auto last_id  = first_id;
@@ -202,9 +198,12 @@ static void BM_delete_chain_100K(benchmark::State& state) {
   }
   state.counters["speed"] = benchmark::Counter(state.iterations() * state.range(0), benchmark::Counter::kIsRate);
 }
+#endif
 
+#if 0
+  // FIXME: Iterator should work, but still not there
 static void BM_traverse_chain_1M(benchmark::State& state) {
-  Graph gc("lg_create_chain", "create_chain");
+  hhds::Graph gc;
 
   auto first_id = gc.create_node();
   auto last_id  = first_id;
@@ -232,6 +231,7 @@ static void BM_traverse_chain_1M(benchmark::State& state) {
   }
   state.counters["speed"] = benchmark::Counter(state.iterations() * state.range(0), benchmark::Counter::kIsRate);
 }
+#endif
 
 //--------------------------------------------------------------------
 
@@ -239,8 +239,8 @@ BENCHMARK(BM_create_flops_100K)->Arg(32);
 BENCHMARK(BM_create_flops_100Kabsl)->Arg(32);
 BENCHMARK(BM_create_flops_100Kemhash)->Arg(32);
 BENCHMARK(BM_create_chain_100K)->Arg(32);
-BENCHMARK(BM_delete_chain_100K)->Arg(32);
-BENCHMARK(BM_traverse_chain_1M)->Arg(32);
+// BENCHMARK(BM_delete_chain_100K)->Arg(32);
+// BENCHMARK(BM_traverse_chain_1M)->Arg(32);
 
 int main(int argc, char* argv[]) {
   benchmark::Initialize(&argc, argv);

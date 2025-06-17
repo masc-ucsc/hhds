@@ -217,6 +217,20 @@ cc_test(
     deps = [":graph"],
 )
 
+cc_test(
+    name = "graph_bench",
+    srcs = ["tests/graph_bench.cpp"],
+    deps = [
+      "@abseil-cpp//absl/container:node_hash_set",
+      "@abseil-cpp//absl/container:flat_hash_map",
+      "@abseil-cpp//absl/container:flat_hash_set",
+      "@google_benchmark//:benchmark",
+      "@googletest//:gtest_main",
+      "@fmt",
+      ":graph",
+    ],
+)
+
 # cc_test(
 #     name = "delete_chip_typical_bench",
 #     srcs = ["tests/delete_bench/delete_leaf_bench/chip_typical_tree_bench.cpp"],
