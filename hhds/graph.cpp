@@ -7,11 +7,6 @@
 #include <vector>
 
 // TODO:
-// 2-Remove main from there, do a unit test in tests/graph_test.cpp?
-// 3-Fix and use the constants from graph_sizing.hpp to avoid hardcode of 42, 22
-// 4-Use odd/even in pin/node so that add_ege can work for pin 0 (pin0==node_id)
-// 4.1-Missing to add node 1 and node 2 as input and output from graph at creation time.
-// 5-Add a better unit test for add_pin/node/edge for single graph. Make sure that it does not have bugs
 // 6-Add the graph_id class
 // 7-Allow edges between graphs add_edge(pin>0, pin<0) or add_edge(pin<0, pin>0)
 // 8-Benchmark against boost library for some example similar to hardware
@@ -20,6 +15,11 @@
 
 // DONE:
 // 1-Use namespace hhds like tree
+// 2-Remove main from there, do a unit test in tests/graph_test.cpp?
+// 3-Fix and use the constants from graph_sizing.hpp to avoid hardcode of 42, 22
+// 4-Use odd/even in pin/node so that add_ege can work for pin 0 (pin0==node_id)
+// 4.1-Missing to add node 1 and node 2 as input and output from graph at creation time.
+// 5-Add a better unit test for add_pin/node/edge for single graph. Make sure that it does not have bugs
 
 namespace hhds {
 
@@ -47,7 +47,6 @@ auto Pin::overflow_handling(Pid self_id, Vid other_id) -> bool {
     if (!raw) {
       continue;
     }
-
     bool is_driver = raw & (1ULL << 1);
     bool is_pin    = raw & (1ULL << 0);
     bool neg       = raw & (1ULL << 13);
@@ -82,23 +81,37 @@ auto Pin::add_edge(Pid self_id, Vid other_id) -> bool {
   if (use_overflow) {
     return overflow_handling(self_id, other_id);
   }
-  Nid actual_self  = self_id >> 2;
-  Vid actual_other = other_id >> 2;
 
-  int64_t  diff  = static_cast<int64_t>(actual_self) - static_cast<int64_t>(actual_other);
+  Nid     actual_self  = self_id >> 2;
+  Vid     actual_other = other_id >> 2;
+  int64_t diff         = static_cast<int64_t>(actual_self) - static_cast<int64_t>(actual_other);
+
   bool     isNeg = diff < 0;
   uint64_t mag   = static_cast<uint64_t>(isNeg ? -diff : diff);
 
   constexpr uint64_t MAX_MAG = (1ULL << 11) - 1;
   if (mag > MAX_MAG) {
+    if (ledge0 == 0) {
+      ledge0 = other_id;
+      return true;
+    }
+    if (ledge1 == 0) {
+      ledge1 = other_id;
+      return true;
+    }
     return overflow_handling(self_id, other_id);
   }
 
-  uint64_t e = (mag & MAX_MAG) << 2;
-  e |= (other_id & 2) ? (1ULL << 1) : 0;
-  e |= (other_id & 1) ? (1ULL << 0) : 0;
+  uint64_t e = 0;
   if (isNeg) {
-    e |= (1ULL << 13);
+    e |= 1ULL << 13;
+  }
+  e |= (mag << 2);
+  if (other_id & 2) {
+    e = e | 2;
+  }
+  if (other_id & 1) {
+    e = e | 1;
   }
   constexpr int      SHIFT = 14;
   constexpr uint64_t SLOT  = (1ULL << SHIFT) - 1;
@@ -109,6 +122,7 @@ auto Pin::add_edge(Pid self_id, Vid other_id) -> bool {
       return true;
     }
   }
+  // if we reach here, insert into ledge0 or ledge1, or overflow
   if (ledge0 == 0) {
     ledge0 = other_id;
     return true;
@@ -117,25 +131,15 @@ auto Pin::add_edge(Pid self_id, Vid other_id) -> bool {
     ledge1 = other_id;
     return true;
   }
-
   return overflow_handling(self_id, other_id);
 }
 
-Pin::EdgeRange::EdgeRange(const Pin* pin, Pid pid) noexcept : pin_(pin), pid_(pid), set_(nullptr), own_(false) {
-
+Pin::EdgeRange::EdgeRange(const Pin* pin, Pid pid) noexcept : pin_(pin), /* pid_(pid), */ set_(nullptr), own_(false) {
   if (pin->use_overflow) {
-    // set_ = pin->sedges_.set;
     set_ = acquire_set();
     set_->clear();
     for (auto raw : *pin->sedges_.set) {
-      bool is_driver = raw & (1ULL << 1);
-      bool is_pin    = raw & (1ULL << 0);
-      Vid  actual_id = raw >> 2;  // get the actual Node ID
-      actual_id      = actual_id << 1;
-      if (is_pin) {
-        actual_id = actual_id | 1;  // set the pin bit
-      }
-      set_->insert(actual_id);
+      set_->insert(raw);
     }
   } else {
     set_ = acquire_set();
@@ -145,7 +149,7 @@ Pin::EdgeRange::EdgeRange(const Pin* pin, Pid pid) noexcept : pin_(pin), pid_(pi
   }
 }
 
-Pin::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : pin_(o.pin_), pid_(o.pid_), set_(o.set_), own_(o.own_) {
+Pin::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : pin_(o.pin_), /* pid_(o.pid_),*/ set_(o.set_), own_(o.own_) {
   o.pin_ = nullptr;
   o.set_ = nullptr;
 }
@@ -175,46 +179,47 @@ void Pin::EdgeRange::release_set(ankerl::unordered_dense::set<Vid>* set) noexcep
 }
 
 void Pin::EdgeRange::populate_set(const Pin* pin, ankerl::unordered_dense::set<Vid>& set, Pid pid) noexcept {
-  constexpr uint64_t SLOT_MASK = (1ULL << 14) - 1;
-  uint64_t           packed    = pin->sedges_.sedges;
-  for (int i = 0; i < 4; i++) {
-    uint64_t e = (packed >> (i * 14)) & SLOT_MASK;
-    if (e == 0) {
+  constexpr uint64_t SLOT_MASK  = (1ULL << 14) - 1;  // grab 14 bits
+  constexpr uint64_t SIGN_BIT   = 1ULL << 13;
+  constexpr uint64_t DRIVER_BIT = 1ULL << 1;
+  constexpr uint64_t PIN_BIT    = 1ULL << 0;
+  constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;  // bits 12–2
+
+  // our caller passed us vid_self = (numeric_id << 1) | pin_flag
+  // strip off the low two bits to get the pure numeric node index:
+  uint64_t self_num = static_cast<uint64_t>(pid) >> 2;
+
+  uint64_t packed = pin->sedges_.sedges;
+  for (int slot = 0; slot < 4; ++slot) {
+    uint64_t raw = (packed >> (slot * 14)) & SLOT_MASK;
+    if (raw == 0) {
       continue;
     }
-    bool isNeg = e & (1ULL << 13);
-    bool isPin = e & 1;
-    e &= ~(1ULL << 13);  // unset the 13th bit
-    if (isNeg) {
-      e = ((pid >> 1) + (e >> 2));
-    } else {
-      e = ((pid >> 1) - (e >> 2));
-    }
-    e = e << 1;  // shift to make it a Vid
-    if (isPin) {
-      e = e | 1;  // set the pin bit
-    }
-    set.insert(e);
+
+    bool neg    = (raw & SIGN_BIT) != 0;
+    bool driver = (raw & DRIVER_BIT) != 0;
+    bool pin    = (raw & PIN_BIT) != 0;
+
+    // grab only the magnitude bits
+    uint64_t mag = (raw >> 2) & MAG_MASK;
+
+    // reconstruct numeric target
+    int64_t  delta      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+    uint64_t target_num = self_num - delta;
+    // std::cout << "raw= " << raw << ", mag= " << mag << ", delta= " << delta
+    //           << ", target_num= " << target_num << ", self_num= " << self_num << "\n";
+
+    // repack into a Vid: shift left 2, OR back the driver+pin bits
+    Vid v = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin ? PIN_BIT : 0));
+    set.insert(v);
   }
+
+  // also remember any “overflow” residues
   if (pin->ledge0) {
-    bool is_pin  = pin->ledge0 & 1;
-    Vid  ledge0_ = pin->ledge0 >> 1;
-    if (is_pin) {
-      ledge0_ = ledge0_ | 1;
-    } else {
-      ledge0_ = ledge0_ & ~1;
-    }
-    set.insert(ledge0_);
+    set.insert(pin->ledge0);
   }
   if (pin->ledge1) {
-    bool is_pin  = pin->ledge1 & 1;
-    Vid  ledge1_ = pin->ledge1 >> 1;
-    if (is_pin) {
-      ledge1_ = ledge1_ | 1;
-    } else {
-      ledge1_ = ledge1_ & ~1;
-    }
-    set.insert(ledge1_);
+    set.insert(pin->ledge1);
   }
 }
 
@@ -329,14 +334,12 @@ auto Node::add_edge(Nid self_id, Vid other_id) -> bool {
   if (isNeg) {
     e |= 1ULL << 13;
   }
-  e |= mag << 2;
+  e |= (mag << 2);
   if (other_id & 2) {
-    uint64_t temp2 = 1ULL << 1;
-    e              = e | 2;
+    e = e | 2;
   }
   if (other_id & 1) {
-    uint64_t temp1 = 1ULL << 0;
-    e              = e | 1;
+    e = e | 1;
   }
   constexpr int      SHIFT = 14;
   constexpr uint64_t SLOT  = (1ULL << SHIFT) - 1;
@@ -347,7 +350,15 @@ auto Node::add_edge(Nid self_id, Vid other_id) -> bool {
       return true;
     }
   }
-
+  // if we reach here, insert into ledge0 or ledge1, or overflow
+  if (ledge0 == 0) {
+    ledge0 = other_id;
+    return true;
+  }
+  if (ledge1 == 0) {
+    ledge1 = other_id;
+    return true;
+  }
   return overflow_handling(self_id, other_id);
 }
 
@@ -367,19 +378,12 @@ bool Node::has_edges() const {
   return false;
 }
 
-Node::EdgeRange::EdgeRange(const Node* node, Nid nid) noexcept : node_(node), nid_(nid), set_(nullptr), own_(false) {
+Node::EdgeRange::EdgeRange(const Node* node, Nid nid) noexcept : node_(node), /* nid_(nid), */ set_(nullptr), own_(false) {
   if (node->use_overflow) {
     set_ = acquire_set();
     set_->clear();
     for (auto raw : *node->sedges_.set) {
-      bool is_driver = raw & (1ULL << 1);
-      bool is_pin    = raw & (1ULL << 0);
-      Vid  actual_id = raw >> 2;  // get the actual Node ID
-      actual_id      = actual_id << 1;
-      if (is_pin) {
-        actual_id = actual_id | 1;  // set the pin bit
-      }
-      set_->insert(actual_id);
+      set_->insert(raw);
     }
   } else {
     set_ = acquire_set();
@@ -389,7 +393,7 @@ Node::EdgeRange::EdgeRange(const Node* node, Nid nid) noexcept : node_(node), ni
   }
 }
 
-Node::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : node_(o.node_), nid_(o.nid_), set_(o.set_), own_(o.own_) {
+Node::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : node_(o.node_), /* nid_(o.nid_), */ set_(o.set_), own_(o.own_) {
   o.node_ = nullptr;
   o.set_  = nullptr;
 }
@@ -417,48 +421,47 @@ void Node::EdgeRange::release_set(ankerl::unordered_dense::set<Nid>* set) noexce
   static thread_local std::vector<ankerl::unordered_dense::set<Nid>*> pool;
   pool.push_back(set);
 }
+
 void Node::EdgeRange::populate_set(const Node* node, ankerl::unordered_dense::set<Nid>& set, Nid nid) noexcept {
-  constexpr uint64_t SLOT_MASK = (1ULL << 14) - 1;
-  uint64_t           packed    = node->sedges_.sedges;
-  for (int i = 0; i < 4; i++) {
-    uint64_t e = (packed >> (i * 14)) & SLOT_MASK;
-    if (e == 0) {
+  constexpr uint64_t SLOT_MASK  = (1ULL << 14) - 1;  // grab 14 bits
+  constexpr uint64_t SIGN_BIT   = 1ULL << 13;
+  constexpr uint64_t DRIVER_BIT = 1ULL << 1;
+  constexpr uint64_t PIN_BIT    = 1ULL << 0;
+  constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;  // bits 12–2
+
+  // our caller passed us vid_self = (numeric_id << 1) | pin_flag
+  // strip off the low two bits to get the pure numeric node index:
+  uint64_t self_num = static_cast<uint64_t>(nid) >> 2;
+
+  uint64_t packed = node->sedges_.sedges;
+  for (int slot = 0; slot < 4; ++slot) {
+    uint64_t raw = (packed >> (slot * 14)) & SLOT_MASK;
+    if (raw == 0) {
       continue;
     }
-    bool isNeg = e & (1ULL << 13);
-    bool isPin = e & 1;
-    e &= ~(1ULL << 13);  // unset the 13th bit
-    if (isNeg) {
-      e = ((nid >> 1) + (e >> 2));
-    } else {
-      e = ((nid >> 1) - (e >> 2));
-    }
-    e = e << 1;  // shift to make it a Vid
-    if (isPin) {
-      e = e | 1;  // set the pin bit
-    }
 
-    set.insert(e);
+    bool neg    = (raw & SIGN_BIT) != 0;
+    bool driver = (raw & DRIVER_BIT) != 0;
+    bool pin    = (raw & PIN_BIT) != 0;
+
+    // grab only the magnitude bits
+    uint64_t mag = (raw >> 2) & MAG_MASK;
+
+    // reconstruct numeric target
+    int64_t  delta      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+    uint64_t target_num = self_num - delta;
+
+    // repack into a Vid: shift left 2, OR back the driver+pin bits
+    Vid v = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin ? PIN_BIT : 0));
+    set.insert(v);
   }
+
+  // also remember any “overflow” residues
   if (node->ledge0) {
-    bool is_pin  = node->ledge0 & 1;
-    Vid  ledge0_ = node->ledge0 >> 1;
-    if (is_pin) {
-      ledge0_ = ledge0_ | 1;
-    } else {
-      ledge0_ = ledge0_ & ~1;
-    }
-    set.insert(ledge0_);
+    set.insert(node->ledge0);
   }
   if (node->ledge1) {
-    bool is_pin  = node->ledge1 & 1;
-    Vid  ledge1_ = node->ledge1 >> 1;
-    if (is_pin) {
-      ledge1_ = ledge1_ | 1;
-    } else {
-      ledge1_ = ledge1_ & ~1;
-    }
-    set.insert(ledge1_);
+    set.insert(node->ledge1);
   }
 }
 
@@ -478,7 +481,7 @@ auto Graph::create_node() -> Nid {
   Nid id = node_table.size();
   assert(id);
   node_table.emplace_back(id);
-  return id << 1 | 0;
+  return id << 2 | 0;
 }
 
 auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
@@ -486,86 +489,52 @@ auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
   assert(id);
   pin_table.emplace_back(nid, pid);
   set_next_pin(nid, id);
-  return id << 1 | 1;
+  return id << 2 | 1;
 }
 
 void Graph::add_edge(Vid driver_id, Vid sink_id) {
-  assert(driver_id & 1);
-  assert(!(sink_id & 1));
-
-  bool driver_type, sink_type;
-  if (driver_id & 1) {
-    // driver is pin
-    driver_type = true;
-  } else {
-    // driver is node
-    driver_type = false;
-  }
-  if (sink_id & 1) {
-    // sink is pin
-    sink_type = true;
-  } else {
-    // sink is node
-    sink_type = false;
-  }
-
-  driver_id = driver_id | 1;
-  sink_id   = sink_id & ~1;
-  driver_id = driver_id << 1;
-  sink_id   = sink_id << 1;
-  if (driver_type) {
-    driver_id = driver_id | 1;
-  }
-  if (sink_type) {
-    sink_id = sink_id | 1;
-  }
-
+  driver_id = driver_id | 2;
+  sink_id   = sink_id & ~2;
   add_edge_int(driver_id, sink_id);
   add_edge_int(sink_id, driver_id);
 }
 
 auto Graph::ref_node(Nid id) const -> Node* {
-  Nid actual_id = id >> 1;
+  Nid actual_id = id >> 2;
   assert(actual_id < node_table.size());
   return (Node*)&node_table[actual_id];
 }
 
 auto Graph::ref_pin(Pid id) const -> Pin* {
-  Pid actual_id = id >> 1;
+  Pid actual_id = id >> 2;
   assert(actual_id < pin_table.size());
   return (Pin*)&pin_table[actual_id];
 }
 
 void Graph::add_edge_int(Vid self_id, Vid other_id) {
-  bool self_type;
-  Vid  actual_self  = self_id >> 2;
-  Vid  actual_other = other_id >> 2;
-  if ((self_id & 1)) {
+  // detect type of self_id and other_id
+  bool self_type = false;
+  if (self_id & 1) {
+    // self is pin
     self_type = true;
-  } else {
-    self_type = false;
   }
-
-  // if both are of same type => ensure their actua values are different
-  if ((self_id & 1) == (other_id & 1)) {
-    assert(actual_self != actual_other);
-  }
-  Vid ref_self = actual_self << 1;
-  if (self_type) {
-    ref_self = ref_self | 1;
-  }
-  // calling respective class instances
   if (!self_type) {
-    auto* node = ref_node(ref_self);
-    node->add_edge(self_id, other_id);
+    auto* node = ref_node(self_id);
+    if (!node->add_edge(self_id, other_id)) {
+      std::cerr << "Error: Node " << node->get_nid() << " overflowed edges while adding edge from " << self_id << " to " << other_id
+                << "\n";
+    }
   } else {
-    auto* pin = ref_pin(ref_self);
-    pin->add_edge(self_id, other_id);
+    auto* pin = ref_pin(self_id);
+    if (!pin->add_edge(self_id, other_id)) {
+      std::cerr << "Error: Pin " << pin->get_master_nid() << ":" << pin->get_port_id()
+                << " overflowed edges while adding edge from " << self_id << " to " << other_id << "\n";
+    }
   }
 }
 
 void Graph::set_next_pin(Nid nid, Pid next_pin) {
-  Nid  actual_nid = nid >> 1;
+  Nid  actual_nid = nid >> 2;
   auto node       = &node_table[actual_nid];
   if (node->get_next_pin_id() == 0) {
     node->set_next_pin_id(next_pin);
