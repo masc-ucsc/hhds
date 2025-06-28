@@ -471,9 +471,10 @@ Graph::Graph() { clear_graph(); }
 
 void Graph::clear_graph() {
   bzero(this, sizeof(Graph));
-  node_table.emplace_back(0);
-  node_table.emplace_back(1);
-  node_table.emplace_back(2);
+  node_table.emplace_back(0);  // Invalid ID
+  node_table.emplace_back(1);  // Input node (can have many pins to node 1)
+  node_table.emplace_back(2);  // Output node
+  node_table.emplace_back(3);  // Constant (common value/issue to handle for toposort) - Each const value is a pin in node3
   pin_table.emplace_back(0, 0);
 }
 
