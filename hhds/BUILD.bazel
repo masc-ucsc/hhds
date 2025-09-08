@@ -56,8 +56,7 @@ cc_library(
     includes = ["."],
     visibility = ["//visibility:public"],
     deps = [
-        "@fmt",
-	"@iassert//:iassert",
+        "@iassert//:iassert",
         "@emhash",
     ] + select({
         ":use_profiling": [
@@ -226,7 +225,6 @@ cc_test(
       "@abseil-cpp//absl/container:flat_hash_set",
       "@google_benchmark//:benchmark",
       "@googletest//:gtest_main",
-      "@fmt",
       ":graph",
     ],
 )
@@ -258,7 +256,6 @@ cc_test(
 #    includes = ["."],
 #    visibility = ["//visibility:public"],
 #    deps = [
-#        "@fmt",
 #        "@iassert",
 #        "@emhash",
 #    ] + select({

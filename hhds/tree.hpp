@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <iostream>
 #include <iterator>
@@ -21,7 +22,6 @@
 #include <stdexcept>
 #include <vector>
 
-#include "fmt/format.h"
 #include "iassert.hpp"
 
 // Logging control
@@ -32,38 +32,38 @@
 #if ENABLE_CREATION_LOGGING
 #define LOG_CREAT_DEBUG(...)                            \
   do {                                                  \
-    fmt::print("[DEBUG] {}:{} - ", __FILE__, __LINE__); \
-    fmt::print(__VA_ARGS__);                            \
-    fmt::print("\n");                                   \
+    std::printf("[DEBUG] %s:%d - ", __FILE__, __LINE__); \
+    std::printf(__VA_ARGS__);                           \
+    std::printf("\n");                                  \
   } while (0)
 #else
 #define LOG_CREAT_DEBUG(...)
 #endif
 
 #if ENABLE_LOGGING
-#define LOG_DEBUG(...)                                  \
+#define LOG_DEBUG(...)                                   \
+  do {                                                   \
+    std::printf("[DEBUG] %s:%d - ", __FILE__, __LINE__); \
+    std::printf(__VA_ARGS__);                            \
+    std::printf("\n");                                   \
+  } while (0)
+#define LOG_INFO(...)                                   \
   do {                                                  \
-    fmt::print("[DEBUG] {}:{} - ", __FILE__, __LINE__); \
-    fmt::print(__VA_ARGS__);                            \
-    fmt::print("\n");                                   \
+    std::printf("[INFO] %s:%d - ", __FILE__, __LINE__); \
+    std::printf(__VA_ARGS__);                           \
+    std::printf("\n");                                  \
   } while (0)
-#define LOG_INFO(...)                                  \
-  do {                                                 \
-    fmt::print("[INFO] {}:{} - ", __FILE__, __LINE__); \
-    fmt::print(__VA_ARGS__);                           \
-    fmt::print("\n");                                  \
-  } while (0)
-#define LOG_WARN(...)                                  \
-  do {                                                 \
-    fmt::print("[WARN] {}:{} - ", __FILE__, __LINE__); \
-    fmt::print(__VA_ARGS__);                           \
-    fmt::print("\n");                                  \
-  } while (0)
-#define LOG_ERROR(...)                                  \
+#define LOG_WARN(...)                                   \
   do {                                                  \
-    fmt::print("[ERROR] {}:{} - ", __FILE__, __LINE__); \
-    fmt::print(__VA_ARGS__);                            \
-    fmt::print("\n");                                   \
+    std::printf("[WARN] %s:%d - ", __FILE__, __LINE__); \
+    std::printf(__VA_ARGS__);                           \
+    std::printf("\n");                                  \
+  } while (0)
+#define LOG_ERROR(...)                                   \
+  do {                                                   \
+    std::printf("[ERROR] %s:%d - ", __FILE__, __LINE__); \
+    std::printf(__VA_ARGS__);                            \
+    std::printf("\n");                                   \
   } while (0)
 #else
 #define LOG_DEBUG(...)
