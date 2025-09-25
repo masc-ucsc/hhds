@@ -75,22 +75,16 @@
 
 namespace hhds {
 /** NOTES for future contributors:
- * Realize that the total number of bits for the
- * each entry of Tree_pointers is 3 + 5*CHUNK_BITS
- * + 2*7*SHORT_DELTA = 3 + 5*43 + 2*7*21 = 512 bits.
+ * Tree_pointers has been simplified to use standard 64-bit pointers
+ * instead of bit-packed fields for better performance. The structure now uses:
+ * - 5 x 64-bit Tree_pos fields (parent, siblings, children) = 320 bits
+ * - 2 x std::array<int32_t, 7> for short deltas = 2 * 7 * 32 = 448 bits
+ * - Bookkeeping fields (num_short_del_occ, is_leaf) = ~24 bits
+ * - Total: ~792 bits (~99 bytes)
  *
- * The number of bits for each entry of Tree_pointers is
- * exactly one cache line. If at any point there is bookkeeping
- * to be added, please add it to the Tree_pointers class after
- * adjusting the values of CHUNK_BITS and SHORT_DELTA.
- *
- * Other values for reference (CHUNK_BITS, SHORT_DELTA, TOTAL_BITS)
- *  40 22 -> 511
-    43 21 -> 512
-    45 20 -> 508
-    48 19 -> 509
- *
- * NEVER let it exceed 512 bits.
+ * This is larger than the previous 512-bit (64-byte) structure but eliminates
+ * expensive bit manipulation operations for much better performance.
+ * The structure is aligned to 64 bytes for cache efficiency.
 */
 
 using Tree_pos    = int64_t;
@@ -104,56 +98,53 @@ static constexpr int16_t NUM_SHORT_DEL = CHUNK_MASK;        // Number of int16_t
 static constexpr Tree_pos INVALID = 0;                 // This is invalid for all pointers other than parent
 static constexpr Tree_pos ROOT    = 1 << CHUNK_SHIFT;  // ROOT ID
 
-static constexpr int CHUNK_BITS  = 49;
-static constexpr int SHORT_DELTA = 18;
+// Now using full 64-bit addressing - much simpler!
+static constexpr uint64_t MAX_TREE_SIZE = UINT64_MAX;  // Maximum number of chunks in the tree
 
-static constexpr uint64_t MAX_TREE_SIZE = 1LL << CHUNK_BITS;  // Maximum number of chunks in the tree
-
-static constexpr Short_delta MIN_SHORT_DELTA = -(1 << (SHORT_DELTA - 1));     // Minimum value for int16_t delta
-static constexpr Short_delta MAX_SHORT_DELTA = (1 << (SHORT_DELTA - 1)) - 1;  // Maximum value for int16_t delta
+// Short delta is now using int32_t (4 bytes) for better performance
+static constexpr Short_delta MIN_SHORT_DELTA = INT32_MIN;     // Minimum value for int32_t delta
+static constexpr Short_delta MAX_SHORT_DELTA = INT32_MAX;     // Maximum value for int32_t delta
 
 template <typename X>
 class Forest;
 
-class __attribute__((packed, aligned(64))) Tree_pointers {  // NOLINT(readability-magic-numbers)
+class __attribute__((aligned(64))) Tree_pointers {  // NOLINT(readability-magic-numbers)
 private:
-  // We only store the exact ID of parent
-  Tree_pos parent : CHUNK_BITS + CHUNK_SHIFT;
-  Tree_pos next_sibling : CHUNK_BITS;
-  Tree_pos prev_sibling : CHUNK_BITS;
+  // Full 64-bit pointers - no more bit packing
+  Tree_pos parent;
+  Tree_pos next_sibling;
+  Tree_pos prev_sibling;
 
   // Long child pointers
-  Tree_pos first_child_l : CHUNK_BITS;
-  Tree_pos last_child_l : CHUNK_BITS;
+  Tree_pos first_child_l;
+  Tree_pos last_child_l;
 
-  // Track number of occupied int16_t delta pointers
-  uint16_t num_short_del_occ : CHUNK_SHIFT;
+  // Track number of occupied short delta pointers
+  uint16_t num_short_del_occ;
 
   // leaf flag
-  bool is_leaf : 1;
+  bool is_leaf;
 
-  // int16_t (delta) child pointers
-  __int128 first_child_s;
-  __int128 last_child_s;
+  // Short (delta) child pointers - now using std::array instead of __int128
+  std::array<Short_delta, NUM_SHORT_DEL> first_child_s;
+  std::array<Short_delta, NUM_SHORT_DEL> last_child_s;
 
   // Helper functions to get and set first child pointers by index
   [[nodiscard]] inline Short_delta _get_first_child_s(int16_t index) const {
-    return (first_child_s >> (index * SHORT_DELTA)) & ((1 << SHORT_DELTA) - 1);
+    return first_child_s[index];
   }
 
   inline void _set_first_child_s(int16_t index, Short_delta value) {
-    first_child_s &= ~((__int128)((static_cast<__int128>(1) << SHORT_DELTA) - 1) << (index * SHORT_DELTA));
-    first_child_s |= ((__int128)value << (index * SHORT_DELTA));
+    first_child_s[index] = value;
   }
 
   // Helper functions to get and set last child pointers by index
   inline Short_delta _get_last_child_s(int16_t index) const {
-    return (last_child_s >> (index * SHORT_DELTA)) & ((static_cast<__int128>(1) << SHORT_DELTA) - 1);
+    return last_child_s[index];
   }
 
   inline void _set_last_child_s(int16_t index, Short_delta value) {
-    last_child_s &= ~((__int128)((static_cast<__int128>(1) << SHORT_DELTA) - 1) << (index * SHORT_DELTA));
-    last_child_s |= ((__int128)value << (index * SHORT_DELTA));
+    last_child_s[index] = value;
   }
 
 public:
@@ -165,9 +156,10 @@ public:
       , first_child_l(INVALID)
       , last_child_l(INVALID)
       , num_short_del_occ(0)
-      , is_leaf(true)
-      , first_child_s(INVALID)
-      , last_child_s(INVALID) {}
+      , is_leaf(true) {
+    first_child_s.fill(INVALID);
+    last_child_s.fill(INVALID);
+  }
 
   /* PARAM CONSTRUCTOR */
   Tree_pointers(Tree_pos p)
@@ -177,9 +169,10 @@ public:
       , first_child_l(INVALID)
       , last_child_l(INVALID)
       , num_short_del_occ(0)
-      , is_leaf(true)
-      , first_child_s(INVALID)
-      , last_child_s(INVALID) {}
+      , is_leaf(true) {
+    first_child_s.fill(INVALID);
+    last_child_s.fill(INVALID);
+  }
 
   // Getters
   [[nodiscard]] Tree_pos get_parent() const { return parent; }

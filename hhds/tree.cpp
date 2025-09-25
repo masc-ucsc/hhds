@@ -1,7 +1,7 @@
 // test.cpp
 #include "tree.hpp"
 
-static_assert(sizeof(hhds::Tree_pointers) == 64);
+static_assert(sizeof(hhds::Tree_pointers) == 128);  // Increased from 64 to 128 bytes for simplified addressing
 
 #if 0
 int main() {

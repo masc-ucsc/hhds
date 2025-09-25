@@ -27,7 +27,7 @@ fn build_hhds_tree(rng: &mut StdRng, depth_val: u32) -> HhdsTree {
         let mut next_level = Vec::new();
 
         for node in current_level {
-            let num_children = rng.random_range(1..=7);
+            let num_children = rng.random_range(3..=14);
             for _i in 0..num_children {
                 let data = id;
                 id += 1;
@@ -54,7 +54,7 @@ fn build_ego_tree(rng: &mut StdRng, depth_val: u32) -> EgoTree<i32> {
         let mut next_level = Vec::new();
 
         for node_id in current_level {
-            let num_children = rng.random_range(1..=7);
+            let num_children = rng.random_range(3..=14);
             for _i in 0..num_children {
                 let data = id;
                 id += 1;
