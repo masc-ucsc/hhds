@@ -242,8 +242,7 @@ private:
   }
 
   [[nodiscard]] inline bool _contains_data(const Tree_pos& idx) const noexcept {
-    return (pointers_stack[idx >> CHUNK_SHIFT].get_num_short_del_occ() >= (idx & CHUNK_MASK));
-    // return (idx < data_stack.size() && data_stack[idx].has_value());
+    return (pointers_stack[idx >> CHUNK_SHIFT].get_num_short_del_occ() > (idx & CHUNK_MASK));
   }
 
   /* Function to add an entry to the pointers and data stack (typically for add/append)*/
@@ -1154,9 +1153,7 @@ public:
     I(tree_ref < 0, "Invalid tree reference - must be negative");
     const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
     I(tree_idx < trees.size(), "Tree index out of range");
-    if (!trees[tree_idx]) {
-      throw std::runtime_error("Attempting to access deleted tree");
-    }
+    I(trees[tree_idx], "Attempting to access deleted tree");
     return *trees[tree_idx];
   }
 
@@ -1229,9 +1226,7 @@ inline Tree_pos tree<X>::get_last_child(const Tree_pos& parent_index) const {
  */
 template <typename X>
 inline Tree_pos tree<X>::get_first_child(const Tree_pos& parent_index) const {
-  // if (!_check_idx_exists(parent_index)) {
-  //     throw std::out_of_range("get_first_child: Parent index out of range");
-  // }
+  I(_check_idx_exists(parent_index), "get_first_child: Parent index out of range");
 
   const auto chunk_id     = (parent_index >> CHUNK_SHIFT);
   const auto chunk_offset = (parent_index & CHUNK_MASK);
@@ -1323,10 +1318,9 @@ inline Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) const {
   }
 
   // Check if the next sibling is within the same chunk, at idx + 1
-  // We do not accept negative id.
-  const auto curr_chunk_id     = (sibling_id <= 0) ? 0 : (sibling_id >> CHUNK_SHIFT);
+  const auto curr_chunk_id     = (sibling_id >> CHUNK_SHIFT);
   const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
-  if (curr_chunk_offset < CHUNK_MASK and _contains_data((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1)) {
+  if (curr_chunk_offset < CHUNK_MASK && _contains_data((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1)) {
     return static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1);
   }
 
@@ -1358,7 +1352,7 @@ inline Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
   // Check if the prev sibling is within the same chunk, at idx - 1
   const auto curr_chunk_id     = (sibling_id >> CHUNK_SHIFT);
   const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
-  if (curr_chunk_offset > 0 and _contains_data((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset - 1)) {
+  if (curr_chunk_offset > 0 && _contains_data((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset - 1)) {
     return static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset - 1);
   }
 
@@ -1382,10 +1376,7 @@ inline Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
  */
 template <typename X>
 Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
-  /* POSSIBLE IMPROVEMENT -> PERFECTLY FORWARD THE DATA AND SIBLING ID*/
-  if (!_check_idx_exists(sibling_id)) {
-    throw std::out_of_range("append_sibling: Sibling index out of range");
-  }
+  I(_check_idx_exists(sibling_id), "append_sibling: Sibling index out of range");
 
   // Directly go to the last sibling of the sibling_id
   const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
@@ -1409,7 +1400,7 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
   }
 
   // Increment the number of occupied slots in the sibling chunk
-  pointers_stack[new_sib >> CHUNK_SHIFT].set_num_short_del_occ((((unsigned)new_sib) & CHUNK_MASK));
+  pointers_stack[new_sib >> CHUNK_SHIFT].set_num_short_del_occ(new_sib & CHUNK_MASK);
   return new_sib;
 }
 
@@ -1424,9 +1415,7 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
  */
 template <typename X>
 Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data) {
-  // if (!_check_idx_exists(sibling_id)) {
-  //     throw std::out_of_range("insert_next_sibling: Sibling index out of range");
-  // }
+  I(_check_idx_exists(sibling_id), "insert_next_sibling: Sibling index out of range");
 
   // If this is the last child, just append a sibling
   if (is_last_child(sibling_id)) {
@@ -1460,9 +1449,6 @@ Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data)
 template <typename X>
 Tree_pos tree<X>::add_root(const X& data) {
   I(pointers_stack.empty(), "add_root: Tree is not empty");
-  // if (!pointers_stack.empty()) {
-  //     throw std::logic_error("add_root: Tree is not empty");
-  // }
 
   // Add empty nodes to make the tree 1-indexed
   for (int i = 0; i < CHUNK_SIZE; i++) {
@@ -1495,9 +1481,7 @@ Tree_pos tree<X>::add_root(const X& data) {
  */
 template <typename X>
 Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
-  if (!_check_idx_exists(parent_index)) {
-    throw std::out_of_range("add_child: Parent index out of range: " + std::to_string(parent_index));
-  }
+  I(_check_idx_exists(parent_index), "add_child: Parent index out of range");
   // This is not the first child being added
   const auto last_child_id = get_last_child(parent_index);
   if (last_child_id != INVALID) {
@@ -1530,14 +1514,8 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
  */
 template <typename X>
 void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
-  if (!_check_idx_exists(leaf_index)) {
-    throw std::out_of_range("delete_leaf: Leaf index out of range");
-  }
-
-  // // Check if the leaf actually is a leaf
-  if (get_first_child(leaf_index) != INVALID) {
-    throw std::logic_error("delete_leaf: Index is not a leaf");
-  }
+  I(_check_idx_exists(leaf_index), "delete_leaf: Leaf index out of range");
+  I(get_first_child(leaf_index) == INVALID, "delete_leaf: Index is not a leaf");
 
   auto& node = pointers_stack[leaf_index >> CHUNK_SHIFT];
   if (node.has_subtree_ref() && forest_ptr) {
@@ -1561,10 +1539,10 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
       data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1] = std::nullopt;
 
       // Update the parent pointer of the moved node
+      const auto moved_node = (leaf_chunk_id << CHUNK_SHIFT) + offset;
       const auto fc = get_first_child((leaf_chunk_id << CHUNK_SHIFT) + offset + 1);
       if (fc != INVALID) {
-        pointers_stack[fc >> CHUNK_SHIFT].set_parent((leaf_chunk_id << CHUNK_SHIFT) + offset);
-        _update_parent_pointer(fc, (leaf_chunk_id << CHUNK_SHIFT) + offset);
+        _update_parent_pointer(fc, moved_node);
       }
 
       // If this was moved to the first place in the chunk, convert int16_t to long
@@ -1603,8 +1581,10 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
     // If the leaf that I just deleted was a last/first child
     // Get the parent of the leaf
     const auto parent_index = pointers_stack[leaf_chunk_id].get_parent();
-    const auto new_par_id   = _try_fit_child_ptr(parent_index, prev_sibling_id);
-    pointers_stack[leaf_chunk_id].set_parent(new_par_id);
+    if (prev_sibling_id != INVALID) {
+      const auto new_par_id = _try_fit_child_ptr(parent_index, prev_sibling_id);
+      pointers_stack[leaf_chunk_id].set_parent(new_par_id);
+    }
 
     // check if parent has no more children
     if (get_first_child(parent_index) == INVALID) {
@@ -1623,9 +1603,7 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
  */
 template <typename X>
 void tree<X>::delete_subtree(const Tree_pos& subtree_root) {
-  if (!_check_idx_exists(subtree_root)) {
-    throw std::out_of_range("delete_subtree: Subtree root index out of range");
-  }
+  I(_check_idx_exists(subtree_root), "delete_subtree: Subtree root index out of range");
 
   // Vector to store the nodes in reverse level order
   std::vector<Tree_pos> nodes_to_delete;
@@ -1645,16 +1623,18 @@ void tree<X>::delete_subtree(const Tree_pos& subtree_root) {
     }
   }
 
+  // Remove subtree references first
+  for (auto node : nodes_to_delete) {
+    auto& node_ptr = pointers_stack[node >> CHUNK_SHIFT];
+    if (node_ptr.has_subtree_ref() && forest_ptr) {
+      forest_ptr->remove_reference(node_ptr.get_subtree_ref());
+    }
+  }
+
   // Delete nodes in reverse order to ensure leaves are deleted first
   for (auto it = nodes_to_delete.rbegin(); it != nodes_to_delete.rend(); ++it) {
     if (is_leaf(*it)) {
       delete_leaf(*it);
-    }
-  }
-  for (auto node : pre_order(subtree_root)) {
-    auto& node_ptr = pointers_stack[node >> CHUNK_SHIFT];
-    if (node_ptr.has_subtree_ref() && forest_ptr) {
-      forest_ptr->remove_reference(node_ptr.get_subtree_ref());
     }
   }
 }
