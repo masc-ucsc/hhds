@@ -21,6 +21,7 @@
 #include <set>
 #include <stdexcept>
 #include <vector>
+#include <bitset>
 
 #include "iassert.hpp"
 
@@ -232,7 +233,8 @@ class tree {
 private:
   /* The tree pointers and data stored separately */
   std::vector<Tree_pointers>    pointers_stack;
-  std::vector<std::optional<X>> data_stack;
+  std::vector<X>                data_stack;
+  std::vector<std::bitset<64>>  validity_stack;
   Forest<X>*                    forest_ptr;
 
   /* Special functions for sanity */
@@ -242,14 +244,151 @@ private:
   }
 
   [[nodiscard]] inline bool _contains_data(const Tree_pos& idx) const noexcept {
-    return (pointers_stack[idx >> CHUNK_SHIFT].get_num_short_del_occ() > (idx & CHUNK_MASK));
+    const auto bitset_idx = idx >> 6;  // Divide by 64 (bits per bitset)
+    const auto bit_pos = idx & 63;     // Modulo 64
+    return bitset_idx < static_cast<Tree_pos>(validity_stack.size()) && validity_stack[bitset_idx][bit_pos];
+  }
+
+  inline void _set_data_valid(const Tree_pos& idx) noexcept {
+    const auto bitset_idx = idx >> 6;
+    const auto bit_pos = idx & 63;
+    if (bitset_idx >= static_cast<Tree_pos>(validity_stack.size())) {
+      validity_stack.resize(bitset_idx + 1);
+    }
+    validity_stack[bitset_idx][bit_pos] = true;
+  }
+
+  inline void _set_data_invalid(const Tree_pos& idx) noexcept {
+    const auto bitset_idx = idx >> 6;
+    const auto bit_pos = idx & 63;
+    if (bitset_idx < static_cast<Tree_pos>(validity_stack.size())) {
+      validity_stack[bitset_idx][bit_pos] = false;
+    }
+  }
+
+  // SIMD-friendly bulk validity check for a range
+  [[nodiscard]] inline bool _has_any_valid_in_range(Tree_pos start, Tree_pos end) const noexcept {
+    const auto start_bitset = start >> 6;
+    const auto end_bitset = end >> 6;
+
+    if (start_bitset >= static_cast<Tree_pos>(validity_stack.size())) return false;
+
+    // Single bitset case
+    if (start_bitset == end_bitset) {
+      const auto start_bit = start & 63;
+      const auto end_bit = end & 63;
+      const auto mask = ((1ULL << (end_bit - start_bit + 1)) - 1) << start_bit;
+      return (validity_stack[start_bitset].to_ullong() & mask) != 0;
+    }
+
+    // Multi-bitset case - check first partial, middle full, last partial
+    const auto start_bit = start & 63;
+    const auto end_bit = end & 63;
+
+    // Check first partial bitset
+    const auto first_mask = ~((1ULL << start_bit) - 1);
+    if ((validity_stack[start_bitset].to_ullong() & first_mask) != 0) return true;
+
+    // Check middle full bitsets
+    for (auto i = start_bitset + 1; i < end_bitset && i < static_cast<Tree_pos>(validity_stack.size()); ++i) {
+      if (validity_stack[i].any()) return true;
+    }
+
+    // Check last partial bitset
+    if (end_bitset < static_cast<Tree_pos>(validity_stack.size())) {
+      const auto last_mask = (1ULL << (end_bit + 1)) - 1;
+      if ((validity_stack[end_bitset].to_ullong() & last_mask) != 0) return true;
+    }
+
+    return false;
+  }
+
+  // SIMD-friendly function to find the next valid index in a range
+  [[nodiscard]] inline Tree_pos _find_next_valid_in_range(Tree_pos start, Tree_pos end) const noexcept {
+    const auto start_bitset = start >> 6;
+    const auto end_bitset = end >> 6;
+
+    if (start_bitset >= static_cast<Tree_pos>(validity_stack.size())) return INVALID;
+
+    // Single bitset case
+    if (start_bitset == end_bitset) {
+      const auto start_bit = start & 63;
+      const auto end_bit = std::min(static_cast<Tree_pos>(end & 63), static_cast<Tree_pos>(63));
+
+      auto bits = validity_stack[start_bitset].to_ullong();
+      bits &= ~((1ULL << start_bit) - 1);  // Clear bits before start
+      bits &= (1ULL << (end_bit + 1)) - 1; // Clear bits after end
+
+      if (bits != 0) {
+        return static_cast<Tree_pos>((start_bitset << 6) + __builtin_ctzll(bits));
+      }
+      return INVALID;
+    }
+
+    // Multi-bitset case
+    const auto start_bit = start & 63;
+
+    // Check first partial bitset
+    auto bits = validity_stack[start_bitset].to_ullong();
+    bits &= ~((1ULL << start_bit) - 1);  // Clear bits before start
+    if (bits != 0) {
+      return static_cast<Tree_pos>((start_bitset << 6) + __builtin_ctzll(bits));
+    }
+
+    // Check middle full bitsets
+    for (auto i = start_bitset + 1; i < end_bitset && i < static_cast<Tree_pos>(validity_stack.size()); ++i) {
+      bits = validity_stack[i].to_ullong();
+      if (bits != 0) {
+        return static_cast<Tree_pos>((i << 6) + __builtin_ctzll(bits));
+      }
+    }
+
+    // Check last partial bitset
+    if (end_bitset < static_cast<Tree_pos>(validity_stack.size())) {
+      const auto end_bit = end & 63;
+      bits = validity_stack[end_bitset].to_ullong();
+      bits &= (1ULL << (end_bit + 1)) - 1;  // Clear bits after end
+      if (bits != 0) {
+        return static_cast<Tree_pos>((end_bitset << 6) + __builtin_ctzll(bits));
+      }
+    }
+
+    return INVALID;
+  }
+
+  // Bulk validation check for chunk boundaries - returns count of valid entries
+  [[nodiscard]] inline size_t _count_valid_in_chunk(Tree_pos chunk_start) const noexcept {
+    const auto bitset_start = chunk_start >> 6;
+    const auto bit_start = chunk_start & 63;
+
+    // Handle case where chunk spans bitset boundary
+    if ((bit_start + CHUNK_SIZE) > 64) {
+      size_t count = 0;
+      for (int i = 0; i < CHUNK_SIZE; ++i) {
+        if (_contains_data(chunk_start + i)) count++;
+      }
+      return count;
+    }
+
+    // Fast path: entire chunk within single bitset
+    if (bitset_start < static_cast<Tree_pos>(validity_stack.size())) {
+      const auto mask = ((1ULL << CHUNK_SIZE) - 1) << bit_start;
+      const auto masked_bits = validity_stack[bitset_start].to_ullong() & mask;
+      return __builtin_popcountll(masked_bits);
+    }
+
+    return 0;
   }
 
   /* Function to add an entry to the pointers and data stack (typically for add/append)*/
   Tree_pos _create_space(const X& data) {
     // Make space for CHUNK_SIZE number of entries at the end
+    const auto start_pos = data_stack.size();
     data_stack.emplace_back(data);
     data_stack.resize(data_stack.size() + CHUNK_MASK);
+
+    // Mark the first entry as valid, others as invalid
+    _set_data_valid(start_pos);
 
     // Add the single pointer node for all CHUNK_SIZE entries
     pointers_stack.emplace_back();
@@ -301,13 +440,15 @@ private:
     /* BASE CASE OF THE RECURSION */
     // If parent has long ptr access, this is easy
     if ((parent_id & CHUNK_MASK) == 0) {
-      pointers_stack[parent_id >> CHUNK_SHIFT].set_last_child_l(child_id >> CHUNK_SHIFT);
-      if (pointers_stack[parent_id >> CHUNK_SHIFT].get_first_child_l() == INVALID) {
-        pointers_stack[parent_id >> CHUNK_SHIFT].set_first_child_l(child_id >> CHUNK_SHIFT);
+      const auto parent_chunk = parent_id >> CHUNK_SHIFT;
+      const auto child_chunk = child_id >> CHUNK_SHIFT;
+      pointers_stack[parent_chunk].set_last_child_l(child_chunk);
+      if (pointers_stack[parent_chunk].get_first_child_l() == INVALID) {
+        pointers_stack[parent_chunk].set_first_child_l(child_chunk);
       }
 
       // update is_leaf flag
-      pointers_stack[parent_id >> CHUNK_SHIFT].set_is_leaf(false);
+      pointers_stack[parent_chunk].set_is_leaf(false);
 
       return parent_id;
     }
@@ -346,7 +487,7 @@ private:
 
         // Remove data from old, and put it here
         data_stack[new_chunk_id << CHUNK_SHIFT] = data_stack[curr_id];
-        data_stack[curr_id]                     = std::nullopt;
+        _set_data_invalid(curr_id);
 
         // Convert the int16_t pointers here to long pointers there
         const auto fc = pointers_stack[parent_chunk_id].get_first_child_s_at(offset);
@@ -425,25 +566,26 @@ public:
    * Data access API
    */
   X& get_data(const Tree_pos& idx) {
-    GI(_check_idx_exists(idx), data_stack[idx].has_value(), "Index out of range or no data at the index");
+    GI(_check_idx_exists(idx), _contains_data(idx), "Index out of range or no data at the index");
 
-    return *data_stack[idx];
+    return data_stack[idx];
   }
 
   const X& get_data(const Tree_pos& idx) const {
-    GI(_check_idx_exists(idx), data_stack[idx].has_value(), "Index out of range or no data at the index");
+    GI(_check_idx_exists(idx), _contains_data(idx), "Index out of range or no data at the index");
 
-    return *data_stack[idx];
+    return data_stack[idx];
   }
 
   void set_data(const Tree_pos& idx, const X& data) {
     I(_check_idx_exists(idx), "Index out of range");
 
     data_stack[idx] = data;
+    _set_data_valid(idx);
   }
 
   // Use "X operator[](const Tree_pos& idx) const { return get_data(idx); }" to pass data as a const reference
-  X operator[](const Tree_pos& idx) { return *data_stack[idx]; }
+  X operator[](const Tree_pos& idx) { return data_stack[idx]; }
 
   /**
    *  Debug API (Temp)
@@ -451,7 +593,7 @@ public:
   void print_tree(int deep = 0) {
     for (size_t i = 0; i < pointers_stack.size(); i++) {
       std::cout << "Index: " << (i << CHUNK_SHIFT) << " Parent: " << pointers_stack[i].get_parent()
-                << " Data: " << data_stack[i << CHUNK_SHIFT].value_or(-1) << std::endl;
+                << " Data: " << (_contains_data(i << CHUNK_SHIFT) ? "VALID" : "INVALID") << std::endl;
       std::cout << "First Child: " << pointers_stack[i].get_first_child_l() << " ";
       std::cout << "Last Child: " << pointers_stack[i].get_last_child_l() << " ";
       std::cout << "Next Sibling: " << pointers_stack[i].get_next_sibling() << " ";
@@ -465,8 +607,8 @@ public:
 
     if (deep) {
       for (size_t i = 0; i < data_stack.size(); i++) {
-        if (data_stack[i].has_value()) {
-          std::cout << "Index: " << i << " Data: " << data_stack[i].value() << std::endl;
+        if (_contains_data(i)) {
+          std::cout << "Index: " << i << " Data: " << data_stack[i] << std::endl;
           std::cout << "PAR : " << get_parent(i) << std::endl;
           std::cout << "FC  : " << get_first_child(i) << std::endl;
           std::cout << "LC  : " << get_last_child(i) << std::endl;
@@ -649,7 +791,7 @@ public:
         }
       }
 
-      return (child_chunk_id == INVALID) ? INVALID : static_cast<Tree_pos>(child_chunk_id << CHUNK_SHIFT);
+      return static_cast<Tree_pos>(child_chunk_id << CHUNK_SHIFT);
     }
 
     inline Tree_pos fast_get_sibling_next(Tree_pos sibling_id) const {
@@ -667,7 +809,7 @@ public:
 
       // Check next sibling chunk
       const auto next_sibling_chunk = tree_ptr->pointers_stack[curr_chunk_id].get_next_sibling();
-      return (next_sibling_chunk == INVALID) ? INVALID : static_cast<Tree_pos>(next_sibling_chunk << CHUNK_SHIFT);
+      return static_cast<Tree_pos>(next_sibling_chunk << CHUNK_SHIFT);
     }
 
     inline Tree_pos fast_get_parent(Tree_pos index) const {
@@ -1244,7 +1386,7 @@ inline Tree_pos tree<X>::get_first_child(const Tree_pos& parent_index) const {
   }
 
   // The beginning of the chunk IS the first child (always)
-  return (child_chunk_id == INVALID) ? INVALID : static_cast<Tree_pos>(child_chunk_id << CHUNK_SHIFT);
+  return static_cast<Tree_pos>(child_chunk_id << CHUNK_SHIFT);
 }
 
 /**
@@ -1320,8 +1462,11 @@ inline Tree_pos tree<X>::get_sibling_next(const Tree_pos& sibling_id) const {
   // Check if the next sibling is within the same chunk, at idx + 1
   const auto curr_chunk_id     = (sibling_id >> CHUNK_SHIFT);
   const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
-  if (curr_chunk_offset < CHUNK_MASK && _contains_data((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1)) {
-    return static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1);
+  if (curr_chunk_offset < CHUNK_MASK) {
+    const auto next_sibling = (curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1;
+    if (_contains_data(next_sibling)) {
+      return static_cast<Tree_pos>(next_sibling);
+    }
   }
 
   // Just jump to the next sibling chunk, or returns invalid
@@ -1352,8 +1497,11 @@ inline Tree_pos tree<X>::get_sibling_prev(const Tree_pos& sibling_id) const {
   // Check if the prev sibling is within the same chunk, at idx - 1
   const auto curr_chunk_id     = (sibling_id >> CHUNK_SHIFT);
   const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
-  if (curr_chunk_offset > 0 && _contains_data((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset - 1)) {
-    return static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset - 1);
+  if (curr_chunk_offset > 0) {
+    const auto prev_sibling = (curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset - 1;
+    if (_contains_data(prev_sibling)) {
+      return static_cast<Tree_pos>(prev_sibling);
+    }
   }
 
   // Just jump to the next sibling chunk, or returns invalid
@@ -1388,10 +1536,12 @@ Tree_pos tree<X>::append_sibling(const Tree_pos& sibling_id, const X& data) {
     // Make a new chunk after this, and put the data there
     new_sib             = _insert_chunk_after(new_sib >> CHUNK_SHIFT) << CHUNK_SHIFT;
     data_stack[new_sib] = data;
+    _set_data_valid(new_sib);
   } else {
     // Just put the data in the next offset
     new_sib++;
     data_stack[new_sib] = data;
+    _set_data_valid(new_sib);
   }
   const auto first_sib     = get_first_child(parent_id);
   const auto new_parent_id = _try_fit_child_ptr(parent_id, new_sib);
@@ -1430,9 +1580,11 @@ Tree_pos tree<X>::insert_next_sibling(const Tree_pos& sibling_id, const X& data)
   if ((new_sib & CHUNK_MASK) != CHUNK_MASK && !_contains_data(new_sib + 1)) {
     new_sib++;
     data_stack[new_sib] = data;
+    _set_data_valid(new_sib);
   } else {
     new_sib             = _insert_chunk_after(new_sib >> CHUNK_SHIFT) << CHUNK_SHIFT;
     data_stack[new_sib] = data;
+    _set_data_valid(new_sib);
   }
 
   return new_sib;
@@ -1451,16 +1603,16 @@ Tree_pos tree<X>::add_root(const X& data) {
   I(pointers_stack.empty(), "add_root: Tree is not empty");
 
   // Add empty nodes to make the tree 1-indexed
-  for (int i = 0; i < CHUNK_SIZE; i++) {
-    data_stack.emplace_back();
-  }
+  data_stack.resize(CHUNK_SIZE);
   pointers_stack.emplace_back();
 
   // Make space for CHUNK_SIZE number of entries at the end
+  const auto root_pos = data_stack.size();
   data_stack.emplace_back(data);
-  for (int i = 0; i < CHUNK_MASK; i++) {
-    data_stack.emplace_back();
-  }
+  data_stack.resize(data_stack.size() + CHUNK_MASK);
+
+  // Mark the root as valid
+  _set_data_valid(root_pos);
 
   // Add the single pointer node for all CHUNK_SIZE entries
   pointers_stack.emplace_back();
@@ -1527,7 +1679,7 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
   const auto prev_sibling_id   = get_sibling_prev(leaf_index);
 
   // Empty this spot in the data array
-  data_stack[leaf_index] = std::nullopt;
+  _set_data_invalid(leaf_index);
   int16_t remaining_data = 0;
 
   // Swap this forward
@@ -1536,7 +1688,7 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
       remaining_data++;
 
       data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset]     = data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1];
-      data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1] = std::nullopt;
+      _set_data_invalid((leaf_chunk_id << CHUNK_SHIFT) + offset + 1);
 
       // Update the parent pointer of the moved node
       const auto moved_node = (leaf_chunk_id << CHUNK_SHIFT) + offset;
