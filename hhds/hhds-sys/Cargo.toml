@@ -26,6 +26,7 @@ tree-sitter = {version = "0.25.4", features = ["std"]}
 tree-sitter-rust = "0.24"
 tree-sitter-cpp = "0.23.4"
 anyhow = "1.0.98"
+ego-tree = "0.6"
 
 [[bench]]
 name = "wide_traversal_bench"
@@ -55,5 +56,35 @@ harness = false
 [[bench]]
 name = "representative_build_bench"
 path = "benches/creation/representative_tree_bench.rs"
+harness = false
+
+[[bench]]
+name = "wide_tree_ego_comparison"
+path = "benches/creation/wide_tree_ego_comparison.rs"
+harness = false
+
+[[bench]]
+name = "wide_tree_ego_comparison_small"
+path = "benches/creation/wide_tree_ego_comparison_small.rs"
+harness = false
+
+[[bench]]
+name = "wide_tree_traversal_ego_comparison"
+path = "benches/traversal/wide_tree_traversal_ego_comparison.rs"
+harness = false
+
+[[bench]]
+name = "wide_tree_traversal_ego_comparison_small"
+path = "benches/traversal/wide_tree_traversal_ego_comparison_small.rs"
+harness = false
+
+[[bench]]
+name = "chip_typical_navigation_comparison"
+path = "benches/navigation/chip_typical_navigation_comparison.rs"
+harness = false
+
+[[bench]]
+name = "mixed_tree_building_comparison"
+path = "benches/creation/mixed_tree_building_comparison.rs"
 harness = false
 

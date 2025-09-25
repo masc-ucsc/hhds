@@ -345,6 +345,26 @@ cc_binary(
     ],
 )
 
+cc_test(
+    name = "chip_typical_navigation_comparison",
+    srcs = ["tests/chip_typical_navigation_comparison.cpp"],
+    deps = [
+        "@google_benchmark//:benchmark",
+        "@googletest//:gtest_main",
+        ":core",
+    ],
+)
+
+cc_test(
+    name = "mixed_tree_building_benchmark",
+    srcs = ["tests/mixed_tree_building_benchmark.cpp"],
+    deps = [
+        "@google_benchmark//:benchmark",
+        "@googletest//:gtest_main",
+        ":core",
+    ],
+)
+
 # cc_binary(
 #     name = "graph_bin",
 #     srcs = ["graph_main.cpp"],

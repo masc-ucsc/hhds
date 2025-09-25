@@ -51,6 +51,26 @@ impl Tree {
         unsafe { get_root(self.handle) }
     }
 
+    pub fn get_parent(&self, node_pos: hhds_Tree_pos) -> hhds_Tree_pos {
+        unsafe { get_parent(self.handle, node_pos) }
+    }
+
+    pub fn get_first_child(&self, parent_pos: hhds_Tree_pos) -> hhds_Tree_pos {
+        unsafe { get_first_child(self.handle, parent_pos) }
+    }
+
+    pub fn get_last_child(&self, parent_pos: hhds_Tree_pos) -> hhds_Tree_pos {
+        unsafe { get_last_child(self.handle, parent_pos) }
+    }
+
+    pub fn get_sibling_next(&self, sibling_pos: hhds_Tree_pos) -> hhds_Tree_pos {
+        unsafe { get_sibling_next(self.handle, sibling_pos) }
+    }
+
+    pub fn get_sibling_prev(&self, sibling_pos: hhds_Tree_pos) -> hhds_Tree_pos {
+        unsafe { get_sibling_prev(self.handle, sibling_pos) }
+    }
+
     pub fn get_data(&self, tree_ref: hhds_Tree_pos) -> c_int {
         unsafe { tree_get_data(self.handle, tree_ref) }
     }
@@ -61,6 +81,14 @@ impl Tree {
 
     pub fn add_child(&self, parent_idx: hhds_Tree_pos, data: c_int) -> hhds_Tree_pos {
         unsafe { add_child(self.handle, parent_idx, data) }
+    }
+
+    pub fn append_sibling(&self, sibling_idx: hhds_Tree_pos, data: c_int) -> hhds_Tree_pos {
+        unsafe { append_sibling(self.handle, sibling_idx, data) }
+    }
+
+    pub fn insert_next_sibling(&self, sibling_idx: hhds_Tree_pos, data: c_int) -> hhds_Tree_pos {
+        unsafe { insert_next_sibling(self.handle, sibling_idx, data) }
     }
 
     pub fn add_subtree_ref(&self, node_pos: hhds_Tree_pos, subtree_ref: hhds_Tree_pos) {

@@ -34,6 +34,14 @@ hhds::Tree_pos get_first_child(TreeIntHandle tree_handle, hhds::Tree_pos parent_
   TreeInt* tree = static_cast<TreeInt *>(tree_handle);
   return tree->get_first_child(parent_index);
 }
+hhds::Tree_pos get_sibling_next(TreeIntHandle tree_handle, hhds::Tree_pos sibling_id) {
+  TreeInt* tree = static_cast<TreeInt *>(tree_handle);
+  return tree->get_sibling_next(sibling_id);
+}
+hhds::Tree_pos get_sibling_prev(TreeIntHandle tree_handle, hhds::Tree_pos sibling_id) {
+  TreeInt* tree = static_cast<TreeInt *>(tree_handle);
+  return tree->get_sibling_prev(sibling_id);
+}
 hhds::Tree_pos get_root(TreeIntHandle tree_handle) {
   return static_cast<TreeInt *>(tree_handle)->get_root();
 }
