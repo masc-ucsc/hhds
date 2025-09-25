@@ -3,13 +3,13 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    println!("cargo:rustc-link-lib=bz2");
+    // println!("cargo:rustc-link-lib=bz2");
     println!("cargo:rustc-link-search=native=../../bazel-bin/external");
     println!("cargo:rustc-link-search=native=../../bazel-bin/hhds"); //TODO: Adjustments
     println!("cargo:rustc-link-lib=static=core"); // set to static but dylib if it's .so
     println!("cargo:rustc-link-search=native=../../bazel-bin/external/iassert+");
-    println!("cargo:rustc-link-lib=static=iassert");
-    println!("cargo:rustc-link-lib=c++");
+    println!("cargo:rustc-link-lib=iassert");
+    println!("cargo:rustc-link-lib=stdc++");
 
     // The bindgen::Builder is the main entry point
     // to bindgen, and lets you build up options for

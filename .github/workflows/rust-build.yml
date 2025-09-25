@@ -36,12 +36,8 @@ jobs:
         sudo apt-get update
         sudo apt-get install libfmt-dev libbz2-dev libc++-dev libc++abi-dev -y
 
-
-    - name: Clone iassert repo
-      run: git clone https://github.com/masc-ucsc/iassert.git hhds/iassert
-
     - name: Build iassert
-      run: bazel build //hhds/iassert:all
+      run: bazel build @iassert
 
     - name: Build Rust project
       run: |
