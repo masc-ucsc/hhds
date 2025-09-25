@@ -95,7 +95,7 @@ void test_tree_traversal_with_subtrees() {
   int              count = 0;
   std::vector<int> visited_values;
 
-  auto range = main_tree.pre_order(main_tree.get_root(), true);
+  auto range = main_tree.pre_order_with_subtrees(main_tree.get_root(), true);
   for (auto it = range.begin(); it != range.end(); ++it) {
     visited_values.push_back(it.get_data());
     count++;
@@ -187,7 +187,7 @@ void test_complex_forest_operations() {
   int           node_count = 0;
   std::set<int> unique_values;
 
-  auto range = main_tree.pre_order(main_tree.get_root(), true);
+  auto range = main_tree.pre_order_with_subtrees(main_tree.get_root(), true);
   for (auto it = range.begin(); it != range.end(); ++it) {
     node_count++;
     unique_values.insert(it.get_data());
@@ -258,8 +258,8 @@ void test_edge_cases() {
   std::set<int> unique_values;
   auto&         first_tree = forest.get_tree(tree_refs[0]);
 
-  for (auto it = first_tree.pre_order(first_tree.get_root(), true).begin();
-       it != first_tree.pre_order(first_tree.get_root(), true).end();
+  for (auto it = first_tree.pre_order_with_subtrees(first_tree.get_root(), true).begin();
+       it != first_tree.pre_order_with_subtrees(first_tree.get_root(), true).end();
        ++it) {
     count++;
     unique_values.insert(it.get_data());

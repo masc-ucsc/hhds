@@ -393,14 +393,18 @@ public:
   /**
    *  Query based API (no updates)
    */
-  [[nodiscard]] Tree_pos get_parent(const Tree_pos& curr_index) const;
+  [[nodiscard]] inline Tree_pos get_parent(const Tree_pos& curr_index) const {
+    return pointers_stack[curr_index >> CHUNK_SHIFT].get_parent();
+  }
   [[nodiscard]] Tree_pos get_last_child(const Tree_pos& parent_index) const;
   [[nodiscard]] Tree_pos get_first_child(const Tree_pos& parent_index) const;
   [[nodiscard]] bool     is_last_child(const Tree_pos& self_index) const;
   [[nodiscard]] bool     is_first_child(const Tree_pos& self_index) const;
   [[nodiscard]] Tree_pos get_sibling_next(const Tree_pos& sibling_id) const;
   [[nodiscard]] Tree_pos get_sibling_prev(const Tree_pos& sibling_id) const;
-  [[nodiscard]] bool     is_leaf(const Tree_pos& leaf_index) const;
+  [[nodiscard]] inline bool     is_leaf(const Tree_pos& leaf_index) const {
+    return pointers_stack[leaf_index >> CHUNK_SHIFT].get_is_leaf();
+  }
   [[nodiscard]] Tree_pos get_root() const { return ROOT; }
 
   /**
@@ -625,8 +629,115 @@ public:
 
   const_sibling_order_range sibling_order(Tree_pos start) const { return const_sibling_order_range(start, this); }
 
-  // PRE-ORDER TRAVERSAL
-  class pre_order_iterator : public traversal_iterator_base<pre_order_iterator> {
+  // PRE-ORDER TRAVERSAL (Optimized for performance)
+  class pre_order_iterator {
+  private:
+    Tree_pos current;
+    const tree<X>* tree_ptr;
+
+    // Fast inline helpers to avoid function call overhead
+    inline Tree_pos fast_get_first_child(Tree_pos parent_index) const {
+      const auto chunk_id = (parent_index >> CHUNK_SHIFT);
+      const auto chunk_offset = (parent_index & CHUNK_MASK);
+
+      Tree_pos child_chunk_id = INVALID;
+      if (!chunk_offset) {
+        child_chunk_id = tree_ptr->pointers_stack[chunk_id].get_first_child_l();
+      } else {
+        const auto first_child_s_i = tree_ptr->pointers_stack[chunk_id].get_first_child_s_at(chunk_offset - 1);
+        if (first_child_s_i != INVALID) {
+          child_chunk_id = chunk_id + first_child_s_i;
+        }
+      }
+
+      return (child_chunk_id == INVALID) ? INVALID : static_cast<Tree_pos>(child_chunk_id << CHUNK_SHIFT);
+    }
+
+    inline Tree_pos fast_get_sibling_next(Tree_pos sibling_id) const {
+      // Fast path: check same chunk first
+      const auto curr_chunk_id = (sibling_id >> CHUNK_SHIFT);
+      const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
+
+      // Check if next slot in same chunk has data
+      if (curr_chunk_offset < CHUNK_MASK) {
+        const auto next_chunk_occ = tree_ptr->pointers_stack[curr_chunk_id].get_num_short_del_occ();
+        if ((curr_chunk_offset + 1) <= next_chunk_occ) {
+          return (curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1;
+        }
+      }
+
+      // Check next sibling chunk
+      const auto next_sibling_chunk = tree_ptr->pointers_stack[curr_chunk_id].get_next_sibling();
+      return (next_sibling_chunk == INVALID) ? INVALID : static_cast<Tree_pos>(next_sibling_chunk << CHUNK_SHIFT);
+    }
+
+    inline Tree_pos fast_get_parent(Tree_pos index) const {
+      return tree_ptr->pointers_stack[index >> CHUNK_SHIFT].get_parent();
+    }
+
+    inline bool fast_is_leaf(Tree_pos index) const {
+      return tree_ptr->pointers_stack[index >> CHUNK_SHIFT].get_is_leaf();
+    }
+
+  public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = Tree_pos;
+    using difference_type = std::ptrdiff_t;
+    using pointer = Tree_pos*;
+    using reference = Tree_pos&;
+
+    pre_order_iterator(Tree_pos start, const tree<X>* tree, bool /* follow_subtrees */ = false)
+        : current(start), tree_ptr(tree) {}
+
+    X get_data() const { return tree_ptr->get_data(current); }
+
+    pre_order_iterator& operator++() {
+      // Optimized preorder traversal - no subtree handling for performance
+
+      // 1. Try to go to first child
+      if (!fast_is_leaf(current)) {
+        auto child = fast_get_first_child(current);
+        if (child != INVALID) {
+          current = child;
+          return *this;
+        }
+      }
+
+      // 2. Try to go to next sibling
+      auto sibling = fast_get_sibling_next(current);
+      if (sibling != INVALID) {
+        current = sibling;
+        return *this;
+      }
+
+      // 3. Go up to parent and find their next sibling
+      auto parent = fast_get_parent(current);
+      while (parent != ROOT && parent != INVALID) {
+        auto parent_sibling = fast_get_sibling_next(parent);
+        if (parent_sibling != INVALID) {
+          current = parent_sibling;
+          return *this;
+        }
+        parent = fast_get_parent(parent);
+      }
+
+      current = INVALID;
+      return *this;
+    }
+
+    bool operator==(const pre_order_iterator& other) const {
+      return current == other.current;
+    }
+
+    bool operator!=(const pre_order_iterator& other) const {
+      return current != other.current;
+    }
+
+    Tree_pos operator*() const { return current; }
+  };
+
+  // Keep the full-featured iterator for subtree traversal when needed
+  class pre_order_iterator_with_subtrees : public traversal_iterator_base<pre_order_iterator_with_subtrees> {
     // private:
 
   public:
@@ -636,7 +747,7 @@ public:
     std::vector<Tree_pos> prev_trees;
     Tree_pos              return_to_node;  // Node to return to after subtree traversal
     std::vector<Tree_pos> return_to_nodes;
-    using base = traversal_iterator_base<pre_order_iterator>;
+    using base = traversal_iterator_base<pre_order_iterator_with_subtrees>;
     using base::current;
     using base::m_follow_subtrees;
     using iterator_category = std::forward_iterator_tag;
@@ -645,12 +756,12 @@ public:
     using pointer           = Tree_pos*;
     using reference         = Tree_pos&;
 
-    pre_order_iterator(Tree_pos start, tree<X>* tree, bool follow_refs)
+    pre_order_iterator_with_subtrees(Tree_pos start, tree<X>* tree, bool follow_refs)
         : base(start, tree, follow_refs), current_tree(tree), main_tree(tree), return_to_node(INVALID) {}
 
     X get_data() const { return current_tree->get_data(current); }
 
-    pre_order_iterator& operator++() {
+    pre_order_iterator_with_subtrees& operator++() {
       if (m_follow_subtrees && current_tree->forest_ptr) {
         auto& node = this->current_tree->pointers_stack[this->current >> CHUNK_SHIFT];
         if (node.has_subtree_ref()) {
@@ -734,11 +845,11 @@ public:
       return *this;
     }
 
-    bool operator==(const pre_order_iterator& other) const {
+    bool operator==(const pre_order_iterator_with_subtrees& other) const {
       return current == other.current && current_tree == other.current_tree;
     }
 
-    bool operator!=(const pre_order_iterator& other) const { return !(*this == other); }
+    bool operator!=(const pre_order_iterator_with_subtrees& other) const { return !(*this == other); }
 
     Tree_pos operator*() const { return current; }
   };
@@ -746,20 +857,41 @@ public:
   class pre_order_range {
   private:
     Tree_pos m_start;
+    const tree<X>* m_tree_ptr;
+    bool     m_follow_subtrees;
+
+  public:
+    pre_order_range(Tree_pos start, const tree<X>* tree, bool follow_subtrees = false)
+        : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
+
+    pre_order_iterator begin() const { return pre_order_iterator(m_start, m_tree_ptr); }
+
+    pre_order_iterator end() const { return pre_order_iterator(INVALID, m_tree_ptr); }
+  };
+
+  // Optimized default traversal (no subtree handling)
+  pre_order_range pre_order(Tree_pos start = ROOT) const {
+    return pre_order_range(start, this, false);
+  }
+
+  // For cases where subtree traversal is needed
+  class pre_order_range_with_subtrees {
+  private:
+    Tree_pos m_start;
     tree<X>* m_tree_ptr;
     bool     m_follow_subtrees;
 
   public:
-    pre_order_range(Tree_pos start, tree<X>* tree, bool follow_subtrees = false)
+    pre_order_range_with_subtrees(Tree_pos start, tree<X>* tree, bool follow_subtrees = false)
         : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
 
-    pre_order_iterator begin() { return pre_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
+    pre_order_iterator_with_subtrees begin() { return pre_order_iterator_with_subtrees(m_start, m_tree_ptr, m_follow_subtrees); }
 
-    pre_order_iterator end() { return pre_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
+    pre_order_iterator_with_subtrees end() { return pre_order_iterator_with_subtrees(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
-  pre_order_range pre_order(Tree_pos start = ROOT, bool follow_subtrees = false) {
-    return pre_order_range(start, this, follow_subtrees);
+  pre_order_range_with_subtrees pre_order_with_subtrees(Tree_pos start = ROOT, bool follow_subtrees = false) {
+    return pre_order_range_with_subtrees(start, this, follow_subtrees);
   }
 
   class const_pre_order_iterator : public traversal_iterator_base<const_pre_order_iterator> {
@@ -864,7 +996,7 @@ public:
     const_pre_order_iterator end() const { return const_pre_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
-  const_pre_order_range pre_order(Tree_pos start = ROOT) const { return const_pre_order_range(start, this); }
+  const_pre_order_range const_pre_order(Tree_pos start = ROOT) const { return const_pre_order_range(start, this); }
 
   // POST-ORDER TRAVERSAL
   class post_order_iterator : public traversal_iterator_base<post_order_iterator> {
@@ -1056,34 +1188,7 @@ public:
 };
 
 // ---------------------------------- TEMPLATE IMPLEMENTATION ---------------------------------- //
-/**
- * @brief Get absolute ID of the parent of a node.
- *
- * @param curr_index The absolute ID of the current node.
- * @return Tree_pos The absolute ID of the parent, INVALID if none
- *
- * @assert If the index is out of range
- */
-template <typename X>
-inline Tree_pos tree<X>::get_parent(const Tree_pos& curr_index) const {
-  I(_check_idx_exists(curr_index), "get_parent: Index out of range");
 
-  return pointers_stack[curr_index >> CHUNK_SHIFT].get_parent();
-}
-
-/**
- * @brief Check if a node is a leaf node.
- *
- * @param leaf_index The absolute ID of the node.
- * @return true If the node is a leaf node.
- * @assert If the index is out of range
- */
-template <typename X>
-inline bool tree<X>::is_leaf(const Tree_pos& leaf_index) const {
-  I(_check_idx_exists(leaf_index), "is_leaf: Index out of range");
-
-  return pointers_stack[leaf_index >> CHUNK_SHIFT].get_is_leaf();
-}
 
 /**
  * @brief Get absolute ID of the last child of a node.
