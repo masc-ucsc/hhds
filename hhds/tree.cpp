@@ -1,7 +1,7 @@
 // test.cpp
 #include "tree.hpp"
 
-static_assert(sizeof(hhds::Tree_pointers) == 128);  // 64B alignment keeps the struct at two cache lines
+static_assert(sizeof(hhds::Tree_pointers) == 192);  // 64B alignment keeps the struct at three cache lines
 
 #if 0
 int main() {
