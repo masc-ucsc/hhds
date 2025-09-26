@@ -35,7 +35,7 @@ fn build_ego_tree(rng: &mut StdRng, num_nodes: u32) -> EgoTree<i32> {
 
 fn bench_wide_tree_comparison(c: &mut Criterion) {
     // Reduced set for faster completion
-    let node_counts = vec![10, 100, 1000, 10000];
+    let node_counts = vec![10, 50, 100, 500];
 
     for num_nodes in node_counts {
         let mut group = c.benchmark_group(format!("wide_tree_{}_nodes", num_nodes));

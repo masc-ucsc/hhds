@@ -58,7 +58,7 @@ fn preorder_traversal_ego(tree: &EgoTree<i32>) -> i32 {
 
 fn bench_wide_tree_traversal_comparison(c: &mut Criterion) {
     // Reduced set for faster completion
-    let node_counts = vec![100, 1000, 10000, 100000];
+    let node_counts = vec![50, 100, 500, 1000];
 
     for num_nodes in node_counts {
         let mut group = c.benchmark_group(format!("wide_tree_traversal_{}_nodes", num_nodes));

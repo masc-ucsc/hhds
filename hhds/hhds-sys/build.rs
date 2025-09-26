@@ -8,8 +8,13 @@ fn main() {
     println!("cargo:rustc-link-search=native=../../bazel-bin/hhds"); //TODO: Adjustments
     println!("cargo:rustc-link-lib=static=core"); // set to static but dylib if it's .so
     println!("cargo:rustc-link-search=native=../../bazel-bin/external/iassert+");
-    println!("cargo:rustc-link-lib=iassert");
-    println!("cargo:rustc-link-lib=stdc++");
+    println!("cargo:rustc-link-lib=static=iassert");
+    // Link to the appropriate C++ standard library based on platform
+    if cfg!(target_os = "macos") {
+        println!("cargo:rustc-link-lib=c++");
+    } else {
+        println!("cargo:rustc-link-lib=stdc++");
+    }
 
     // The bindgen::Builder is the main entry point
     // to bindgen, and lets you build up options for

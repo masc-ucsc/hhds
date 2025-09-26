@@ -27,7 +27,7 @@ fn build_hhds_tree(rng: &mut StdRng, depth_val: u32) -> HhdsTree {
         let mut next_level = Vec::new();
 
         for node in current_level {
-            let num_children = rng.random_range(3..=14);
+            let num_children = rng.random_range(3..=8);
             for _i in 0..num_children {
                 let data = id;
                 id += 1;
@@ -54,7 +54,7 @@ fn build_ego_tree(rng: &mut StdRng, depth_val: u32) -> EgoTree<i32> {
         let mut next_level = Vec::new();
 
         for node_id in current_level {
-            let num_children = rng.random_range(3..=14);
+            let num_children = rng.random_range(3..=8);
             for _i in 0..num_children {
                 let data = id;
                 id += 1;
@@ -127,7 +127,7 @@ fn test_ego_navigation(tree: &EgoTree<i32>) -> u64 {
 }
 
 fn bench_chip_typical_navigation_comparison(c: &mut Criterion) {
-    let depths = vec![2, 3, 4, 5];
+    let depths = vec![2, 3];
 
     for depth in depths {
         let mut group = c.benchmark_group(format!("chip_typical_navigation_depth_{}", depth));

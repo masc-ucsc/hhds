@@ -23,7 +23,7 @@ fn build_mixed_hhds_tree(rng: &mut StdRng, depth_val: u32) -> HhdsTree {
         let mut next_level = Vec::new();
 
         for node in current_level {
-            let num_children = rng.random_range(4..=10); // 4-10 children per node
+            let num_children = rng.random_range(3..=6); // 4-10 children per node
 
             // Add first child normally
             if num_children > 0 {
@@ -70,7 +70,7 @@ fn build_mixed_ego_tree(rng: &mut StdRng, depth_val: u32) -> EgoTree<i32> {
         let mut next_level = Vec::new();
 
         for node_id in current_level {
-            let num_children = rng.random_range(4..=10);
+            let num_children = rng.random_range(3..=6);
 
             // Add first child normally
             if num_children > 0 {
@@ -106,11 +106,11 @@ fn build_mixed_ego_tree(rng: &mut StdRng, depth_val: u32) -> EgoTree<i32> {
 }
 
 fn bench_mixed_tree_building_comparison(c: &mut Criterion) {
-    let depths = vec![4, 5, 6];
+    let depths = vec![3, 4];
 
     for depth in depths {
         let mut group = c.benchmark_group(format!("mixed_tree_building_depth_{}", depth));
-        group.sample_size(if depth >= 6 { 10 } else { 30 });
+        group.sample_size(30);
 
         // Benchmark HHDS tree building with mixed operations
         group.bench_function("hhds", |b| {

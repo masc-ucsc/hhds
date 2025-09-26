@@ -34,11 +34,11 @@ fn build_ego_tree(rng: &mut StdRng, num_nodes: u32) -> EgoTree<i32> {
 }
 
 fn bench_wide_tree_comparison(c: &mut Criterion) {
-    let node_counts = vec![10, 100, 1000, 10000, 100000, 1000000];
+    let node_counts = vec![10, 100, 500, 1000];
 
     for num_nodes in node_counts {
         let mut group = c.benchmark_group(format!("wide_tree_{}_nodes", num_nodes));
-        group.sample_size(if num_nodes >= 100000 { 10 } else { 100 });
+        group.sample_size(if num_nodes >= 1000 { 20 } else { 50 });
 
         // Benchmark HHDS tree creation
         group.bench_function("hhds", |b| {
