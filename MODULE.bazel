@@ -24,7 +24,7 @@ bazel_dep(name = "bazel_skylib", version = "1.8.1")
 git_repository(
 	name = "tree_sitter_cpp",
 	remote = "https://github.com/tree-sitter/tree-sitter-cpp.git",
-	commit = "2a682d312b09eb737a08b4900ec786415574b6bf"
+	commit = "12bd6f7e96080d2e70ec51d4068f2f66120dde35"
 )
 
 # Perfetto
