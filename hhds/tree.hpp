@@ -24,6 +24,12 @@
 
 #include "iassert.hpp"
 
+#ifdef TESTING
+  #undef I                    
+  #define I(cond, msg) \
+      do { if (!(cond)) throw std::runtime_error(msg); } while (0)
+#endif
+
 // Logging control
 #define ENABLE_LOGGING          0
 #define ENABLE_CREATION_LOGGING 0

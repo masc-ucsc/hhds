@@ -343,6 +343,9 @@ cc_binary(
     deps = [
         ":core",
     ],
+    copts = [
+        "-DTESTING"
+    ]
 )
 
 cc_test(
