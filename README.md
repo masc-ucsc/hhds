@@ -26,7 +26,7 @@ sometimes called a "tombstone deletion"
 
 -Add edges is not so frequent after the 1st phase of graph creation
 
--Nodes has several "pins" and the edges are bi-directional
+-Nodes have several "pins" and the edges are bi-directional
 
 -In practice (topological sort), most edges are "short" no need to keep large
 32 bit integer. Delta optimization to fit more edges.
