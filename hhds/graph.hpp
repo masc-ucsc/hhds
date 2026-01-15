@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <iostream>
+#include <unordered_map>
 #include <vector>
 
 #include "graph_sizing.hpp"
@@ -21,13 +22,13 @@ public:
   Pin();
   Pin(Nid master_nid_value, Port_id port_id_value);
 
-  [[nodiscard]] Nid       get_master_nid() const;  // should be in node
+  [[nodiscard]] Nid       get_master_nid() const;
   [[nodiscard]] Port_id   get_port_id() const;
-  auto                    add_edge(Pid self_id, Pid other_id) -> bool;     // should be in node
-  [[nodiscard]] bool      has_edges() const;                               // should be in node
-  [[nodiscard]] Pid       get_next_pin_id() const;                         // should be in node
-  void                    set_next_pin_id(Pid id);                         // should be in node
-  [[nodiscard]] bool      check_overflow() const { return use_overflow; }  // should be in node
+  auto                    add_edge(Pid self_id, Pid other_id) -> bool; 
+  [[nodiscard]] bool      has_edges() const;
+  [[nodiscard]] Pid       get_next_pin_id() const;
+  void                    set_next_pin_id(Pid id);
+  [[nodiscard]] bool      check_overflow() const { return use_overflow; }
   static constexpr size_t MAX_EDGES = 8;
 
   class EdgeRange {
@@ -62,8 +63,8 @@ private:
   Nid     master_nid : Nid_bits;   // 42 bits
   Port_id port_id : Port_bits;     // 22 bits    => 64 bits (8 bytes)   // should not be in node
   Pid     next_pin_id : Nid_bits;  // 42 bits
-  Nid     ledge0 : Nid_bits;       // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
-  Nid     ledge1 : Nid_bits;       // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
+  Vid     ledge0 : Nid_bits;       // 42 bits to store too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
+  Vid     ledge1 : Nid_bits;       // 42 bits to store too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
   uint8_t use_overflow : 1;        // 1 bit      => 64 bits (8 bytes)
 
   // adds upto a total of 191 bits => 24 bytes
@@ -123,8 +124,8 @@ private:
   Nid     nid : Nid_bits;
   Type    type : 16;
   Pid     next_pin_id : Nid_bits;
-  Nid     ledge0 : Nid_bits;
-  Nid     ledge1 : Nid_bits;
+  Vid     ledge0 : Nid_bits;
+  Vid     ledge1 : Nid_bits;
   uint8_t use_overflow : 1;
   uint8_t padding : 7;
   union {
@@ -137,12 +138,14 @@ static_assert(sizeof(Node) == 32, "Node size mismatch");
 class Graph {
 public:
   Graph();
+  ~Graph();  
   void clear_graph();
 
   [[nodiscard]] Nid  create_node();
   [[nodiscard]] Pid  create_pin(Nid nid, Port_id port_id);
   [[nodiscard]] auto ref_node(Nid id) const -> Node*;
   [[nodiscard]] auto ref_pin(Pid id) const -> Pin*;
+  [[nodiscard]] Gid get_gid() const noexcept { return gid_; }
 
   void add_edge(Pid driver_id, Pid sink_id);
   void display_graph() const;
@@ -152,8 +155,29 @@ private:
   void add_edge_int(Pid self_id, Pid other_id);
   void set_next_pin(Nid nid, Pid next_pin);
 
+  friend class Graph_Library;
+  Gid gid_ = Gid_invalid;
   std::vector<Node> node_table;
   std::vector<Pin>  pin_table;
+};
+
+
+class Graph_Library {
+public:
+  static auto instance() noexcept -> Graph_Library&;
+
+  // Registers a graph if it is not already registered and returns its assigned gid.
+  // gid 0 is reserved/unused.
+  auto register_graph(Graph* g) noexcept -> Gid;
+  void unregister_graph(Graph* g) noexcept;
+
+  [[nodiscard]] auto ref_graph(Gid id) const noexcept -> Graph*;
+  [[nodiscard]] auto get_graph_id(const Graph* g) const noexcept -> Gid;
+
+private:
+  Graph_Library() = default;
+
+  std::vector<Graph*>                 graphs_;
 };
 
 }  // namespace hhds
