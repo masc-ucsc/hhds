@@ -1,14 +1,10 @@
 #include "graph.hpp"
-
 #include <strings.h>
-
 #include <ctime>
 #include <iostream>
 #include <vector>
 
 // TODO:
-// 6-Add the graph_id class
-// 7-Allow edges between graphs add_edge(pin>0, pin<0) or add_edge(pin<0, pin>0)
 // 8-Benchmark against boost library for some example similar to hardware
 // 9-Iterator single graph (fast, fwd, bwd)
 // 10-Iterator hierarchical across graphs (fast, fwd, bwd)
@@ -20,6 +16,8 @@
 // 4-Use odd/even in pin/node so that add_ege can work for pin 0 (pin0==node_id)
 // 4.1-Missing to add node 1 and node 2 as input and output from graph at creation time.
 // 5-Add a better unit test for add_pin/node/edge for single graph. Make sure that it does not have bugs
+// 6-Add the graph_id class
+// 7-Allow edges between graphs add_edge(pin>0, pin<0) or add_edge(pin<0, pin>0)
 
 namespace hhds {
 
@@ -78,6 +76,12 @@ auto Pin::overflow_handling(Pid self_id, Vid other_id) -> bool {
 }
 
 auto Pin::add_edge(Pid self_id, Vid other_id) -> bool {
+  // Remote edges (negative Vids) must not be packed.
+  // Store full Vid in overflow.
+  if (vid_is_negative(other_id)) {
+    return overflow_handling(self_id, other_id);
+  }
+
   if (use_overflow) {
     return overflow_handling(self_id, other_id);
   }
@@ -185,7 +189,7 @@ void Pin::EdgeRange::populate_set(const Pin* pin, ankerl::unordered_dense::set<V
   constexpr uint64_t PIN_BIT    = 1ULL << 0;
   constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;  // bits 12–2
 
-  // our caller passed us vid_self = (numeric_id << 1) | pin_flag
+  // caller passed vid_self = (numeric_id << 2) | pin_flag
   // strip off the low two bits to get the pure numeric node index:
   uint64_t self_num = static_cast<uint64_t>(pid) >> 2;
 
@@ -206,15 +210,13 @@ void Pin::EdgeRange::populate_set(const Pin* pin, ankerl::unordered_dense::set<V
     // reconstruct numeric target
     int64_t  delta      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
     uint64_t target_num = self_num - delta;
-    // std::cout << "raw= " << raw << ", mag= " << mag << ", delta= " << delta
-    //           << ", target_num= " << target_num << ", self_num= " << self_num << "\n";
 
     // repack into a Vid: shift left 2, OR back the driver+pin bits
     Vid v = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin ? PIN_BIT : 0));
     set.insert(v);
   }
 
-  // also remember any “overflow” residues
+  // also remember any overflow residues
   if (pin->ledge0) {
     set.insert(pin->ledge0);
   }
@@ -306,6 +308,10 @@ auto Node::overflow_handling(Nid self_id, Vid other_id) -> bool {
 }
 
 auto Node::add_edge(Nid self_id, Vid other_id) -> bool {
+  if (vid_is_negative(other_id)) {
+    return overflow_handling(self_id, other_id);
+  }
+
   if (use_overflow) {
     return overflow_handling(self_id, other_id);
   }
@@ -429,7 +435,7 @@ void Node::EdgeRange::populate_set(const Node* node, ankerl::unordered_dense::se
   constexpr uint64_t PIN_BIT    = 1ULL << 0;
   constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;  // bits 12–2
 
-  // our caller passed us vid_self = (numeric_id << 1) | pin_flag
+  // caller passed vid_self = (numeric_id << 2) | pin_flag
   // strip off the low two bits to get the pure numeric node index:
   uint64_t self_num = static_cast<uint64_t>(nid) >> 2;
 
@@ -467,10 +473,22 @@ void Node::EdgeRange::populate_set(const Node* node, ankerl::unordered_dense::se
 
 auto Node::get_edges(Nid nid) const noexcept -> EdgeRange { return EdgeRange(this, nid); }
 
-Graph::Graph() { clear_graph(); }
+Graph::Graph() { 
+  clear_graph();
+  (void)Graph_Library::instance().register_graph(this);
+}
+
+Graph::~Graph() {
+  Graph_Library::instance().unregister_graph(this);
+}
 
 void Graph::clear_graph() {
-  bzero(this, sizeof(Graph));
+  node_table.clear();
+  pin_table.clear();
+
+  node_table.reserve(NUM_NODES);
+  pin_table.reserve(NUM_NODES * MAX_PINS_PER_NODE);
+
   node_table.emplace_back(0);  // Invalid ID
   node_table.emplace_back(1);  // Input node (can have many pins to node 1)
   node_table.emplace_back(2);  // Output node
@@ -496,8 +514,72 @@ auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
 void Graph::add_edge(Vid driver_id, Vid sink_id) {
   driver_id = driver_id | 2;
   sink_id   = sink_id & ~2;
-  add_edge_int(driver_id, sink_id);
-  add_edge_int(sink_id, driver_id);
+
+  const bool driver_remote = vid_is_negative(driver_id);
+  const bool sink_remote   = vid_is_negative(sink_id);
+
+  // Intra-graph: preserve old symmetric behavior.
+  if (!driver_remote && !sink_remote) {
+    add_edge_int(driver_id, sink_id);
+    add_edge_int(sink_id, driver_id);
+    return;
+  }
+
+  // Inter-graph: exactly one endpoint must be remote (negative Vid).
+  if (driver_remote && sink_remote) {
+    std::cerr << "Error: add_edge inter-graph cannot have both endpoints remote\n";
+    return;
+  }
+
+  auto&     lib      = Graph_Library::instance();
+  const Gid self_gid = lib.get_graph_id(this);
+  if (self_gid == Gid_invalid) {
+    std::cerr << "Error: current Graph not registered in Graph_Library\n";
+    return;
+  }
+
+  if (sink_remote) {
+    // Local driver (this graph) -> remote sink (other graph)
+    const Gid other_gid = vid_get_gid(sink_id);
+    Vid       sink_local = vid_get_local(sink_id);
+    sink_local = sink_local & ~2ULL;  // ensure sink
+
+    auto* other_graph = lib.ref_graph(other_gid);
+    if (!other_graph) {
+      std::cerr << "Error: unknown other graph gid=" << other_gid << "\n";
+      return;
+    }
+
+    // Store local half-edge driver -> remote sink.
+    add_edge_int(driver_id, sink_id);
+
+    // Store reciprocal in the other graph: sink -> remote driver.
+    const Vid driver_remote_id = vid_make_remote(self_gid, driver_id);
+    other_graph->add_edge_int(sink_local, driver_remote_id);
+    return;
+  }
+
+  // driver_remote == true
+  {
+    // Local sink (this graph) <- remote driver (other graph)
+    const Gid other_gid = vid_get_gid(driver_id);
+    Vid       driver_local = vid_get_local(driver_id);
+    driver_local = driver_local | 2ULL;  // ensure driver
+
+    auto* other_graph = lib.ref_graph(other_gid);
+    if (!other_graph) {
+      std::cerr << "Error: unknown other graph gid=" << other_gid << "\n";
+      return;
+    }
+
+    // Store local half-edge sink -> remote driver.
+    add_edge_int(sink_id, driver_id);
+
+    // Store reciprocal in the other graph: driver -> remote sink.
+    const Vid sink_remote_id = vid_make_remote(self_gid, sink_id);
+    other_graph->add_edge_int(driver_local, sink_remote_id);
+    return;
+  }
 }
 
 auto Graph::ref_node(Nid id) const -> Node* {
@@ -570,6 +652,52 @@ void Graph::display_next_pin_of_node() const {
   for (Nid nid = 1; nid < node_table.size(); ++nid) {
     std::cout << "Node " << nid << " first_pin=" << node_table[nid].get_next_pin_id() << "\n";
   }
+}
+
+auto Graph_Library::instance() noexcept -> Graph_Library& {
+  static Graph_Library lib;
+  return lib;
+}
+
+auto Graph_Library::register_graph(Graph* g) noexcept -> Gid {
+  if (g == nullptr) {
+    return Gid_invalid;
+  }
+  if (g->gid_ != Gid_invalid) return g->gid_;         // already registered
+  if (graphs_.empty()) {
+    graphs_.push_back(nullptr);                       // gid 0 reserved
+  }
+  const Gid gid = static_cast<Gid>(graphs_.size());
+  graphs_.push_back(g);
+  g->gid_ = gid;
+  return gid;
+}
+
+void Graph_Library::unregister_graph(Graph* g) noexcept {
+  if (g == nullptr) {
+    return;
+  }
+  Gid gid = g->gid_;
+  if (gid == Gid_invalid) return;
+
+  if (gid < graphs_.size() && graphs_[gid] == g) {
+    graphs_[gid] = nullptr;
+    g->gid_ = Gid_invalid;
+  }
+}
+
+auto Graph_Library::ref_graph(Gid id) const noexcept -> Graph* {
+  if (id == 0 || id == Gid_invalid) {
+    return nullptr;
+  }
+  if (id >= graphs_.size()) {
+    return nullptr;
+  }
+  return graphs_[id];
+}
+
+auto Graph_Library::get_graph_id(const Graph* g) const noexcept -> Gid {
+  return g ? g->gid_ : Gid_invalid;
 }
 
 }  // namespace hhds
