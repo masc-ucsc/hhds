@@ -5,7 +5,6 @@
 #include <cstdlib>
 #include <ctime>
 #include <iostream>
-#include <unordered_map>
 #include <vector>
 
 #include "graph_sizing.hpp"
