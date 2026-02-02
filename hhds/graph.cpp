@@ -247,7 +247,9 @@ Node::Node(Nid nid_val) {
   nid = nid_val;
 }
 
-void Node::clear_node() { bzero(this, sizeof(Node)); }
+void Node::clear_node() {
+  bzero(this, sizeof(Node));
+}
 
 void Node::set_type(Type t) { type = t; }
 Nid  Node::get_nid() const { return nid; }
@@ -257,7 +259,9 @@ void Node::set_next_pin_id(Pid id) { next_pin_id = id; }
 
 auto Node::overflow_handling(Nid self_id, Vid other_id) -> bool {
   if (use_overflow) {
-    sedges_.set->insert(other_id);
+    if(other_id) {
+      sedges_.set->insert(other_id);
+    }
     return true;
   }
 
@@ -278,7 +282,7 @@ auto Node::overflow_handling(Nid self_id, Vid other_id) -> bool {
     int64_t  diff = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
 
     Nid actual_self = static_cast<Nid>(self_id >> 2);
-    Vid target      = static_cast<Vid>(actual_self + diff);
+    Vid target      = static_cast<Vid>(actual_self - diff);
     target          = (target << 2);
     if (is_driver) {
       target |= 2;
@@ -301,7 +305,9 @@ auto Node::overflow_handling(Nid self_id, Vid other_id) -> bool {
   sedges_.set    = hs;
   ledge0 = ledge1 = 0;
 
-  hs->insert(other_id);
+  if(other_id) {
+    hs->insert(other_id);
+  }
   return true;
 }
 
@@ -364,7 +370,7 @@ auto Node::add_edge(Nid self_id, Vid other_id) -> bool {
 
 bool Node::has_edges() const {
   if (use_overflow) {
-    return true;
+    return sedges_.set != nullptr && !sedges_.set->empty();
   }
   if (sedges_.sedges != 0) {
     return true;
@@ -376,6 +382,37 @@ bool Node::has_edges() const {
     return true;
   }
   return false;
+}
+
+void Node::set_subnode(Gid gid) {
+  // Existence inside GraphLibrary must be checked by the caller (Node has no library pointer).
+  if (gid == Gid_invalid) {
+    return;
+  }
+  // Ensure overflow mode so ledge0 is no longer used as an edge spill slot.
+  if (!use_overflow) {
+    const Vid self_vid = (static_cast<Vid>(nid) << 2);  // nid stored as numeric id
+    (void)overflow_handling(self_vid, 0);               // 0 => promote only, no edge insert
+  } else {
+    assert(sedges_.set != nullptr);
+  }
+
+  // Store gid in ledge0 as (gid + 1) so ledge0==0 means "no subnode".
+  const uint64_t g = static_cast<uint64_t>(gid);
+  assert(g != 0);
+  assert(g < (1ULL << Nid_bits));                       // since ledge0 is Nid_bits wide
+  ledge0 = static_cast<Nid>(g);
+}
+
+Gid Node::get_subnode() const noexcept {
+  if (!use_overflow || ledge0 == 0) {
+    return Gid_invalid;
+  }
+  return static_cast<Gid>(static_cast<uint64_t>(ledge0));
+}
+
+bool Node::has_subnode() const noexcept {
+  return use_overflow && ledge0 != 0;
 }
 
 Node::EdgeRange::EdgeRange(const Node* node, Nid nid) noexcept : node_(node), /* nid_(nid), */ set_(nullptr), own_(false) {
@@ -471,6 +508,8 @@ Graph::Graph() { clear_graph(); }
 
 void Graph::clear_graph() {
   bzero(this, sizeof(Graph));
+  node_table.clear();
+  pin_table.clear();
   node_table.emplace_back(0);  // Invalid ID
   node_table.emplace_back(1);  // Input node (can have many pins to node 1)
   node_table.emplace_back(2);  // Output node
