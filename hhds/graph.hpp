@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <iostream>
+#include <memory>
 #include <vector>
 
 #include "graph_sizing.hpp"
@@ -90,6 +91,12 @@ public:
   auto               add_edge(Pid self_id, Pid other_id) -> bool;
   [[nodiscard]] bool check_overflow() const { return use_overflow; }
 
+  // Subgraph link: stored in ledge0 *only when use_overflow == 1* as (gid + 1).
+  // Caller must validate gid before calling set_subnode().
+  void               set_subnode(Gid gid);
+  [[nodiscard]] Gid  get_subnode() const noexcept;
+  [[nodiscard]] bool has_subnode() const noexcept;
+
   static constexpr size_t MAX_EDGES = 8;
 
   class EdgeRange {
@@ -141,6 +148,14 @@ public:
 
   [[nodiscard]] Nid  create_node();
   [[nodiscard]] Pid  create_pin(Nid nid, Port_id port_id);
+
+  // Built-in nodes created by Graph::clear_graph()
+  static constexpr Nid INPUT_NODE  = 1;
+  static constexpr Nid OUTPUT_NODE = 2;
+
+  [[nodiscard]] Pid add_input(Port_id port_id) { return create_pin(INPUT_NODE, port_id); }
+  [[nodiscard]] Pid add_output(Port_id port_id) { return create_pin(OUTPUT_NODE, port_id); }
+
   [[nodiscard]] auto ref_node(Nid id) const -> Node*;
   [[nodiscard]] auto ref_pin(Pid id) const -> Pin*;
 
@@ -154,6 +169,59 @@ private:
 
   std::vector<Node> node_table;
   std::vector<Pin>  pin_table;
+};
+
+
+class GraphLibrary {
+public:
+  static constexpr Gid invalid_id = Gid_invalid;
+
+  GraphLibrary() = default;
+
+  // Create a new graph and return its ID.
+  [[nodiscard]] Gid create_graph() {
+    graphs_.push_back(std::make_unique<Graph>());
+    ++live_count_;
+    return static_cast<Gid>(graphs_.size() - 1);
+  }
+
+  [[nodiscard]] bool has_graph(Gid id) const noexcept {
+    const size_t idx = static_cast<size_t>(id);
+    return idx < graphs_.size() && graphs_[idx] != nullptr;
+  }
+
+  [[nodiscard]] Graph& get_graph(Gid id) {
+    assert(has_graph(id));
+    return *graphs_[static_cast<size_t>(id)];
+  }
+
+  [[nodiscard]] const Graph& get_graph(Gid id) const {
+    assert(has_graph(id));
+    return *graphs_[static_cast<size_t>(id)];
+  }
+
+  // Tombstone-delete (IDs are not reused).
+  void delete_graph(Gid id) noexcept {
+    if (static_cast<size_t>(id) >= graphs_.size()) {
+      return;
+    }
+    auto& slot = graphs_[static_cast<size_t>(id)];
+    if (slot) {
+      slot.reset();
+      --live_count_;
+    }
+  }
+
+  // Slots (including tombstones).
+  [[nodiscard]] size_t capacity() const noexcept { return graphs_.size(); }
+
+  // Count of live graphs.
+  [[nodiscard]] Gid live_count() const noexcept { return live_count_; }
+
+private:
+  std::vector<std::unique_ptr<Graph>> graphs_;
+  // count of live graphs
+  Gid live_count_ = 0;
 };
 
 }  // namespace hhds
