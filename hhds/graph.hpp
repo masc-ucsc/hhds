@@ -18,6 +18,7 @@ constexpr int NUM_TYPES         = 3;
 constexpr int MAX_PINS_PER_NODE = 10;
 
 class __attribute__((packed)) Pin {
+  friend class Graph;
 public:
   Pin();
   Pin(Nid master_nid_value, Port_id port_id_value);
@@ -78,6 +79,7 @@ private:
 static_assert(sizeof(Pin) == 32, "Pin size mismatch");
 
 class __attribute__((packed)) Node {
+  friend class Graph;
 public:
   Node();
   explicit Node(Nid nid_value);
@@ -160,6 +162,7 @@ public:
   [[nodiscard]] auto ref_pin(Pid id) const -> Pin*;
 
   void add_edge(Pid driver_id, Pid sink_id);
+  void delete_node(Nid nid);
   void display_graph() const;
   void display_next_pin_of_node() const;
 

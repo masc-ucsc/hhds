@@ -2,6 +2,8 @@
 
 #include <cassert>
 #include <iostream>
+#include <random>
+#include <vector>
 
 using namespace hhds;
 
@@ -253,6 +255,142 @@ void test_overflow_handling() {
   std::cout << "test_overflow_handling passed\n";
 }
 
+void test_large_fanin_deletion() {
+  Graph g;
+
+  // Create graph with 2 inputs and 1 output
+  Pid input1 = g.add_input(1);
+  Pid input2 = g.add_input(2);
+  Pid output = g.add_output(1);
+
+  // Create 1000 intermediate nodes
+  std::vector<Nid> intermediate_nodes;
+  for (int i = 0; i < 1000; ++i) {
+    intermediate_nodes.push_back(g.create_node());
+  }
+
+  // Create the central node with 3 input pins
+  Nid central_node = g.create_node();
+  Pid central_pin0 = g.create_pin(central_node, 0);
+  Pid central_pin1 = g.create_pin(central_node, 1);
+  Pid central_pin2 = g.create_pin(central_node, 2);
+
+  // Random number generator for distributing connections
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<> pin_dist(0, 2);
+
+  // Connect all 1000 nodes to input1 and to one of the central node's pins
+  std::vector<Pid> central_pins = {central_pin0, central_pin1, central_pin2};
+  ankerl::unordered_dense::map<Pid, int> pin_connection_counts;
+  pin_connection_counts[central_pin0] = 0;
+  pin_connection_counts[central_pin1] = 0;
+  pin_connection_counts[central_pin2] = 0;
+
+  for (int i = 0; i < 1000; ++i) {
+    // Connect intermediate node to input1
+    g.add_edge(input1, intermediate_nodes[i]);
+
+    // Randomly select which central pin to connect to
+    int pin_idx = pin_dist(gen);
+    g.add_edge(intermediate_nodes[i], central_pins[pin_idx]);
+    pin_connection_counts[central_pins[pin_idx]]++;
+  }
+
+  // Connect central node to output
+  g.add_edge(central_node, output);
+
+  std::cout << "test_large_fanin_deletion: created 1000 nodes + 1 central node\n";
+  std::cout << "  connections to central_pin0: " << pin_connection_counts[central_pin0] << "\n";
+  std::cout << "  connections to central_pin1: " << pin_connection_counts[central_pin1] << "\n";
+  std::cout << "  connections to central_pin2: " << pin_connection_counts[central_pin2] << "\n";
+
+  // Verify edges exist before deletion
+  // Check that central node has edge to output
+  {
+    auto edges = g.ref_node(central_node)->get_edges(central_node);
+    bool found_output = false;
+    for (auto e : edges) {
+      if ((e & ~3) == (output & ~3)) {
+        found_output = true;
+        break;
+      }
+    }
+    assert(found_output && "test_large_fanin_deletion: central node should have edge to output");
+  }
+
+  // Check that each intermediate node has edges
+  for (int i = 0; i < 1000; ++i) {
+    auto edges = g.ref_node(intermediate_nodes[i])->get_edges(intermediate_nodes[i]);
+    int edge_count = 0;
+    for (auto e : edges) {
+      (void)e;
+      edge_count++;
+    }
+    assert(edge_count >= 2 && "test_large_fanin_deletion: intermediate nodes should have at least 2 edges");
+  }
+
+  // Check that central pins have edges
+  for (auto pin : central_pins) {
+    auto edges = g.ref_pin(pin)->get_edges(pin);
+    bool has_edges = false;
+    for (auto e : edges) {
+      (void)e;
+      has_edges = true;
+      break;
+    }
+    assert(has_edges && "test_large_fanin_deletion: central pins should have edges");
+  }
+
+  std::cout << "test_large_fanin_deletion: verified edges exist\n";
+
+  // Delete the central node
+  g.delete_node(central_node);
+
+  std::cout << "test_large_fanin_deletion: deleted central node\n";
+
+  // Verify edges are gone after deletion
+  // Check that central node has no edges to output
+  {
+    auto edges = g.ref_node(central_node)->get_edges(central_node);
+    int edge_count = 0;
+    for (auto e : edges) {
+      (void)e;
+      edge_count++;
+    }
+    assert(edge_count == 0 && "test_large_fanin_deletion: central node should have no edges after deletion");
+  }
+
+  // Check that intermediate nodes' edges to central node are gone
+  for (int i = 0; i < 1000; ++i) {
+    auto edges = g.ref_node(intermediate_nodes[i])->get_edges(intermediate_nodes[i]);
+    bool found_central = false;
+    for (auto e : edges) {
+      Vid e_base = (e >> 2) << 2;
+      if (e_base == central_node || e_base == central_pin0 || e_base == central_pin1 || e_base == central_pin2) {
+        found_central = true;
+        break;
+      }
+    }
+    assert(!found_central
+           && "test_large_fanin_deletion: intermediate nodes should not have edges to deleted central node");
+  }
+
+  // Check that central pins have no edges
+  for (auto pin : central_pins) {
+    auto edges = g.ref_pin(pin)->get_edges(pin);
+    int edge_count = 0;
+    for (auto e : edges) {
+      (void)e;
+      edge_count++;
+    }
+    assert(edge_count == 0 && "test_large_fanin_deletion: central pins should have no edges after deletion");
+  }
+
+  std::cout << "test_large_fanin_deletion: verified edges are removed\n";
+  std::cout << "test_large_fanin_deletion passed\n";
+}
+
 int main() {
   std::cout << "Running graph tests...\n";
   test_node_to_node();
@@ -261,6 +399,7 @@ int main() {
   test_pin_to_node();
   test_sedges_ledges();
   test_overflow_handling();
+  test_large_fanin_deletion();
   std::cout << "All graph tests passed.\n";
   return 0;
 }

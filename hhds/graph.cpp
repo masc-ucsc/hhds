@@ -539,6 +539,101 @@ void Graph::add_edge(Vid driver_id, Vid sink_id) {
   add_edge_int(sink_id, driver_id);
 }
 
+void Graph::delete_node(Nid nid) {
+  auto* node = ref_node(nid);
+  if (!node) {
+    return;
+  }
+
+  // Get all edges from this node
+  auto edges = node->get_edges(nid);
+  std::vector<Vid> edges_to_remove;
+  for (auto edge : edges) {
+    edges_to_remove.push_back(edge);
+  }
+
+  // For each connected node/pin, we need to remove the reverse edge
+  for (auto other_vid : edges_to_remove) {
+    bool is_pin = other_vid & 1;
+    if (is_pin) {
+      auto* other_pin = ref_pin(other_vid);
+      if (other_pin && other_pin->has_edges()) {
+        // Need to remove nid from other_pin's edge list
+        if (other_pin->use_overflow) {
+          other_pin->sedges_.set->erase(nid);
+          other_pin->sedges_.set->erase(nid | 2);
+        }
+      }
+    } else {
+      auto* other_node = ref_node(other_vid);
+      if (other_node && other_node->has_edges()) {
+        // Need to remove nid from other_node's edge list
+        if (other_node->use_overflow) {
+          other_node->sedges_.set->erase(nid);
+          other_node->sedges_.set->erase(nid | 2);
+        }
+      }
+    }
+  }
+
+  // Also remove edges from pins of this node
+  Pid cur_pin = node->get_next_pin_id();
+  while (cur_pin != 0) {
+    Pid actual_pin_id = cur_pin;
+    auto* pin = &pin_table[cur_pin];
+
+    // Get all edges from this pin
+    Pid pin_vid = (actual_pin_id << 2) | 1;
+    auto pin_edges = pin->get_edges(pin_vid);
+    std::vector<Vid> pin_edges_to_remove;
+    for (auto edge : pin_edges) {
+      pin_edges_to_remove.push_back(edge);
+    }
+
+    // Remove reverse edges
+    for (auto other_vid : pin_edges_to_remove) {
+      bool is_pin = other_vid & 1;
+      if (is_pin) {
+        auto* other_pin = ref_pin(other_vid);
+        if (other_pin && other_pin->has_edges()) {
+          if (other_pin->use_overflow) {
+            other_pin->sedges_.set->erase(pin_vid);
+            other_pin->sedges_.set->erase(pin_vid | 2);
+          }
+        }
+      } else {
+        auto* other_node = ref_node(other_vid);
+        if (other_node && other_node->has_edges()) {
+          if (other_node->use_overflow) {
+            other_node->sedges_.set->erase(pin_vid);
+            other_node->sedges_.set->erase(pin_vid | 2);
+          }
+        }
+      }
+    }
+
+    // Clear this pin's edges
+    if (pin->use_overflow && pin->sedges_.set) {
+      pin->sedges_.set->clear();
+    } else {
+      pin->sedges_.sedges = 0;
+      pin->ledge0 = 0;
+      pin->ledge1 = 0;
+    }
+
+    cur_pin = pin->get_next_pin_id();
+  }
+
+  // Clear the node's edges
+  if (node->use_overflow && node->sedges_.set) {
+    node->sedges_.set->clear();
+  } else {
+    node->sedges_.sedges = 0;
+    node->ledge0 = 0;
+    node->ledge1 = 0;
+  }
+}
+
 auto Graph::ref_node(Nid id) const -> Node* {
   Nid actual_id = id >> 2;
   assert(actual_id < node_table.size());
