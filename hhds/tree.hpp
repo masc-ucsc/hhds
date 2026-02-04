@@ -7,10 +7,12 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <iterator>
@@ -20,14 +22,16 @@
 #include <set>
 #include <stdexcept>
 #include <vector>
-#include <bitset>
 
 #include "iassert.hpp"
 
 #ifdef TESTING
-  #undef I                    
-  #define I(cond, msg) \
-      do { if (!(cond)) throw std::runtime_error(msg); } while (0)
+#undef I
+#define I(cond, msg)                 \
+  do {                               \
+    if (!(cond))                     \
+      throw std::runtime_error(msg); \
+  } while (0)
 #endif
 
 // Logging control
@@ -36,11 +40,11 @@
 
 // Logging macros
 #if ENABLE_CREATION_LOGGING
-#define LOG_CREAT_DEBUG(...)                            \
-  do {                                                  \
+#define LOG_CREAT_DEBUG(...)                             \
+  do {                                                   \
     std::printf("[DEBUG] %s:%d - ", __FILE__, __LINE__); \
-    std::printf(__VA_ARGS__);                           \
-    std::printf("\n");                                  \
+    std::printf(__VA_ARGS__);                            \
+    std::printf("\n");                                   \
   } while (0)
 #else
 #define LOG_CREAT_DEBUG(...)
@@ -90,15 +94,15 @@ namespace hhds {
  * This is larger than the previous 512-bit (64-byte) structure but eliminates
  * expensive bit manipulation operations for much better performance.
  * The structure is aligned to 64 bytes for cache efficiency.
-*/
+ */
 
 using Tree_pos = int64_t;
 
-static constexpr int16_t CHUNK_SHIFT   = 3;                 // The number of bits in a chunk offset
-static constexpr int16_t CHUNK_SIZE    = 1 << CHUNK_SHIFT;  // Size of a chunk in bits
-static constexpr int16_t CHUNK_MASK    = CHUNK_SIZE - 1;    // Mask for chunk offset
-static constexpr Tree_pos INVALID = 0;                 // This is invalid for all pointers other than parent
-static constexpr Tree_pos ROOT    = 1 << CHUNK_SHIFT;  // ROOT ID
+static constexpr int16_t  CHUNK_SHIFT = 3;                 // The number of bits in a chunk offset
+static constexpr int16_t  CHUNK_SIZE  = 1 << CHUNK_SHIFT;  // Size of a chunk in bits
+static constexpr int16_t  CHUNK_MASK  = CHUNK_SIZE - 1;    // Mask for chunk offset
+static constexpr Tree_pos INVALID     = 0;                 // This is invalid for all pointers other than parent
+static constexpr Tree_pos ROOT        = 1 << CHUNK_SHIFT;  // ROOT ID
 
 // Now using full 64-bit addressing - much simpler!
 static constexpr uint64_t MAX_TREE_SIZE = UINT64_MAX;  // Maximum number of chunks in the tree
@@ -166,7 +170,8 @@ public:
   // Operators
   constexpr bool operator==(const Tree_pointers& other) const {
     return parent == other.parent && next_sibling == other.next_sibling && prev_sibling == other.prev_sibling
-           && first_child_ptrs == other.first_child_ptrs && last_child_ptrs == other.last_child_ptrs && num_short_del_occ == other.num_short_del_occ && is_leaf == other.is_leaf;
+           && first_child_ptrs == other.first_child_ptrs && last_child_ptrs == other.last_child_ptrs
+           && num_short_del_occ == other.num_short_del_occ && is_leaf == other.is_leaf;
   }
 
   constexpr bool operator!=(const Tree_pointers& other) const { return !(*this == other); }
@@ -194,10 +199,10 @@ template <typename X>
 class tree {
 private:
   /* The tree pointers and data stored separately */
-  std::vector<Tree_pointers>    pointers_stack;
-  std::vector<X>                data_stack;
-  std::vector<std::bitset<64>>  validity_stack;
-  Forest<X>*                    forest_ptr;
+  std::vector<Tree_pointers>   pointers_stack;
+  std::vector<X>               data_stack;
+  std::vector<std::bitset<64>> validity_stack;
+  Forest<X>*                   forest_ptr;
 
   /* Special functions for sanity */
   [[nodiscard]] inline bool _check_idx_exists(const Tree_pos& idx) const noexcept {
@@ -207,13 +212,13 @@ private:
 
   [[nodiscard]] inline bool _contains_data(const Tree_pos& idx) const noexcept {
     const auto bitset_idx = idx >> 6;  // Divide by 64 (bits per bitset)
-    const auto bit_pos = idx & 63;     // Modulo 64
+    const auto bit_pos    = idx & 63;  // Modulo 64
     return bitset_idx < static_cast<Tree_pos>(validity_stack.size()) && validity_stack[bitset_idx][bit_pos];
   }
 
   inline void _set_data_valid(const Tree_pos& idx) noexcept {
     const auto bitset_idx = idx >> 6;
-    const auto bit_pos = idx & 63;
+    const auto bit_pos    = idx & 63;
     if (bitset_idx >= static_cast<Tree_pos>(validity_stack.size())) {
       validity_stack.resize(bitset_idx + 1);
     }
@@ -222,7 +227,7 @@ private:
 
   inline void _set_data_invalid(const Tree_pos& idx) noexcept {
     const auto bitset_idx = idx >> 6;
-    const auto bit_pos = idx & 63;
+    const auto bit_pos    = idx & 63;
     if (bitset_idx < static_cast<Tree_pos>(validity_stack.size())) {
       validity_stack[bitset_idx][bit_pos] = false;
     }
@@ -231,35 +236,43 @@ private:
   // SIMD-friendly bulk validity check for a range
   [[nodiscard]] inline bool _has_any_valid_in_range(Tree_pos start, Tree_pos end) const noexcept {
     const auto start_bitset = start >> 6;
-    const auto end_bitset = end >> 6;
+    const auto end_bitset   = end >> 6;
 
-    if (start_bitset >= static_cast<Tree_pos>(validity_stack.size())) return false;
+    if (start_bitset >= static_cast<Tree_pos>(validity_stack.size())) {
+      return false;
+    }
 
     // Single bitset case
     if (start_bitset == end_bitset) {
       const auto start_bit = start & 63;
-      const auto end_bit = end & 63;
-      const auto mask = ((1ULL << (end_bit - start_bit + 1)) - 1) << start_bit;
+      const auto end_bit   = end & 63;
+      const auto mask      = ((1ULL << (end_bit - start_bit + 1)) - 1) << start_bit;
       return (validity_stack[start_bitset].to_ullong() & mask) != 0;
     }
 
     // Multi-bitset case - check first partial, middle full, last partial
     const auto start_bit = start & 63;
-    const auto end_bit = end & 63;
+    const auto end_bit   = end & 63;
 
     // Check first partial bitset
     const auto first_mask = ~((1ULL << start_bit) - 1);
-    if ((validity_stack[start_bitset].to_ullong() & first_mask) != 0) return true;
+    if ((validity_stack[start_bitset].to_ullong() & first_mask) != 0) {
+      return true;
+    }
 
     // Check middle full bitsets
     for (auto i = start_bitset + 1; i < end_bitset && i < static_cast<Tree_pos>(validity_stack.size()); ++i) {
-      if (validity_stack[i].any()) return true;
+      if (validity_stack[i].any()) {
+        return true;
+      }
     }
 
     // Check last partial bitset
     if (end_bitset < static_cast<Tree_pos>(validity_stack.size())) {
       const auto last_mask = (1ULL << (end_bit + 1)) - 1;
-      if ((validity_stack[end_bitset].to_ullong() & last_mask) != 0) return true;
+      if ((validity_stack[end_bitset].to_ullong() & last_mask) != 0) {
+        return true;
+      }
     }
 
     return false;
@@ -268,18 +281,20 @@ private:
   // SIMD-friendly function to find the next valid index in a range
   [[nodiscard]] inline Tree_pos _find_next_valid_in_range(Tree_pos start, Tree_pos end) const noexcept {
     const auto start_bitset = start >> 6;
-    const auto end_bitset = end >> 6;
+    const auto end_bitset   = end >> 6;
 
-    if (start_bitset >= static_cast<Tree_pos>(validity_stack.size())) return INVALID;
+    if (start_bitset >= static_cast<Tree_pos>(validity_stack.size())) {
+      return INVALID;
+    }
 
     // Single bitset case
     if (start_bitset == end_bitset) {
       const auto start_bit = start & 63;
-      const auto end_bit = std::min(static_cast<Tree_pos>(end & 63), static_cast<Tree_pos>(63));
+      const auto end_bit   = std::min(static_cast<Tree_pos>(end & 63), static_cast<Tree_pos>(63));
 
       auto bits = validity_stack[start_bitset].to_ullong();
-      bits &= ~((1ULL << start_bit) - 1);  // Clear bits before start
-      bits &= (1ULL << (end_bit + 1)) - 1; // Clear bits after end
+      bits &= ~((1ULL << start_bit) - 1);   // Clear bits before start
+      bits &= (1ULL << (end_bit + 1)) - 1;  // Clear bits after end
 
       if (bits != 0) {
         return static_cast<Tree_pos>((start_bitset << 6) + __builtin_ctzll(bits));
@@ -308,7 +323,7 @@ private:
     // Check last partial bitset
     if (end_bitset < static_cast<Tree_pos>(validity_stack.size())) {
       const auto end_bit = end & 63;
-      bits = validity_stack[end_bitset].to_ullong();
+      bits               = validity_stack[end_bitset].to_ullong();
       bits &= (1ULL << (end_bit + 1)) - 1;  // Clear bits after end
       if (bits != 0) {
         return static_cast<Tree_pos>((end_bitset << 6) + __builtin_ctzll(bits));
@@ -321,20 +336,22 @@ private:
   // Bulk validation check for chunk boundaries - returns count of valid entries
   [[nodiscard]] inline size_t _count_valid_in_chunk(Tree_pos chunk_start) const noexcept {
     const auto bitset_start = chunk_start >> 6;
-    const auto bit_start = chunk_start & 63;
+    const auto bit_start    = chunk_start & 63;
 
     // Handle case where chunk spans bitset boundary
     if ((bit_start + CHUNK_SIZE) > 64) {
       size_t count = 0;
       for (int i = 0; i < CHUNK_SIZE; ++i) {
-        if (_contains_data(chunk_start + i)) count++;
+        if (_contains_data(chunk_start + i)) {
+          count++;
+        }
       }
       return count;
     }
 
     // Fast path: entire chunk within single bitset
     if (bitset_start < static_cast<Tree_pos>(validity_stack.size())) {
-      const auto mask = ((1ULL << CHUNK_SIZE) - 1) << bit_start;
+      const auto mask        = ((1ULL << CHUNK_SIZE) - 1) << bit_start;
       const auto masked_bits = validity_stack[bitset_start].to_ullong() & mask;
       return __builtin_popcountll(masked_bits);
     }
@@ -410,13 +427,13 @@ public:
   [[nodiscard]] inline Tree_pos get_parent(const Tree_pos& curr_index) const {
     return pointers_stack[curr_index >> CHUNK_SHIFT].get_parent();
   }
-  [[nodiscard]] Tree_pos get_last_child(const Tree_pos& parent_index) const;
-  [[nodiscard]] Tree_pos get_first_child(const Tree_pos& parent_index) const;
-  [[nodiscard]] bool     is_last_child(const Tree_pos& self_index) const;
-  [[nodiscard]] bool     is_first_child(const Tree_pos& self_index) const;
-  [[nodiscard]] Tree_pos get_sibling_next(const Tree_pos& sibling_id) const;
-  [[nodiscard]] Tree_pos get_sibling_prev(const Tree_pos& sibling_id) const;
-  [[nodiscard]] inline bool     is_leaf(const Tree_pos& leaf_index) const {
+  [[nodiscard]] Tree_pos    get_last_child(const Tree_pos& parent_index) const;
+  [[nodiscard]] Tree_pos    get_first_child(const Tree_pos& parent_index) const;
+  [[nodiscard]] bool        is_last_child(const Tree_pos& self_index) const;
+  [[nodiscard]] bool        is_first_child(const Tree_pos& self_index) const;
+  [[nodiscard]] Tree_pos    get_sibling_next(const Tree_pos& sibling_id) const;
+  [[nodiscard]] Tree_pos    get_sibling_prev(const Tree_pos& sibling_id) const;
+  [[nodiscard]] inline bool is_leaf(const Tree_pos& leaf_index) const {
     return pointers_stack[leaf_index >> CHUNK_SHIFT].get_is_leaf();
   }
   [[nodiscard]] Tree_pos get_root() const { return ROOT; }
@@ -646,7 +663,7 @@ public:
   // PRE-ORDER TRAVERSAL (Optimized for performance)
   class pre_order_iterator {
   private:
-    Tree_pos current;
+    Tree_pos       current;
     const tree<X>* tree_ptr;
 
     // Fast inline helpers to avoid function call overhead
@@ -658,7 +675,7 @@ public:
 
     inline Tree_pos fast_get_sibling_next(Tree_pos sibling_id) const {
       // Fast path: check same chunk first
-      const auto curr_chunk_id = (sibling_id >> CHUNK_SHIFT);
+      const auto curr_chunk_id     = (sibling_id >> CHUNK_SHIFT);
       const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
 
       // Check if next slot in same chunk has data
@@ -674,23 +691,18 @@ public:
       return static_cast<Tree_pos>(next_sibling_chunk << CHUNK_SHIFT);
     }
 
-    inline Tree_pos fast_get_parent(Tree_pos index) const {
-      return tree_ptr->pointers_stack[index >> CHUNK_SHIFT].get_parent();
-    }
+    inline Tree_pos fast_get_parent(Tree_pos index) const { return tree_ptr->pointers_stack[index >> CHUNK_SHIFT].get_parent(); }
 
-    inline bool fast_is_leaf(Tree_pos index) const {
-      return tree_ptr->pointers_stack[index >> CHUNK_SHIFT].get_is_leaf();
-    }
+    inline bool fast_is_leaf(Tree_pos index) const { return tree_ptr->pointers_stack[index >> CHUNK_SHIFT].get_is_leaf(); }
 
   public:
     using iterator_category = std::forward_iterator_tag;
-    using value_type = Tree_pos;
-    using difference_type = std::ptrdiff_t;
-    using pointer = Tree_pos*;
-    using reference = Tree_pos&;
+    using value_type        = Tree_pos;
+    using difference_type   = std::ptrdiff_t;
+    using pointer           = Tree_pos*;
+    using reference         = Tree_pos&;
 
-    pre_order_iterator(Tree_pos start, const tree<X>* tree, bool /* follow_subtrees */ = false)
-        : current(start), tree_ptr(tree) {}
+    pre_order_iterator(Tree_pos start, const tree<X>* tree, bool /* follow_subtrees */ = false) : current(start), tree_ptr(tree) {}
 
     X get_data() const { return tree_ptr->get_data(current); }
 
@@ -728,13 +740,9 @@ public:
       return *this;
     }
 
-    bool operator==(const pre_order_iterator& other) const {
-      return current == other.current;
-    }
+    bool operator==(const pre_order_iterator& other) const { return current == other.current; }
 
-    bool operator!=(const pre_order_iterator& other) const {
-      return current != other.current;
-    }
+    bool operator!=(const pre_order_iterator& other) const { return current != other.current; }
 
     Tree_pos operator*() const { return current; }
   };
@@ -859,9 +867,9 @@ public:
 
   class pre_order_range {
   private:
-    Tree_pos m_start;
+    Tree_pos       m_start;
     const tree<X>* m_tree_ptr;
-    bool     m_follow_subtrees;
+    bool           m_follow_subtrees;
 
   public:
     pre_order_range(Tree_pos start, const tree<X>* tree, bool follow_subtrees = false)
@@ -873,9 +881,7 @@ public:
   };
 
   // Optimized default traversal (no subtree handling)
-  pre_order_range pre_order(Tree_pos start = ROOT) const {
-    return pre_order_range(start, this, false);
-  }
+  pre_order_range pre_order(Tree_pos start = ROOT) const { return pre_order_range(start, this, false); }
 
   // For cases where subtree traversal is needed
   class pre_order_range_with_subtrees {
@@ -1190,7 +1196,6 @@ public:
 
 // ---------------------------------- TEMPLATE IMPLEMENTATION ---------------------------------- //
 
-
 /**
  * @brief Get absolute ID of the last child of a node.
  *
@@ -1463,8 +1468,8 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
 
   // Try to fit this child pointer
   const auto child_chunk_id = _create_space(data);
-  const auto new_child_id = child_chunk_id << CHUNK_SHIFT;
-  const auto new_parent_id = _try_fit_child_ptr(parent_index, new_child_id);
+  const auto new_child_id   = child_chunk_id << CHUNK_SHIFT;
+  const auto new_parent_id  = _try_fit_child_ptr(parent_index, new_child_id);
   pointers_stack[child_chunk_id].set_parent(new_parent_id);
 
   // Set num occupied to 0
@@ -1472,7 +1477,7 @@ Tree_pos tree<X>::add_child(const Tree_pos& parent_index, const X& data) {
 
   // update is_leaf flag and set both first and last child pointers since this is the only child
   const auto parent_chunk_id = parent_index >> CHUNK_SHIFT;
-  const auto parent_offset = static_cast<int16_t>(parent_index & CHUNK_MASK);
+  const auto parent_offset   = static_cast<int16_t>(parent_index & CHUNK_MASK);
   pointers_stack[parent_chunk_id].set_is_leaf(false);
   pointers_stack[parent_chunk_id].set_last_child_at(parent_offset, new_child_id);
 
@@ -1513,7 +1518,7 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
     if (_contains_data((leaf_chunk_id << CHUNK_SHIFT) + offset + 1)) {
       remaining_data++;
 
-      data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset]     = data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1];
+      data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset] = data_stack[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1];
       _set_data_invalid((leaf_chunk_id << CHUNK_SHIFT) + offset + 1);
 
       // Move any child pointer metadata along with the node
@@ -1523,7 +1528,7 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
 
       // Update the parent pointer of the moved node
       const auto moved_node = (leaf_chunk_id << CHUNK_SHIFT) + offset;
-      const auto fc = get_first_child((leaf_chunk_id << CHUNK_SHIFT) + offset + 1);
+      const auto fc         = get_first_child((leaf_chunk_id << CHUNK_SHIFT) + offset + 1);
       if (fc != INVALID) {
         _update_parent_pointer(fc, moved_node);
       }

@@ -1,3 +1,8 @@
+###############################################################################
+module(
+    name = "hhds",
+    version = "0.2.0",
+)
 
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 git_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
@@ -8,17 +13,12 @@ bazel_dep(name = "rules_foreign_cc", version = "0.15.1")
 
 
 bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
-bazel_dep(name = "google_benchmark", version = "1.9.4")
+bazel_dep(name = "google_benchmark", version = "1.9.5")
 
 bazel_dep(name = "abseil-cpp", version = "20250814.1") # 20240722.0.bcr.2")
 bazel_dep(name = "rules_rust", version = "0.68.1")
 bazel_dep(name = "rules_rust_bindgen", version = "0.68.1")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
-
-#module(
-#    name = "hhds",
-#    version = "0.2.0",
-#)
 
 
 
@@ -60,10 +60,10 @@ bazel_dep(name = "iassert", version = "0.1.1")
 
 archive_override(
     module_name = "iassert",
-    integrity = "sha256-Z9PIn1Fvbo8rE5RhStEvuRA0h39CcRK+536PzJKH/UU=",
-    strip_prefix = "iassert-db67db81bc7708fae78d1d667c9a085e5c0e123c",
+    integrity = "sha256-sMOp2bzYfLhVMYfFoliGIXKHAi3bZpTVTSD+2oXjMp8=",
+    strip_prefix = "iassert-0460fbd8405a96b3615be425df9066eba835fcf0",
     urls = [
-        "https://github.com/masc-ucsc/iassert/archive/db67db81bc7708fae78d1d667c9a085e5c0e123c.zip",
+        "https://github.com/masc-ucsc/iassert/archive/0460fbd8405a96b3615be425df9066eba835fcf0.zip",
     ],
 )
 
