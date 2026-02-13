@@ -7,8 +7,6 @@
 #include <vector>
 
 // TODO:
-// 6-Add the graph_id class
-// 7-Allow edges between graphs add_edge(pin>0, pin<0) or add_edge(pin<0, pin>0)
 // 8-Benchmark against boost library for some example similar to hardware
 // 9-Iterator single graph (fast, fwd, bwd)
 // 10-Iterator hierarchical across graphs (fast, fwd, bwd)
@@ -20,6 +18,8 @@
 // 4-Use odd/even in pin/node so that add_ege can work for pin 0 (pin0==node_id)
 // 4.1-Missing to add node 1 and node 2 as input and output from graph at creation time.
 // 5-Add a better unit test for add_pin/node/edge for single graph. Make sure that it does not have bugs
+// 6-Add the graph_id class
+// 7_Add inter-graph connections (set_subnode)
 
 namespace hhds {
 
@@ -134,7 +134,7 @@ auto Pin::add_edge(Pid self_id, Vid other_id) -> bool {
   return overflow_handling(self_id, other_id);
 }
 
-Pin::EdgeRange::EdgeRange(const Pin* pin, Pid pid) noexcept : pin_(pin), /* pid_(pid), */ set_(nullptr), own_(false) {
+Pin::EdgeRange::EdgeRange(const Pin* pin, Pid pid) noexcept : pin_(pin), set_(nullptr), own_(false) {
   if (pin->use_overflow) {
     set_ = acquire_set();
     set_->clear();
@@ -149,7 +149,7 @@ Pin::EdgeRange::EdgeRange(const Pin* pin, Pid pid) noexcept : pin_(pin), /* pid_
   }
 }
 
-Pin::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : pin_(o.pin_), /* pid_(o.pid_),*/ set_(o.set_), own_(o.own_) {
+Pin::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : pin_(o.pin_), set_(o.set_), own_(o.own_) {
   o.pin_ = nullptr;
   o.set_ = nullptr;
 }
@@ -206,8 +206,6 @@ void Pin::EdgeRange::populate_set(const Pin* pin, ankerl::unordered_dense::set<V
     // reconstruct numeric target
     int64_t  delta      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
     uint64_t target_num = self_num - delta;
-    // std::cout << "raw= " << raw << ", mag= " << mag << ", delta= " << delta
-    //           << ", target_num= " << target_num << ", self_num= " << self_num << "\n";
 
     // repack into a Vid: shift left 2, OR back the driver+pin bits
     Vid v = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin ? PIN_BIT : 0));
@@ -247,9 +245,7 @@ Node::Node(Nid nid_val) {
   nid = nid_val;
 }
 
-void Node::clear_node() {
-  bzero(this, sizeof(Node));
-}
+void Node::clear_node() { bzero(this, sizeof(Node)); }
 
 void Node::set_type(Type t) { type = t; }
 Nid  Node::get_nid() const { return nid; }
@@ -259,7 +255,7 @@ void Node::set_next_pin_id(Pid id) { next_pin_id = id; }
 
 auto Node::overflow_handling(Nid self_id, Vid other_id) -> bool {
   if (use_overflow) {
-    if(other_id) {
+    if (other_id) {
       sedges_.set->insert(other_id);
     }
     return true;
@@ -305,7 +301,7 @@ auto Node::overflow_handling(Nid self_id, Vid other_id) -> bool {
   sedges_.set    = hs;
   ledge0 = ledge1 = 0;
 
-  if(other_id) {
+  if (other_id) {
     hs->insert(other_id);
   }
   return true;
@@ -399,8 +395,7 @@ void Node::set_subnode(Gid gid) {
 
   // Store gid in ledge0 as (gid + 1) so ledge0==0 means "no subnode".
   const uint64_t g = static_cast<uint64_t>(gid);
-  assert(g != 0);
-  assert(g < (1ULL << Nid_bits));                       // since ledge0 is Nid_bits wide
+  assert(g < (1ULL << Nid_bits));  // since ledge0 is Nid_bits wide
   ledge0 = static_cast<Nid>(g);
 }
 
@@ -411,9 +406,7 @@ Gid Node::get_subnode() const noexcept {
   return static_cast<Gid>(static_cast<uint64_t>(ledge0));
 }
 
-bool Node::has_subnode() const noexcept {
-  return use_overflow && ledge0 != 0;
-}
+bool Node::has_subnode() const noexcept { return use_overflow && ledge0 != 0; }
 
 Node::EdgeRange::EdgeRange(const Node* node, Nid nid) noexcept : node_(node), /* nid_(nid), */ set_(nullptr), own_(false) {
   if (node->use_overflow) {
@@ -507,7 +500,6 @@ auto Node::get_edges(Nid nid) const noexcept -> EdgeRange { return EdgeRange(thi
 Graph::Graph() { clear_graph(); }
 
 void Graph::clear_graph() {
-  bzero(this, sizeof(Graph));
   node_table.clear();
   pin_table.clear();
   node_table.emplace_back(0);  // Invalid ID
@@ -515,6 +507,55 @@ void Graph::clear_graph() {
   node_table.emplace_back(2);  // Output node
   node_table.emplace_back(3);  // Constant (common value/issue to handle for toposort) - Each const value is a pin in node3
   pin_table.emplace_back(0, 0);
+}
+
+void Graph::bind_library(const GraphLibrary* owner, Gid self_gid) noexcept {
+  owner_lib_ = owner;
+  self_gid_  = self_gid;
+}
+
+auto Graph::fast_iter(bool hierarchy, Gid top_graph, uint32_t tree_node_num) const -> std::vector<FastIterator> {
+  if (top_graph == 0) {
+    top_graph = self_gid_;
+  }
+  if (tree_node_num == 0) {
+    tree_node_num = 1;
+  }
+
+  std::vector<FastIterator> result;
+  result.reserve(node_table.size());
+
+  ankerl::unordered_dense::set<Gid> active_graphs;
+  if (self_gid_ != Gid_invalid) {
+    active_graphs.insert(self_gid_);
+  }
+
+  uint32_t next_tree_node_num = tree_node_num;
+  fast_iter_impl(hierarchy, top_graph, tree_node_num, next_tree_node_num, active_graphs, result);
+  return result;
+}
+
+void Graph::fast_iter_impl(bool hierarchy, Gid top_graph, uint32_t tree_node_num, uint32_t& next_tree_node_num,
+                           ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<FastIterator>& out) const {
+  const Gid curr_graph = self_gid_;
+  for (size_t i = 1; i < node_table.size(); ++i) {
+    const Nid   node_id = static_cast<Nid>(i) << 2;
+    const auto& node    = node_table[i];
+
+    if (hierarchy && node.has_subnode() && owner_lib_ != nullptr) {
+      const Gid other_graph_id = node.get_subnode();
+      if (owner_lib_->has_graph(other_graph_id) && active_graphs.find(other_graph_id) == active_graphs.end()) {
+        active_graphs.insert(other_graph_id);
+        const uint32_t child_tree_node_num = ++next_tree_node_num;
+        owner_lib_->get_graph(other_graph_id)
+            .fast_iter_impl(hierarchy, top_graph, child_tree_node_num, next_tree_node_num, active_graphs, out);
+        active_graphs.erase(other_graph_id);
+        continue;
+      }
+    }
+
+    out.emplace_back(node_id, top_graph, curr_graph, tree_node_num);
+  }
 }
 
 auto Graph::create_node() -> Nid {
@@ -525,6 +566,7 @@ auto Graph::create_node() -> Nid {
 }
 
 auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
+  // nid is << 2 here but port_id is not << 2 id (here but pin id in actual) is also not << 2
   Pid id = pin_table.size();
   assert(id);
   pin_table.emplace_back(nid, pid);
@@ -546,7 +588,7 @@ void Graph::delete_node(Nid nid) {
   }
 
   // Get all edges from this node
-  auto edges = node->get_edges(nid);
+  auto             edges = node->get_edges(nid);
   std::vector<Vid> edges_to_remove;
   for (auto edge : edges) {
     edges_to_remove.push_back(edge);
@@ -562,7 +604,46 @@ void Graph::delete_node(Nid nid) {
         if (other_pin->use_overflow) {
           other_pin->sedges_.set->erase(nid);
           other_pin->sedges_.set->erase(nid | 2);
+        } else {
+          // we need to check sedges_.sedges and ledge0/ledge1 for the edge to remove
+          constexpr int      SHIFT      = 14;
+          constexpr uint64_t SLOT_MASK  = (1ULL << SHIFT) - 1;
+          const uint64_t     self_num   = static_cast<uint64_t>(other_vid) >> 2;
+          const Vid          actual_nid = nid >> 2;
+
+          for (int i = 0; i < 4; ++i) {
+            uint64_t raw = (other_pin->sedges_.sedges >> (i * SHIFT)) & SLOT_MASK;
+            if (raw == 0) {
+              continue;
+            }
+            bool     neg    = raw & (1ULL << 13);
+            bool     driver = raw & (1ULL << 1);
+            bool     pin    = raw & (1ULL << 0);
+            uint64_t mag    = (raw >> 2) & ((1ULL << 11) - 1);
+            int64_t  diff   = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+
+            // self_num - actual_nid = diff => actual_nid = self_num - diff
+            uint64_t actual_nid = nid >> 2;
+            uint64_t target_num = self_num - diff;
+
+            if (target_num != actual_nid) {
+              continue;
+            } else {
+              // we found the edge to remove, now check if driver/pin bits match
+              // delete
+              other_pin->sedges_.sedges &= ~(SLOT_MASK << (i * SHIFT));
+              break;  // break after finding the edge to remove
+            }
+          }
+          if (other_pin->ledge0 == nid || other_pin->ledge0 == (nid | static_cast<Vid>(2))) {
+            other_pin->ledge0 = 0;
+          } else if (other_pin->ledge1 == nid || other_pin->ledge1 == (nid | static_cast<Vid>(2))) {
+            other_pin->ledge1 = 0;
+          }
         }
+      } else {
+        // This can happen if the other pin was already deleted as part of this node deletion process, so we can ignore it.
+        std::cerr << "Warning: Connected pin " << (other_vid >> 2) << " has no edges while deleting node " << nid << "\n";
       }
     } else {
       auto* other_node = ref_node(other_vid);
@@ -571,7 +652,42 @@ void Graph::delete_node(Nid nid) {
         if (other_node->use_overflow) {
           other_node->sedges_.set->erase(nid);
           other_node->sedges_.set->erase(nid | 2);
+        } else {
+          // we need to check sedges_.sedges and ledge0/ledge1 for the edge to remove
+          constexpr int      SHIFT     = 14;
+          constexpr uint64_t SLOT_MASK = (1ULL << SHIFT) - 1;
+          const uint64_t     self_num  = static_cast<uint64_t>(other_vid) >> 2;
+
+          for (int i = 0; i < 4; ++i) {
+            uint64_t raw = (other_node->sedges_.sedges >> (i * SHIFT)) & SLOT_MASK;
+            if (raw == 0) {
+              continue;
+            }
+            bool     neg    = raw & (1ULL << 13);
+            bool     driver = raw & (1ULL << 1);
+            bool     pin    = raw & (1ULL << 0);
+            uint64_t mag    = (raw >> 2) & ((1ULL << 11) - 1);
+            int64_t  diff   = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+
+            // self_num - actual_nid = diff => actual_nid = self_num - diff
+            uint64_t actual_nid = nid >> 2;
+            uint64_t target_num = self_num - diff;
+            if (target_num != actual_nid) {
+              continue;
+            } else {
+              other_node->sedges_.sedges &= ~(SLOT_MASK << (i * SHIFT));
+              break;  // break after finding the edge to remove
+            }
+          }
+          if (other_node->ledge0 == nid || other_node->ledge0 == (nid | static_cast<Vid>(2))) {
+            other_node->ledge0 = 0;
+          } else if (other_node->ledge1 == nid || other_node->ledge1 == (nid | static_cast<Vid>(2))) {
+            other_node->ledge1 = 0;
+          }
         }
+      } else {
+        // This can happen if the other node was already deleted as part of this node deletion process, so we can ignore it.
+        std::cerr << "Warning: Connected node " << (other_vid >> 2) << " has no edges while deleting node " << nid << "\n";
       }
     }
   }
@@ -579,12 +695,13 @@ void Graph::delete_node(Nid nid) {
   // Also remove edges from pins of this node
   Pid cur_pin = node->get_next_pin_id();
   while (cur_pin != 0) {
-    Pid actual_pin_id = cur_pin;
-    auto* pin = &pin_table[cur_pin];
+    // cur_pin is encoded vid; decode before indexing pin table.
+    Pid   pin_vid       = cur_pin;
+    Pid   actual_pin_id = pin_vid >> 2;
+    auto* pin           = &pin_table[actual_pin_id];
 
     // Get all edges from this pin
-    Pid pin_vid = (actual_pin_id << 2) | 1;
-    auto pin_edges = pin->get_edges(pin_vid);
+    auto             pin_edges = pin->get_edges(pin_vid);
     std::vector<Vid> pin_edges_to_remove;
     for (auto edge : pin_edges) {
       pin_edges_to_remove.push_back(edge);
@@ -599,7 +716,43 @@ void Graph::delete_node(Nid nid) {
           if (other_pin->use_overflow) {
             other_pin->sedges_.set->erase(pin_vid);
             other_pin->sedges_.set->erase(pin_vid | 2);
+          } else {
+            // we need to check sedges_.sedges and ledge0/ledge1 for the edge to remove
+            constexpr int      SHIFT          = 14;
+            constexpr uint64_t SLOT_MASK      = (1ULL << SHIFT) - 1;
+            const uint64_t     self_num       = static_cast<uint64_t>(other_vid) >> 2;
+            const Vid          actual_pin_vid = actual_pin_id;
+
+            for (int i = 0; i < 4; ++i) {
+              uint64_t raw = (other_pin->sedges_.sedges >> (i * SHIFT)) & SLOT_MASK;
+              if (raw == 0) {
+                continue;
+              }
+              bool     neg    = raw & (1ULL << 13);
+              bool     driver = raw & (1ULL << 1);
+              bool     pin    = raw & (1ULL << 0);
+              uint64_t mag    = (raw >> 2) & ((1ULL << 11) - 1);
+              int64_t  diff   = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+
+              // self_num - actual_pin_vid = diff => actual_pin_vid = self_num - diff
+              uint64_t target_num = self_num - diff;
+
+              if (target_num != actual_pin_vid) {
+                continue;
+              } else {
+                other_pin->sedges_.sedges &= ~(SLOT_MASK << (i * SHIFT));
+                break;  // break after finding the edge to remove
+              }
+            }
+            if (other_pin->ledge0 == pin_vid || other_pin->ledge0 == (pin_vid | static_cast<Vid>(2))) {
+              other_pin->ledge0 = 0;
+            } else if (other_pin->ledge1 == pin_vid || other_pin->ledge1 == (pin_vid | static_cast<Vid>(2))) {
+              other_pin->ledge1 = 0;
+            }
           }
+        } else {
+          // This can happen if the other pin was already deleted as part of this node deletion process, so we can ignore it.
+          std::cerr << "Warning: Connected pin " << (other_vid >> 2) << " has no edges while deleting node " << nid << "\n";
         }
       } else {
         auto* other_node = ref_node(other_vid);
@@ -607,7 +760,43 @@ void Graph::delete_node(Nid nid) {
           if (other_node->use_overflow) {
             other_node->sedges_.set->erase(pin_vid);
             other_node->sedges_.set->erase(pin_vid | 2);
+          } else {
+            // we need to check sedges_.sedges and ledge0/ledge1 for the edge to remove
+            constexpr int      SHIFT          = 14;
+            constexpr uint64_t SLOT_MASK      = (1ULL << SHIFT) - 1;
+            const uint64_t     self_num       = static_cast<uint64_t>(other_vid) >> 2;
+            const Vid          actual_pin_vid = actual_pin_id;
+
+            for (int i = 0; i < 4; ++i) {
+              uint64_t raw = (other_node->sedges_.sedges >> (i * SHIFT)) & SLOT_MASK;
+              if (raw == 0) {
+                continue;
+              }
+              bool     neg    = raw & (1ULL << 13);
+              bool     driver = raw & (1ULL << 1);
+              bool     pin    = raw & (1ULL << 0);
+              uint64_t mag    = (raw >> 2) & ((1ULL << 11) - 1);
+              int64_t  diff   = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+
+              // self_num - actual_pin_vid = diff => actual_pin_vid = self_num - diff
+              uint64_t target_num = self_num - diff;
+
+              if (target_num != actual_pin_vid) {
+                continue;
+              } else {
+                other_node->sedges_.sedges &= ~(SLOT_MASK << (i * SHIFT));
+                break;  // break after finding the edge to remove
+              }
+            }
+            if (other_node->ledge0 == pin_vid || other_node->ledge0 == (pin_vid | static_cast<Vid>(2))) {
+              other_node->ledge0 = 0;
+            } else if (other_node->ledge1 == pin_vid || other_node->ledge1 == (pin_vid | static_cast<Vid>(2))) {
+              other_node->ledge1 = 0;
+            }
           }
+        } else {
+          // This can happen if the other node was already deleted as part of this node deletion process, so we can ignore it.
+          std::cerr << "Warning: Connected node " << (other_vid >> 2) << " has no edges while deleting node " << nid << "\n";
         }
       }
     }
@@ -617,8 +806,8 @@ void Graph::delete_node(Nid nid) {
       pin->sedges_.set->clear();
     } else {
       pin->sedges_.sedges = 0;
-      pin->ledge0 = 0;
-      pin->ledge1 = 0;
+      pin->ledge0         = 0;
+      pin->ledge1         = 0;
     }
 
     cur_pin = pin->get_next_pin_id();
@@ -629,8 +818,8 @@ void Graph::delete_node(Nid nid) {
     node->sedges_.set->clear();
   } else {
     node->sedges_.sedges = 0;
-    node->ledge0 = 0;
-    node->ledge1 = 0;
+    node->ledge0         = 0;
+    node->ledge1         = 0;
   }
 }
 
@@ -669,17 +858,20 @@ void Graph::add_edge_int(Vid self_id, Vid other_id) {
 }
 
 void Graph::set_next_pin(Nid nid, Pid next_pin) {
+  // here next_pin is not << 2 but nid is << 2
   Nid  actual_nid = nid >> 2;
   auto node       = &node_table[actual_nid];
   if (node->get_next_pin_id() == 0) {
-    node->set_next_pin_id(next_pin);
+    node->set_next_pin_id(next_pin << 2 | 1);
     return;
   }
   Pid cur = node->get_next_pin_id();
+  cur     = cur >> 2;
   while (pin_table[cur].get_next_pin_id()) {
     cur = pin_table[cur].get_next_pin_id();
+    cur = cur >> 2;
   }
-  pin_table[cur].set_next_pin_id(next_pin);
+  pin_table[cur].set_next_pin_id(next_pin << 2 | 1);
 }
 
 void Graph::display_graph() const {
