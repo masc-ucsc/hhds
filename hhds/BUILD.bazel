@@ -295,6 +295,17 @@ cc_test(
 #    ],
 #)
 
+cc_test(
+    name = "iterators",
+    srcs = ["tests/iterators.cpp"],
+    tags = ["manual"],  # planned API, not yet implemented
+    deps = [
+        ":core",
+        ":graph",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "scale_test",
     srcs = ["tests/scale_test.cpp"],
