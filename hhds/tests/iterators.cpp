@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include "absl/container/flat_hash_map.h"
 #include "hhds/graph.hpp"
 #include "hhds/tree.hpp"
 
@@ -41,8 +42,8 @@ TEST(CompactTypes, NodeClassHashable) {
   EXPECT_EQ(n1, n1);
   EXPECT_NE(n1, n2);
 
-  // Usable as hash map key for external attribute tables
-  std::unordered_map<hhds::Node_class, int> attrs;
+  // Usable as absl::flat_hash_map key for external attribute tables
+  absl::flat_hash_map<hhds::Node_class, int> attrs;
   attrs[n1] = 42;
   EXPECT_EQ(attrs[n1], 42);
 }
@@ -130,16 +131,16 @@ TEST(LazyTraversal, FastClassSingleGraph) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 8: connect(Node_class, Node_class) shorthand (api_todo.md #8)
+// Section 4: add_edge(Node_class, Node_class) pin-0 shorthand (api_todo.md #4)
 // ---------------------------------------------------------------------------
 
-TEST(ConnectShorthand, NodeToNode) {
+TEST(AddEdgeShorthand, NodeToNode) {
   hhds::Graph g;
   auto n1 = g.create_node();
   auto n2 = g.create_node();
 
-  // Implicit pin 0 on both sides
-  g.connect(n1, n2);
+  // add_edge with Node_class uses implicit pin 0 on both sides
+  g.add_edge(n1, n2);
 
   int count = 0;
   for (auto edge : g.out_edges(n1)) {
@@ -150,7 +151,7 @@ TEST(ConnectShorthand, NodeToNode) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 9: Node pin iteration (api_todo.md #9)
+// Section 8: Node pin iteration (api_todo.md #8)
 // ---------------------------------------------------------------------------
 
 TEST(PinIteration, GetPins) {
@@ -169,7 +170,7 @@ TEST(PinIteration, GetPins) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 10: Tree iterators return Tnode_class (api_todo.md #10)
+// Section 9: Tree iterators return Tnode_class (api_todo.md #9)
 // ---------------------------------------------------------------------------
 
 TEST(TreeIterator, PreOrderYieldsTnodeClass) {
@@ -190,7 +191,7 @@ TEST(TreeIterator, PreOrderYieldsTnodeClass) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 15: Hierarchy cursor — graphs (api_todo.md #15)
+// Section 14: Hierarchy cursor — graphs (api_todo.md #14)
 // ---------------------------------------------------------------------------
 
 TEST(HierCursor, GraphBasicNavigation) {
@@ -335,7 +336,7 @@ TEST(HierCursor, GraphIterateNodesAtLevel) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 15: Hierarchy cursor — trees/forest (api_todo.md #15)
+// Section 14: Hierarchy cursor — trees/forest (api_todo.md #14)
 // ---------------------------------------------------------------------------
 
 TEST(ForestCursor, BasicNavigation) {
@@ -383,7 +384,7 @@ TEST(ForestCursor, BasicNavigation) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 15: get_callers (api_todo.md #15)
+// Section 14: get_callers (api_todo.md #14)
 // ---------------------------------------------------------------------------
 
 TEST(GetCallers, GraphCallersTracking) {

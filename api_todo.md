@@ -62,17 +62,17 @@ private:
 };
 
 // With hierarchy — carries a pointer to the hierarchy tree and a position
-// in it (hier_tid). The hierarchy tree encodes the design instance tree:
-// each tree node maps to a Gid. Walking from hier_tid to the root gives
-// the full hierarchy path. get_current_gid() reads the Gid at hier_tid;
+// in it (hier_pos). The hierarchy tree encodes the design instance tree:
+// each tree node maps to a Gid. Walking from hier_pos to the root gives
+// the full hierarchy path. get_current_gid() reads the Gid at hier_pos;
 // get_root_gid() reads the Gid at the tree root.
 struct Node_hier {
-  Gid get_current_gid() const;    // Gid at hier_tid
+  Gid get_current_gid() const;    // Gid at hier_pos
   Gid get_root_gid() const;       // Gid at hierarchy tree root
   Port_id get_port_id() const;    // always 0 for Node
 private:
   std::shared_ptr<tree<Gid>> hier_ref;  // hierarchy tree (each node stores a Gid)
-  Tid hier_tid;                    // current position in hierarchy tree
+  Tree_pos hier_pos;                    // current position in hierarchy tree
   Nid nid;
 };
 
@@ -83,7 +83,7 @@ struct Pin_hier {
   Port_id get_port_id() const;
 private:
   std::shared_ptr<tree<Gid>> hier_ref;
-  Tid hier_tid;
+  Tree_pos hier_pos;
   Pid pid;
 };
 ```
@@ -108,14 +108,14 @@ private:
 };
 
 // With hierarchy — same pattern as graph: hier_ref is the hierarchy tree,
-// hier_tid is the current position. Walking the hierarchy tree gives the
+// hier_pos is the current position. Walking the hierarchy tree gives the
 // full path of tree instances.
 struct Tnode_hier {
   Tid      get_current_tid() const;
   Tid      get_root_tid() const;
 private:
-  std::shared_ptr<tree<Tid>> hier_ref;  // hierarchy tree (each node stores a Tid)
-  Tid hier_tid;
+  std::shared_ptr<tree<Gid>> hier_ref;  // hierarchy tree (each node stores a Gid)
+  Tree_pos hier_pos;
   Tree_pos pos;
 };
 ```
@@ -141,8 +141,21 @@ struct Edge_hier {
 
 ### Hash/Equality Support
 
-All compact types need `operator==`, `operator<`, and `std::hash` specializations
-so they can be used as keys in external attribute tables (the primary use case).
+All compact types need `operator==`, `operator!=`, and `AbslHashValue` so they
+can be used as keys in `absl::flat_hash_map` / `absl::flat_hash_set` for
+external attribute tables (the primary use case).
+
+```cpp
+// Example pattern (same for all _class/_flat/_hier types):
+struct Node_class {
+  constexpr bool operator==(const Node_class &other) const { return nid == other.nid; }
+  constexpr bool operator!=(const Node_class &other) const { return !(*this == other); }
+
+  template <typename H> friend H AbslHashValue(H h, const Node_class &s) {
+    return H::combine(std::move(h), s.nid);
+  }
+};
+```
 
 ---
 
@@ -188,7 +201,10 @@ Tombstone or compaction strategy TBD.
 `fast_iter()` currently returns `std::vector<FastIterator>` — won't scale to
 billions of nodes. Replace with lazy ranges that yield compact types directly.
 
-Creation functions return compact types (`Node_class`, `Pin_class`):
+Creation functions return compact types (`Node_class`, `Pin_class`).
+`add_edge` accepts both `Node_class` and `Pin_class` pairs — a `Node_class`
+is equivalent to a `Pin_class` with port 0, so `add_edge(Node_class, Node_class)`
+is the pin-0 shorthand (no separate `connect` needed):
 ```cpp
 Node_class create_node();                              // returns Node_class directly
 Pin_class  create_pin(Node_class node, Port_id port);  // returns Pin_class directly
@@ -235,7 +251,7 @@ Gid Graph::get_gid() const;
 ```
 
 The `_hier` types hold a `std::shared_ptr<tree<Gid>>` (graph) or
-`std::shared_ptr<tree<Tid>>` (tree) to the hierarchy tree,
+`std::shared_ptr<tree<Gid>>` (tree) to the hierarchy tree,
 ensuring it stays alive while references exist. The `_class` and `_flat`
 types are lightweight value types with no smart pointers.
 
@@ -270,18 +286,7 @@ std::shared_ptr<tree<X>> find_tree(Tid tid) const;
 
 ---
 
-## 8. `connect(Node_class, Node_class)` Pin-0 Shorthand (Medium Priority)
-
-Most cells have just pin-0 sink + pin-0 driver. Leverages existing pin-0 optimization.
-This is the same as `add_edge(Node_class, Node_class)` from section 4.
-
-```cpp
-void connect(Node_class driver, Node_class sink);  // implicit pin 0 on both
-```
-
----
-
-## 9. Node Pin Iteration (Medium Priority)
+## 8. Node Pin Iteration (Medium Priority)
 
 Avoid forcing users to walk the pin linked list manually.
 
@@ -293,7 +298,7 @@ PinRange<Pin_class> get_sink_pins(Node_class node) const;   // pins that sink ed
 
 ---
 
-## 10. Update Tree Iterators to Return `Tnode_class` / `Tnode_hier` (Medium Priority)
+## 9. Update Tree Iterators to Return `Tnode_class` / `Tnode_hier` (Medium Priority)
 
 Current tree iterators dereference to `Tree_pos`. They should yield `Tnode_class`
 for single-tree iteration, or `Tnode_hier` when traversing across a forest.
@@ -317,7 +322,7 @@ for (auto tnode : my_forest.pre_order_hier(tree_ref)) {
 
 ---
 
-## 11. Forest / GraphLibrary Iteration (Low Priority)
+## 10. Forest / GraphLibrary Iteration (Low Priority)
 
 ```cpp
 // Forest
@@ -331,7 +336,7 @@ size_t graph_count() const;  // live count (excluding tombstones)
 
 ---
 
-## 12. `operator[]` Return by Reference (Low Priority)
+## 11. `operator[]` Return by Reference (Low Priority)
 
 ```cpp
 // Current (returns by value):
@@ -344,7 +349,7 @@ const X& operator[](Tnode_class tnode) const;
 
 ---
 
-## 13. `is_valid()` Helpers (Low Priority)
+## 12. `is_valid()` Helpers (Low Priority)
 
 ```cpp
 // Tree
@@ -357,7 +362,7 @@ static constexpr bool is_valid(Pin_class pin);
 
 ---
 
-## 14. Hierarchy Naming Consistency (Low Priority)
+## 13. Hierarchy Naming Consistency (Low Priority)
 
 Align tree and graph hierarchy vocabulary:
 
@@ -373,7 +378,7 @@ Proposed: both use consistent pattern:
 
 ---
 
-## 15. Hierarchy Cursor (High Priority)
+## 14. Hierarchy Cursor (High Priority)
 
 A cursor-like API (similar to tree-sitter cursors) for navigating the instance
 hierarchy formed by connected forests or connected graph libraries. The cursor
@@ -419,7 +424,7 @@ Each position in the hierarchy tree corresponds to a graph instance.
 class HierCursor {
   const GraphLibrary* lib;
   std::shared_ptr<tree<Gid>> hier_tree;  // hierarchy tree (each node stores a Gid)
-  Tid hier_tid;                     // current position in hierarchy tree
+  Tree_pos hier_pos;                     // current position in hierarchy tree
 
   // Hierarchy navigation (return true if moved, false if at boundary)
   bool goto_parent();         // go up one hierarchy level
@@ -441,7 +446,7 @@ class HierCursor {
   NodeRange<Node_class> each_node() const;
 
   // Reset cursor to a different position (must be within same hierarchy tree)
-  void reset(Tid position);
+  void reset(Tree_pos position);
 };
 ```
 
@@ -453,8 +458,8 @@ records which tree instances reference which sub-trees via `subtree_ref`.
 ```cpp
 class ForestCursor {
   Forest<X>* forest;
-  std::shared_ptr<tree<Tid>> hier_tree;  // hierarchy tree (each node stores a Tid)
-  Tid hier_tid;
+  std::shared_ptr<tree<Gid>> hier_tree;  // hierarchy tree (each node stores a Gid)
+  Tree_pos hier_pos;
 
   bool goto_parent();
   bool goto_first_child();
@@ -472,7 +477,7 @@ class ForestCursor {
   // Iterate nodes within current tree
   TnodeRange<Tnode_class> each_tnode() const;
 
-  void reset(Tid position);
+  void reset(Tree_pos position);
 };
 ```
 
@@ -523,9 +528,20 @@ HierCursor cursor = lib.create_cursor(first_caller.caller_gid);
 cursor.goto_first_child();  // descend into ALU from that specific parent
 ```
 
+### Hierarchy Tree Lifecycle
+
+Each graph in the GraphLibrary has an associated hierarchy tree (`tree<Gid>`),
+created empty when the graph is created. `create_node()` does not modify the
+hierarchy tree. `set_subnode(node, sub_gid)` adds a new child to the hierarchy
+tree (appended as last child, which is significantly faster than ordered
+insertion). `delete_node()` on a subnode either removes the child from the
+hierarchy tree or, for speed, sets its Gid to 0 (tombstone). The same pattern
+applies to Forest: `add_subtree_ref()` adds a child to the forest's hierarchy
+tree; deletion removes or tombstones it.
+
 ### Relationship to `_hier` Types
 
-The cursor internally holds the same `(hier_ref, hier_tid)` pair that
+The cursor internally holds the same `(hier_ref, hier_pos)` pair that
 `Node_hier`, `Pin_hier`, and `Tnode_hier` carry. When iterating nodes at the
 current hierarchy level, the cursor can yield `_hier` values that inherit the
 cursor's hierarchy context:
@@ -582,4 +598,5 @@ Three tiers, matching LiveHD's Compact_class / Compact_flat / Compact:
 - `_flat`: cross-graph/tree with flattened hierarchy (each instance gets a unique Gid/Tid)
 - `_hier`: full hierarchy via shared pointer to hierarchy tree + position in it
 
-All must support hashing and equality for use as hash map keys.
+All must support `AbslHashValue`, `operator==`, and `operator!=` for use as
+`absl::flat_hash_map` keys.
