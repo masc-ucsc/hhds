@@ -30,7 +30,7 @@ TEST(CompactTypes, PinClassFromGraph) {
   auto node = g.create_node();
   auto pin  = node.create_pin(3);
 
-  EXPECT_EQ(pin.get_nid(), node.get_nid());
+  EXPECT_EQ(pin.get_raw_nid(), node.get_raw_nid());  // get_raw_nid() for internal cross-check only
   EXPECT_EQ(pin.get_port_id(), 3);
 }
 
@@ -120,7 +120,7 @@ TEST(LazyTraversal, FastClassSingleGraph) {
   g.add_edge(n1, n2);
   g.add_edge(n2, n3);
 
-  // fast_class: lazy range over all nodes in a single graph
+  // fast_class: span over the graph's internal node storage (cheap, no allocation)
   int count = 0;
   for (auto node : g.fast_class()) {
     (void)node.get_port_id();
@@ -131,7 +131,7 @@ TEST(LazyTraversal, FastClassSingleGraph) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 4: add_edge(Node_class, Node_class) pin-0 shorthand (api_todo.md #4)
+// Section 4 (cont.): add_edge(Node_class, Node_class) pin-0 shorthand
 // ---------------------------------------------------------------------------
 
 TEST(AddEdgeShorthand, NodeToNode) {
@@ -200,11 +200,25 @@ TEST(TreeIterator, PreOrderYieldsTnodeClass) {
   // pre_order yields Tnode_class
   int count = 0;
   for (auto tnode : t.pre_order()) {
-    auto& data = tnode.get_data();
+    const auto& data = tnode.get_data();  // get_data() is read-only (const X&)
     (void)data;
     count++;
   }
   EXPECT_EQ(count, 4);
+}
+
+TEST(TreeIterator, RefDataMutableAccess) {
+  hhds::tree<int> t;
+  auto root = t.add_root(10);
+
+  // get_data() is const — read-only
+  const auto& ro = root.get_data();
+  EXPECT_EQ(ro, 10);
+
+  // ref_data() gives a mutable unique_ptr handle
+  auto ptr = root.ref_data();
+  *ptr = 99;
+  EXPECT_EQ(root.get_data(), 99);
 }
 
 // ---------------------------------------------------------------------------
@@ -361,22 +375,24 @@ TEST(HierCursor, GraphIterateNodesAtLevel) {
 TEST(ForestCursor, BasicNavigation) {
   hhds::Forest<int> forest;
 
-  auto main_tree = forest.create_tree(1);    // returns shared_ptr<tree<int>>
-  auto sub_tree  = forest.create_tree(10);   // returns shared_ptr<tree<int>>
-  auto leaf_tree = forest.create_tree(100);  // returns shared_ptr<tree<int>>
+  auto main_tree = forest.create_tree();  // returns shared_ptr<tree<int>>
+  auto sub_tree  = forest.create_tree();  // returns shared_ptr<tree<int>>
+  auto leaf_tree = forest.create_tree();  // returns shared_ptr<tree<int>>
   auto main_tid  = main_tree->get_tid();
   auto sub_tid   = sub_tree->get_tid();
   auto leaf_tid  = leaf_tree->get_tid();
 
   // main_tree root has a child that references sub_tree
-  auto root  = main_tree->get_root();  // returns Tnode_class
+  auto root  = main_tree->add_root(1);
   auto child = main_tree->add_child(root, 2);
   main_tree->add_subtree_ref(child, sub_tid);
 
   // sub_tree root has a child that references leaf_tree
-  auto sub_root  = sub_tree->get_root();
+  auto sub_root  = sub_tree->add_root(10);
   auto sub_child = sub_tree->add_child(sub_root, 20);
   sub_tree->add_subtree_ref(sub_child, leaf_tid);
+
+  leaf_tree->add_root(100);
 
   auto cursor = forest.create_cursor(main_tid);
   EXPECT_TRUE(cursor.is_root());
@@ -433,18 +449,20 @@ TEST(GetCallers, GraphCallersTracking) {
 TEST(GetCallers, ForestCallersTracking) {
   hhds::Forest<int> forest;
 
-  auto tree_a     = forest.create_tree(1);     // returns shared_ptr<tree<int>>
-  auto tree_b     = forest.create_tree(2);     // returns shared_ptr<tree<int>>
-  auto shared     = forest.create_tree(100);   // returns shared_ptr<tree<int>>
+  auto tree_a     = forest.create_tree();  // returns shared_ptr<tree<int>>
+  auto tree_b     = forest.create_tree();  // returns shared_ptr<tree<int>>
+  auto shared     = forest.create_tree();  // returns shared_ptr<tree<int>>
   auto shared_tid = shared->get_tid();
 
-  auto a_root  = tree_a->get_root();
+  auto a_root  = tree_a->add_root(1);
   auto a_child = tree_a->add_child(a_root, 10);
   tree_a->add_subtree_ref(a_child, shared_tid);
 
-  auto b_root  = tree_b->get_root();
+  auto b_root  = tree_b->add_root(2);
   auto b_child = tree_b->add_child(b_root, 20);
   tree_b->add_subtree_ref(b_child, shared_tid);
+
+  shared->add_root(100);
 
   // shared_tree should have 2 callers
   int caller_count = 0;

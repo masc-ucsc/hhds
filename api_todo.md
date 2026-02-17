@@ -22,10 +22,11 @@ custom `*Range` wrappers, so standard span/ranges operations compose naturally.
 Spans are non-owning views: validity lasts until the owning HHDS object mutates
 the underlying storage for that view.
 
-### New Type Alias
+### New Type Aliases
 
 ```cpp
-using Tid = uint64_t;  // Tree node ID (position in hierarchy tree)
+using Gid = uint64_t;  // Graph ID (unique per graph instance in a GraphLibrary)
+using Tid = uint64_t;  // Tree ID (unique per tree instance in a Forest)
 ```
 
 ### Graph IDs
@@ -34,12 +35,13 @@ using Tid = uint64_t;  // Tree node ID (position in hierarchy tree)
 // Per-graph local (no hierarchy info, single graph scope)
 struct Node_class {
   Port_id get_port_id() const; // always 0 for Node (consistent with Pin_class)
+  Nid get_raw_nid() const;     // raw internal ID: for debugging or cross-HHDS internals only
 private:
   Nid nid;
 };
 
 struct Pin_class {
-  Nid get_nid() const;        // master node
+  Nid get_raw_nid() const;    // raw internal node ID: for debugging or cross-HHDS internals only
   Port_id get_port_id() const;
 private:
   Pid pid;
@@ -59,7 +61,7 @@ private:
 struct Pin_flat {
   Gid get_root_gid() const;
   Gid get_current_gid() const;
-  Nid get_nid() const;        // master node
+  Nid get_raw_nid() const;    // raw internal node ID: for debugging or cross-HHDS internals only
   Port_id get_port_id() const;
 private:
   Gid root_gid;
@@ -85,7 +87,7 @@ private:
 struct Pin_hier {
   Gid get_current_gid() const;
   Gid get_root_gid() const;
-  Nid get_nid() const;
+  Nid get_raw_nid() const;    // raw internal node ID: for debugging or cross-HHDS internals only
   Port_id get_port_id() const;
 private:
   std::shared_ptr<tree<Gid>> hier_ref;
@@ -98,19 +100,23 @@ private:
 
 ```cpp
 // Per-tree local (single tree scope)
+// Tid is the raw internal node ID; Tree_pos is the lower-level implementation
+// index inside HHDS storage and never appears in any public API.
 struct Tnode_class {
+  Tid get_raw_tid() const;  // raw internal ID: for debugging or cross-HHDS internals only
 private:
-  Tree_pos pos;
+  Tid tid;
 };
 
 // Cross-tree but flattened (each tree instance gets a unique Tid)
+// root_tid / current_tid identify trees by their root node's Tid.
 struct Tnode_flat {
   Tid      get_root_tid() const;
   Tid      get_current_tid() const;
 private:
-  Tid      root_tid;
-  Tid      current_tid;
-  Tree_pos pos;
+  Tid      root_tid;     // root Tid of the top-level tree in hierarchy
+  Tid      current_tid;  // root Tid of the tree this node belongs to
+  Tid      tid;          // raw node ID within the current tree
 };
 
 // With hierarchy — same pattern as graph: hier_ref is the hierarchy tree,
@@ -120,9 +126,9 @@ struct Tnode_hier {
   Tid      get_current_tid() const;
   Tid      get_root_tid() const;
 private:
-  std::shared_ptr<tree<Tid>> hier_ref;  // hierarchy tree (each node stores a Tid)
-  Tree_pos hier_pos;
-  Tree_pos pos;
+  std::shared_ptr<tree<Tid>> hier_ref;  // hierarchy tree (each node stores a root Tid)
+  Tree_pos hier_pos;                    // position within the hierarchy tree (internal)
+  Tid      tid;                         // raw node ID within the current tree
 };
 ```
 
@@ -228,6 +234,12 @@ Tombstone or compaction strategy TBD.
 `fast_iter()` currently returns `std::vector<FastIterator>`.
 Expose traversal results as `std::span<const ...>` views over compact types.
 
+`std::span` is a non-owning view over contiguous memory, not a lazy range.
+`fast_class()` returns a span directly over the graph's internal node storage
+(nodes are stored contiguously, so no extra allocation is needed).
+`forward_class()` pre-computes and caches the topological order internally;
+the cache is invalidated on the next structural mutation.
+
 Creation functions return compact types (`Node_class`, `Pin_class`).
 `add_edge` accepts both `Node_class` and `Pin_class` pairs — a `Node_class`
 is equivalent to a `Pin_class` with port 0, so `add_edge(Node_class, Node_class)`
@@ -269,7 +281,8 @@ numeric ID (useful for debugging/printing but not the primary handle).
 
 ```cpp
 // Forest — creates trees, returns shared ownership
-std::shared_ptr<tree<X>> create_tree(const X& root_data);
+// Root must be set explicitly via tree<X>::add_root() after creation.
+std::shared_ptr<tree<X>> create_tree();
 std::shared_ptr<tree<X>> get_tree(Tid tid);
 
 // tree<X> exposes its ID
@@ -312,7 +325,7 @@ std::shared_ptr<Graph> find_graph(std::string_view name) const;
 std::shared_ptr<Graph> find_graph(Gid gid) const;
 
 // Forest
-std::shared_ptr<tree<X>> create_tree(std::string_view name, const X& root_data);
+std::shared_ptr<tree<X>> create_tree(std::string_view name);  // root set via add_root()
 std::shared_ptr<tree<X>> find_tree(std::string_view name) const;
 std::shared_ptr<tree<X>> find_tree(Tid tid) const;
 ```
@@ -343,13 +356,20 @@ for single-tree iteration, or `Tnode_hier` when traversing across a forest.
 
 ```cpp
 // Tree creation returns Tnode_class directly
-Tnode_class root  = my_tree.add_root(data);
+Tnode_class root  = my_tree.add_root(data);   // sets the root; tree must be empty
 Tnode_class child = my_tree.add_child(root, data);
+Tnode_class root2 = my_tree.get_root();        // retrieve the root of a non-empty tree
+
+// Data access on Tnode_class:
+//   get_data()  — returns const X&; read-only, no editing allowed
+//   ref_data()  — returns std::unique_ptr<X>; for mutable access; do not hold across mutations
+const X&           tnode.get_data()  const;
+std::unique_ptr<X> tnode.ref_data();
 
 // Single-tree (yields Tnode_class)
 for (auto tnode : my_tree.pre_order()) {
-  auto& data = tnode.get_data();
-  auto parent = tnode.get_parent(); // returns Tnode_class
+  const auto& data = tnode.get_data();  // read-only
+  auto parent = tnode.get_parent();     // returns Tnode_class
 }
 
 // Hierarchical across forest (yields Tnode_hier)
@@ -476,16 +496,17 @@ class HierCursor {
   Gid get_root_gid() const;      // graph at root of cursor
 
   // Hierarchy info
-  bool is_root() const;          // at top of cursor scope
-  bool is_leaf() const;          // no sub-instances below
-  int  depth() const;            // distance from root
+  bool is_root() const;                       // at top of cursor scope
+  bool is_leaf() const;                       // no sub-instances below
+  int  depth() const;                         // distance from root
+  bool is_subnode(Node_hier node) const;      // true if node has a registered sub-instance (via set_subnode)
 
   // Iterate nodes within current hierarchy level.
   // Yields Node_hier so hierarchy context is preserved.
   std::span<const Node_hier> each_node() const;
 
-  // Reset cursor to a different position (must be within same hierarchy tree)
-  void reset(Tree_pos position);
+  // Reset cursor to a different graph within the same hierarchy tree
+  void reset(Gid gid);
 };
 ```
 
@@ -516,7 +537,8 @@ class ForestCursor {
   // Iterate nodes within current tree
   std::span<const Tnode_class> each_tnode() const;
 
-  void reset(Tree_pos position);
+  // Reset cursor to a different tree within the same hierarchy (identified by root Tid)
+  void reset(Tid root_tid);
 };
 ```
 
@@ -526,8 +548,8 @@ class ForestCursor {
 // Graph — rooted at a specific graph instance
 HierCursor cursor = lib.create_cursor(root_gid);
 
-// Forest — rooted at a specific tree
-ForestCursor cursor = forest.create_cursor(root_tree_ref);
+// Forest — rooted at a specific tree (identified by the root Tid of that tree)
+ForestCursor cursor = forest.create_cursor(root_tid);
 ```
 
 ### Discovering Callers
