@@ -22,13 +22,13 @@ TEST(CompactTypes, NodeClassFromGraph) {
 
   // create_node returns Node_class directly (not raw Nid)
   auto node = g.create_node();
-  EXPECT_EQ(node.get_port_id(), 0);  // Node always has port 0
+  EXPECT_EQ(node.get_port_id(), 0);  // Node_class encodes port-id 0 identity
 }
 
 TEST(CompactTypes, PinClassFromGraph) {
   hhds::Graph g;
   auto node = g.create_node();
-  auto pin  = g.create_pin(node, 3);
+  auto pin  = node.create_pin(3);
 
   EXPECT_EQ(pin.get_nid(), node.get_nid());
   EXPECT_EQ(pin.get_port_id(), 3);
@@ -94,8 +94,8 @@ TEST(DelEdge, BasicRemoval) {
   hhds::Graph g;
   auto n1  = g.create_node();
   auto n2  = g.create_node();
-  auto p1  = g.create_pin(n1, 0);
-  auto p2  = g.create_pin(n2, 0);
+  auto p1  = n1.create_pin(0);
+  auto p2  = n2.create_pin(0);
   g.add_edge(p1, p2);
 
   g.del_edge(p1, p2);
@@ -157,16 +157,33 @@ TEST(AddEdgeShorthand, NodeToNode) {
 TEST(PinIteration, GetPins) {
   hhds::Graph g;
   auto node = g.create_node();
-  g.create_pin(node, 1);
-  g.create_pin(node, 2);
-  g.create_pin(node, 3);
+  node.create_pin(1);
+  node.create_pin(2);
+  node.create_pin(3);
 
+  // pin 0 is not present yet: create_node() only creates the node entry.
   int count = 0;
   for (auto pin : g.get_pins(node)) {
     (void)pin.get_port_id();
     count++;
   }
   EXPECT_EQ(count, 3);
+}
+
+TEST(PinIteration, GetPinsIncludesPin0WhenMaterialized) {
+  hhds::Graph g;
+  auto node = g.create_node();
+  node.create_pin(0);  // materialize pin 0 on this node
+  node.create_pin(1);
+  node.create_pin(2);
+  node.create_pin(3);
+
+  int count = 0;
+  for (auto pin : g.get_pins(node)) {
+    (void)pin.get_port_id();
+    count++;
+  }
+  EXPECT_EQ(count, 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -198,20 +215,20 @@ TEST(HierCursor, GraphBasicNavigation) {
   hhds::GraphLibrary lib;
 
   // Create a 3-level hierarchy: top -> mid -> leaf
-  auto top_gid  = lib.create_graph();
-  auto mid_gid  = lib.create_graph();
-  auto leaf_gid = lib.create_graph();
-
-  auto& top = lib.get_graph(top_gid);
-  auto& mid = lib.get_graph(mid_gid);
+  auto top      = lib.create_graph();   // returns shared_ptr<Graph>
+  auto mid      = lib.create_graph();   // returns shared_ptr<Graph>
+  auto leaf     = lib.create_graph();   // returns shared_ptr<Graph>
+  auto top_gid  = top->get_gid();
+  auto mid_gid  = mid->get_gid();
+  auto leaf_gid = leaf->get_gid();
 
   // top has a node that instantiates mid
-  auto sub_mid = top.create_node();
-  top.set_subnode(sub_mid, mid_gid);
+  auto sub_mid = top->create_node();
+  top->set_subnode(sub_mid, mid_gid);
 
   // mid has a node that instantiates leaf
-  auto sub_leaf = mid.create_node();
-  mid.set_subnode(sub_leaf, leaf_gid);
+  auto sub_leaf = mid->create_node();
+  mid->set_subnode(sub_leaf, leaf_gid);
 
   // Create cursor rooted at top
   auto cursor = lib.create_cursor(top_gid);
@@ -250,18 +267,19 @@ TEST(HierCursor, GraphBasicNavigation) {
 TEST(HierCursor, GraphSiblingNavigation) {
   hhds::GraphLibrary lib;
 
-  auto top_gid = lib.create_graph();
-  auto alu_gid = lib.create_graph();
-  auto reg_gid = lib.create_graph();
-
-  auto& top = lib.get_graph(top_gid);
+  auto top    = lib.create_graph();   // returns shared_ptr<Graph>
+  auto alu    = lib.create_graph();   // returns shared_ptr<Graph>
+  auto reg    = lib.create_graph();   // returns shared_ptr<Graph>
+  auto top_gid = top->get_gid();
+  auto alu_gid = alu->get_gid();
+  auto reg_gid = reg->get_gid();
 
   // top has two sub-instances: ALU and RegFile
-  auto n_alu = top.create_node();
-  top.set_subnode(n_alu, alu_gid);
+  auto n_alu = top->create_node();
+  top->set_subnode(n_alu, alu_gid);
 
-  auto n_reg = top.create_node();
-  top.set_subnode(n_reg, reg_gid);
+  auto n_reg = top->create_node();
+  top->set_subnode(n_reg, reg_gid);
 
   auto cursor = lib.create_cursor(top_gid);
   EXPECT_TRUE(cursor.goto_first_child());
@@ -285,19 +303,19 @@ TEST(HierCursor, GraphSiblingNavigation) {
 TEST(HierCursor, GraphSharedModuleDisambiguation) {
   hhds::GraphLibrary lib;
 
-  auto cpu_a_gid = lib.create_graph();
-  auto cpu_b_gid = lib.create_graph();
-  auto alu_gid   = lib.create_graph();
-
-  auto& cpu_a = lib.get_graph(cpu_a_gid);
-  auto& cpu_b = lib.get_graph(cpu_b_gid);
+  auto cpu_a = lib.create_graph();   // returns shared_ptr<Graph>
+  auto cpu_b = lib.create_graph();   // returns shared_ptr<Graph>
+  auto alu   = lib.create_graph();   // returns shared_ptr<Graph>
+  auto cpu_a_gid = cpu_a->get_gid();
+  auto cpu_b_gid = cpu_b->get_gid();
+  auto alu_gid   = alu->get_gid();
 
   // Both CPUs instantiate the same ALU
-  auto a_sub = cpu_a.create_node();
-  cpu_a.set_subnode(a_sub, alu_gid);
+  auto a_sub = cpu_a->create_node();
+  cpu_a->set_subnode(a_sub, alu_gid);
 
-  auto b_sub = cpu_b.create_node();
-  cpu_b.set_subnode(b_sub, alu_gid);
+  auto b_sub = cpu_b->create_node();
+  cpu_b->set_subnode(b_sub, alu_gid);
 
   // Cursor rooted at CPU_A: going into ALU then up returns to CPU_A
   auto cursor_a = lib.create_cursor(cpu_a_gid);
@@ -317,17 +335,18 @@ TEST(HierCursor, GraphSharedModuleDisambiguation) {
 TEST(HierCursor, GraphIterateNodesAtLevel) {
   hhds::GraphLibrary lib;
 
-  auto top_gid = lib.create_graph();
-  auto& top    = lib.get_graph(top_gid);
+  auto top     = lib.create_graph();  // returns shared_ptr<Graph>
+  auto top_gid = top->get_gid();
 
-  top.create_node();
-  top.create_node();
-  top.create_node();
+  top->create_node();
+  top->create_node();
+  top->create_node();
 
   auto cursor = lib.create_cursor(top_gid);
 
   int count = 0;
   for (auto node : cursor.each_node()) {
+    (void)node.get_current_gid();  // each_node yields Node_hier
     (void)node.get_port_id();
     count++;
   }
@@ -342,42 +361,42 @@ TEST(HierCursor, GraphIterateNodesAtLevel) {
 TEST(ForestCursor, BasicNavigation) {
   hhds::Forest<int> forest;
 
-  auto main_ref = forest.create_tree(1);
-  auto sub_ref  = forest.create_tree(10);
-  auto leaf_ref = forest.create_tree(100);
-
-  auto& main_tree = forest.get_tree(main_ref);
-  auto& sub_tree  = forest.get_tree(sub_ref);
+  auto main_tree = forest.create_tree(1);    // returns shared_ptr<tree<int>>
+  auto sub_tree  = forest.create_tree(10);   // returns shared_ptr<tree<int>>
+  auto leaf_tree = forest.create_tree(100);  // returns shared_ptr<tree<int>>
+  auto main_tid  = main_tree->get_tid();
+  auto sub_tid   = sub_tree->get_tid();
+  auto leaf_tid  = leaf_tree->get_tid();
 
   // main_tree root has a child that references sub_tree
-  auto root  = main_tree.get_root();  // returns Tnode_class
-  auto child = main_tree.add_child(root, 2);
-  main_tree.add_subtree_ref(child, sub_ref);
+  auto root  = main_tree->get_root();  // returns Tnode_class
+  auto child = main_tree->add_child(root, 2);
+  main_tree->add_subtree_ref(child, sub_tid);
 
   // sub_tree root has a child that references leaf_tree
-  auto sub_root  = sub_tree.get_root();
-  auto sub_child = sub_tree.add_child(sub_root, 20);
-  sub_tree.add_subtree_ref(sub_child, leaf_ref);
+  auto sub_root  = sub_tree->get_root();
+  auto sub_child = sub_tree->add_child(sub_root, 20);
+  sub_tree->add_subtree_ref(sub_child, leaf_tid);
 
-  auto cursor = forest.create_cursor(main_ref);
+  auto cursor = forest.create_cursor(main_tid);
   EXPECT_TRUE(cursor.is_root());
-  EXPECT_EQ(cursor.get_current_tid(), main_ref);
+  EXPECT_EQ(cursor.get_current_tid(), main_tid);
 
   // Descend into sub_tree
   EXPECT_TRUE(cursor.goto_first_child());
-  EXPECT_EQ(cursor.get_current_tid(), sub_ref);
+  EXPECT_EQ(cursor.get_current_tid(), sub_tid);
 
   // Descend into leaf_tree
   EXPECT_TRUE(cursor.goto_first_child());
-  EXPECT_EQ(cursor.get_current_tid(), leaf_ref);
+  EXPECT_EQ(cursor.get_current_tid(), leaf_tid);
   EXPECT_TRUE(cursor.is_leaf());
 
   // Go back up
   EXPECT_TRUE(cursor.goto_parent());
-  EXPECT_EQ(cursor.get_current_tid(), sub_ref);
+  EXPECT_EQ(cursor.get_current_tid(), sub_tid);
 
   EXPECT_TRUE(cursor.goto_parent());
-  EXPECT_EQ(cursor.get_current_tid(), main_ref);
+  EXPECT_EQ(cursor.get_current_tid(), main_tid);
   EXPECT_TRUE(cursor.is_root());
 
   EXPECT_FALSE(cursor.goto_parent());
@@ -390,18 +409,16 @@ TEST(ForestCursor, BasicNavigation) {
 TEST(GetCallers, GraphCallersTracking) {
   hhds::GraphLibrary lib;
 
-  auto cpu_a_gid = lib.create_graph();
-  auto cpu_b_gid = lib.create_graph();
-  auto alu_gid   = lib.create_graph();
+  auto cpu_a = lib.create_graph();   // returns shared_ptr<Graph>
+  auto cpu_b = lib.create_graph();   // returns shared_ptr<Graph>
+  auto alu   = lib.create_graph();   // returns shared_ptr<Graph>
+  auto alu_gid = alu->get_gid();
 
-  auto& cpu_a = lib.get_graph(cpu_a_gid);
-  auto& cpu_b = lib.get_graph(cpu_b_gid);
+  auto a_sub = cpu_a->create_node();
+  cpu_a->set_subnode(a_sub, alu_gid);
 
-  auto a_sub = cpu_a.create_node();
-  cpu_a.set_subnode(a_sub, alu_gid);
-
-  auto b_sub = cpu_b.create_node();
-  cpu_b.set_subnode(b_sub, alu_gid);
+  auto b_sub = cpu_b->create_node();
+  cpu_b->set_subnode(b_sub, alu_gid);
 
   // ALU should have 2 callers
   int caller_count = 0;
@@ -416,24 +433,22 @@ TEST(GetCallers, GraphCallersTracking) {
 TEST(GetCallers, ForestCallersTracking) {
   hhds::Forest<int> forest;
 
-  auto tree_a_ref = forest.create_tree(1);
-  auto tree_b_ref = forest.create_tree(2);
-  auto shared_ref = forest.create_tree(100);
+  auto tree_a     = forest.create_tree(1);     // returns shared_ptr<tree<int>>
+  auto tree_b     = forest.create_tree(2);     // returns shared_ptr<tree<int>>
+  auto shared     = forest.create_tree(100);   // returns shared_ptr<tree<int>>
+  auto shared_tid = shared->get_tid();
 
-  auto& tree_a = forest.get_tree(tree_a_ref);
-  auto& tree_b = forest.get_tree(tree_b_ref);
+  auto a_root  = tree_a->get_root();
+  auto a_child = tree_a->add_child(a_root, 10);
+  tree_a->add_subtree_ref(a_child, shared_tid);
 
-  auto a_root  = tree_a.get_root();
-  auto a_child = tree_a.add_child(a_root, 10);
-  tree_a.add_subtree_ref(a_child, shared_ref);
-
-  auto b_root  = tree_b.get_root();
-  auto b_child = tree_b.add_child(b_root, 20);
-  tree_b.add_subtree_ref(b_child, shared_ref);
+  auto b_root  = tree_b->get_root();
+  auto b_child = tree_b->add_child(b_root, 20);
+  tree_b->add_subtree_ref(b_child, shared_tid);
 
   // shared_tree should have 2 callers
   int caller_count = 0;
-  for (auto& c : forest.get_callers(shared_ref)) {
+  for (auto& c : forest.get_callers(shared_tid)) {
     (void)c.caller_tid;
     (void)c.caller_tnode;
     caller_count++;
@@ -444,18 +459,16 @@ TEST(GetCallers, ForestCallersTracking) {
 TEST(GetCallers, CreateCursorFromCaller) {
   hhds::GraphLibrary lib;
 
-  auto cpu_a_gid = lib.create_graph();
-  auto cpu_b_gid = lib.create_graph();
-  auto alu_gid   = lib.create_graph();
+  auto cpu_a = lib.create_graph();   // returns shared_ptr<Graph>
+  auto cpu_b = lib.create_graph();   // returns shared_ptr<Graph>
+  auto alu   = lib.create_graph();   // returns shared_ptr<Graph>
+  auto alu_gid = alu->get_gid();
 
-  auto& cpu_a = lib.get_graph(cpu_a_gid);
-  auto& cpu_b = lib.get_graph(cpu_b_gid);
+  auto a_sub = cpu_a->create_node();
+  cpu_a->set_subnode(a_sub, alu_gid);
 
-  auto a_sub = cpu_a.create_node();
-  cpu_a.set_subnode(a_sub, alu_gid);
-
-  auto b_sub = cpu_b.create_node();
-  cpu_b.set_subnode(b_sub, alu_gid);
+  auto b_sub = cpu_b->create_node();
+  cpu_b->set_subnode(b_sub, alu_gid);
 
   // Pick a caller and create a rooted cursor from it
   auto callers_it = lib.get_callers(alu_gid).begin();

@@ -12,9 +12,15 @@ bazel test -c dbg //hhds:iterators
 ## 1. Compact ID Types (High Priority)
 
 All iterators and public APIs should return these types, not raw `Nid`/`Pid`/`Tree_pos`.
-Raw IDs (`Nid`, `Pid`, `Tree_pos`) are **private to the implementation**.
-Users never see or handle raw IDs directly — creation functions return compact
-types, and all query/mutation APIs accept compact types.
+Raw IDs (`Nid`, `Pid`, `Tree_pos`) are **private to HHDS internals**.
+They may still be used internally across HHDS objects for compact storage and
+indexing, but users never see or handle them directly. Public creation/query/
+mutation APIs return/accept compact types.
+
+Public collection/view APIs should use C++23 `std::span<const T>` instead of
+custom `*Range` wrappers, so standard span/ranges operations compose naturally.
+Spans are non-owning views: validity lasts until the owning HHDS object mutates
+the underlying storage for that view.
 
 ### New Type Alias
 
@@ -114,11 +120,32 @@ struct Tnode_hier {
   Tid      get_current_tid() const;
   Tid      get_root_tid() const;
 private:
-  std::shared_ptr<tree<Gid>> hier_ref;  // hierarchy tree (each node stores a Gid)
+  std::shared_ptr<tree<Tid>> hier_ref;  // hierarchy tree (each node stores a Tid)
   Tree_pos hier_pos;
   Tree_pos pos;
 };
 ```
+
+### Conversions Between Compact Tiers
+
+`_hier` carries full hierarchy path context, `_flat` carries only `(root,current)`,
+and `_class` is local-only. Conversions are intentionally one-way:
+
+```cpp
+// always valid (information is discarded, never invented)
+Node_class to_class(Node_hier v);
+Node_flat  to_flat(Node_hier v);
+Node_class to_class(Node_flat v);
+
+// valid with explicit context
+Node_flat  to_flat(Node_class v, Gid current_gid, Gid root_gid = current_gid);
+
+// not allowed: hierarchy path cannot be reconstructed from _class/_flat alone
+Node_hier  to_hier(Node_class) = delete;
+Node_hier  to_hier(Node_flat)  = delete;
+```
+
+Same rules apply to `Pin_*` and `Tnode_*`.
 
 ### Edge View
 
@@ -165,10 +192,10 @@ The #1 usage pattern in LiveHD. Every compiler pass iterates input or output edg
 
 ```cpp
 // On Graph — single-graph scope, returns Edge_class
-EdgeRange<Edge_class> inp_edges(Node_class node) const;   // edges where node is sink
-EdgeRange<Edge_class> out_edges(Node_class node) const;    // edges where node is driver
-EdgeRange<Edge_class> inp_edges(Pin_class pin) const;
-EdgeRange<Edge_class> out_edges(Pin_class pin) const;
+std::span<const Edge_class> inp_edges(Node_class node) const;   // edges where node is sink
+std::span<const Edge_class> out_edges(Node_class node) const;   // edges where node is driver
+std::span<const Edge_class> inp_edges(Pin_class pin) const;
+std::span<const Edge_class> out_edges(Pin_class pin) const;
 ```
 
 Usage:
@@ -196,34 +223,40 @@ Tombstone or compaction strategy TBD.
 
 ---
 
-## 4. Lazy Graph Traversal Iterators (High Priority)
+## 4. Span-Based Graph Traversal Views (High Priority)
 
-`fast_iter()` currently returns `std::vector<FastIterator>` — won't scale to
-billions of nodes. Replace with lazy ranges that yield compact types directly.
+`fast_iter()` currently returns `std::vector<FastIterator>`.
+Expose traversal results as `std::span<const ...>` views over compact types.
 
 Creation functions return compact types (`Node_class`, `Pin_class`).
 `add_edge` accepts both `Node_class` and `Pin_class` pairs — a `Node_class`
 is equivalent to a `Pin_class` with port 0, so `add_edge(Node_class, Node_class)`
 is the pin-0 shorthand (no separate `connect` needed):
 ```cpp
-Node_class create_node();                              // returns Node_class directly
-Pin_class  create_pin(Node_class node, Port_id port);  // returns Pin_class directly
+Node_class create_node();  // creates node only (pin 0 is NOT automatically materialized)
+Pin_class  Node_class::create_pin(Port_id port);  // preferred API style
 void       add_edge(Node_class driver, Node_class sink);    // pin-0 shorthand
 void       add_edge(Pin_class driver, Pin_class sink);
 ```
 
+Pin-0 behavior:
+- `node.create_pin(0)` returns the node's pin-0 handle and marks pin-0 as present.
+- `node.create_pin(N!=0)` allocates a regular pin entry for port `N`.
+- `add_edge(Node_class, Node_class)` is shorthand for using port 0 on both ends;
+  if pin 0 is not present yet, it is materialized lazily.
+
 ```cpp
 // Single-graph scope
-NodeRange<Node_class> fast_class() const;
-NodeRange<Node_class> forward_class() const;   // topological order
+std::span<const Node_class> fast_class() const;
+std::span<const Node_class> forward_class() const;   // topological order
 
 // Flattened cross-graph scope
-NodeRange<Node_flat> fast_flat() const;
-NodeRange<Node_flat> forward_flat() const;
+std::span<const Node_flat> fast_flat() const;
+std::span<const Node_flat> forward_flat() const;
 
 // Full hierarchy scope
-NodeRange<Node_hier> fast_hier() const;
-NodeRange<Node_hier> forward_hier() const;
+std::span<const Node_hier> fast_hier() const;
+std::span<const Node_hier> forward_hier() const;
 ```
 
 ---
@@ -251,7 +284,7 @@ Gid Graph::get_gid() const;
 ```
 
 The `_hier` types hold a `std::shared_ptr<tree<Gid>>` (graph) or
-`std::shared_ptr<tree<Gid>>` (tree) to the hierarchy tree,
+`std::shared_ptr<tree<Tid>>` (tree) to the hierarchy tree,
 ensuring it stays alive while references exist. The `_class` and `_flat`
 types are lightweight value types with no smart pointers.
 
@@ -291,10 +324,15 @@ std::shared_ptr<tree<X>> find_tree(Tid tid) const;
 Avoid forcing users to walk the pin linked list manually.
 
 ```cpp
-PinRange<Pin_class> get_pins(Node_class node) const;       // all pins
-PinRange<Pin_class> get_driver_pins(Node_class node) const; // pins that drive edges
-PinRange<Pin_class> get_sink_pins(Node_class node) const;   // pins that sink edges
+std::span<const Pin_class> get_pins(Node_class node) const;        // all existing pins, including pin 0 when present
+std::span<const Pin_class> get_driver_pins(Node_class node) const; // pins that drive edges
+std::span<const Pin_class> get_sink_pins(Node_class node) const;   // pins that sink edges
 ```
+
+Pin 0 is not implicitly present after `create_node()`. It appears in
+`get_pins(node)` only after it has been materialized (explicitly by
+`node.create_pin(0)` or implicitly by APIs that require pin 0 such as
+`add_edge(Node_class, Node_class)`).
 
 ---
 
@@ -326,11 +364,11 @@ for (auto tnode : my_forest.pre_order_hier(tree_ref)) {
 
 ```cpp
 // Forest
-ForestRange<std::shared_ptr<tree<X>>> each_tree() const;
+std::span<const std::shared_ptr<tree<X>>> each_tree() const;
 size_t tree_count() const;
 
 // GraphLibrary
-GraphRange<std::shared_ptr<Graph>> each_graph() const;
+std::span<const std::shared_ptr<Graph>> each_graph() const;
 size_t graph_count() const;  // live count (excluding tombstones)
 ```
 
@@ -442,8 +480,9 @@ class HierCursor {
   bool is_leaf() const;          // no sub-instances below
   int  depth() const;            // distance from root
 
-  // Iterate nodes within current hierarchy level (single-graph scope)
-  NodeRange<Node_class> each_node() const;
+  // Iterate nodes within current hierarchy level.
+  // Yields Node_hier so hierarchy context is preserved.
+  std::span<const Node_hier> each_node() const;
 
   // Reset cursor to a different position (must be within same hierarchy tree)
   void reset(Tree_pos position);
@@ -458,7 +497,7 @@ records which tree instances reference which sub-trees via `subtree_ref`.
 ```cpp
 class ForestCursor {
   Forest<X>* forest;
-  std::shared_ptr<tree<Gid>> hier_tree;  // hierarchy tree (each node stores a Gid)
+  std::shared_ptr<tree<Tid>> hier_tree;  // hierarchy tree (each node stores a Tid)
   Tree_pos hier_pos;
 
   bool goto_parent();
@@ -475,7 +514,7 @@ class ForestCursor {
   int  depth() const;
 
   // Iterate nodes within current tree
-  TnodeRange<Tnode_class> each_tnode() const;
+  std::span<const Tnode_class> each_tnode() const;
 
   void reset(Tree_pos position);
 };
@@ -501,20 +540,20 @@ instantiated a handful of times in most EDA designs).
 
 ```cpp
 // Graph — who instantiates this graph?
-// Returns an iterator over the set of (caller_gid, caller_node) pairs.
+// Returns a span over the set of (caller_gid, caller_node) pairs.
 // The set lives inside the target graph (or GraphLibrary).
 struct CallerInfo {
   Gid        caller_gid;   // graph that contains the subnode
   Node_class caller_node;  // node within that graph that has set_subnode
 };
-auto get_callers(Gid gid) const;  // iterable over CallerInfo
+std::span<const CallerInfo> get_callers(Gid gid) const;
 
 // Forest — who references this tree?
 struct TreeCallerInfo {
   Tid    caller_tid;   // tree that contains the subtree_ref
   Tnode_class caller_tnode; // node within that tree that has add_subtree_ref
 };
-auto get_callers(Tid ref) const;  // iterable over TreeCallerInfo
+std::span<const TreeCallerInfo> get_callers(Tid ref) const;
 ```
 
 Usage — inspect all instantiation contexts and pick one:
