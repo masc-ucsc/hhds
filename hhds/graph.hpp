@@ -8,6 +8,7 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -30,6 +31,7 @@ public:
   [[nodiscard]] Nid     get_master_nid() const;
   [[nodiscard]] Port_id get_port_id() const;
   auto                  add_edge(Pid self_id, Pid other_id) -> bool;
+  auto                  delete_edge(Pid self_id, Pid other_id) -> bool;
   [[nodiscard]] bool    has_edges() const;
   [[nodiscard]] Pid     get_next_pin_id() const;
   void                  set_next_pin_id(Pid id);
@@ -97,6 +99,7 @@ public:
   void               set_next_pin_id(Pid id);
   [[nodiscard]] bool has_edges() const;
   auto               add_edge(Pid self_id, Pid other_id) -> bool;
+  auto               delete_edge(Pid self_id, Pid other_id) -> bool;
   [[nodiscard]] bool check_overflow() const { return use_overflow; }
 
   // Subgraph link: stored in ledge0 *only when use_overflow == 1* as (gid + 1).
@@ -149,6 +152,94 @@ private:
 };
 static_assert(sizeof(Node) == 32, "Node size mismatch");
 
+class Graph;
+
+class Pin_class {
+public:
+  Pin_class() = default;
+  Pin_class(Nid raw_nid_value, Port_id port_id_value, Pid pin_pid_value)
+      : raw_nid(raw_nid_value), port_id(port_id_value), pin_pid(pin_pid_value) {}
+
+  [[nodiscard]] Nid     get_raw_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] Pid     get_pin_pid() const noexcept { return pin_pid; }
+  [[nodiscard]] Port_id get_port_id() const noexcept { return port_id; }
+
+  // Interop with existing APIs that still accept raw Pid.
+  [[nodiscard]] operator Pid() const noexcept { return pin_pid; }
+
+private:
+  Nid     raw_nid = 0;
+  Port_id port_id = 0;
+  Pid     pin_pid = 0;
+};
+
+class Node_class {
+public:
+  Node_class() = default;
+  Node_class(Graph* graph_value, Nid raw_nid_value) : graph(graph_value), raw_nid(raw_nid_value) {}
+
+  [[nodiscard]] Port_id   get_port_id() const noexcept { return 0; }
+  [[nodiscard]] Nid       get_raw_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] Pin_class create_pin(Port_id port_id) const;
+
+  // Interop with existing APIs that still accept raw Nid.
+  [[nodiscard]] operator Nid() const noexcept { return raw_nid; }
+
+  [[nodiscard]] bool operator==(const Node_class& other) const noexcept { return graph == other.graph && raw_nid == other.raw_nid; }
+  [[nodiscard]] bool operator!=(const Node_class& other) const noexcept { return !(*this == other); }
+
+  template <typename H>
+  friend H AbslHashValue(H h, const Node_class& node) {
+    return H::combine(std::move(h), node.graph, node.raw_nid);
+  }
+
+private:
+  Graph* graph   = nullptr;
+  Nid    raw_nid = 0;
+};
+
+class Node_flat {
+public:
+  Node_flat() = default;
+  Node_flat(Gid root_gid_value, Gid current_gid_value, Nid raw_nid_value)
+      : root_gid(root_gid_value), current_gid(current_gid_value), raw_nid(raw_nid_value) {}
+
+  [[nodiscard]] Gid     get_root_gid() const noexcept { return root_gid; }
+  [[nodiscard]] Gid     get_current_gid() const noexcept { return current_gid; }
+  [[nodiscard]] Port_id get_port_id() const noexcept { return 0; }
+  [[nodiscard]] Nid     get_raw_nid() const noexcept { return raw_nid; }
+
+  [[nodiscard]] bool operator==(const Node_flat& other) const noexcept {
+    return root_gid == other.root_gid && current_gid == other.current_gid && raw_nid == other.raw_nid;
+  }
+  [[nodiscard]] bool operator!=(const Node_flat& other) const noexcept { return !(*this == other); }
+
+  template <typename H>
+  friend H AbslHashValue(H h, const Node_flat& node) {
+    return H::combine(std::move(h), node.root_gid, node.current_gid, node.raw_nid);
+  }
+
+private:
+  Gid root_gid    = Gid_invalid;
+  Gid current_gid = Gid_invalid;
+  Nid raw_nid     = 0;
+};
+
+class Edge_class {
+public:
+  Node_class driver;
+  Node_class sink;
+  Pin_class  driver_pin;
+  Pin_class  sink_pin;
+
+  // edge kind mapping:
+  // 1 => n -> n
+  // 2 => p -> p
+  // 3 => n -> p
+  // 4 => p -> n
+  uint8_t type : 3;
+};
+
 class GraphLibrary;
 
 class Graph {
@@ -156,8 +247,8 @@ public:
   Graph();
   void clear_graph();
 
-  [[nodiscard]] Nid create_node();
-  [[nodiscard]] Pid create_pin(Nid nid, Port_id port_id);
+  [[nodiscard]] Node_class create_node();
+  [[nodiscard]] Pid        create_pin(Nid nid, Port_id port_id);
 
   // Built-in nodes created by Graph::clear_graph()
   static constexpr Nid INPUT_NODE  = (static_cast<Nid>(1) << 2);
@@ -171,10 +262,23 @@ public:
   [[nodiscard]] auto ref_node(Nid id) const -> Node*;
   [[nodiscard]] auto ref_pin(Pid id) const -> Pin*;
 
-  void add_edge(Pid driver_id, Pid sink_id);
-  void delete_node(Nid nid);
-  void display_graph() const;
-  void display_next_pin_of_node() const;
+  void add_edge(Node_class driver_node, Node_class sink_node) { add_edge(driver_node.get_raw_nid(), sink_node.get_raw_nid()); }
+  void add_edge(Node_class driver_node, Pin_class sink_pin) { add_edge(driver_node.get_raw_nid(), sink_pin.get_pin_pid()); }
+  void add_edge(Pin_class driver_pin, Node_class sink_node) { add_edge(driver_pin.get_pin_pid(), sink_node.get_raw_nid()); }
+  void add_edge(Pin_class driver_pin, Pin_class sink_pin) { add_edge(driver_pin.get_pin_pid(), sink_pin.get_pin_pid()); }
+
+  void                                  add_edge(Pid driver_id, Pid sink_id);
+  void                                  del_edge(Node_class node1, Node_class node2);
+  void                                  del_edge(Node_class node, Pin_class pin);
+  void                                  del_edge(Pin_class pin, Node_class node);
+  void                                  del_edge(Pin_class pin1, Pin_class pin2);
+  [[nodiscard]] std::vector<Edge_class> out_edges(Node_class node);
+  [[nodiscard]] std::vector<Edge_class> inp_edges(Node_class node);
+  [[nodiscard]] auto                    fast_class() const -> std::span<const Node_class>;
+  [[nodiscard]] auto                    fast_flat() const -> std::span<const Node_flat>;
+  void                                  delete_node(Nid nid);
+  void                                  display_graph() const;
+  void                                  display_next_pin_of_node() const;
 
   class FastIterator {
   public:
@@ -196,16 +300,23 @@ public:
   [[nodiscard]] std::vector<FastIterator> fast_iter(bool hierarchy, Gid top_graph = 0, uint32_t tree_node_num = 0) const;
 
 private:
-  void add_edge_int(Pid self_id, Pid other_id);
-  void set_next_pin(Nid nid, Pid next_pin);
-  void bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
-  void fast_iter_impl(bool hierarchy, Gid top_graph, uint32_t tree_node_num, uint32_t& next_tree_node_num,
-                      ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<FastIterator>& out) const;
+  void                    del_edge_int(Vid driver_id, Vid sink_id);
+  void                    add_edge_int(Pid self_id, Pid other_id);
+  void                    set_next_pin(Nid nid, Pid next_pin);
+  void                    bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
+  void                    invalidate_fast_class_cache() noexcept;
+  void                    rebuild_fast_class_cache() const;
+  void                    rebuild_fast_flat_cache() const;
+  void                    fast_iter_impl(bool hierarchy, Gid top_graph, uint32_t tree_node_num, uint32_t& next_tree_node_num,
+                                         ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<FastIterator>& out) const;
 
-  std::vector<Node>   node_table;
-  std::vector<Pin>    pin_table;
-  const GraphLibrary* owner_lib_ = nullptr;
-  Gid                 self_gid_  = Gid_invalid;
+  std::vector<Node>               node_table;
+  std::vector<Pin>                pin_table;
+  mutable std::vector<Node_class> fast_class_cache_;
+  mutable std::vector<Node_flat>  fast_flat_cache_;
+  mutable bool                    fast_class_cache_valid_ = false;
+  const GraphLibrary*             owner_lib_              = nullptr;
+  Gid                             self_gid_               = Gid_invalid;
 
   friend class GraphLibrary;
 };

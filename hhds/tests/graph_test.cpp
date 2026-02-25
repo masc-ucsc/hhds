@@ -76,7 +76,7 @@ void test_node_to_node() {
     auto range = g.ref_node(n2)->get_edges(n2);
     auto it    = range.begin();
     assert(it != range.end() && "no edge out of n2");
-    assert(*it == n1 | 2 && "edge out of n2 should be n1");
+    assert(*it == (n1 | 2) && "edge out of n2 should be n1");
     ++it;
     assert(it == range.end() && "only one edge should exist");
   }
@@ -100,7 +100,7 @@ void test_pin_to_pin() {
   {
     auto range = g.ref_pin(p2)->get_edges(p2);
     auto it    = range.begin();
-    assert(it != range.end() && *it == p1 | 2 && "test_pin_to_pin failed: missing p1");
+    assert(it != range.end() && *it == (p1 | 2) && "test_pin_to_pin failed: missing p1");
     ++it;
     assert(it == range.end() && "test_pin_to_pin failed: extra edges found");
   }
@@ -123,7 +123,7 @@ void test_node_to_pin() {
   {
     auto range = g.ref_pin(p)->get_edges(p);
     auto it    = range.begin();
-    assert(it != range.end() && *it == n | 2 && "test_node_to_pin failed: missing n");
+    assert(it != range.end() && *it == (n | 2) && "test_node_to_pin failed: missing n");
     ++it;
     assert(it == range.end() && "test_node_to_pin failed: extra edges found");
   }
@@ -145,7 +145,7 @@ void test_pin_to_node() {
   {
     auto range = g.ref_node(n)->get_edges(n);
     auto it    = range.begin();
-    assert(it != range.end() && *it == p | 2 && "test_pin_to_node failed: missing p");
+    assert(it != range.end() && *it == (p | 2) && "test_pin_to_node failed: missing p");
     ++it;
     assert(it == range.end() && "test_pin_to_node failed: extra edges found");
   }
@@ -187,42 +187,42 @@ void test_sedges_ledges() {
   auto sed2 = g.ref_pin(p2)->get_edges(p2);
   assert(sed2.begin() != sed2.end() && "test_sedges_ledges failed: no edges found for p2");
   auto it2 = sed2.begin();
-  assert(*it2 == p1 | 2 && "test_sedges_ledges failed: sedges[0] != src for p2");
+  assert(*it2 == (p1 | 2) && "test_sedges_ledges failed: sedges[0] != src for p2");
   ++it2;
   assert(it2 == sed2.end() && "test_sedges_ledges failed: extra edges found for p2");
 
   auto sed3 = g.ref_pin(p3)->get_edges(p3);
   assert(sed3.begin() != sed3.end() && "test_sedges_ledges failed: no edges found for p3");
   auto it3 = sed3.begin();
-  assert(*it3 == p1 | 2 && "test_sedges_ledges failed: sedges[0] != src for p3");
+  assert(*it3 == (p1 | 2) && "test_sedges_ledges failed: sedges[0] != src for p3");
   ++it3;
   assert(it3 == sed3.end() && "test_sedges_ledges failed: extra edges found for p3");
 
   auto sed4 = g.ref_pin(p4)->get_edges(p4);
   assert(sed4.begin() != sed4.end() && "test_sedges_ledges failed: no edges found for p4");
   auto it4 = sed4.begin();
-  assert(*it4 == p1 | 2 && "test_sedges_ledges failed: sedges[0] != src for p4");
+  assert(*it4 == (p1 | 2) && "test_sedges_ledges failed: sedges[0] != src for p4");
   ++it4;
   assert(it4 == sed4.end() && "test_sedges_ledges failed: extra edges found for p4");
 
   auto sed5 = g.ref_node(n2)->get_edges(n2);
   assert(sed5.begin() != sed5.end() && "test_sedges_ledges failed: no edges found for n2");
   auto it5 = sed5.begin();
-  assert(*it5 == p1 | 2 && "test_sedges_ledges failed: sedges[0] != src for n2");
+  assert(*it5 == (p1 | 2) && "test_sedges_ledges failed: sedges[0] != src for n2");
   ++it5;
   assert(it5 == sed5.end() && "test_sedges_ledges failed: extra edges found for n2");
 
   auto sed6 = g.ref_node(n3)->get_edges(n3);
   assert(sed6.begin() != sed6.end() && "test_sedges_ledges failed: no edges found for n3");
   auto it6 = sed6.begin();
-  assert(*it6 == p1 | 2 && "test_sedges_ledges failed: sedges[0] != src for n3");
+  assert(*it6 == (p1 | 2) && "test_sedges_ledges failed: sedges[0] != src for n3");
   ++it6;
   assert(it6 == sed6.end() && "test_sedges_ledges failed: extra edges found for n3");
 
   auto sed7 = g.ref_node(n4)->get_edges(n4);
   assert(sed7.begin() != sed7.end() && "test_sedges_ledges failed: no edges found for n4");
   auto it7 = sed7.begin();
-  assert(*it7 == p1 | 2 && "test_sedges_ledges failed: sedges[0] != src for n4");
+  assert(*it7 == (p1 | 2) && "test_sedges_ledges failed: sedges[0] != src for n4");
   ++it7;
   assert(it7 == sed7.end() && "test_sedges_ledges failed: extra edges found for n4");
   std::cout << "test_sedges_ledges passed\n";
@@ -266,37 +266,37 @@ void test_overflow_handling() {
   auto sed2 = g.ref_pin(p2)->get_edges(p2);
   auto it2  = sed2.begin();
   assert(it2 != sed2.end() && "test_overflow_handling failed: no edges found for p2");
-  assert(*it2 == p1 | 2 && "test_overflow_handling failed: sedges[0] != src");
+  assert(*it2 == (p1 | 2) && "test_overflow_handling failed: sedges[0] != src");
 
   auto sed3 = g.ref_pin(p3)->get_edges(p3);
   auto it3  = sed3.begin();
   assert(it3 != sed3.end() && "test_overflow_handling failed: no edges found for p3");
-  assert(*it3 == p1 | 2 && "test_overflow_handling failed: sedges[0] != src");
+  assert(*it3 == (p1 | 2) && "test_overflow_handling failed: sedges[0] != src");
 
   auto sed4 = g.ref_pin(p4)->get_edges(p4);
   auto it4  = sed4.begin();
   assert(it4 != sed4.end() && "test_overflow_handling failed: no edges found for p4");
-  assert(*it4 == p1 | 2 && "test_overflow_handling failed: sedges[0] != src");
+  assert(*it4 == (p1 | 2) && "test_overflow_handling failed: sedges[0] != src");
 
   auto sed5 = g.ref_node(n3)->get_edges(n3);
   auto it5  = sed5.begin();
   assert(it5 != sed5.end() && "test_overflow_handling failed: no edges found for n3");
-  assert(*it5 == p1 | 2 && "test_overflow_handling failed: sedges[0] != src");
+  assert(*it5 == (p1 | 2) && "test_overflow_handling failed: sedges[0] != src");
 
   auto sed6 = g.ref_node(n4)->get_edges(n4);
   auto it6  = sed6.begin();
   assert(it6 != sed6.end() && "test_overflow_handling failed: no edges found for n4");
-  assert(*it6 == p1 | 2 && "test_overflow_handling failed: sedges[0] != src");
+  assert(*it6 == (p1 | 2) && "test_overflow_handling failed: sedges[0] != src");
 
   auto sed7 = g.ref_node(n2)->get_edges(n2);
   auto it7  = sed7.begin();
   assert(it7 != sed7.end() && "test_overflow_handling failed: no edges found for n2");
-  assert(*it7 == p1 | 2 && "test_overflow_handling failed: sedges[0] != src");
+  assert(*it7 == (p1 | 2) && "test_overflow_handling failed: sedges[0] != src");
 
   auto sed8 = g.ref_node(n5)->get_edges(n5);
   auto it8  = sed8.begin();
   assert(it8 != sed8.end() && "test_overflow_handling failed: no edges found for n5");
-  assert(*it8 == p1 | 2 && "test_overflow_handling failed: sedges[0] != src");
+  assert(*it8 == (p1 | 2) && "test_overflow_handling failed: sedges[0] != src");
 
   // check if the overflow handling is done correctly
   auto p1_ptr = g.ref_pin(p1);
@@ -313,9 +313,9 @@ void test_large_fanin_deletion() {
   Pid input2 = g.add_input(2);
   Pid output = g.add_output(1);
 
-  assert(input1 == 1 << 2 | 1 && "test_large_fanin_deletion: input1 should be pin 1 on input node");
-  assert(input2 == 2 << 2 | 3 && "test_large_fanin_deletion: input2 should be pin 3 on input node");
-  assert(output == 3 << 2 | 1 && "test_large_fanin_deletion: output should be pin 1 on output node");
+  assert(input1 == ((1 << 2) | 1) && "test_large_fanin_deletion: input1 should be pin 1 on input node");
+  assert(input2 == ((2 << 2) | 1) && "test_large_fanin_deletion: input2 should be pin 2 on input node");
+  assert(output == ((3 << 2) | 1) && "test_large_fanin_deletion: output should be pin 1 on output node");
   std::cout << "test_large_fanin_deletion: created input and output pins\n";
 
   // Create 1000 intermediate nodes
@@ -344,9 +344,9 @@ void test_large_fanin_deletion() {
   pin_connection_counts[central_pin1] = 0;
   pin_connection_counts[central_pin2] = 0;
 
-  assert(central_pin0 == 4 << 2 | 1 && "test_large_fanin_deletion: central_pin0 should be pin 4 on central node");
-  assert(central_pin1 == 5 << 2 | 1 && "test_large_fanin_deletion: central_pin1 should be pin 5 on central node");
-  assert(central_pin2 == 6 << 2 | 1 && "test_large_fanin_deletion: central_pin2 should be pin 6 on central node");
+  assert(central_pin0 == ((4 << 2) | 1) && "test_large_fanin_deletion: central_pin0 should be pin 4 on central node");
+  assert(central_pin1 == ((5 << 2) | 1) && "test_large_fanin_deletion: central_pin1 should be pin 5 on central node");
+  assert(central_pin2 == ((6 << 2) | 1) && "test_large_fanin_deletion: central_pin2 should be pin 6 on central node");
   std::cout << "test_large_fanin_deletion: created central node and pins\n";
 
   // assert next pin of each node and pin is correct
