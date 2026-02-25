@@ -1,12 +1,11 @@
 // This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 
+#include <chrono>
 #include <iostream>
 #include <thread>
-#include <chrono>
 
 #include "hhds/tree.hpp"
 #include "iassert.hpp"
-
 
 void test_basic_forest_operations() {
   hhds::Forest<int> forest;
@@ -120,8 +119,8 @@ void test_tree_traversal_with_subtrees() {
 
 void test_cycle_traversal() {
   hhds::Forest<std::string> forest;
-  auto a_ref = forest.create_tree("a");
-  auto b_ref = forest.create_tree("b");
+  auto                      a_ref = forest.create_tree("a");
+  auto                      b_ref = forest.create_tree("b");
 
   auto& a = forest.get_tree(a_ref);
   auto& b = forest.get_tree(b_ref);
@@ -145,7 +144,6 @@ void test_cycle_traversal() {
 
   std::vector<std::string> expected = {"a", "a_child", "b", "b_child", "a", "a_child"};
   I(visited_values == expected, "Pre-order traversal with subtrees should visit nodes in the correct order");
-
 }
 
 void test_complex_forest_operations() {
@@ -233,37 +231,37 @@ void test_complex_forest_operations() {
     unique_values.insert(it.get_data());
     I(node_count <= 10000, "Possible infinite loop in traversal");
   }
-  
+
   I(node_count >= 318, "Should visit at least 282 nodes in large tree traversal");
   I(unique_values.size() > 200, "Should see at least 200 unique values");
-  
+
   // // tst bulk deletions
-  //for (int i = main_nodes.size() - 1; i >= 0; i -= 10) {
+  // for (int i = main_nodes.size() - 1; i >= 0; i -= 10) {
   //  if (i < static_cast<int>(main_nodes.size())) {
-   //   main_tree.delete_leaf(main_nodes[i]);
-   // }
+  //   main_tree.delete_leaf(main_nodes[i]);
+  // }
   //}
-  
+
   // verify reference counts
-  //deleted = forest.delete_tree(sub_tree1_ref);
-  //I(deleted, "Should now be able to delete referenced tree");
-  //I(deleted, "Should still not be able to delete referenced tree");
+  // deleted = forest.delete_tree(sub_tree1_ref);
+  // I(deleted, "Should now be able to delete referenced tree");
+  // I(deleted, "Should still not be able to delete referenced tree");
 }
 
 void test_tombstone_deletion() {
   hhds::Forest<int> forest;
-  auto t1 = forest.create_tree(10);
-  auto t2 = forest.create_tree(20);
-  auto t3 = forest.create_tree(30);
-  
-  I(t1 == -1, "Expected t1 == -1");  
-  I(t2 == -2, "Expected t2 == -2");  
-  I(t3 == -3, "Expected t3 == -3");  
+  auto              t1 = forest.create_tree(10);
+  auto              t2 = forest.create_tree(20);
+  auto              t3 = forest.create_tree(30);
+
+  I(t1 == -1, "Expected t1 == -1");
+  I(t2 == -2, "Expected t2 == -2");
+  I(t3 == -3, "Expected t3 == -3");
 
   auto t2_tree = forest.get_tree(t2);
   I(t2_tree.get_data(t2_tree.get_root()) == 20, "Expected tree 2 to have data 20");
   forest.delete_tree(t2);
-  
+
   bool caught_exception = false;
   try {
     t2_tree = forest.get_tree(t2);
@@ -318,7 +316,6 @@ void test_edge_cases() {
     tree.add_child(tree.get_root(), i * 20);
   }
 
-
   // test traversal
   int           count = 0;
   std::set<int> unique_values;
@@ -343,8 +340,6 @@ void test_edge_cases() {
 }
 
 int main() {
-
-  
   std::cout << "\n>>> Starting forest correctness tests\n";
   test_basic_forest_operations();
   std::cout << "Basic forest operations test passed\n";
@@ -352,7 +347,7 @@ int main() {
   std::cout << "\n>>> Starting subtree references test\n";
   test_subtree_references();
   std::cout << "Subtree references test passed\n";
-  
+
   std::cout << "\n>>> Starting tree traversal with subtrees test\n";
   test_tree_traversal_with_subtrees();
   std::cout << "Tree traversal with subtrees test passed\n";

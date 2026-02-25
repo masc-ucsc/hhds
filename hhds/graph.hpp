@@ -300,15 +300,15 @@ public:
   [[nodiscard]] std::vector<FastIterator> fast_iter(bool hierarchy, Gid top_graph = 0, uint32_t tree_node_num = 0) const;
 
 private:
-  void                    del_edge_int(Vid driver_id, Vid sink_id);
-  void                    add_edge_int(Pid self_id, Pid other_id);
-  void                    set_next_pin(Nid nid, Pid next_pin);
-  void                    bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
-  void                    invalidate_fast_class_cache() noexcept;
-  void                    rebuild_fast_class_cache() const;
-  void                    rebuild_fast_flat_cache() const;
-  void                    fast_iter_impl(bool hierarchy, Gid top_graph, uint32_t tree_node_num, uint32_t& next_tree_node_num,
-                                         ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<FastIterator>& out) const;
+  void del_edge_int(Vid driver_id, Vid sink_id);
+  void add_edge_int(Pid self_id, Pid other_id);
+  void set_next_pin(Nid nid, Pid next_pin);
+  void bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
+  void invalidate_fast_class_cache() noexcept;
+  void rebuild_fast_class_cache() const;
+  void rebuild_fast_flat_cache() const;
+  void fast_iter_impl(bool hierarchy, Gid top_graph, uint32_t tree_node_num, uint32_t& next_tree_node_num,
+                      ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<FastIterator>& out) const;
 
   std::vector<Node>               node_table;
   std::vector<Pin>                pin_table;

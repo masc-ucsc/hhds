@@ -62,6 +62,27 @@ TEST(EdgeIteration, OutEdges) {
     count++;
   }
   EXPECT_EQ(count, 2);
+
+  count = 0;
+  for (auto edge : g.inp_edges(n1)) {
+    EXPECT_EQ(edge.driver.get_port_id(), 0);
+    count++;
+  }
+  EXPECT_EQ(count, 0);
+
+  count = 0;
+  for (auto edge : g.out_edges(n2)) {
+    EXPECT_EQ(edge.driver.get_port_id(), 0);
+    count++;
+  }
+  EXPECT_EQ(count, 0);
+
+  count = 0;
+  for (auto edge : g.inp_edges(n2)) {
+    EXPECT_EQ(edge.driver.get_port_id(), 0);
+    count++;
+  }
+  EXPECT_EQ(count, 1);
 }
 
 TEST(EdgeIteration, InpEdges) {
@@ -79,6 +100,13 @@ TEST(EdgeIteration, InpEdges) {
     count++;
   }
   EXPECT_EQ(count, 2);
+
+  count = 0;
+  for (auto edge : g.inp_edges(n1)) {
+    EXPECT_EQ(edge.sink.get_port_id(), 0);
+    count++;
+  }
+  EXPECT_EQ(count, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -93,10 +121,118 @@ TEST(DelEdge, BasicRemoval) {
   auto        p2 = n2.create_pin(0);
   g.add_edge(p1, p2);
 
-  g.del_edge(p1, p2);
-
   int count = 0;
   for (auto edge : g.out_edges(n1)) {
+    (void)edge;
+    count++;
+  }
+  EXPECT_EQ(count, 0);  // node (pin0) has no edge
+
+  count = 0;
+  // TODO: out_edge/inp_edges accepts node (pin0) and Pin_class/Pin_flat too
+  for (auto edge : g.out_edges(p1)) {
+    EXPECT_EQ(edge.driver, p1);
+    EXPECT_EQ(edge.sink, p2);
+
+    // TODO: get_master_node()-> Node_class
+    EXPECT_EQ(edge.driver.get_master_node(), n1);
+    EXPECT_EQ(edge.sink.get_master_node(), n2);
+    count++;
+  }
+  EXPECT_EQ(count, 1);
+  count = 0;
+  for (auto edge : g.inp_edges(p2)) {
+    EXPECT_EQ(edge.driver, p1);
+    EXPECT_EQ(edge.sink, p2);
+
+    // TODO: get_master_node()-> Node_class
+    EXPECT_EQ(edge.driver.get_master_node(), n1);
+    EXPECT_EQ(edge.sink.get_master_node(), n2);
+    count++;
+  }
+  EXPECT_EQ(count, 1);
+
+  count = 0;
+  for (auto edge : g.inp_edges(p1)) {
+    (void)edge;
+    count++;
+  }
+  EXPECT_EQ(count, 0);
+
+  count = 0;
+  for (auto edge : g.out_edges(p2)) {
+    (void)edge;
+    count++;
+  }
+  EXPECT_EQ(count, 0);
+
+  count = 0;
+  for (auto edge : g.out_edges(n1)) {
+    (void)edge;
+    count++;
+  }
+  EXPECT_EQ(count, 0);
+
+  count = 0;
+  for (auto edge : g.out_edges(n2)) {
+    (void)edge;
+    count++;
+  }
+  EXPECT_EQ(count, 0);
+
+  // DELETE, and then no edges in any direction
+  g.del_edge(p1, p2);
+
+  count = 0;
+  for (auto edge : g.out_edges(n1)) {
+    (void)edge;
+    count++;
+  }
+  EXPECT_EQ(count, 0);
+
+  count = 0;
+  for (auto edge : g.inp_edges(n1)) {
+    (void)edge;
+    count++;
+  }
+  EXPECT_EQ(count, 0);
+
+  count = 0;
+  for (auto edge : g.out_edges(p1)) {
+    (void)edge;
+    count++;
+  }
+  EXPECT_EQ(count, 0);
+
+  count = 0;
+  for (auto edge : g.inp_edges(p1)) {
+    (void)edge;
+    count++;
+  }
+
+  count = 0;
+  for (auto edge : g.out_edges(n2)) {
+    (void)edge;
+    count++;
+  }
+  EXPECT_EQ(count, 0);
+
+  count = 0;
+  for (auto edge : g.inp_edges(n2)) {
+    (void)edge;
+    count++;
+  }
+  EXPECT_EQ(count, 0);
+
+  count = 0;
+  for (auto edge : g.out_edges(p2)) {
+    (void)edge;
+    count++;
+  }
+  EXPECT_EQ(count, 0);
+
+  count = 0;
+  for (auto edge : g.inp_edges(p2)) {
     (void)edge;
     count++;
   }

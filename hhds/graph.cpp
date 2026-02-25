@@ -151,8 +151,8 @@ auto Pin::delete_edge(Pid self_id, Vid other_id) -> bool {
         return pin->sedges_.set->erase(edge) != 0;
       } else {
         // delete from packed edges
-        constexpr int      SHIFT      = 14;
-        constexpr uint64_t SLOT_MASK  = (1ULL << SHIFT) - 1;
+        constexpr int      SHIFT     = 14;
+        constexpr uint64_t SLOT_MASK = (1ULL << SHIFT) - 1;
         for (int i = 0; i < 4; ++i) {
           // Extract the i-th packed slot from sedges_.sedges
           uint64_t packed = (static_cast<uint64_t>(pin->sedges_.sedges) >> (i * SHIFT)) & SLOT_MASK;
@@ -691,7 +691,7 @@ auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
   return id << 2 | 1;
 }
 
-auto Node_class::create_pin(Port_id port_id_value) const -> Pin_class {
+auto Node_class::create_pin(Port_id port_id_value) -> Pin_class {
   assert(graph != nullptr);
   const Pid pin_pid = graph->create_pin(raw_nid, port_id_value);
   return Pin_class(raw_nid, port_id_value, pin_pid);
