@@ -180,7 +180,7 @@ public:
 
   [[nodiscard]] Port_id   get_port_id() const noexcept { return 0; }
   [[nodiscard]] Nid       get_raw_nid() const noexcept { return raw_nid; }
-  [[nodiscard]] Pin_class create_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class create_pin(Port_id port_id);
 
   // Interop with existing APIs that still accept raw Nid.
   [[nodiscard]] operator Nid() const noexcept { return raw_nid; }

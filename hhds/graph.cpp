@@ -151,12 +151,17 @@ auto Pin::delete_edge(Pid self_id, Vid other_id) -> bool {
         return pin->sedges_.set->erase(edge) != 0;
       } else {
         // delete from packed edges
-        constexpr int      SHIFT = 14;
-        constexpr uint64_t SLOT  = (1ULL << SHIFT) - 1;
+        constexpr int      SHIFT      = 14;
+        constexpr uint64_t SLOT_MASK  = (1ULL << SHIFT) - 1;
         for (int i = 0; i < 4; ++i) {
-          uint64_t e = edge & (SLOT << (i * SHIFT));
-          if (e >> 2 == (other_id >> 2)) {
-            pin->sedges_.sedges &= ~(static_cast<int64_t>(SLOT) << (i * SHIFT));
+          // Extract the i-th packed slot from sedges_.sedges
+          uint64_t packed = (static_cast<uint64_t>(pin->sedges_.sedges) >> (i * SHIFT)) & SLOT_MASK;
+          if (packed == 0) {
+            continue;
+          }
+          if ((packed >> 2) == (static_cast<uint64_t>(other_id) >> 2)) {
+            // Clear the matching slot
+            pin->sedges_.sedges &= ~(static_cast<int64_t>(SLOT_MASK) << (i * SHIFT));
             return true;
           }
         }
