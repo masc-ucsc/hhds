@@ -6,6 +6,10 @@
 //
 // All public APIs return compact types (Node_class, Pin_class, Tnode_class).
 // Raw IDs (Nid, Pid, Tree_pos) are internal and never exposed to users.
+//
+// NOTE: Runnable tests for already-implemented APIs were moved to
+// tests/iterators_impl.cpp. This file intentionally keeps only pending API
+// tests (commented out) as TODO documentation.
 
 #include <gtest/gtest.h>
 
@@ -13,150 +17,13 @@
 #include "hhds/graph.hpp"
 #include "hhds/tree.hpp"
 
-// ---------------------------------------------------------------------------
-// Section 1: Compact ID types (api_todo.md #1)
-// ---------------------------------------------------------------------------
-
-TEST(CompactTypes, NodeClassFromGraph) {
-  hhds::Graph g;
-
-  // create_node returns Node_class directly (not raw Nid)
-  auto node = g.create_node();
-  EXPECT_EQ(node.get_port_id(), 0);  // Node_class encodes port-id 0 identity
-}
-
-TEST(CompactTypes, PinClassFromGraph) {
-  hhds::Graph g;
-  auto node = g.create_node();
-  auto pin  = node.create_pin(3);
-
-  EXPECT_EQ(pin.get_raw_nid(), node.get_raw_nid());  // get_raw_nid() for internal cross-check only
-  EXPECT_EQ(pin.get_port_id(), 3);
-}
-
-TEST(CompactTypes, NodeClassHashable) {
-  hhds::Graph g;
-  auto n1 = g.create_node();
-  auto n2 = g.create_node();
-
-  EXPECT_EQ(n1, n1);
-  EXPECT_NE(n1, n2);
-
-  // Usable as absl::flat_hash_map key for external attribute tables
-  absl::flat_hash_map<hhds::Node_class, int> attrs;
-  attrs[n1] = 42;
-  EXPECT_EQ(attrs[n1], 42);
-}
-
-// ---------------------------------------------------------------------------
-// Section 2: Direction-aware edge iteration (api_todo.md #2)
-// ---------------------------------------------------------------------------
-
-TEST(EdgeIteration, OutEdges) {
-  hhds::Graph g;
-  auto n1 = g.create_node();
-  auto n2 = g.create_node();
-  auto n3 = g.create_node();
-  g.add_edge(n1, n2);
-  g.add_edge(n1, n3);
-
-  // out_edges: edges where n1 is the driver
-  int count = 0;
-  for (auto edge : g.out_edges(n1)) {
-    EXPECT_EQ(edge.driver.get_port_id(), 0);
-    count++;
-  }
-  EXPECT_EQ(count, 2);
-}
-
-TEST(EdgeIteration, InpEdges) {
-  hhds::Graph g;
-  auto n1 = g.create_node();
-  auto n2 = g.create_node();
-  auto n3 = g.create_node();
-  g.add_edge(n1, n3);
-  g.add_edge(n2, n3);
-
-  // inp_edges: edges where n3 is the sink
-  int count = 0;
-  for (auto edge : g.inp_edges(n3)) {
-    EXPECT_EQ(edge.sink.get_port_id(), 0);
-    count++;
-  }
-  EXPECT_EQ(count, 2);
-}
-
-// ---------------------------------------------------------------------------
-// Section 3: del_edge (api_todo.md #3)
-// ---------------------------------------------------------------------------
-
-TEST(DelEdge, BasicRemoval) {
-  hhds::Graph g;
-  auto n1  = g.create_node();
-  auto n2  = g.create_node();
-  auto p1  = n1.create_pin(0);
-  auto p2  = n2.create_pin(0);
-  g.add_edge(p1, p2);
-
-  g.del_edge(p1, p2);
-
-  int count = 0;
-  for (auto edge : g.out_edges(n1)) {
-    (void)edge;
-    count++;
-  }
-  EXPECT_EQ(count, 0);
-}
-
-// ---------------------------------------------------------------------------
-// Section 4: Lazy graph traversal (api_todo.md #4)
-// ---------------------------------------------------------------------------
-
-TEST(LazyTraversal, FastClassSingleGraph) {
-  hhds::Graph g;
-  auto n1 = g.create_node();
-  auto n2 = g.create_node();
-  auto n3 = g.create_node();
-  g.add_edge(n1, n2);
-  g.add_edge(n2, n3);
-
-  // fast_class: span over the graph's internal node storage (cheap, no allocation)
-  int count = 0;
-  for (auto node : g.fast_class()) {
-    (void)node.get_port_id();
-    count++;
-  }
-  // 3 user nodes + built-in nodes (INPUT, OUTPUT, CONST)
-  EXPECT_GE(count, 3);
-}
-
-// ---------------------------------------------------------------------------
-// Section 4 (cont.): add_edge(Node_class, Node_class) pin-0 shorthand
-// ---------------------------------------------------------------------------
-
-TEST(AddEdgeShorthand, NodeToNode) {
-  hhds::Graph g;
-  auto n1 = g.create_node();
-  auto n2 = g.create_node();
-
-  // add_edge with Node_class uses implicit pin 0 on both sides
-  g.add_edge(n1, n2);
-
-  int count = 0;
-  for (auto edge : g.out_edges(n1)) {
-    (void)edge;
-    count++;
-  }
-  EXPECT_EQ(count, 1);
-}
-
-// ---------------------------------------------------------------------------
-// Section 8: Node pin iteration (api_todo.md #8)
-// ---------------------------------------------------------------------------
+// // ---------------------------------------------------------------------------
+// // Section 8: Node pin iteration (api_todo.md #8)
+// // ---------------------------------------------------------------------------
 
 TEST(PinIteration, GetPins) {
   hhds::Graph g;
-  auto node = g.create_node();
+  auto        node = g.create_node();
   node.create_pin(1);
   node.create_pin(2);
   node.create_pin(3);
@@ -172,7 +39,7 @@ TEST(PinIteration, GetPins) {
 
 TEST(PinIteration, GetPinsIncludesPin0WhenMaterialized) {
   hhds::Graph g;
-  auto node = g.create_node();
+  auto        node = g.create_node();
   node.create_pin(0);  // materialize pin 0 on this node
   node.create_pin(1);
   node.create_pin(2);
@@ -186,14 +53,14 @@ TEST(PinIteration, GetPinsIncludesPin0WhenMaterialized) {
   EXPECT_EQ(count, 4);
 }
 
-// ---------------------------------------------------------------------------
-// Section 9: Tree iterators return Tnode_class (api_todo.md #9)
-// ---------------------------------------------------------------------------
+// // ---------------------------------------------------------------------------
+// // Section 9: Tree iterators return Tnode_class (api_todo.md #9)
+// // ---------------------------------------------------------------------------
 
 TEST(TreeIterator, PreOrderYieldsTnodeClass) {
   hhds::tree<int> t;
-  auto root = t.add_root(1);       // returns Tnode_class
-  auto c1   = t.add_child(root, 2);
+  auto            root = t.add_root(1);  // returns Tnode_class
+  auto            c1   = t.add_child(root, 2);
   t.add_child(root, 3);
   t.add_child(c1, 4);
 
@@ -209,7 +76,7 @@ TEST(TreeIterator, PreOrderYieldsTnodeClass) {
 
 TEST(TreeIterator, RefDataMutableAccess) {
   hhds::tree<int> t;
-  auto root = t.add_root(10);
+  auto            root = t.add_root(10);
 
   // get_data() is const — read-only
   const auto& ro = root.get_data();
@@ -217,21 +84,21 @@ TEST(TreeIterator, RefDataMutableAccess) {
 
   // ref_data() gives a mutable unique_ptr handle
   auto ptr = root.ref_data();
-  *ptr = 99;
+  *ptr     = 99;
   EXPECT_EQ(root.get_data(), 99);
 }
 
-// ---------------------------------------------------------------------------
-// Section 14: Hierarchy cursor — graphs (api_todo.md #14)
-// ---------------------------------------------------------------------------
+// // ---------------------------------------------------------------------------
+// // Section 14: Hierarchy cursor — graphs (api_todo.md #14)
+// // ---------------------------------------------------------------------------
 
 TEST(HierCursor, GraphBasicNavigation) {
   hhds::GraphLibrary lib;
 
   // Create a 3-level hierarchy: top -> mid -> leaf
-  auto top      = lib.create_graph();   // returns shared_ptr<Graph>
-  auto mid      = lib.create_graph();   // returns shared_ptr<Graph>
-  auto leaf     = lib.create_graph();   // returns shared_ptr<Graph>
+  auto top      = lib.create_graph();  // returns shared_ptr<Graph>
+  auto mid      = lib.create_graph();  // returns shared_ptr<Graph>
+  auto leaf     = lib.create_graph();  // returns shared_ptr<Graph>
   auto top_gid  = top->get_gid();
   auto mid_gid  = mid->get_gid();
   auto leaf_gid = leaf->get_gid();
@@ -281,9 +148,9 @@ TEST(HierCursor, GraphBasicNavigation) {
 TEST(HierCursor, GraphSiblingNavigation) {
   hhds::GraphLibrary lib;
 
-  auto top    = lib.create_graph();   // returns shared_ptr<Graph>
-  auto alu    = lib.create_graph();   // returns shared_ptr<Graph>
-  auto reg    = lib.create_graph();   // returns shared_ptr<Graph>
+  auto top     = lib.create_graph();  // returns shared_ptr<Graph>
+  auto alu     = lib.create_graph();  // returns shared_ptr<Graph>
+  auto reg     = lib.create_graph();  // returns shared_ptr<Graph>
   auto top_gid = top->get_gid();
   auto alu_gid = alu->get_gid();
   auto reg_gid = reg->get_gid();
@@ -317,9 +184,9 @@ TEST(HierCursor, GraphSiblingNavigation) {
 TEST(HierCursor, GraphSharedModuleDisambiguation) {
   hhds::GraphLibrary lib;
 
-  auto cpu_a = lib.create_graph();   // returns shared_ptr<Graph>
-  auto cpu_b = lib.create_graph();   // returns shared_ptr<Graph>
-  auto alu   = lib.create_graph();   // returns shared_ptr<Graph>
+  auto cpu_a     = lib.create_graph();  // returns shared_ptr<Graph>
+  auto cpu_b     = lib.create_graph();  // returns shared_ptr<Graph>
+  auto alu       = lib.create_graph();  // returns shared_ptr<Graph>
   auto cpu_a_gid = cpu_a->get_gid();
   auto cpu_b_gid = cpu_b->get_gid();
   auto alu_gid   = alu->get_gid();
@@ -368,9 +235,9 @@ TEST(HierCursor, GraphIterateNodesAtLevel) {
   EXPECT_GE(count, 3);
 }
 
-// ---------------------------------------------------------------------------
-// Section 14: Hierarchy cursor — trees/forest (api_todo.md #14)
-// ---------------------------------------------------------------------------
+// // ---------------------------------------------------------------------------
+// // Section 14: Hierarchy cursor — trees/forest (api_todo.md #14)
+// // ---------------------------------------------------------------------------
 
 TEST(ForestCursor, BasicNavigation) {
   hhds::Forest<int> forest;
@@ -418,16 +285,16 @@ TEST(ForestCursor, BasicNavigation) {
   EXPECT_FALSE(cursor.goto_parent());
 }
 
-// ---------------------------------------------------------------------------
-// Section 14: get_callers (api_todo.md #14)
-// ---------------------------------------------------------------------------
+// // ---------------------------------------------------------------------------
+// // Section 14: get_callers (api_todo.md #14)
+// // ---------------------------------------------------------------------------
 
 TEST(GetCallers, GraphCallersTracking) {
   hhds::GraphLibrary lib;
 
-  auto cpu_a = lib.create_graph();   // returns shared_ptr<Graph>
-  auto cpu_b = lib.create_graph();   // returns shared_ptr<Graph>
-  auto alu   = lib.create_graph();   // returns shared_ptr<Graph>
+  auto cpu_a   = lib.create_graph();  // returns shared_ptr<Graph>
+  auto cpu_b   = lib.create_graph();  // returns shared_ptr<Graph>
+  auto alu     = lib.create_graph();  // returns shared_ptr<Graph>
   auto alu_gid = alu->get_gid();
 
   auto a_sub = cpu_a->create_node();
@@ -477,9 +344,9 @@ TEST(GetCallers, ForestCallersTracking) {
 TEST(GetCallers, CreateCursorFromCaller) {
   hhds::GraphLibrary lib;
 
-  auto cpu_a = lib.create_graph();   // returns shared_ptr<Graph>
-  auto cpu_b = lib.create_graph();   // returns shared_ptr<Graph>
-  auto alu   = lib.create_graph();   // returns shared_ptr<Graph>
+  auto cpu_a   = lib.create_graph();  // returns shared_ptr<Graph>
+  auto cpu_b   = lib.create_graph();  // returns shared_ptr<Graph>
+  auto alu     = lib.create_graph();  // returns shared_ptr<Graph>
   auto alu_gid = alu->get_gid();
 
   auto a_sub = cpu_a->create_node();
