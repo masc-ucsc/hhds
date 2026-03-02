@@ -573,6 +573,43 @@ TEST(LazyTraversal, ForwardClassTopologicalOrder) {
   EXPECT_EQ(order3.size(), before_size + 1);
 }
 
+TEST(LazyTraversal, ForwardClassTopologicalOrder2) {
+  hhds::Graph g;
+  auto        n1 = g.create_node();
+  auto        n2 = g.create_node();
+  auto        n3 = g.create_node();
+  auto        n4 = g.create_node();
+
+  auto inp1 = g.add_input(23);
+  auto out1 = g.add_output(40);
+
+  // n4 -> n3 -> n1 -> n2
+  std::vector<hhds::Node_class> expected;
+  expected.emplace_back(n4);
+  expected.emplace_back(n3);
+  expected.emplace_back(n1);
+  expected.emplace_back(n2);
+
+  g.add_edge(inp1, n4);
+  g.add_edge(n4, n3);
+  g.add_edge(n3, n1);
+  g.add_edge(n1, n2);
+  g.add_edge(n2, out1);
+
+  int pos = 0;
+  for (auto node : g.forward_class()) {
+    EXPECT_EQ(expected[pos], node);
+    pos++;
+  }
+
+  g.add_edge(n3, out1);  // Still should be the same
+  pos = 0;
+  for (auto node : g.forward_class()) {
+    EXPECT_EQ(expected[pos], node);
+    pos++;
+  }
+}
+
 TEST(LazyTraversal, ForwardFlatHierarchyAndCacheInvalidation) {
   hhds::GraphLibrary lib;
   const hhds::Gid    root_gid  = lib.create_graph();
