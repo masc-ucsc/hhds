@@ -2,9 +2,14 @@
 
 #include <strings.h>
 
+#include <algorithm>
 #include <ctime>
+#include <functional>
 #include <iostream>
+#include <queue>
 #include <vector>
+
+#include "tree.hpp"
 
 // TODO:
 // 8-Benchmark against boost library for some example similar to hardware
@@ -22,6 +27,115 @@
 // 7_Add inter-graph connections (set_subnode)
 
 namespace hhds {
+
+Node_hier::Node_hier(std::shared_ptr<tree<Gid>> hier_ref_value, int64_t hier_pos_value, Nid raw_nid_value)
+    : hier_ref(std::move(hier_ref_value)), hier_pos(hier_pos_value), raw_nid(raw_nid_value) {}
+
+auto Node_hier::get_root_gid() const noexcept -> Gid {
+  if (!hier_ref) {
+    return Gid_invalid;
+  }
+  return hier_ref->get_data(hier_ref->get_root());
+}
+
+auto Node_hier::get_current_gid() const noexcept -> Gid {
+  if (!hier_ref) {
+    return Gid_invalid;
+  }
+  return hier_ref->get_data(hier_pos);
+}
+
+auto Pin_hier::get_root_gid() const noexcept -> Gid {
+  if (!hier_ref) {
+    return Gid_invalid;
+  }
+  return hier_ref->get_data(hier_ref->get_root());
+}
+
+auto Pin_hier::get_current_gid() const noexcept -> Gid {
+  if (!hier_ref) {
+    return Gid_invalid;
+  }
+  return hier_ref->get_data(hier_pos);
+}
+
+auto to_class(const Node_hier& v) -> Node_class { return Node_class(nullptr, v.get_raw_nid() & ~static_cast<Nid>(2)); }
+
+auto to_flat(const Node_hier& v) -> Node_flat {
+  return Node_flat(v.get_root_gid(), v.get_current_gid(), v.get_raw_nid() & ~static_cast<Nid>(2));
+}
+
+auto to_class(const Node_flat& v) -> Node_class { return Node_class(nullptr, v.get_raw_nid() & ~static_cast<Nid>(2)); }
+
+auto to_flat(const Node_class& v, Gid current_gid, Gid root_gid) -> Node_flat {
+  if (root_gid == Gid_invalid) {
+    root_gid = current_gid;
+  }
+  return Node_flat(root_gid, current_gid, v.get_raw_nid() & ~static_cast<Nid>(2));
+}
+
+auto to_class(const Pin_hier& v) -> Pin_class {
+  return Pin_class(v.get_raw_nid() & ~static_cast<Nid>(2), v.get_port_id(), v.get_pin_pid());
+}
+
+auto to_flat(const Pin_hier& v) -> Pin_flat {
+  return Pin_flat(v.get_root_gid(), v.get_current_gid(), v.get_raw_nid() & ~static_cast<Nid>(2), v.get_port_id(), v.get_pin_pid());
+}
+
+auto to_class(const Pin_flat& v) -> Pin_class {
+  return Pin_class(v.get_raw_nid() & ~static_cast<Nid>(2), v.get_port_id(), v.get_pin_pid());
+}
+
+auto to_flat(const Pin_class& v, Gid current_gid, Gid root_gid) -> Pin_flat {
+  if (root_gid == Gid_invalid) {
+    root_gid = current_gid;
+  }
+  return Pin_flat(root_gid, current_gid, v.get_raw_nid() & ~static_cast<Nid>(2), v.get_port_id(), v.get_pin_pid());
+}
+
+auto to_flat(const Edge_class& e, Gid current_gid, Gid root_gid) -> Edge_flat {
+  if (root_gid == Gid_invalid) {
+    root_gid = current_gid;
+  }
+  Edge_flat out;
+  out.driver = to_flat(e.driver_pin, current_gid, root_gid);
+  out.sink   = to_flat(e.sink_pin, current_gid, root_gid);
+  return out;
+}
+
+auto to_flat(const Edge_hier& e) -> Edge_flat {
+  Edge_flat out;
+  out.driver = to_flat(e.driver);
+  out.sink   = to_flat(e.sink);
+  return out;
+}
+
+auto to_hier(const Edge_class& e, std::shared_ptr<tree<Gid>> hier_ref, int64_t hier_pos) -> Edge_hier {
+  Edge_hier out;
+  out.driver = Pin_hier(hier_ref, hier_pos, e.driver_pin.get_raw_nid(), e.driver_pin.get_port_id(), e.driver_pin.get_pin_pid());
+  out.sink = Pin_hier(std::move(hier_ref), hier_pos, e.sink_pin.get_raw_nid(), e.sink_pin.get_port_id(), e.sink_pin.get_pin_pid());
+  return out;
+}
+
+auto to_class(const Edge_flat& e) -> Edge_class {
+  Edge_class out{};
+  out.driver_pin = to_class(e.driver);
+  out.sink_pin   = to_class(e.sink);
+  out.driver     = Node_class(nullptr, out.driver_pin.get_raw_nid() | static_cast<Nid>(2));
+  out.sink       = Node_class(nullptr, out.sink_pin.get_raw_nid() & ~static_cast<Nid>(2));
+  out.type       = 2;  // p -> p
+  return out;
+}
+
+auto to_class(const Edge_hier& e) -> Edge_class {
+  Edge_class out{};
+  out.driver_pin = to_class(e.driver);
+  out.sink_pin   = to_class(e.sink);
+  out.driver     = Node_class(nullptr, out.driver_pin.get_raw_nid() | static_cast<Nid>(2));
+  out.sink       = Node_class(nullptr, out.sink_pin.get_raw_nid() & ~static_cast<Nid>(2));
+  out.type       = 2;  // p -> p
+  return out;
+}
 
 Pin::Pin() : master_nid(0), port_id(0), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.set = nullptr} {}
 
@@ -151,17 +265,12 @@ auto Pin::delete_edge(Pid self_id, Vid other_id) -> bool {
         return pin->sedges_.set->erase(edge) != 0;
       } else {
         // delete from packed edges
-        constexpr int      SHIFT     = 14;
-        constexpr uint64_t SLOT_MASK = (1ULL << SHIFT) - 1;
+        constexpr int      SHIFT = 14;
+        constexpr uint64_t SLOT  = (1ULL << SHIFT) - 1;
         for (int i = 0; i < 4; ++i) {
-          // Extract the i-th packed slot from sedges_.sedges
-          uint64_t packed = (static_cast<uint64_t>(pin->sedges_.sedges) >> (i * SHIFT)) & SLOT_MASK;
-          if (packed == 0) {
-            continue;
-          }
-          if ((packed >> 2) == (static_cast<uint64_t>(other_id) >> 2)) {
-            // Clear the matching slot
-            pin->sedges_.sedges &= ~(static_cast<int64_t>(SLOT_MASK) << (i * SHIFT));
+          uint64_t e = edge & (SLOT << (i * SHIFT));
+          if (e >> 2 == (other_id >> 2)) {
+            pin->sedges_.sedges &= ~(static_cast<int64_t>(SLOT) << (i * SHIFT));
             return true;
           }
         }
@@ -598,7 +707,7 @@ void Graph::clear_graph() {
   node_table.emplace_back(2);  // Output node
   node_table.emplace_back(3);  // Constant (common value/issue to handle for toposort) - Each const value is a pin in node3
   pin_table.emplace_back(0, 0);
-  invalidate_fast_class_cache();
+  invalidate_traversal_caches();
 }
 
 void Graph::bind_library(const GraphLibrary* owner, Gid self_gid) noexcept {
@@ -606,7 +715,18 @@ void Graph::bind_library(const GraphLibrary* owner, Gid self_gid) noexcept {
   self_gid_  = self_gid;
 }
 
-void Graph::invalidate_fast_class_cache() noexcept { fast_class_cache_valid_ = false; }
+void Graph::invalidate_traversal_caches() noexcept {
+  fast_class_cache_valid_    = false;
+  fast_hier_cache_valid_     = false;
+  forward_class_cache_valid_ = false;
+  forward_flat_cache_valid_  = false;
+  forward_hier_cache_valid_  = false;
+  fast_hier_tree_cache_.reset();
+  forward_hier_tree_cache_.reset();
+  if (owner_lib_ != nullptr) {
+    owner_lib_->note_graph_mutation();
+  }
+}
 
 void Graph::rebuild_fast_class_cache() const {
   fast_class_cache_.clear();
@@ -627,6 +747,217 @@ void Graph::rebuild_fast_flat_cache() const {
   for (const auto& it : traversal) {
     fast_flat_cache_.emplace_back(it.get_top_graph(), it.get_curr_graph(), it.get_node_id());
   }
+}
+
+void Graph::rebuild_fast_hier_cache() const {
+  fast_hier_cache_.clear();
+  fast_hier_tree_cache_ = std::make_shared<tree<Gid>>();
+
+  Gid root_gid = self_gid_;
+  if (root_gid == Gid_invalid) {
+    root_gid = 0;
+  }
+  const Tree_pos root_pos = fast_hier_tree_cache_->add_root(root_gid);
+
+  ankerl::unordered_dense::set<Gid> active_graphs;
+  if (self_gid_ != Gid_invalid) {
+    active_graphs.insert(self_gid_);
+  }
+  fast_hier_impl(fast_hier_tree_cache_, root_pos, active_graphs, fast_hier_cache_);
+
+  fast_hier_cache_epoch_ = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
+  fast_hier_cache_valid_ = true;
+}
+
+void Graph::rebuild_forward_class_cache() const {
+  forward_class_cache_.clear();
+  if (node_table.size() <= 1) {
+    forward_class_cache_valid_ = true;
+    return;
+  }
+
+  const size_t                                      node_count = node_table.size();
+  std::vector<ankerl::unordered_dense::set<size_t>> adjacency(node_count);
+  std::vector<uint32_t>                             indegree(node_count, 0);
+
+  auto add_dependency = [&](size_t driver_idx, Vid sink_vid) {
+    Nid sink_nid = 0;
+    if (sink_vid & static_cast<Vid>(1)) {
+      const Pid sink_pid = (static_cast<Pid>(sink_vid) & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+      sink_nid           = ref_pin(sink_pid)->get_master_nid();
+    } else {
+      sink_nid = static_cast<Nid>(sink_vid);
+    }
+
+    sink_nid &= ~static_cast<Nid>(3);
+    const size_t sink_idx = static_cast<size_t>(sink_nid >> 2);
+    if (sink_idx == 0 || sink_idx >= node_count) {
+      return;
+    }
+
+    if (adjacency[driver_idx].insert(sink_idx).second) {
+      ++indegree[sink_idx];
+    }
+  };
+
+  for (size_t driver_idx = 1; driver_idx < node_count; ++driver_idx) {
+    const Nid driver_nid = static_cast<Nid>(driver_idx) << 2;
+
+    auto node_edges = node_table[driver_idx].get_edges(driver_nid);
+    for (auto vid : node_edges) {
+      if (vid & static_cast<Vid>(2)) {
+        continue;
+      }
+      add_dependency(driver_idx, vid);
+    }
+
+    for (Pid pin_vid = node_table[driver_idx].get_next_pin_id(); pin_vid != 0;) {
+      const Pid canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+      auto      pin_edges     = ref_pin(canonical_pin)->get_edges(canonical_pin);
+      for (auto vid : pin_edges) {
+        if (vid & static_cast<Vid>(2)) {
+          continue;
+        }
+        add_dependency(driver_idx, vid);
+      }
+      pin_vid = ref_pin(canonical_pin)->get_next_pin_id();
+    }
+  }
+
+  std::priority_queue<size_t, std::vector<size_t>, std::greater<size_t>> ready;
+  for (size_t idx = 1; idx < node_count; ++idx) {
+    if (indegree[idx] == 0) {
+      ready.push(idx);
+    }
+  }
+
+  std::vector<bool> emitted(node_count, false);
+  forward_class_cache_.reserve(node_count - 1);
+  while (!ready.empty()) {
+    const size_t node_idx = ready.top();
+    ready.pop();
+    if (emitted[node_idx]) {
+      continue;
+    }
+
+    emitted[node_idx] = true;
+    forward_class_cache_.emplace_back(const_cast<Graph*>(this), static_cast<Nid>(node_idx) << 2);
+
+    for (auto sink_idx : adjacency[node_idx]) {
+      if (indegree[sink_idx] == 0) {
+        continue;
+      }
+      --indegree[sink_idx];
+      if (indegree[sink_idx] == 0) {
+        ready.push(sink_idx);
+      }
+    }
+  }
+
+  // Preserve determinism under cycles by appending unresolved nodes by ID.
+  for (size_t idx = 1; idx < node_count; ++idx) {
+    if (!emitted[idx]) {
+      forward_class_cache_.emplace_back(const_cast<Graph*>(this), static_cast<Nid>(idx) << 2);
+    }
+  }
+
+  forward_class_cache_valid_ = true;
+}
+
+void Graph::forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_flat>& out) const {
+  for (const auto& node : forward_class()) {
+    const Nid   node_nid = node.get_raw_nid();
+    const auto& node_ref = node_table[static_cast<size_t>(node_nid >> 2)];
+
+    if (node_ref.has_subnode() && owner_lib_ != nullptr) {
+      const Gid other_graph_id = node_ref.get_subnode();
+      if (owner_lib_->has_graph(other_graph_id) && active_graphs.find(other_graph_id) == active_graphs.end()) {
+        active_graphs.insert(other_graph_id);
+        owner_lib_->get_graph(other_graph_id).forward_flat_impl(top_graph, active_graphs, out);
+        active_graphs.erase(other_graph_id);
+        continue;
+      }
+    }
+
+    out.emplace_back(top_graph, self_gid_, node_nid);
+  }
+}
+
+void Graph::fast_hier_impl(std::shared_ptr<tree<Gid>> hier_ref, int64_t hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs,
+                           std::vector<Node_hier>& out) const {
+  for (size_t i = 1; i < node_table.size(); ++i) {
+    const Nid   node_id = static_cast<Nid>(i) << 2;
+    const auto& node    = node_table[i];
+
+    if (node.has_subnode() && owner_lib_ != nullptr) {
+      const Gid other_graph_id = node.get_subnode();
+      if (owner_lib_->has_graph(other_graph_id) && active_graphs.find(other_graph_id) == active_graphs.end()) {
+        const Tree_pos child_hier_pos = hier_ref->add_child(hier_pos, other_graph_id);
+        active_graphs.insert(other_graph_id);
+        owner_lib_->get_graph(other_graph_id).fast_hier_impl(hier_ref, child_hier_pos, active_graphs, out);
+        active_graphs.erase(other_graph_id);
+        continue;
+      }
+    }
+
+    out.emplace_back(hier_ref, hier_pos, node_id);
+  }
+}
+
+void Graph::forward_hier_impl(std::shared_ptr<tree<Gid>> hier_ref, int64_t hier_pos,
+                              ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const {
+  for (const auto& node : forward_class()) {
+    const Nid   node_nid = node.get_raw_nid();
+    const auto& node_ref = node_table[static_cast<size_t>(node_nid >> 2)];
+
+    if (node_ref.has_subnode() && owner_lib_ != nullptr) {
+      const Gid other_graph_id = node_ref.get_subnode();
+      if (owner_lib_->has_graph(other_graph_id) && active_graphs.find(other_graph_id) == active_graphs.end()) {
+        const Tree_pos child_hier_pos = hier_ref->add_child(hier_pos, other_graph_id);
+        active_graphs.insert(other_graph_id);
+        owner_lib_->get_graph(other_graph_id).forward_hier_impl(hier_ref, child_hier_pos, active_graphs, out);
+        active_graphs.erase(other_graph_id);
+        continue;
+      }
+    }
+
+    out.emplace_back(hier_ref, hier_pos, node_nid);
+  }
+}
+
+void Graph::rebuild_forward_flat_cache() const {
+  forward_flat_cache_.clear();
+
+  const Gid                         top_graph = self_gid_;
+  ankerl::unordered_dense::set<Gid> active_graphs;
+  if (self_gid_ != Gid_invalid) {
+    active_graphs.insert(self_gid_);
+  }
+  forward_flat_impl(top_graph, active_graphs, forward_flat_cache_);
+
+  forward_flat_cache_epoch_ = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
+  forward_flat_cache_valid_ = true;
+}
+
+void Graph::rebuild_forward_hier_cache() const {
+  forward_hier_cache_.clear();
+  forward_hier_tree_cache_ = std::make_shared<tree<Gid>>();
+
+  Gid root_gid = self_gid_;
+  if (root_gid == Gid_invalid) {
+    root_gid = 0;
+  }
+  const Tree_pos root_pos = forward_hier_tree_cache_->add_root(root_gid);
+
+  ankerl::unordered_dense::set<Gid> active_graphs;
+  if (self_gid_ != Gid_invalid) {
+    active_graphs.insert(self_gid_);
+  }
+
+  forward_hier_impl(forward_hier_tree_cache_, root_pos, active_graphs, forward_hier_cache_);
+
+  forward_hier_cache_epoch_ = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
+  forward_hier_cache_valid_ = true;
 }
 
 auto Graph::fast_iter(bool hierarchy, Gid top_graph, uint32_t tree_node_num) const -> std::vector<FastIterator> {
@@ -677,24 +1008,58 @@ auto Graph::create_node() -> Node_class {
   Nid id = node_table.size();
   assert(id);
   node_table.emplace_back(id);
-  invalidate_fast_class_cache();
+  invalidate_traversal_caches();
   Nid raw_nid = id << 2 | 0;
   return Node_class(this, raw_nid);
 }
 
 auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
   // nid is << 2 here but port_id is not << 2 id (here but pin id in actual) is also not << 2
+  nid &= ~static_cast<Nid>(2);  // Pin ownership is by node identity, independent of edge role bit.
   Pid id = pin_table.size();
   assert(id);
   pin_table.emplace_back(nid, pid);
   set_next_pin(nid, id);
+  invalidate_traversal_caches();
   return id << 2 | 1;
 }
 
-auto Node_class::create_pin(Port_id port_id_value) -> Pin_class {
+auto Graph::make_pin_class(Pid pin_pid) const -> Pin_class {
+  const auto* pin = ref_pin(pin_pid);
+  return Pin_class(const_cast<Graph*>(this), pin->get_master_nid(), pin->get_port_id(), pin_pid);
+}
+
+auto Pin_class::get_master_node() const -> Node_class {
+  if (graph != nullptr && pin_pid != 0) {
+    const auto* pin = graph->ref_pin(pin_pid);
+    return Node_class(graph, pin->get_master_nid());
+  }
+  return Node_class(graph, raw_nid);
+}
+
+auto Node_class::create_pin(Port_id port_id_value) const -> Pin_class {
   assert(graph != nullptr);
   const Pid pin_pid = graph->create_pin(raw_nid, port_id_value);
-  return Pin_class(raw_nid, port_id_value, pin_pid);
+  return Pin_class(graph, raw_nid, port_id_value, pin_pid);
+}
+
+void Graph::set_subnode(Node_class node, Gid gid) { set_subnode(node.get_raw_nid(), gid); }
+
+void Graph::set_subnode(Nid nid, Gid gid) {
+  if (gid == Gid_invalid) {
+    return;
+  }
+
+  if (owner_lib_ != nullptr) {
+    assert(owner_lib_->has_graph(gid));
+    if (!owner_lib_->has_graph(gid)) {
+      return;
+    }
+  }
+
+  nid &= ~static_cast<Nid>(3);
+  ref_node(nid)->set_subnode(gid);
+  invalidate_traversal_caches();
 }
 
 void Graph::add_edge(Vid driver_id, Vid sink_id) {
@@ -702,15 +1067,28 @@ void Graph::add_edge(Vid driver_id, Vid sink_id) {
   sink_id   = sink_id & ~2;
   add_edge_int(driver_id, sink_id);
   add_edge_int(sink_id, driver_id);
+  invalidate_traversal_caches();
 }
 
-void Graph::del_edge(Node_class node1, Node_class node2) { del_edge_int(node1.get_raw_nid(), node2.get_raw_nid()); }
+void Graph::del_edge(Node_class node1, Node_class node2) {
+  del_edge_int(node1.get_raw_nid(), node2.get_raw_nid());
+  invalidate_traversal_caches();
+}
 
-void Graph::del_edge(Node_class node, Pin_class pin) { del_edge_int(node.get_raw_nid(), pin.get_pin_pid()); }
+void Graph::del_edge(Node_class node, Pin_class pin) {
+  del_edge_int(node.get_raw_nid(), pin.get_pin_pid());
+  invalidate_traversal_caches();
+}
 
-void Graph::del_edge(Pin_class pin, Node_class node) { del_edge_int(pin.get_pin_pid(), node.get_raw_nid()); }
+void Graph::del_edge(Pin_class pin, Node_class node) {
+  del_edge_int(pin.get_pin_pid(), node.get_raw_nid());
+  invalidate_traversal_caches();
+}
 
-void Graph::del_edge(Pin_class pin1, Pin_class pin2) { del_edge_int(pin1.get_pin_pid(), pin2.get_pin_pid()); }
+void Graph::del_edge(Pin_class pin1, Pin_class pin2) {
+  del_edge_int(pin1.get_pin_pid(), pin2.get_pin_pid());
+  invalidate_traversal_caches();
+}
 
 auto Graph::fast_class() const -> std::span<const Node_class> {
   const size_t expected_size = node_table.size() > 0 ? node_table.size() - 1 : 0;
@@ -720,9 +1098,41 @@ auto Graph::fast_class() const -> std::span<const Node_class> {
   return std::span<const Node_class>(fast_class_cache_.data(), fast_class_cache_.size());
 }
 
+auto Graph::forward_class() const -> std::span<const Node_class> {
+  const size_t expected_size = node_table.size() > 0 ? node_table.size() - 1 : 0;
+  if (!forward_class_cache_valid_ || forward_class_cache_.size() != expected_size) {
+    rebuild_forward_class_cache();
+  }
+  return std::span<const Node_class>(forward_class_cache_.data(), forward_class_cache_.size());
+}
+
 auto Graph::fast_flat() const -> std::span<const Node_flat> {
   rebuild_fast_flat_cache();
   return std::span<const Node_flat>(fast_flat_cache_.data(), fast_flat_cache_.size());
+}
+
+auto Graph::fast_hier() const -> std::span<const Node_hier> {
+  const uint64_t expected_epoch = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
+  if (!fast_hier_cache_valid_ || (owner_lib_ != nullptr && fast_hier_cache_epoch_ != expected_epoch)) {
+    rebuild_fast_hier_cache();
+  }
+  return std::span<const Node_hier>(fast_hier_cache_.data(), fast_hier_cache_.size());
+}
+
+auto Graph::forward_flat() const -> std::span<const Node_flat> {
+  const uint64_t expected_epoch = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
+  if (!forward_flat_cache_valid_ || (owner_lib_ != nullptr && forward_flat_cache_epoch_ != expected_epoch)) {
+    rebuild_forward_flat_cache();
+  }
+  return std::span<const Node_flat>(forward_flat_cache_.data(), forward_flat_cache_.size());
+}
+
+auto Graph::forward_hier() const -> std::span<const Node_hier> {
+  const uint64_t expected_epoch = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
+  if (!forward_hier_cache_valid_ || (owner_lib_ != nullptr && forward_hier_cache_epoch_ != expected_epoch)) {
+    rebuild_forward_hier_cache();
+  }
+  return std::span<const Node_hier>(forward_hier_cache_.data(), forward_hier_cache_.size());
 }
 
 void Graph::del_edge_int(Vid driver_id, Vid sink_id) {
@@ -741,9 +1151,10 @@ void Graph::del_edge_int(Vid driver_id, Vid sink_id) {
 
 auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
   std::vector<Edge_class> out;
-  const Nid               self_nid = node.get_raw_nid();
+  const Nid               self_nid = node.get_raw_nid() & ~static_cast<Nid>(2);
   auto*                   self     = ref_node(self_nid);
   auto                    edges    = self->get_edges(self_nid);
+  const Node_class        self_driver(this, self_nid | static_cast<Nid>(2));
 
   for (auto vid : edges) {
     if (vid & 2) {
@@ -754,8 +1165,8 @@ auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
 
       Edge_class e{};
       e.type     = 3;  // n -> p
-      e.driver   = node;
-      e.sink_pin = Pin_class(self_nid, 0, sink_pid);  // keep your existing ctor usage
+      e.driver   = self_driver;
+      e.sink_pin = make_pin_class(sink_pid);
       // e.sink / e.driver_pin remain default
       out.push_back(e);
       continue;
@@ -764,7 +1175,7 @@ auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
 
       Edge_class e{};
       e.type   = 1;  // n -> n
-      e.driver = node;
+      e.driver = self_driver;
       e.sink   = Node_class(this, sink_nid);  // keep your existing ctor usage
       // e.driver_pin / e.sink_pin remain default
       out.push_back(e);
@@ -775,9 +1186,10 @@ auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
 
 auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
   std::vector<Edge_class> out;
-  const Nid               self_nid = node.get_raw_nid();
+  const Nid               self_nid = node.get_raw_nid() & ~static_cast<Nid>(2);
   auto*                   self     = ref_node(self_nid);
   auto                    edges    = self->get_edges(self_nid);
+  const Node_class        self_sink(this, self_nid & ~static_cast<Nid>(2));
 
   for (auto vid : edges) {
     if (!(vid & 2)) {
@@ -788,8 +1200,8 @@ auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
 
       Edge_class e{};
       e.type       = 4;  // p -> n
-      e.driver_pin = Pin_class(self_nid, 0, driver_pid);
-      e.sink       = node;
+      e.driver_pin = make_pin_class(driver_pid);
+      e.sink       = self_sink;
       // e.driver / e.sink_pin remain default
       out.push_back(e);
       continue;
@@ -799,7 +1211,7 @@ auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
       Edge_class e{};
       e.type   = 1;  // n -> n
       e.driver = Node_class(this, driver_nid);
-      e.sink   = node;
+      e.sink   = self_sink;
       // e.driver_pin / e.sink_pin remain default
       out.push_back(e);
     }
@@ -807,8 +1219,129 @@ auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
   return out;
 }
 
+auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
+  std::vector<Edge_class> out;
+  const Pid               self_pid        = pin.get_pin_pid();
+  const Pid               self_pid_lookup = (self_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+  auto*                   self            = ref_pin(self_pid_lookup);
+  auto                    edges           = self->get_edges(self_pid_lookup);
+  const Pin_class         self_driver_pin = make_pin_class(self_pid_lookup | static_cast<Pid>(2));
+
+  for (auto vid : edges) {
+    if (vid & 2) {
+      continue;
+    }
+    if (vid & 1) {
+      const Pid sink_pid = static_cast<Pid>(vid);
+
+      Edge_class e{};
+      e.type       = 2;  // p -> p
+      e.driver_pin = self_driver_pin;
+      e.sink_pin   = make_pin_class(sink_pid);
+      out.push_back(e);
+      continue;
+    }
+
+    const Nid sink_nid = static_cast<Nid>(vid);
+
+    Edge_class e{};
+    e.type       = 4;  // p -> n
+    e.driver_pin = self_driver_pin;
+    e.sink       = Node_class(this, sink_nid);
+    out.push_back(e);
+  }
+
+  return out;
+}
+
+auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
+  std::vector<Edge_class> out;
+  const Pid               self_pid      = pin.get_pin_pid();
+  const Pid               self_pid_sink = (self_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+  auto*                   self          = ref_pin(self_pid_sink);
+  auto                    edges         = self->get_edges(self_pid_sink);
+  const Pin_class         self_sink_pin = make_pin_class(self_pid_sink);
+
+  for (auto vid : edges) {
+    if (!(vid & 2)) {
+      continue;
+    }
+    if (vid & 1) {
+      const Pid driver_pid = static_cast<Pid>(vid);
+
+      Edge_class e{};
+      e.type       = 2;  // p -> p
+      e.driver_pin = make_pin_class(driver_pid);
+      e.sink_pin   = self_sink_pin;
+      out.push_back(e);
+      continue;
+    }
+
+    const Nid driver_nid = static_cast<Nid>(vid);
+
+    Edge_class e{};
+    e.type     = 3;  // n -> p
+    e.driver   = Node_class(this, driver_nid);
+    e.sink_pin = self_sink_pin;
+    out.push_back(e);
+  }
+
+  return out;
+}
+
+auto Graph::get_pins(Node_class node) -> std::vector<Pin_class> {
+  std::vector<Pin_class> out;
+  const Nid              self_nid = node.get_raw_nid() & ~static_cast<Nid>(2);
+  auto*                  self     = ref_node(self_nid);
+
+  Pid cur_pin = self->get_next_pin_id();
+  while (cur_pin != 0) {
+    const Pid canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    out.push_back(make_pin_class(canonical_pin));
+    cur_pin = ref_pin(canonical_pin)->get_next_pin_id();
+  }
+
+  return out;
+}
+
+auto Graph::get_driver_pins(Node_class node) -> std::vector<Pin_class> {
+  std::vector<Pin_class> out;
+  for (const auto& pin : get_pins(node)) {
+    const Pid pid_lookup = (pin.get_pin_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    auto*     self       = ref_pin(pid_lookup);
+    auto      edges      = self->get_edges(pid_lookup);
+
+    for (auto vid : edges) {
+      // Driver pin: edge is outgoing (bit1=0) and target is a pin (bit0=1).
+      if (!(vid & static_cast<Vid>(2)) && (vid & static_cast<Vid>(1))) {
+        out.push_back(make_pin_class(pid_lookup));
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+auto Graph::get_sink_pins(Node_class node) -> std::vector<Pin_class> {
+  std::vector<Pin_class> out;
+  for (const auto& pin : get_pins(node)) {
+    const Pid pid_lookup = (pin.get_pin_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    auto*     self       = ref_pin(pid_lookup);
+    auto      edges      = self->get_edges(pid_lookup);
+
+    for (auto vid : edges) {
+      // Sink pin: edge is incoming (bit1=1) and source is a pin (bit0=1).
+      if ((vid & static_cast<Vid>(3)) == static_cast<Vid>(3)) {
+        out.push_back(make_pin_class(pid_lookup));
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 void Graph::delete_node(Nid nid) {
-  invalidate_fast_class_cache();
+  invalidate_traversal_caches();
 
   auto* node = ref_node(nid);
   if (!node) {

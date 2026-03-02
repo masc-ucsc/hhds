@@ -514,15 +514,15 @@ void test_fast_iter_hierarchy() {
   Graph& child = lib.get_graph(child_gid);
   Graph& leaf  = lib.get_graph(leaf_gid);
 
-  (void)root.create_node();                         // node 4
-  const Nid root_sub = root.create_node();          // node 5
-  (void)root.create_node();                         // node 6
-  root.ref_node(root_sub)->set_subnode(child_gid);  // node 5 -> graph 2 subnode
+  (void)root.create_node();                 // node 4
+  const Nid root_sub = root.create_node();  // node 5
+  (void)root.create_node();                 // node 6
+  root.set_subnode(root_sub, child_gid);    // node 5 -> graph 2 subnode
 
-  (void)child.create_node();                         // node 4
-  const Nid child_sub = child.create_node();         // node 5
-  (void)child.create_node();                         // node 6
-  child.ref_node(child_sub)->set_subnode(leaf_gid);  // node 5 -> graph 3 subnode
+  (void)child.create_node();                  // node 4
+  const Nid child_sub = child.create_node();  // node 5
+  (void)child.create_node();                  // node 6
+  child.set_subnode(child_sub, leaf_gid);     // node 5 -> graph 3 subnode
 
   (void)leaf.create_node();  // node 4
 
@@ -560,17 +560,17 @@ void test_fast_iter_hierarchy_multiple_subnodes() {
   Graph& child = lib.get_graph(child_gid);
   Graph& leaf  = lib.get_graph(leaf_gid);
 
-  (void)root.create_node();                          // node 4
-  const Nid root_sub = root.create_node();           // node 5
-  (void)root.create_node();                          // node 6
-  const Nid root_sub2 = root.create_node();          // node 7
-  root.ref_node(root_sub)->set_subnode(child_gid);   // node 5 -> graph 2 subnode
-  root.ref_node(root_sub2)->set_subnode(child_gid);  // node 7 -> graph 2 subnode
+  (void)root.create_node();                  // node 4
+  const Nid root_sub = root.create_node();   // node 5
+  (void)root.create_node();                  // node 6
+  const Nid root_sub2 = root.create_node();  // node 7
+  root.set_subnode(root_sub, child_gid);     // node 5 -> graph 2 subnode
+  root.set_subnode(root_sub2, child_gid);    // node 7 -> graph 2 subnode
 
-  (void)child.create_node();                         // node 4
-  const Nid child_sub = child.create_node();         // node 5
-  (void)child.create_node();                         // node 6
-  child.ref_node(child_sub)->set_subnode(leaf_gid);  // node 5 -> graph 3 subnode
+  (void)child.create_node();                  // node 4
+  const Nid child_sub = child.create_node();  // node 5
+  (void)child.create_node();                  // node 6
+  child.set_subnode(child_sub, leaf_gid);     // node 5 -> graph 3 subnode
 
   (void)leaf.create_node();  // node 4
 
