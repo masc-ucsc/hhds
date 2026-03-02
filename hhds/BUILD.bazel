@@ -73,6 +73,7 @@ cc_library(
         "graph.hpp",
         "graph_sizing.hpp",
         "hash_set3.hpp",
+        "tree.hpp",
         "unordered_dense.hpp",
     ],
     copts = COPTS + [
@@ -86,6 +87,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "@emhash",
+        "@iassert",
     ],
 )
 
@@ -296,9 +298,8 @@ cc_test(
 #)
 
 cc_test(
-    name = "iterators",
-    srcs = ["tests/iterators.cpp"],
-    tags = ["manual"],  # planned API, not yet implemented
+    name = "iterators_impl",
+    srcs = ["tests/iterators_impl.cpp"],
     deps = [
         ":core",
         ":graph",
@@ -308,8 +309,9 @@ cc_test(
 )
 
 cc_test(
-    name = "iterators_impl",
-    srcs = ["tests/iterators_impl.cpp"],
+    name = "iterators",
+    srcs = ["tests/iterators.cpp"],
+    tags = ["manual"],  # planned API, not yet implemented
     deps = [
         ":core",
         ":graph",
