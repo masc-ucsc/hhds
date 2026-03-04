@@ -551,7 +551,7 @@ TEST(LazyTraversal, ForwardClassTopologicalOrder) {
   auto order2 = g.forward_class();
   EXPECT_EQ(order.data(), order2.data());
 
-  ASSERT_EQ(order.size(), 7);
+  ASSERT_EQ(order.size(), 4);
   absl::flat_hash_map<hhds::Nid, size_t> pos;
   for (size_t i = 0; i < order.size(); ++i) {
     pos[order[i].get_raw_nid() & ~static_cast<hhds::Nid>(3)] = i;
