@@ -770,8 +770,9 @@ void Graph::rebuild_fast_hier_cache() const {
 }
 
 void Graph::rebuild_forward_class_cache() const {
+  constexpr size_t first_user_node_idx = 4;  // 0:invalid, 1:INPUT, 2:OUTPUT, 3:CONST
   forward_class_cache_.clear();
-  if (node_table.size() <= 1) {
+  if (node_table.size() <= first_user_node_idx) {
     forward_class_cache_valid_ = true;
     return;
   }
@@ -791,7 +792,7 @@ void Graph::rebuild_forward_class_cache() const {
 
     sink_nid &= ~static_cast<Nid>(3);
     const size_t sink_idx = static_cast<size_t>(sink_nid >> 2);
-    if (sink_idx == 0 || sink_idx >= node_count) {
+    if (sink_idx < first_user_node_idx || sink_idx >= node_count) {
       return;
     }
 
@@ -800,7 +801,7 @@ void Graph::rebuild_forward_class_cache() const {
     }
   };
 
-  for (size_t driver_idx = 1; driver_idx < node_count; ++driver_idx) {
+  for (size_t driver_idx = first_user_node_idx; driver_idx < node_count; ++driver_idx) {
     const Nid driver_nid = static_cast<Nid>(driver_idx) << 2;
 
     auto node_edges = node_table[driver_idx].get_edges(driver_nid);
@@ -825,14 +826,14 @@ void Graph::rebuild_forward_class_cache() const {
   }
 
   std::priority_queue<size_t, std::vector<size_t>, std::greater<size_t>> ready;
-  for (size_t idx = 1; idx < node_count; ++idx) {
+  for (size_t idx = first_user_node_idx; idx < node_count; ++idx) {
     if (indegree[idx] == 0) {
       ready.push(idx);
     }
   }
 
   std::vector<bool> emitted(node_count, false);
-  forward_class_cache_.reserve(node_count - 1);
+  forward_class_cache_.reserve(node_count - first_user_node_idx);
   while (!ready.empty()) {
     const size_t node_idx = ready.top();
     ready.pop();
@@ -855,7 +856,7 @@ void Graph::rebuild_forward_class_cache() const {
   }
 
   // Preserve determinism under cycles by appending unresolved nodes by ID.
-  for (size_t idx = 1; idx < node_count; ++idx) {
+  for (size_t idx = first_user_node_idx; idx < node_count; ++idx) {
     if (!emitted[idx]) {
       forward_class_cache_.emplace_back(const_cast<Graph*>(this), static_cast<Nid>(idx) << 2);
     }
@@ -1099,7 +1100,8 @@ auto Graph::fast_class() const -> std::span<const Node_class> {
 }
 
 auto Graph::forward_class() const -> std::span<const Node_class> {
-  const size_t expected_size = node_table.size() > 0 ? node_table.size() - 1 : 0;
+  constexpr size_t first_user_node_idx = 4;  // 0:invalid, 1:INPUT, 2:OUTPUT, 3:CONST
+  const size_t expected_size = node_table.size() > first_user_node_idx ? node_table.size() - first_user_node_idx : 0;
   if (!forward_class_cache_valid_ || forward_class_cache_.size() != expected_size) {
     rebuild_forward_class_cache();
   }
