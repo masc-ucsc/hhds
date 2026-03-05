@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <regex>
+
 #include "absl/container/flat_hash_map.h"
 #include "hhds/graph.hpp"
 #include "hhds/tree.hpp"
@@ -601,6 +603,7 @@ TEST(LazyTraversal, ForwardClassTopologicalOrder2) {
     EXPECT_EQ(expected[pos], node);
     pos++;
   }
+  EXPECT_EQ(pos, expected.size());
 
   g.add_edge(n3, out1);  // Still should be the same
   pos = 0;
@@ -608,6 +611,15 @@ TEST(LazyTraversal, ForwardClassTopologicalOrder2) {
     EXPECT_EQ(expected[pos], node);
     pos++;
   }
+  EXPECT_EQ(pos, expected.size());
+
+  g.set_subnode(n3, 1023);  // Force a future GiD is valid
+  pos = 0;
+  for (auto node : g.forward_class()) {
+    EXPECT_EQ(expected[pos], node);
+    pos++;
+  }
+  EXPECT_EQ(pos, expected.size());
 }
 
 TEST(LazyTraversal, ForwardFlatHierarchyAndCacheInvalidation) {
