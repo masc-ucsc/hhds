@@ -86,15 +86,16 @@ numeric ID (useful for debugging/printing but not the primary handle).
 ```cpp
 // Forest — creates trees, returns shared ownership
 // Root must be set explicitly via tree<X>::add_root() after creation.
-std::shared_ptr<tree<X>> create_tree();
-std::shared_ptr<tree<X>> get_tree(Tid tid);
+std::shared_ptr<tree<X>> create_tree(std::string_view name);
+std::shared_ptr<tree<X>> get_tree(std::string_view name, Tid tid);
 
 // tree<X> exposes its ID
 Tid tree<X>::get_tid() const;
 
 // GraphLibrary — creates graphs, returns shared ownership
-std::shared_ptr<Graph> create_graph();
+std::shared_ptr<Graph> create_graph(std::string_view name);
 std::shared_ptr<Graph> get_graph(Gid gid);
+std::shared_ptr<Graph> get_graph(std::string_view name);
 
 // Graph exposes its ID
 Gid Graph::get_gid() const;
