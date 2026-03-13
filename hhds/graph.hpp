@@ -166,12 +166,24 @@ public:
       : raw_nid(raw_nid_value & ~static_cast<Nid>(2)), port_id(port_id_value), pin_pid(pin_pid_value) {}
 
   [[nodiscard]] Node_class get_master_node() const;
-  [[nodiscard]] Nid        get_raw_nid() const noexcept { return raw_nid; }
-  [[nodiscard]] Pid        get_pin_pid() const noexcept { return pin_pid; }
-  [[nodiscard]] Port_id    get_port_id() const noexcept { return port_id; }
+  [[nodiscard]] Nid        get_raw_nid() const noexcept {
+    assert_accessible_handle();
+    return raw_nid;
+  }
+  [[nodiscard]] Pid get_pin_pid() const noexcept {
+    assert_accessible_handle();
+    return pin_pid;
+  }
+  [[nodiscard]] Port_id get_port_id() const noexcept {
+    assert_accessible_handle();
+    return port_id;
+  }
 
   // Interop with existing APIs that still accept raw Pid.
-  [[nodiscard]] operator Pid() const noexcept { return pin_pid; }
+  [[nodiscard]] operator Pid() const noexcept {
+    assert_accessible_handle();
+    return pin_pid;
+  }
 
   [[nodiscard]] bool operator==(const Pin_class& other) const noexcept { return graph == other.graph && pin_pid == other.pin_pid; }
   [[nodiscard]] bool operator!=(const Pin_class& other) const noexcept { return !(*this == other); }
@@ -182,10 +194,13 @@ public:
   }
 
 private:
+  void    assert_accessible_handle() const noexcept;
   Graph*  graph   = nullptr;
   Nid     raw_nid = 0;
   Port_id port_id = 0;
   Pid     pin_pid = 0;
+
+  friend class Graph;
 };
 
 class Node_class {
@@ -193,12 +208,21 @@ public:
   Node_class() = default;
   Node_class(Graph* graph_value, Nid raw_nid_value) : graph(graph_value), raw_nid(raw_nid_value) {}
 
-  [[nodiscard]] Port_id   get_port_id() const noexcept { return 0; }
-  [[nodiscard]] Nid       get_raw_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] Port_id get_port_id() const noexcept {
+    assert_accessible_handle();
+    return 0;
+  }
+  [[nodiscard]] Nid get_raw_nid() const noexcept {
+    assert_accessible_handle();
+    return raw_nid;
+  }
   [[nodiscard]] Pin_class create_pin(Port_id port_id) const;
 
   // Interop with existing APIs that still accept raw Nid.
-  [[nodiscard]] operator Nid() const noexcept { return raw_nid; }
+  [[nodiscard]] operator Nid() const noexcept {
+    assert_accessible_handle();
+    return raw_nid;
+  }
 
   [[nodiscard]] bool operator==(const Node_class& other) const noexcept { return graph == other.graph && raw_nid == other.raw_nid; }
   [[nodiscard]] bool operator!=(const Node_class& other) const noexcept { return !(*this == other); }
@@ -209,8 +233,11 @@ public:
   }
 
 private:
+  void   assert_accessible_handle() const noexcept;
   Graph* graph   = nullptr;
   Nid    raw_nid = 0;
+
+  friend class Graph;
 };
 
 class Node_flat {
@@ -383,10 +410,16 @@ class GraphLibrary;
 class Graph {
 public:
   Graph();
-  void clear_graph();
+  // Graphs are owned via handles; copying or moving would break identity and stale-handle checks.
+  Graph(const Graph&)            = delete;
+  Graph& operator=(const Graph&) = delete;
+  Graph(Graph&&)                 = delete;
+  Graph& operator=(Graph&&)      = delete;
+  void   clear_graph();
 
   [[nodiscard]] Node_class create_node();
   [[nodiscard]] Pid        create_pin(Nid nid, Port_id port_id);
+  [[nodiscard]] Gid        get_gid() const noexcept { return self_gid_; }
 
   // Built-in nodes created by Graph::clear_graph()
   static constexpr Nid INPUT_NODE  = (static_cast<Nid>(1) << 2);
@@ -400,10 +433,26 @@ public:
   [[nodiscard]] auto ref_node(Nid id) const -> Node*;
   [[nodiscard]] auto ref_pin(Pid id) const -> Pin*;
 
-  void add_edge(Node_class driver_node, Node_class sink_node) { add_edge(driver_node.get_raw_nid(), sink_node.get_raw_nid()); }
-  void add_edge(Node_class driver_node, Pin_class sink_pin) { add_edge(driver_node.get_raw_nid(), sink_pin.get_pin_pid()); }
-  void add_edge(Pin_class driver_pin, Node_class sink_node) { add_edge(driver_pin.get_pin_pid(), sink_node.get_raw_nid()); }
-  void add_edge(Pin_class driver_pin, Pin_class sink_pin) { add_edge(driver_pin.get_pin_pid(), sink_pin.get_pin_pid()); }
+  void add_edge(Node_class driver_node, Node_class sink_node) {
+    assert_compatible(driver_node);
+    assert_compatible(sink_node);
+    add_edge(driver_node.get_raw_nid(), sink_node.get_raw_nid());
+  }
+  void add_edge(Node_class driver_node, Pin_class sink_pin) {
+    assert_compatible(driver_node);
+    assert_compatible(sink_pin);
+    add_edge(driver_node.get_raw_nid(), sink_pin.get_pin_pid());
+  }
+  void add_edge(Pin_class driver_pin, Node_class sink_node) {
+    assert_compatible(driver_pin);
+    assert_compatible(sink_node);
+    add_edge(driver_pin.get_pin_pid(), sink_node.get_raw_nid());
+  }
+  void add_edge(Pin_class driver_pin, Pin_class sink_pin) {
+    assert_compatible(driver_pin);
+    assert_compatible(sink_pin);
+    add_edge(driver_pin.get_pin_pid(), sink_pin.get_pin_pid());
+  }
   void set_subnode(Node_class node, Gid gid);
   void set_subnode(Nid nid, Gid gid);
 
@@ -449,6 +498,10 @@ public:
   [[nodiscard]] std::vector<FastIterator> fast_iter(bool hierarchy, Gid top_graph = 0, uint32_t tree_node_num = 0) const;
 
 private:
+  void                    assert_accessible() const noexcept;
+  void                    assert_compatible(const Node_class& node) const noexcept;
+  void                    assert_compatible(const Pin_class& pin) const noexcept;
+  void                    invalidate_from_library() noexcept;
   void                    del_edge_int(Vid driver_id, Vid sink_id);
   void                    add_edge_int(Pid self_id, Pid other_id);
   void                    set_next_pin(Nid nid, Pid next_pin);
@@ -489,7 +542,10 @@ private:
   mutable uint64_t                   forward_hier_cache_epoch_  = 0;
   const GraphLibrary*                owner_lib_                 = nullptr;
   Gid                                self_gid_                  = Gid_invalid;
+  bool                               deleted_                   = false;
 
+  friend class Node_class;
+  friend class Pin_class;
   friend class GraphLibrary;
 };
 
@@ -497,34 +553,48 @@ class GraphLibrary {
 public:
   static constexpr Gid invalid_id = Gid_invalid;
 
+  GraphLibrary(const GraphLibrary&)            = delete;
+  GraphLibrary& operator=(const GraphLibrary&) = delete;
+  GraphLibrary(GraphLibrary&&)                 = delete;
+  GraphLibrary& operator=(GraphLibrary&&)      = delete;
+
   GraphLibrary() {
     // reserve slot 0 for invalid_id
     graphs_.push_back(nullptr);
   }
 
-  // Create a new graph and return its ID.
-  [[nodiscard]] Gid create_graph() {
-    const Gid id = static_cast<Gid>(graphs_.size());
-    graphs_.push_back(std::make_unique<Graph>());
-    graphs_.back()->bind_library(this, id);
+  ~GraphLibrary() {
+    for (auto& graph : graphs_) {
+      if (graph) {
+        graph->invalidate_from_library();
+      }
+    }
+  }
+
+  // Create a new graph and return shared ownership.
+  [[nodiscard]] std::shared_ptr<Graph> create_graph() {
+    const Gid              id    = static_cast<Gid>(graphs_.size());
+    std::shared_ptr<Graph> graph = std::make_shared<Graph>();
+    graph->bind_library(this, id);
+    graphs_.push_back(graph);
     ++live_count_;
     note_graph_mutation();
-    return id;
+    return graph;
   }
 
   [[nodiscard]] bool has_graph(Gid id) const noexcept {
     const size_t idx = static_cast<size_t>(id);
-    return idx < graphs_.size() && graphs_[idx] != nullptr;
+    return idx < graphs_.size() && graphs_[idx] != nullptr && !graphs_[idx]->deleted_;
   }
 
-  [[nodiscard]] Graph& get_graph(Gid id) {
+  [[nodiscard]] std::shared_ptr<Graph> get_graph(Gid id) {
     assert(has_graph(id));
-    return *graphs_[static_cast<size_t>(id)];
+    return graphs_[static_cast<size_t>(id)];
   }
 
-  [[nodiscard]] const Graph& get_graph(Gid id) const {
+  [[nodiscard]] std::shared_ptr<const Graph> get_graph(Gid id) const {
     assert(has_graph(id));
-    return *graphs_[static_cast<size_t>(id)];
+    return graphs_[static_cast<size_t>(id)];
   }
 
   [[nodiscard]] uint64_t mutation_epoch() const noexcept { return mutation_epoch_; }
@@ -535,8 +605,8 @@ public:
       return;
     }
     auto& slot = graphs_[static_cast<size_t>(id)];
-    if (slot) {
-      slot.reset();
+    if (slot && !slot->deleted_) {
+      slot->invalidate_from_library();
       --live_count_;
       note_graph_mutation();
     }
@@ -551,7 +621,7 @@ public:
 private:
   void note_graph_mutation() const noexcept { ++mutation_epoch_; }
 
-  std::vector<std::unique_ptr<Graph>> graphs_;
+  std::vector<std::shared_ptr<Graph>> graphs_;
   // count of live graphs
   Gid              live_count_     = 0;
   mutable uint64_t mutation_epoch_ = 1;
