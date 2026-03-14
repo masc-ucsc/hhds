@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "hhds/graph_sizing.hpp"
 #include "iassert.hpp"
 
 #ifdef TESTING
@@ -97,6 +98,7 @@ namespace hhds {
  */
 
 using Tree_pos = int64_t;
+using Tid      = Tree_pos;
 
 static constexpr int16_t  CHUNK_SHIFT = 3;                 // The number of bits in a chunk offset
 static constexpr int16_t  CHUNK_SIZE  = 1 << CHUNK_SHIFT;  // Size of a chunk in bits
@@ -121,6 +123,7 @@ private:
   // Direct child pointers per slot within the chunk
   std::array<Tree_pos, CHUNK_SIZE> first_child_ptrs;
   std::array<Tree_pos, CHUNK_SIZE> last_child_ptrs;
+  std::array<Type, CHUNK_SIZE>     types;
 
   // Track number of occupied entries in the chunk
   uint16_t num_short_del_occ;
@@ -136,10 +139,12 @@ public:
       , prev_sibling(INVALID)
       , first_child_ptrs{}
       , last_child_ptrs{}
+      , types{}
       , num_short_del_occ(0)
       , is_leaf(true) {
     first_child_ptrs.fill(INVALID);
     last_child_ptrs.fill(INVALID);
+    types.fill(0);
   }
 
   /* PARAM CONSTRUCTOR */
@@ -149,10 +154,12 @@ public:
       , prev_sibling(INVALID)
       , first_child_ptrs{}
       , last_child_ptrs{}
+      , types{}
       , num_short_del_occ(0)
       , is_leaf(true) {
     first_child_ptrs.fill(INVALID);
     last_child_ptrs.fill(INVALID);
+    types.fill(0);
   }
 
   // Getters
@@ -161,6 +168,7 @@ public:
   [[nodiscard]] Tree_pos get_prev_sibling() const { return prev_sibling; }
   [[nodiscard]] Tree_pos get_first_child_at(int16_t index) const { return first_child_ptrs[static_cast<size_t>(index)]; }
   [[nodiscard]] Tree_pos get_last_child_at(int16_t index) const { return last_child_ptrs[static_cast<size_t>(index)]; }
+  [[nodiscard]] Type     get_type_at(int16_t index) const { return types[static_cast<size_t>(index)]; }
 
   // Getter for num_occ
   [[nodiscard]] uint16_t get_num_short_del_occ() const { return num_short_del_occ; }
@@ -172,7 +180,7 @@ public:
   constexpr bool operator==(const Tree_pointers& other) const {
     return parent == other.parent && next_sibling == other.next_sibling && prev_sibling == other.prev_sibling
            && first_child_ptrs == other.first_child_ptrs && last_child_ptrs == other.last_child_ptrs
-           && num_short_del_occ == other.num_short_del_occ && is_leaf == other.is_leaf;
+           && types == other.types && num_short_del_occ == other.num_short_del_occ && is_leaf == other.is_leaf;
   }
 
   constexpr bool operator!=(const Tree_pointers& other) const { return !(*this == other); }
@@ -184,6 +192,7 @@ public:
   void set_prev_sibling(Tree_pos p) { prev_sibling = p; }
   void set_first_child_at(int16_t index, Tree_pos value) { first_child_ptrs[static_cast<size_t>(index)] = value; }
   void set_last_child_at(int16_t index, Tree_pos value) { last_child_ptrs[static_cast<size_t>(index)] = value; }
+  void set_type_at(int16_t index, Type value) { types[static_cast<size_t>(index)] = value; }
   void set_num_short_del_occ(uint16_t n) { num_short_del_occ = n; }
   void set_is_leaf(bool l) { this->is_leaf = l; }
 
@@ -281,29 +290,161 @@ private:
   Tree* _get_forest_tree(Tree_pos tree_ref);
 
 public:
+  class Node_class {
+  public:
+    Node_class() = default;
+    explicit Node_class(Tid raw_tid_value) : raw_tid(raw_tid_value) {}
+
+    [[nodiscard]] Tid get_raw_tid() const noexcept { return raw_tid; }
+    [[nodiscard]] bool operator==(const Node_class& other) const noexcept { return raw_tid == other.raw_tid; }
+    [[nodiscard]] bool operator!=(const Node_class& other) const noexcept { return !(*this == other); }
+
+    template <typename H>
+    friend H AbslHashValue(H h, const Node_class& node) {
+      return H::combine(std::move(h), node.raw_tid);
+    }
+
+  private:
+    Tid raw_tid = INVALID;
+
+    friend class Tree;
+  };
+
+  class Node_flat {
+  public:
+    Node_flat() = default;
+    Node_flat(Tid root_tid_value, Tid current_tid_value, Tid raw_tid_value)
+        : root_tid(root_tid_value), current_tid(current_tid_value), raw_tid(raw_tid_value) {}
+
+    [[nodiscard]] Tid get_root_tid() const noexcept { return root_tid; }
+    [[nodiscard]] Tid get_current_tid() const noexcept { return current_tid; }
+    [[nodiscard]] Tid get_raw_tid() const noexcept { return raw_tid; }
+    [[nodiscard]] bool operator==(const Node_flat& other) const noexcept {
+      return root_tid == other.root_tid && current_tid == other.current_tid && raw_tid == other.raw_tid;
+    }
+    [[nodiscard]] bool operator!=(const Node_flat& other) const noexcept { return !(*this == other); }
+
+    template <typename H>
+    friend H AbslHashValue(H h, const Node_flat& node) {
+      return H::combine(std::move(h), node.root_tid, node.current_tid, node.raw_tid);
+    }
+
+  private:
+    Tid root_tid    = INVALID;
+    Tid current_tid = INVALID;
+    Tid raw_tid     = INVALID;
+
+    friend class Tree;
+  };
+
+  class Node_hier {
+  public:
+    Node_hier() = default;
+    Node_hier(Tid root_tid_value, Tid current_tid_value, Tree_pos hier_pos_value, Tid raw_tid_value)
+        : root_tid(root_tid_value), current_tid(current_tid_value), hier_pos(hier_pos_value), raw_tid(raw_tid_value) {}
+
+    [[nodiscard]] Tid      get_root_tid() const noexcept { return root_tid; }
+    [[nodiscard]] Tid      get_current_tid() const noexcept { return current_tid; }
+    [[nodiscard]] Tree_pos get_hier_pos() const noexcept { return hier_pos; }
+    [[nodiscard]] Tid      get_raw_tid() const noexcept { return raw_tid; }
+    [[nodiscard]] bool     operator==(const Node_hier& other) const noexcept {
+      return root_tid == other.root_tid && current_tid == other.current_tid && hier_pos == other.hier_pos && raw_tid == other.raw_tid;
+    }
+    [[nodiscard]] bool operator!=(const Node_hier& other) const noexcept { return !(*this == other); }
+
+    template <typename H>
+    friend H AbslHashValue(H h, const Node_hier& node) {
+      return H::combine(std::move(h), node.root_tid, node.current_tid, node.hier_pos, node.raw_tid);
+    }
+
+  private:
+    Tid      root_tid    = INVALID;
+    Tid      current_tid = INVALID;
+    Tree_pos hier_pos    = INVALID;
+    Tid      raw_tid     = INVALID;
+
+    friend class Tree;
+  };
+
   explicit Tree(Forest* forest = nullptr) : forest_ptr(forest) {}
+
+  [[nodiscard]] static bool is_valid(Node_class node) noexcept { return node.get_raw_tid() != INVALID; }
+  [[nodiscard]] static bool is_valid(Node_flat node) noexcept { return node.get_raw_tid() != INVALID; }
+  [[nodiscard]] static bool is_valid(Node_hier node) noexcept { return node.get_raw_tid() != INVALID; }
+
+  [[nodiscard]] Node_class as_class(Tree_pos pos) const {
+    return (_check_idx_exists(pos) && _contains_data(pos)) ? Node_class(pos) : Node_class();
+  }
+  [[nodiscard]] Node_flat as_flat(Tree_pos pos, Tid current_tid, Tid root_tid = INVALID) const {
+    if (!_check_idx_exists(pos) || !_contains_data(pos)) {
+      return Node_flat();
+    }
+    if (root_tid == INVALID) {
+      root_tid = current_tid;
+    }
+    return Node_flat(root_tid, current_tid, pos);
+  }
+  [[nodiscard]] Node_hier as_hier(Tree_pos pos, Tid current_tid, Tree_pos hier_pos, Tid root_tid = INVALID) const {
+    if (!_check_idx_exists(pos) || !_contains_data(pos)) {
+      return Node_hier();
+    }
+    if (root_tid == INVALID) {
+      root_tid = current_tid;
+    }
+    return Node_hier(root_tid, current_tid, hier_pos, pos);
+  }
+  [[nodiscard]] Node_class get_root_node() const { return as_class(get_root()); }
 
   [[nodiscard]] inline Tree_pos get_parent(const Tree_pos& curr_index) const {
     return pointers_stack[curr_index >> CHUNK_SHIFT].get_parent();
   }
+  [[nodiscard]] Node_class get_parent(Node_class curr_index) const { return as_class(get_parent(curr_index.get_raw_tid())); }
   [[nodiscard]] Tree_pos    get_last_child(const Tree_pos& parent_index) const;
+  [[nodiscard]] Node_class  get_last_child(Node_class parent_index) const { return as_class(get_last_child(parent_index.get_raw_tid())); }
   [[nodiscard]] Tree_pos    get_first_child(const Tree_pos& parent_index) const;
+  [[nodiscard]] Node_class  get_first_child(Node_class parent_index) const { return as_class(get_first_child(parent_index.get_raw_tid())); }
+  [[nodiscard]] Type        get_type(const Tree_pos& node_index) const {
+    I(_check_idx_exists(node_index), "get_type: Node index out of range");
+    const auto chunk_id     = (node_index >> CHUNK_SHIFT);
+    const auto chunk_offset = static_cast<int16_t>(node_index & CHUNK_MASK);
+    return pointers_stack[chunk_id].get_type_at(chunk_offset);
+  }
+  [[nodiscard]] Type get_type(Node_class node_index) const { return get_type(node_index.get_raw_tid()); }
   [[nodiscard]] bool        is_last_child(const Tree_pos& self_index) const;
+  [[nodiscard]] bool        is_last_child(Node_class self_index) const { return is_last_child(self_index.get_raw_tid()); }
   [[nodiscard]] bool        is_first_child(const Tree_pos& self_index) const;
+  [[nodiscard]] bool        is_first_child(Node_class self_index) const { return is_first_child(self_index.get_raw_tid()); }
   [[nodiscard]] Tree_pos    get_sibling_next(const Tree_pos& sibling_id) const;
+  [[nodiscard]] Node_class  get_sibling_next(Node_class sibling_id) const { return as_class(get_sibling_next(sibling_id.get_raw_tid())); }
   [[nodiscard]] Tree_pos    get_sibling_prev(const Tree_pos& sibling_id) const;
+  [[nodiscard]] Node_class  get_sibling_prev(Node_class sibling_id) const { return as_class(get_sibling_prev(sibling_id.get_raw_tid())); }
   [[nodiscard]] inline bool is_leaf(const Tree_pos& leaf_index) const {
     return pointers_stack[leaf_index >> CHUNK_SHIFT].get_is_leaf();
   }
+  [[nodiscard]] bool     is_leaf(Node_class leaf_index) const { return is_leaf(leaf_index.get_raw_tid()); }
   [[nodiscard]] Tree_pos get_root() const { return ROOT; }
 
   Tree_pos append_sibling(const Tree_pos& sibling_id);
+  Node_class append_sibling(Node_class sibling_id) { return as_class(append_sibling(sibling_id.get_raw_tid())); }
   Tree_pos add_child(const Tree_pos& parent_index);
+  Node_class add_child(Node_class parent_index) { return as_class(add_child(parent_index.get_raw_tid())); }
   Tree_pos add_root();
+  Node_class add_root_node() { return as_class(add_root()); }
+  void       set_type(const Tree_pos& node_index, Type type) {
+    I(_check_idx_exists(node_index), "set_type: Node index out of range");
+    const auto chunk_id     = (node_index >> CHUNK_SHIFT);
+    const auto chunk_offset = static_cast<int16_t>(node_index & CHUNK_MASK);
+    pointers_stack[chunk_id].set_type_at(chunk_offset, type);
+  }
+  void       set_type(Node_class node_index, Type type) { set_type(node_index.get_raw_tid(), type); }
   void     delete_leaf(const Tree_pos& leaf_index);
+  void     delete_leaf(Node_class leaf_index) { delete_leaf(leaf_index.get_raw_tid()); }
   void     delete_subtree(const Tree_pos& subtree_root);
+  void     delete_subtree(Node_class subtree_root) { delete_subtree(subtree_root.get_raw_tid()); }
   void     add_subtree_ref(const Tree_pos& node_pos, Tree_pos subtree_ref);
+  void     add_subtree_ref(Node_class node_pos, Tid subtree_ref) { add_subtree_ref(node_pos.get_raw_tid(), subtree_ref); }
   Tree_pos insert_next_sibling(const Tree_pos& sibling_id);
+  Node_class insert_next_sibling(Node_class sibling_id) { return as_class(insert_next_sibling(sibling_id.get_raw_tid())); }
 
   void print_tree(int deep = 0) {
     for (size_t i = 0; i < pointers_stack.size(); i++) {
@@ -344,17 +485,17 @@ public:
 
   public:
     using iterator_category = std::forward_iterator_tag;
-    using value_type        = Tree_pos;
+    using value_type        = Node_class;
     using difference_type   = std::ptrdiff_t;
-    using pointer           = Tree_pos*;
-    using reference         = Tree_pos&;
+    using pointer           = void;
+    using reference         = Node_class;
 
     traversal_iterator_base(Tree_pos start, const Tree* tree, bool follow_refs)
         : current(start), tree_ptr(tree), m_follow_subtrees(follow_refs) {}
 
     bool     operator==(const traversal_iterator_base& other) const { return current == other.current; }
     bool     operator!=(const traversal_iterator_base& other) const { return current != other.current; }
-    Tree_pos operator*() const { return current; }
+    Node_class operator*() const { return tree_ptr->as_class(current); }
 
   protected:
     Tree_pos handle_subtree_ref(Tree_pos pos) {
@@ -378,10 +519,10 @@ public:
 
   public:
     using iterator_category = std::forward_iterator_tag;
-    using value_type        = Tree_pos;
+    using value_type        = Node_class;
     using difference_type   = std::ptrdiff_t;
-    using pointer           = Tree_pos*;
-    using reference         = Tree_pos&;
+    using pointer           = void;
+    using reference         = Node_class;
 
     sibling_order_iterator(Tree_pos start, Tree* tree, bool follow_refs) : base(start, tree, follow_refs) {}
 
@@ -417,6 +558,9 @@ public:
   sibling_order_range sibling_order(Tree_pos start, bool follow_subtrees = false) {
     return sibling_order_range(start, this, follow_subtrees);
   }
+  sibling_order_range sibling_order(Node_class start, bool follow_subtrees = false) {
+    return sibling_order_range(start.get_raw_tid(), this, follow_subtrees);
+  }
 
   class const_sibling_order_iterator : public traversal_iterator_base<const_sibling_order_iterator> {
   private:
@@ -426,10 +570,10 @@ public:
 
   public:
     using iterator_category = std::forward_iterator_tag;
-    using value_type        = Tree_pos;
+    using value_type        = Node_class;
     using difference_type   = std::ptrdiff_t;
-    using pointer           = const Tree_pos*;
-    using reference         = const Tree_pos&;
+    using pointer           = void;
+    using reference         = Node_class;
 
     const_sibling_order_iterator(Tree_pos start, const Tree* tree, bool follow_refs) : base(start, tree, follow_refs) {}
 
@@ -463,6 +607,7 @@ public:
   };
 
   const_sibling_order_range sibling_order(Tree_pos start) const { return const_sibling_order_range(start, this); }
+  const_sibling_order_range sibling_order(Node_class start) const { return const_sibling_order_range(start.get_raw_tid(), this); }
 
   class pre_order_iterator {
   private:
@@ -495,10 +640,10 @@ public:
 
   public:
     using iterator_category = std::forward_iterator_tag;
-    using value_type        = Tree_pos;
+    using value_type        = Node_class;
     using difference_type   = std::ptrdiff_t;
-    using pointer           = Tree_pos*;
-    using reference         = Tree_pos&;
+    using pointer           = void;
+    using reference         = Node_class;
 
     pre_order_iterator(Tree_pos start, const Tree* tree, bool /* follow_subtrees */ = false) : current(start), tree_ptr(tree) {}
 
@@ -533,7 +678,7 @@ public:
 
     bool     operator==(const pre_order_iterator& other) const { return current == other.current; }
     bool     operator!=(const pre_order_iterator& other) const { return current != other.current; }
-    Tree_pos operator*() const { return current; }
+    Node_class operator*() const { return tree_ptr->as_class(current); }
   };
 
   class pre_order_range {
@@ -551,6 +696,7 @@ public:
   };
 
   pre_order_range pre_order(Tree_pos start = ROOT) const { return pre_order_range(start, this, false); }
+  pre_order_range pre_order(Node_class start) const { return pre_order_range(start.get_raw_tid(), this, false); }
 
   class pre_order_iterator_with_subtrees : public traversal_iterator_base<pre_order_iterator_with_subtrees> {
   public:
@@ -567,10 +713,10 @@ public:
 
   public:
     using iterator_category = std::forward_iterator_tag;
-    using value_type        = Tree_pos;
+    using value_type        = Node_class;
     using difference_type   = std::ptrdiff_t;
-    using pointer           = Tree_pos*;
-    using reference         = Tree_pos&;
+    using pointer           = void;
+    using reference         = Node_class;
 
     pre_order_iterator_with_subtrees(Tree_pos start, Tree* tree, bool follow_refs)
         : base(start, tree, follow_refs), current_tree(tree), main_tree(tree) {}
@@ -648,7 +794,7 @@ public:
 
     bool     operator==(const pre_order_iterator_with_subtrees& other) const { return current == other.current && current_tree == other.current_tree; }
     bool     operator!=(const pre_order_iterator_with_subtrees& other) const { return !(*this == other); }
-    Tree_pos operator*() const { return current; }
+    Node_class operator*() const { return current_tree->as_class(current); }
   };
 
   class pre_order_range_with_subtrees {
@@ -668,6 +814,9 @@ public:
   pre_order_range_with_subtrees pre_order_with_subtrees(Tree_pos start = ROOT, bool follow_subtrees = false) {
     return pre_order_range_with_subtrees(start, this, follow_subtrees);
   }
+  pre_order_range_with_subtrees pre_order_with_subtrees(Node_class start, bool follow_subtrees = false) {
+    return pre_order_range_with_subtrees(start.get_raw_tid(), this, follow_subtrees);
+  }
 
   class post_order_iterator : public traversal_iterator_base<post_order_iterator> {
   private:
@@ -675,14 +824,22 @@ public:
     using base::current;
     using base::tree_ptr;
 
+    void descend_to_first_post_order() {
+      while (current != INVALID && tree_ptr->get_first_child(current) != INVALID) {
+        current = tree_ptr->get_first_child(current);
+      }
+    }
+
   public:
     using iterator_category = std::forward_iterator_tag;
-    using value_type        = Tree_pos;
+    using value_type        = Node_class;
     using difference_type   = std::ptrdiff_t;
-    using pointer           = Tree_pos*;
-    using reference         = Tree_pos&;
+    using pointer           = void;
+    using reference         = Node_class;
 
-    post_order_iterator(Tree_pos start, Tree* tree, bool follow_refs) : base(start, tree, follow_refs) {}
+    post_order_iterator(Tree_pos start, Tree* tree, bool follow_refs) : base(start, tree, follow_refs) {
+      descend_to_first_post_order();
+    }
 
     post_order_iterator& operator++() {
       Tree_pos subtree_root = this->handle_subtree_ref(this->current);
@@ -722,14 +879,19 @@ public:
   post_order_range post_order(Tree_pos start = ROOT, bool follow_subtrees = false) {
     return post_order_range(start, this, follow_subtrees);
   }
+  post_order_range post_order(Node_class start, bool follow_subtrees = false) {
+    return post_order_range(start.get_raw_tid(), this, follow_subtrees);
+  }
 
-  [[nodiscard]] bool   is_subtree_ref(Tree_pos pos) const { return pos < 0; }
-  [[nodiscard]] size_t get_subtree_index(Tree_pos pos) const { return static_cast<size_t>(-pos - 1); }
+  [[nodiscard]] bool   is_subtree_ref(Tree_pos pos) const { return get_subtree_ref(pos) < 0; }
+  [[nodiscard]] bool   is_subtree_ref(Node_class pos) const { return is_subtree_ref(pos.get_raw_tid()); }
+  [[nodiscard]] size_t get_subtree_index(Tree_pos pos) const { return static_cast<size_t>(-get_subtree_ref(pos) - 1); }
   [[nodiscard]] Tree_pos make_subtree_ref(size_t subtree_index) const { return static_cast<Tree_pos>(-(subtree_index + 1)); }
   [[nodiscard]] Tree_pos get_subtree_ref(Tree_pos pos) const {
     I(_check_idx_exists(pos), "get_subtree_ref: Node index out of range");
     return pos < static_cast<Tree_pos>(subtree_refs.size()) ? subtree_refs[pos] : INVALID;
   }
+  [[nodiscard]] Tid get_subtree_ref(Node_class pos) const { return get_subtree_ref(pos.get_raw_tid()); }
 };
 
 class Forest {
@@ -1778,6 +1940,20 @@ public:
   }
 };
 
+[[nodiscard]] inline Tree::Node_class to_class(const Tree::Node_hier& v) { return Tree::Node_class(v.get_raw_tid()); }
+[[nodiscard]] inline Tree::Node_flat  to_flat(const Tree::Node_hier& v) {
+  return Tree::Node_flat(v.get_root_tid(), v.get_current_tid(), v.get_raw_tid());
+}
+[[nodiscard]] inline Tree::Node_class to_class(const Tree::Node_flat& v) { return Tree::Node_class(v.get_raw_tid()); }
+[[nodiscard]] inline Tree::Node_flat  to_flat(const Tree::Node_class& v, Tid current_tid, Tid root_tid = INVALID) {
+  if (root_tid == INVALID) {
+    root_tid = current_tid;
+  }
+  return Tree::Node_flat(root_tid, current_tid, v.get_raw_tid());
+}
+Tree::Node_hier to_hier(Tree::Node_class) = delete;
+Tree::Node_hier to_hier(Tree::Node_flat)  = delete;
+
 inline Tree* Tree::_get_forest_tree(Tree_pos tree_ref) {
   I(forest_ptr != nullptr, "Tree is not attached to a forest");
   return &forest_ptr->get_tree(tree_ref);
@@ -1946,6 +2122,7 @@ inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
   _set_data_invalid(leaf_index);
   subtree_refs[leaf_index] = INVALID;
   pointers_stack[leaf_chunk_id].set_first_child_at(static_cast<int16_t>(leaf_chunk_offset), INVALID);
+  pointers_stack[leaf_chunk_id].set_type_at(static_cast<int16_t>(leaf_chunk_offset), 0);
   int16_t remaining_data = 0;
 
   for (int16_t offset = leaf_chunk_offset; offset < CHUNK_SIZE - 1; offset++) {
@@ -1958,6 +2135,8 @@ inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
       auto& chunk_meta = pointers_stack[leaf_chunk_id];
       chunk_meta.set_first_child_at(offset, chunk_meta.get_first_child_at(offset + 1));
       chunk_meta.set_first_child_at(offset + 1, INVALID);
+      chunk_meta.set_type_at(offset, chunk_meta.get_type_at(offset + 1));
+      chunk_meta.set_type_at(offset + 1, 0);
       subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset]     = subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1];
       subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1] = INVALID;
 

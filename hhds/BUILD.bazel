@@ -45,6 +45,7 @@ cc_library(
         "tree.hpp",
         "lhtree.hpp",
         "wrapper.hpp",
+        "graph_sizing.hpp",
     ]),
     copts = COPTS,
     defines = select({
@@ -379,6 +380,25 @@ cc_test(
     deps = [
         ":core",
         "@google_benchmark//:benchmark",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "tree_wrapper_test",
+    srcs = ["tests/tree_wrapper_test.cpp"],
+    deps = [
+        ":core",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "tree_type_test",
+    srcs = ["tests/tree_type_test.cpp"],
+    deps = [
+        ":core",
         "@googletest//:gtest_main",
     ],
 )
