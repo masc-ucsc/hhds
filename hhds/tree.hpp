@@ -107,8 +107,9 @@ static constexpr Tree_pos ROOT        = 1 << CHUNK_SHIFT;  // ROOT ID
 // Now using full 64-bit addressing - much simpler!
 static constexpr uint64_t MAX_TREE_SIZE = UINT64_MAX;  // Maximum number of chunks in the tree
 
-template <typename X>
 class Forest;
+template <typename X>
+class PayloadForest;
 
 class __attribute__((aligned(64))) Tree_pointers {  // NOLINT(readability-magic-numbers)
 private:
@@ -193,7 +194,590 @@ public:
 };  // Tree_pointers class
 
 template <typename X>
-class Forest;
+class PayloadForest;
+
+class Tree {
+private:
+  std::vector<Tree_pointers>   pointers_stack;
+  std::vector<std::bitset<64>> validity_stack;
+  std::vector<Tree_pos>        subtree_refs;
+  Forest*                      forest_ptr;
+
+  [[nodiscard]] inline bool _check_idx_exists(const Tree_pos& idx) const noexcept {
+    return idx > INVALID && idx < static_cast<Tree_pos>(pointers_stack.size() << CHUNK_SHIFT);
+  }
+
+  [[nodiscard]] inline bool _contains_data(const Tree_pos& idx) const noexcept {
+    const auto bitset_idx = idx >> 6;
+    const auto bit_pos    = idx & 63;
+    return bitset_idx < static_cast<Tree_pos>(validity_stack.size()) && validity_stack[bitset_idx][bit_pos];
+  }
+
+  inline void _set_data_valid(const Tree_pos& idx) noexcept {
+    const auto bitset_idx = idx >> 6;
+    const auto bit_pos    = idx & 63;
+    if (bitset_idx >= static_cast<Tree_pos>(validity_stack.size())) {
+      validity_stack.resize(bitset_idx + 1);
+    }
+    validity_stack[bitset_idx][bit_pos] = true;
+  }
+
+  inline void _set_data_invalid(const Tree_pos& idx) noexcept {
+    const auto bitset_idx = idx >> 6;
+    const auto bit_pos    = idx & 63;
+    if (bitset_idx < static_cast<Tree_pos>(validity_stack.size())) {
+      validity_stack[bitset_idx][bit_pos] = false;
+    }
+  }
+
+  Tree_pos _create_space() {
+    const auto start_pos = static_cast<Tree_pos>(pointers_stack.size() << CHUNK_SHIFT);
+    pointers_stack.emplace_back();
+    subtree_refs.resize(pointers_stack.size() << CHUNK_SHIFT, INVALID);
+    _set_data_valid(start_pos);
+    return static_cast<Tree_pos>(pointers_stack.size() - 1);
+  }
+
+  Tree_pos _insert_chunk_after(const Tree_pos& curr) {
+    const auto new_chunk_id = _create_space();
+
+    pointers_stack[new_chunk_id].set_prev_sibling(curr);
+    pointers_stack[new_chunk_id].set_next_sibling(pointers_stack[curr].get_next_sibling());
+    pointers_stack[curr].set_next_sibling(new_chunk_id);
+
+    if (pointers_stack[new_chunk_id].get_next_sibling() != INVALID) {
+      pointers_stack[pointers_stack[new_chunk_id].get_next_sibling()].set_prev_sibling(new_chunk_id);
+    }
+
+    pointers_stack[new_chunk_id].set_parent(pointers_stack[curr].get_parent());
+
+    return new_chunk_id;
+  }
+
+  void _update_parent_pointer(const Tree_pos& first_child, const Tree_pos& new_parent_id) {
+    I(_check_idx_exists(first_child), "First child index out of range");
+    I(_check_idx_exists(new_parent_id), "New parent index out of range");
+
+    auto curr_chunk_id = (first_child >> CHUNK_SHIFT);
+    while (curr_chunk_id != INVALID) {
+      pointers_stack[curr_chunk_id].set_parent(new_parent_id);
+      curr_chunk_id = pointers_stack[curr_chunk_id].get_next_sibling();
+    }
+  }
+
+  Tree_pos _try_fit_child_ptr(const Tree_pos& parent_id, const Tree_pos& child_id) {
+    I(_check_idx_exists(parent_id), "parent_id index out of range");
+    I(_check_idx_exists(child_id), "child_id index out of range");
+
+    const auto parent_chunk_id     = (parent_id >> CHUNK_SHIFT);
+    const auto parent_chunk_offset = (parent_id & CHUNK_MASK);
+
+    pointers_stack[parent_chunk_id].set_first_child_at(static_cast<int16_t>(parent_chunk_offset), child_id);
+    pointers_stack[parent_chunk_id].set_is_leaf(false);
+
+    return parent_id;
+  }
+
+  Tree* _get_forest_tree(Tree_pos tree_ref);
+
+public:
+  explicit Tree(Forest* forest = nullptr) : forest_ptr(forest) {}
+
+  [[nodiscard]] inline Tree_pos get_parent(const Tree_pos& curr_index) const {
+    return pointers_stack[curr_index >> CHUNK_SHIFT].get_parent();
+  }
+  [[nodiscard]] Tree_pos    get_last_child(const Tree_pos& parent_index) const;
+  [[nodiscard]] Tree_pos    get_first_child(const Tree_pos& parent_index) const;
+  [[nodiscard]] bool        is_last_child(const Tree_pos& self_index) const;
+  [[nodiscard]] bool        is_first_child(const Tree_pos& self_index) const;
+  [[nodiscard]] Tree_pos    get_sibling_next(const Tree_pos& sibling_id) const;
+  [[nodiscard]] Tree_pos    get_sibling_prev(const Tree_pos& sibling_id) const;
+  [[nodiscard]] inline bool is_leaf(const Tree_pos& leaf_index) const {
+    return pointers_stack[leaf_index >> CHUNK_SHIFT].get_is_leaf();
+  }
+  [[nodiscard]] Tree_pos get_root() const { return ROOT; }
+
+  Tree_pos append_sibling(const Tree_pos& sibling_id);
+  Tree_pos add_child(const Tree_pos& parent_index);
+  Tree_pos add_root();
+  void     delete_leaf(const Tree_pos& leaf_index);
+  void     delete_subtree(const Tree_pos& subtree_root);
+  void     add_subtree_ref(const Tree_pos& node_pos, Tree_pos subtree_ref);
+  Tree_pos insert_next_sibling(const Tree_pos& sibling_id);
+
+  void print_tree(int deep = 0) {
+    for (size_t i = 0; i < pointers_stack.size(); i++) {
+      std::cout << "Index: " << (i << CHUNK_SHIFT) << " Parent: " << pointers_stack[i].get_parent()
+                << " Data: " << (_contains_data(i << CHUNK_SHIFT) ? "VALID" : "INVALID") << std::endl;
+      std::cout << "First Child[0]: " << pointers_stack[i].get_first_child_at(0) << " ";
+      std::cout << "Next Sibling: " << pointers_stack[i].get_next_sibling() << " ";
+      std::cout << "Prev Sibling: " << pointers_stack[i].get_prev_sibling() << " ";
+      std::cout << "Num Occ: " << pointers_stack[i].get_num_short_del_occ() << std::endl;
+      std::cout << "Is Leaf: " << pointers_stack[i].get_is_leaf() << std::endl;
+      std::cout << std::endl;
+    }
+
+    if (!deep) {
+      return;
+    }
+
+    std::cout << std::endl;
+    for (Tree_pos i = ROOT; i < static_cast<Tree_pos>(pointers_stack.size() << CHUNK_SHIFT); ++i) {
+      if (_contains_data(i)) {
+        std::cout << "Index: " << i << " Data: VALID" << std::endl;
+        std::cout << "PAR : " << get_parent(i) << std::endl;
+        std::cout << "FC  : " << get_first_child(i) << std::endl;
+        std::cout << "LC  : " << get_last_child(i) << std::endl;
+        std::cout << "NS  : " << get_sibling_next(i) << std::endl;
+        std::cout << "PS  : " << get_sibling_prev(i) << std::endl;
+        std::cout << std::endl;
+      }
+    }
+  }
+
+  template <typename Derived>
+  class traversal_iterator_base {
+  protected:
+    Tree_pos    current;
+    const Tree* tree_ptr;
+    bool        m_follow_subtrees;
+
+  public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type        = Tree_pos;
+    using difference_type   = std::ptrdiff_t;
+    using pointer           = Tree_pos*;
+    using reference         = Tree_pos&;
+
+    traversal_iterator_base(Tree_pos start, const Tree* tree, bool follow_refs)
+        : current(start), tree_ptr(tree), m_follow_subtrees(follow_refs) {}
+
+    bool     operator==(const traversal_iterator_base& other) const { return current == other.current; }
+    bool     operator!=(const traversal_iterator_base& other) const { return current != other.current; }
+    Tree_pos operator*() const { return current; }
+
+  protected:
+    Tree_pos handle_subtree_ref(Tree_pos pos) {
+      if (m_follow_subtrees && tree_ptr->forest_ptr) {
+        Tree_pos ref = tree_ptr->get_subtree_ref(pos);
+        if (ref != INVALID) {
+          if (ref < 0) {
+            return ROOT;
+          }
+        }
+      }
+      return INVALID;
+    }
+  };
+
+  class sibling_order_iterator : public traversal_iterator_base<sibling_order_iterator> {
+  private:
+    using base = traversal_iterator_base<sibling_order_iterator>;
+    using base::current;
+    using base::tree_ptr;
+
+  public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type        = Tree_pos;
+    using difference_type   = std::ptrdiff_t;
+    using pointer           = Tree_pos*;
+    using reference         = Tree_pos&;
+
+    sibling_order_iterator(Tree_pos start, Tree* tree, bool follow_refs) : base(start, tree, follow_refs) {}
+
+    sibling_order_iterator& operator++() {
+      Tree_pos subtree_root = this->handle_subtree_ref(this->current);
+      if (subtree_root != INVALID) {
+        this->current = subtree_root;
+        return *this;
+      }
+      if (tree_ptr->get_sibling_next(current) != INVALID) {
+        current = tree_ptr->get_sibling_next(current);
+      } else {
+        current = INVALID;
+      }
+      return *this;
+    }
+  };
+
+  class sibling_order_range {
+  private:
+    Tree_pos m_start;
+    Tree*    m_tree_ptr;
+    bool     m_follow_subtrees;
+
+  public:
+    sibling_order_range(Tree_pos start, Tree* tree, bool follow_subtrees = false)
+        : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
+
+    sibling_order_iterator begin() { return sibling_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
+    sibling_order_iterator end() { return sibling_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
+  };
+
+  sibling_order_range sibling_order(Tree_pos start, bool follow_subtrees = false) {
+    return sibling_order_range(start, this, follow_subtrees);
+  }
+
+  class const_sibling_order_iterator : public traversal_iterator_base<const_sibling_order_iterator> {
+  private:
+    using base = traversal_iterator_base<const_sibling_order_iterator>;
+    using base::current;
+    using base::tree_ptr;
+
+  public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type        = Tree_pos;
+    using difference_type   = std::ptrdiff_t;
+    using pointer           = const Tree_pos*;
+    using reference         = const Tree_pos&;
+
+    const_sibling_order_iterator(Tree_pos start, const Tree* tree, bool follow_refs) : base(start, tree, follow_refs) {}
+
+    const_sibling_order_iterator& operator++() {
+      Tree_pos subtree_root = this->handle_subtree_ref(this->current);
+      if (subtree_root != INVALID) {
+        this->current = subtree_root;
+        return *this;
+      }
+      if (tree_ptr->get_sibling_next(current) != INVALID) {
+        current = tree_ptr->get_sibling_next(current);
+      } else {
+        current = INVALID;
+      }
+      return *this;
+    }
+  };
+
+  class const_sibling_order_range {
+  private:
+    Tree_pos    m_start;
+    const Tree* m_tree_ptr;
+    bool        m_follow_subtrees;
+
+  public:
+    const_sibling_order_range(Tree_pos start, const Tree* tree, bool follow_subtrees = false)
+        : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
+
+    const_sibling_order_iterator begin() const { return const_sibling_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
+    const_sibling_order_iterator end() const { return const_sibling_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
+  };
+
+  const_sibling_order_range sibling_order(Tree_pos start) const { return const_sibling_order_range(start, this); }
+
+  class pre_order_iterator {
+  private:
+    Tree_pos    current;
+    const Tree* tree_ptr;
+
+    inline Tree_pos fast_get_first_child(Tree_pos parent_index) const {
+      const auto chunk_id     = (parent_index >> CHUNK_SHIFT);
+      const auto chunk_offset = (parent_index & CHUNK_MASK);
+      return tree_ptr->pointers_stack[chunk_id].get_first_child_at(static_cast<int16_t>(chunk_offset));
+    }
+
+    inline Tree_pos fast_get_sibling_next(Tree_pos sibling_id) const {
+      const auto curr_chunk_id     = (sibling_id >> CHUNK_SHIFT);
+      const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
+
+      if (curr_chunk_offset < CHUNK_MASK) {
+        const auto next_chunk_occ = tree_ptr->pointers_stack[curr_chunk_id].get_num_short_del_occ();
+        if ((curr_chunk_offset + 1) <= next_chunk_occ) {
+          return (curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1;
+        }
+      }
+
+      const auto next_sibling_chunk = tree_ptr->pointers_stack[curr_chunk_id].get_next_sibling();
+      return static_cast<Tree_pos>(next_sibling_chunk << CHUNK_SHIFT);
+    }
+
+    inline Tree_pos fast_get_parent(Tree_pos index) const { return tree_ptr->pointers_stack[index >> CHUNK_SHIFT].get_parent(); }
+    inline bool     fast_is_leaf(Tree_pos index) const { return tree_ptr->pointers_stack[index >> CHUNK_SHIFT].get_is_leaf(); }
+
+  public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type        = Tree_pos;
+    using difference_type   = std::ptrdiff_t;
+    using pointer           = Tree_pos*;
+    using reference         = Tree_pos&;
+
+    pre_order_iterator(Tree_pos start, const Tree* tree, bool /* follow_subtrees */ = false) : current(start), tree_ptr(tree) {}
+
+    pre_order_iterator& operator++() {
+      if (!fast_is_leaf(current)) {
+        auto child = fast_get_first_child(current);
+        if (child != INVALID) {
+          current = child;
+          return *this;
+        }
+      }
+
+      auto sibling = fast_get_sibling_next(current);
+      if (sibling != INVALID) {
+        current = sibling;
+        return *this;
+      }
+
+      auto parent = fast_get_parent(current);
+      while (parent != ROOT && parent != INVALID) {
+        auto parent_sibling = fast_get_sibling_next(parent);
+        if (parent_sibling != INVALID) {
+          current = parent_sibling;
+          return *this;
+        }
+        parent = fast_get_parent(parent);
+      }
+
+      current = INVALID;
+      return *this;
+    }
+
+    bool     operator==(const pre_order_iterator& other) const { return current == other.current; }
+    bool     operator!=(const pre_order_iterator& other) const { return current != other.current; }
+    Tree_pos operator*() const { return current; }
+  };
+
+  class pre_order_range {
+  private:
+    Tree_pos    m_start;
+    const Tree* m_tree_ptr;
+    bool        m_follow_subtrees;
+
+  public:
+    pre_order_range(Tree_pos start, const Tree* tree, bool follow_subtrees = false)
+        : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
+
+    pre_order_iterator begin() const { return pre_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
+    pre_order_iterator end() const { return pre_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
+  };
+
+  pre_order_range pre_order(Tree_pos start = ROOT) const { return pre_order_range(start, this, false); }
+
+  class pre_order_iterator_with_subtrees : public traversal_iterator_base<pre_order_iterator_with_subtrees> {
+  public:
+    std::set<Tree_pos>    visited_subtrees;
+    Tree*                 current_tree;
+    Tree*                 main_tree;
+    std::vector<Tree_pos> prev_trees;
+    std::vector<Tree_pos> return_to_nodes;
+
+  private:
+    using base = traversal_iterator_base<pre_order_iterator_with_subtrees>;
+    using base::current;
+    using base::m_follow_subtrees;
+
+  public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type        = Tree_pos;
+    using difference_type   = std::ptrdiff_t;
+    using pointer           = Tree_pos*;
+    using reference         = Tree_pos&;
+
+    pre_order_iterator_with_subtrees(Tree_pos start, Tree* tree, bool follow_refs)
+        : base(start, tree, follow_refs), current_tree(tree), main_tree(tree) {}
+
+    pre_order_iterator_with_subtrees& operator++() {
+      if (m_follow_subtrees && current_tree->forest_ptr) {
+        Tree_pos ref = current_tree->get_subtree_ref(current);
+        if (ref != INVALID) {
+          if (ref < 0 && visited_subtrees.find(ref) == visited_subtrees.end()) {
+            visited_subtrees.insert(ref);
+            prev_trees.push_back(ref);
+            return_to_nodes.push_back(current);
+            current_tree = current_tree->_get_forest_tree(ref);
+            current      = ROOT;
+            return *this;
+          }
+        }
+      }
+
+      if (!current_tree->is_leaf(current)) {
+        auto new_cur = current_tree->get_first_child(current);
+        if (new_cur != INVALID) {
+          current = new_cur;
+          return *this;
+        }
+      }
+
+      auto nxt = current_tree->get_sibling_next(current);
+      if (nxt != INVALID) {
+        current = nxt;
+        return *this;
+      }
+
+      auto parent = current_tree->get_parent(current);
+      while (parent != ROOT && parent != INVALID) {
+        auto parent_sibling = current_tree->get_sibling_next(parent);
+        if (parent_sibling != INVALID) {
+          current = parent_sibling;
+          return *this;
+        }
+        parent = current_tree->get_parent(parent);
+      }
+
+      if (current_tree != main_tree) {
+        Tree_pos r_node;
+        if (prev_trees.size() <= 1) {
+          current_tree = main_tree;
+          r_node       = return_to_nodes.back();
+          return_to_nodes.pop_back();
+          prev_trees.clear();
+        } else {
+          prev_trees.pop_back();
+          current_tree = current_tree->_get_forest_tree(prev_trees.back());
+          r_node       = return_to_nodes.back();
+          return_to_nodes.pop_back();
+        }
+
+        if (!current_tree->is_leaf(r_node)) {
+          auto new_cur = current_tree->get_first_child(r_node);
+          if (new_cur != INVALID) {
+            current = new_cur;
+            return *this;
+          }
+        }
+
+        current = current_tree->get_sibling_next(r_node);
+        if (current != INVALID) {
+          return *this;
+        }
+      }
+
+      current = INVALID;
+      return *this;
+    }
+
+    bool     operator==(const pre_order_iterator_with_subtrees& other) const { return current == other.current && current_tree == other.current_tree; }
+    bool     operator!=(const pre_order_iterator_with_subtrees& other) const { return !(*this == other); }
+    Tree_pos operator*() const { return current; }
+  };
+
+  class pre_order_range_with_subtrees {
+  private:
+    Tree_pos m_start;
+    Tree*    m_tree_ptr;
+    bool     m_follow_subtrees;
+
+  public:
+    pre_order_range_with_subtrees(Tree_pos start, Tree* tree, bool follow_subtrees = false)
+        : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
+
+    pre_order_iterator_with_subtrees begin() { return pre_order_iterator_with_subtrees(m_start, m_tree_ptr, m_follow_subtrees); }
+    pre_order_iterator_with_subtrees end() { return pre_order_iterator_with_subtrees(INVALID, m_tree_ptr, m_follow_subtrees); }
+  };
+
+  pre_order_range_with_subtrees pre_order_with_subtrees(Tree_pos start = ROOT, bool follow_subtrees = false) {
+    return pre_order_range_with_subtrees(start, this, follow_subtrees);
+  }
+
+  class post_order_iterator : public traversal_iterator_base<post_order_iterator> {
+  private:
+    using base = traversal_iterator_base<post_order_iterator>;
+    using base::current;
+    using base::tree_ptr;
+
+  public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type        = Tree_pos;
+    using difference_type   = std::ptrdiff_t;
+    using pointer           = Tree_pos*;
+    using reference         = Tree_pos&;
+
+    post_order_iterator(Tree_pos start, Tree* tree, bool follow_refs) : base(start, tree, follow_refs) {}
+
+    post_order_iterator& operator++() {
+      Tree_pos subtree_root = this->handle_subtree_ref(this->current);
+      if (subtree_root != INVALID) {
+        this->current = subtree_root;
+        return *this;
+      }
+
+      if (tree_ptr->get_sibling_next(current) != INVALID) {
+        auto next = tree_ptr->get_sibling_next(current);
+        while (tree_ptr->get_sibling_next(next) != INVALID) {
+          next = tree_ptr->get_first_child(next);
+        }
+
+        current = next;
+      } else {
+        current = tree_ptr->get_parent(current);
+      }
+      return *this;
+    }
+  };
+
+  class post_order_range {
+  private:
+    Tree_pos m_start;
+    Tree*    m_tree_ptr;
+    bool     m_follow_subtrees;
+
+  public:
+    post_order_range(Tree_pos start, Tree* tree, bool follow_subtrees = false)
+        : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
+
+    post_order_iterator begin() { return post_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
+    post_order_iterator end() { return post_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
+  };
+
+  post_order_range post_order(Tree_pos start = ROOT, bool follow_subtrees = false) {
+    return post_order_range(start, this, follow_subtrees);
+  }
+
+  [[nodiscard]] bool   is_subtree_ref(Tree_pos pos) const { return pos < 0; }
+  [[nodiscard]] size_t get_subtree_index(Tree_pos pos) const { return static_cast<size_t>(-pos - 1); }
+  [[nodiscard]] Tree_pos make_subtree_ref(size_t subtree_index) const { return static_cast<Tree_pos>(-(subtree_index + 1)); }
+  [[nodiscard]] Tree_pos get_subtree_ref(Tree_pos pos) const {
+    I(_check_idx_exists(pos), "get_subtree_ref: Node index out of range");
+    return pos < static_cast<Tree_pos>(subtree_refs.size()) ? subtree_refs[pos] : INVALID;
+  }
+};
+
+class Forest {
+private:
+  std::vector<std::unique_ptr<Tree>> trees;
+  std::vector<size_t>                reference_counts;
+
+public:
+  Tree_pos create_tree() {
+    trees.push_back(std::make_unique<Tree>(this));
+    reference_counts.push_back(0);
+    return -static_cast<Tree_pos>(trees.size());
+  }
+
+  Tree& get_tree(Tree_pos tree_ref) {
+    I(tree_ref < 0, "Invalid tree reference - must be negative");
+    const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
+    I(tree_idx < trees.size(), "Tree index out of range");
+    I(trees[tree_idx], "Attempting to access deleted tree");
+    return *trees[tree_idx];
+  }
+
+  void add_reference(Tree_pos tree_ref) {
+    const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
+    reference_counts[tree_idx]++;
+  }
+
+  void remove_reference(Tree_pos tree_ref) {
+    const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
+    I(reference_counts[tree_idx] > 0, "Reference count already zero");
+    reference_counts[tree_idx]--;
+  }
+
+  bool delete_tree(Tree_pos tree_ref) {
+    const auto tree_idx = static_cast<size_t>(-tree_ref - 1);
+    I(tree_idx < trees.size(), "Tree index out of range");
+
+    if (reference_counts[tree_idx] > 0) {
+      return false;
+    }
+
+    if (trees[tree_idx]) {
+      trees[tree_idx].reset();
+      return true;
+    }
+    return false;
+  }
+};
 
 template <typename X>
 class tree {
@@ -202,7 +786,7 @@ private:
   std::vector<Tree_pointers>   pointers_stack;
   std::vector<X>               data_stack;
   std::vector<std::bitset<64>> validity_stack;
-  Forest<X>*                   forest_ptr;
+  PayloadForest<X>*            forest_ptr;
 
   /* Special functions for sanity */
   [[nodiscard]] inline bool _check_idx_exists(const Tree_pos& idx) const noexcept {
@@ -510,7 +1094,7 @@ public:
     }
   }
 
-  explicit tree(Forest<X>* forest = nullptr) : forest_ptr(forest) {}
+  explicit tree(PayloadForest<X>* forest = nullptr) : forest_ptr(forest) {}
 
   /**
    * ITERATORS
@@ -1145,7 +1729,7 @@ public:
 };  // tree class
 
 template <typename X>
-class Forest {
+class PayloadForest {
 private:
   std::vector<std::unique_ptr<tree<X>>> trees;
   std::vector<size_t>                   reference_counts;
@@ -1193,6 +1777,284 @@ public:
     return false;
   }
 };
+
+inline Tree* Tree::_get_forest_tree(Tree_pos tree_ref) {
+  I(forest_ptr != nullptr, "Tree is not attached to a forest");
+  return &forest_ptr->get_tree(tree_ref);
+}
+
+// ---------------------------------- STRUCTURAL TREE IMPLEMENTATION ---------------------------------- //
+
+inline Tree_pos Tree::get_last_child(const Tree_pos& parent_index) const {
+  I(_check_idx_exists(parent_index), "get_last_child: Parent index out of range");
+
+  const auto chunk_id     = (parent_index >> CHUNK_SHIFT);
+  const auto chunk_offset = (parent_index & CHUNK_MASK);
+  return pointers_stack[chunk_id].get_last_child_at(static_cast<int16_t>(chunk_offset));
+}
+
+inline Tree_pos Tree::get_first_child(const Tree_pos& parent_index) const {
+  I(_check_idx_exists(parent_index), "get_first_child: Parent index out of range");
+
+  const auto chunk_id     = (parent_index >> CHUNK_SHIFT);
+  const auto chunk_offset = (parent_index & CHUNK_MASK);
+  return pointers_stack[chunk_id].get_first_child_at(static_cast<int16_t>(chunk_offset));
+}
+
+inline bool Tree::is_last_child(const Tree_pos& self_index) const {
+  I(_check_idx_exists(self_index), "is_last_child: Index out of range");
+
+  const auto self_chunk_id     = (self_index >> CHUNK_SHIFT);
+  const auto self_chunk_offset = (self_index & CHUNK_MASK);
+
+  if (pointers_stack[self_chunk_id].get_next_sibling() != INVALID) {
+    return false;
+  }
+  return pointers_stack[self_chunk_id].get_num_short_del_occ() == self_chunk_offset;
+}
+
+inline bool Tree::is_first_child(const Tree_pos& self_index) const {
+  I(_check_idx_exists(self_index), "is_first_child: Index out of range");
+
+  const auto self_chunk_id     = (self_index >> CHUNK_SHIFT);
+  const auto self_chunk_offset = (self_index & CHUNK_MASK);
+
+  if (pointers_stack[self_chunk_id].get_prev_sibling() != INVALID) {
+    return false;
+  }
+
+  return !self_chunk_offset;
+}
+
+inline Tree_pos Tree::get_sibling_next(const Tree_pos& sibling_id) const {
+  I(_check_idx_exists(sibling_id), "get_sibling_next: Sibling index out of range");
+
+  const auto curr_chunk_id     = (sibling_id >> CHUNK_SHIFT);
+  const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
+  const auto last_occupied     = pointers_stack[curr_chunk_id].get_num_short_del_occ();
+
+  if (curr_chunk_offset < last_occupied) {
+    return static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1);
+  }
+
+  const auto next_chunk = pointers_stack[curr_chunk_id].get_next_sibling();
+  return (next_chunk != INVALID) ? static_cast<Tree_pos>(next_chunk << CHUNK_SHIFT) : INVALID;
+}
+
+inline Tree_pos Tree::get_sibling_prev(const Tree_pos& sibling_id) const {
+  I(_check_idx_exists(sibling_id), "get_sibling_prev: Sibling index out of range");
+
+  const auto curr_chunk_id     = (sibling_id >> CHUNK_SHIFT);
+  const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
+
+  if (curr_chunk_offset > 0) {
+    return static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset - 1);
+  }
+
+  const auto prev_chunk = pointers_stack[curr_chunk_id].get_prev_sibling();
+  return (prev_chunk != INVALID)
+             ? static_cast<Tree_pos>((prev_chunk << CHUNK_SHIFT) + pointers_stack[prev_chunk].get_num_short_del_occ())
+             : INVALID;
+}
+
+inline Tree_pos Tree::append_sibling(const Tree_pos& sibling_id) {
+  I(_check_idx_exists(sibling_id), "append_sibling: Sibling index out of range");
+
+  const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
+  auto       new_sib   = get_last_child(parent_id);
+
+  if ((new_sib & CHUNK_MASK) == CHUNK_MASK) {
+    new_sib = _insert_chunk_after(new_sib >> CHUNK_SHIFT) << CHUNK_SHIFT;
+  } else {
+    new_sib++;
+    _set_data_valid(new_sib);
+  }
+
+  pointers_stack[new_sib >> CHUNK_SHIFT].set_num_short_del_occ(new_sib & CHUNK_MASK);
+  pointers_stack[parent_id >> CHUNK_SHIFT].set_is_leaf(false);
+
+  const auto parent_offset = static_cast<int16_t>(parent_id & CHUNK_MASK);
+  pointers_stack[parent_id >> CHUNK_SHIFT].set_last_child_at(parent_offset, new_sib);
+
+  return new_sib;
+}
+
+inline Tree_pos Tree::insert_next_sibling(const Tree_pos& sibling_id) {
+  I(_check_idx_exists(sibling_id), "insert_next_sibling: Sibling index out of range");
+
+  if (is_last_child(sibling_id)) {
+    return append_sibling(sibling_id);
+  }
+
+  auto new_sib = sibling_id;
+  if ((new_sib & CHUNK_MASK) != CHUNK_MASK && !_contains_data(new_sib + 1)) {
+    new_sib++;
+    _set_data_valid(new_sib);
+  } else {
+    new_sib = _insert_chunk_after(new_sib >> CHUNK_SHIFT) << CHUNK_SHIFT;
+  }
+
+  return new_sib;
+}
+
+inline Tree_pos Tree::add_root() {
+  I(pointers_stack.empty(), "add_root: Tree is not empty");
+
+  pointers_stack.emplace_back();
+  const auto root_pos = _create_space() << CHUNK_SHIFT;
+  pointers_stack[ROOT >> CHUNK_SHIFT].set_num_short_del_occ(0);
+
+  return root_pos;
+}
+
+inline Tree_pos Tree::add_child(const Tree_pos& parent_index) {
+  I(_check_idx_exists(parent_index), "add_child: Parent index out of range");
+
+  const auto last_child_id = get_last_child(parent_index);
+  if (last_child_id != INVALID) {
+    return append_sibling(last_child_id);
+  }
+
+  const auto child_chunk_id = _create_space();
+  const auto new_child_id   = child_chunk_id << CHUNK_SHIFT;
+  const auto new_parent_id  = _try_fit_child_ptr(parent_index, new_child_id);
+  pointers_stack[child_chunk_id].set_parent(new_parent_id);
+  pointers_stack[child_chunk_id].set_num_short_del_occ(0);
+
+  const auto parent_chunk_id = parent_index >> CHUNK_SHIFT;
+  const auto parent_offset   = static_cast<int16_t>(parent_index & CHUNK_MASK);
+  pointers_stack[parent_chunk_id].set_is_leaf(false);
+  pointers_stack[parent_chunk_id].set_last_child_at(parent_offset, new_child_id);
+
+  return new_child_id;
+}
+
+inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
+  I(_check_idx_exists(leaf_index), "delete_leaf: Leaf index out of range");
+  I(get_first_child(leaf_index) == INVALID, "delete_leaf: Index is not a leaf");
+
+  const auto subtree_ref = get_subtree_ref(leaf_index);
+  if (subtree_ref != INVALID && forest_ptr) {
+    forest_ptr->remove_reference(subtree_ref);
+  }
+
+  const auto leaf_chunk_id     = leaf_index >> CHUNK_SHIFT;
+  const auto leaf_chunk_offset = leaf_index & CHUNK_MASK;
+  const auto prev_sibling_id   = get_sibling_prev(leaf_index);
+  const auto next_sibling_id   = get_sibling_next(leaf_index);
+
+  _set_data_invalid(leaf_index);
+  subtree_refs[leaf_index] = INVALID;
+  pointers_stack[leaf_chunk_id].set_first_child_at(static_cast<int16_t>(leaf_chunk_offset), INVALID);
+  int16_t remaining_data = 0;
+
+  for (int16_t offset = leaf_chunk_offset; offset < CHUNK_SIZE - 1; offset++) {
+    if (_contains_data((leaf_chunk_id << CHUNK_SHIFT) + offset + 1)) {
+      remaining_data++;
+
+      _set_data_valid((leaf_chunk_id << CHUNK_SHIFT) + offset);
+      _set_data_invalid((leaf_chunk_id << CHUNK_SHIFT) + offset + 1);
+
+      auto& chunk_meta = pointers_stack[leaf_chunk_id];
+      chunk_meta.set_first_child_at(offset, chunk_meta.get_first_child_at(offset + 1));
+      chunk_meta.set_first_child_at(offset + 1, INVALID);
+      subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset]     = subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1];
+      subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1] = INVALID;
+
+      const auto moved_node = (leaf_chunk_id << CHUNK_SHIFT) + offset;
+      const auto fc         = get_first_child((leaf_chunk_id << CHUNK_SHIFT) + offset + 1);
+      if (fc != INVALID) {
+        _update_parent_pointer(fc, moved_node);
+      }
+    } else {
+      break;
+    }
+  }
+
+  int16_t new_last = -1;
+  for (int16_t idx = CHUNK_SIZE - 1; idx >= 0; --idx) {
+    if (_contains_data((leaf_chunk_id << CHUNK_SHIFT) + idx)) {
+      new_last = idx;
+      break;
+    }
+  }
+  pointers_stack[leaf_chunk_id].set_num_short_del_occ(new_last >= 0 ? static_cast<uint16_t>(new_last) : 0);
+
+  if (remaining_data == 0) {
+    const auto prev_sib_chunk = pointers_stack[leaf_chunk_id].get_prev_sibling();
+    const auto next_sib_chunk = pointers_stack[leaf_chunk_id].get_next_sibling();
+
+    if (prev_sib_chunk != INVALID) {
+      pointers_stack[prev_sib_chunk].set_next_sibling(next_sib_chunk);
+    }
+
+    if (next_sib_chunk != INVALID) {
+      pointers_stack[next_sib_chunk].set_prev_sibling(prev_sib_chunk);
+    }
+
+    const auto parent_index  = pointers_stack[leaf_chunk_id].get_parent();
+    const auto parent_chunk  = parent_index >> CHUNK_SHIFT;
+    const auto parent_offset = static_cast<int16_t>(parent_index & CHUNK_MASK);
+    auto&      parent_meta   = pointers_stack[parent_chunk];
+
+    if (parent_meta.get_first_child_at(parent_offset) == leaf_index) {
+      Tree_pos replacement = INVALID;
+      if (next_sibling_id != INVALID) {
+        replacement = next_sibling_id;
+      } else if (prev_sibling_id != INVALID) {
+        replacement = prev_sibling_id;
+      }
+      parent_meta.set_first_child_at(parent_offset, replacement);
+    }
+
+    if (parent_meta.get_first_child_at(parent_offset) == INVALID) {
+      parent_meta.set_is_leaf(true);
+      parent_meta.set_last_child_at(parent_offset, INVALID);
+    } else if (next_sibling_id == INVALID && prev_sibling_id != INVALID) {
+      parent_meta.set_last_child_at(parent_offset, prev_sibling_id);
+    }
+  }
+}
+
+inline void Tree::delete_subtree(const Tree_pos& subtree_root) {
+  I(_check_idx_exists(subtree_root), "delete_subtree: Subtree root index out of range");
+
+  std::vector<Tree_pos> nodes_to_delete;
+  std::queue<Tree_pos>  q;
+  q.push(subtree_root);
+
+  while (!q.empty()) {
+    Tree_pos node = q.front();
+    q.pop();
+    nodes_to_delete.push_back(node);
+
+    for (auto child = get_first_child(node); child != INVALID; child = get_sibling_next(child)) {
+      q.push(child);
+    }
+  }
+
+  for (auto node : nodes_to_delete) {
+    const auto subtree_ref = get_subtree_ref(node);
+    if (subtree_ref != INVALID && forest_ptr) {
+      forest_ptr->remove_reference(subtree_ref);
+    }
+  }
+
+  for (auto it = nodes_to_delete.rbegin(); it != nodes_to_delete.rend(); ++it) {
+    if (is_leaf(*it)) {
+      delete_leaf(*it);
+    }
+  }
+}
+
+inline void Tree::add_subtree_ref(const Tree_pos& node_pos, Tree_pos subtree_ref) {
+  I(subtree_ref < 0, "Subtree reference must be negative");
+  I(_check_idx_exists(node_pos), "add_subtree_ref: Node index out of range");
+  subtree_refs[node_pos] = subtree_ref;
+  if (forest_ptr) {
+    forest_ptr->add_reference(subtree_ref);
+  }
+}
 
 // ---------------------------------- TEMPLATE IMPLEMENTATION ---------------------------------- //
 

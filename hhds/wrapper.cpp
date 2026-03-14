@@ -4,14 +4,14 @@
 #include "tree.hpp"
 // #include <stdexcept>
 
-using ForestInt        = hhds::Forest<int>;
+using ForestInt        = hhds::PayloadForest<int>;
 using TreeInt          = hhds::tree<int>;
 using PreOrderIterInt  = typename hhds::tree<int>::pre_order_iterator;
 using PostOrderIterInt = typename hhds::tree<int>::post_order_iterator;
 // --- Tree ---
 
 template class hhds::tree<int>;    // This explicitly instantiates the template for int
-template class hhds::Forest<int>;  // This explicitly instantiates the template for int
+template class hhds::PayloadForest<int>;  // This explicitly instantiates the compatibility template for int
 
 // --- Tree
 TreeIntHandle tree_int_new_empty() { return static_cast<TreeIntHandle>(new TreeInt()); }
