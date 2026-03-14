@@ -58,18 +58,18 @@ HHDS_BUILD_WIDE_CASE(1000000)
 HHDS_BUILD_WIDE_CASE(10000000)
 
 BENCHMARK(test_wide_tree_10_hhds);
-// BENCHMARK(test_wide_tree_10_lh);
+BENCHMARK(test_wide_tree_10_lh);
 BENCHMARK(test_wide_tree_100_hhds);
-// BENCHMARK(test_wide_tree_100_lh);
+BENCHMARK(test_wide_tree_100_lh);
 BENCHMARK(test_wide_tree_1000_hhds);
-// BENCHMARK(test_wide_tree_1000_lh);
+BENCHMARK(test_wide_tree_1000_lh);
 BENCHMARK(test_wide_tree_10000_hhds);
-// BENCHMARK(test_wide_tree_10000_lh);
+BENCHMARK(test_wide_tree_10000_lh);
 BENCHMARK(test_wide_tree_100000_hhds);
-// BENCHMARK(test_wide_tree_100000_lh);
+BENCHMARK(test_wide_tree_100000_lh);
 BENCHMARK(test_wide_tree_1000000_hhds);
-// BENCHMARK(test_wide_tree_1000000_lh);
+BENCHMARK(test_wide_tree_1000000_lh);
 BENCHMARK(test_wide_tree_10000000_hhds);
-// BENCHMARK(test_wide_tree_10000000_lh);
+BENCHMARK(test_wide_tree_10000000_lh);
 
 BENCHMARK_MAIN();

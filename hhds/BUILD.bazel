@@ -88,80 +88,73 @@ cc_library(
     ],
 )
 
-cc_test(
+cc_binary(
     name = "add_append_deep_bench",
     srcs = ["tests/add_append_bench/deep_tree_bench.cpp"],
     tags = ["manual"],
     deps = [
         ":core",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
+        "@google_benchmark//:benchmark_main",
     ],
 )
 
-cc_test(
+cc_binary(
     name = "traversal_deep_bench",
     srcs = ["tests/traversal_bench/preorder_bench/deep_tree_bench.cpp"],
     tags = ["manual"],
     deps = [
         ":core",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
+        "@google_benchmark//:benchmark_main",
     ],
 )
 
-cc_test(
+cc_binary(
     name = "traversal_wide_bench",
     srcs = ["tests/traversal_bench/preorder_bench/wide_tree_bench.cpp"],
     tags = ["manual"],
     deps = [
         ":core",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
+        "@google_benchmark//:benchmark_main",
     ],
 )
 
-cc_test(
+cc_binary(
     name = "traversal_chip_typical_bench",
     srcs = ["tests/traversal_bench/preorder_bench/chip_typical_tree_bench.cpp"],
     tags = ["manual"],
     deps = [
         ":core",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
+        "@google_benchmark//:benchmark_main",
     ],
 )
 
-cc_test(
+cc_binary(
     name = "traversal_chip_long_typical_bench",
     srcs = ["tests/traversal_bench/preorder_bench/chip_typical_long_tree_bench.cpp"],
     tags = ["manual"],
     deps = [
         ":core",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
+        "@google_benchmark//:benchmark_main",
     ],
 )
 
-cc_test(
+cc_binary(
     name = "build_deep_bench",
     srcs = ["tests/creation_bench/deep_tree_bench.cpp"],
     tags = ["manual"],
     deps = [
         ":core",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
+        "@google_benchmark//:benchmark_main",
     ],
 )
 
-cc_test(
+cc_binary(
     name = "build_wide_bench",
     srcs = ["tests/creation_bench/wide_tree_bench.cpp"],
     tags = ["manual"],
     deps = [
         ":core",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
+        "@google_benchmark//:benchmark_main",
     ],
 )
 
@@ -187,36 +180,33 @@ cc_test(
 #$ORIGIN/../../../tree-sitter-cpp"],
 #)
 
-cc_test(
+cc_binary(
     name = "add_append_wide_bench",
     srcs = ["tests/add_append_bench/wide_tree_bench.cpp"],
     tags = ["manual"],
     deps = [
         ":core",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
+        "@google_benchmark//:benchmark_main",
     ],
 )
 
-cc_test(
+cc_binary(
     name = "add_append_chip_typical_bench",
     srcs = ["tests/add_append_bench/chip_typical_tree_bench.cpp"],
     tags = ["manual"],
     deps = [
         ":core",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
+        "@google_benchmark//:benchmark_main",
     ],
 )
 
-cc_test(
+cc_binary(
     name = "add_append_chip_typical_long_bench",
     srcs = ["tests/add_append_bench/chip_typical_long_tree_bench.cpp"],
     tags = ["manual"],
     deps = [
         ":core",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
+        "@google_benchmark//:benchmark_main",
     ],
 )
 
@@ -226,7 +216,7 @@ cc_test(
     deps = [":graph"],
 )
 
-cc_test(
+cc_binary(
     name = "graph_bench",
     srcs = ["tests/graph_bench.cpp"],
     tags = ["manual"],
@@ -235,8 +225,7 @@ cc_test(
         "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/container:flat_hash_set",
         "@abseil-cpp//absl/container:node_hash_set",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
+        "@google_benchmark//:benchmark_main",
     ],
 )
 
@@ -381,14 +370,13 @@ cc_binary(
     ],
 )
 
-cc_test(
+cc_binary(
     name = "chip_typical_navigation_comparison",
     srcs = ["tests/chip_typical_navigation_comparison.cpp"],
     tags = ["manual"],
     deps = [
         ":core",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
+        "@google_benchmark//:benchmark_main",
     ],
 )
 
@@ -411,14 +399,13 @@ cc_test(
     ],
 )
 
-cc_test(
+cc_binary(
     name = "mixed_tree_building_benchmark",
     srcs = ["tests/mixed_tree_building_benchmark.cpp"],
     tags = ["manual"],
     deps = [
         ":core",
-        "@google_benchmark//:benchmark",
-        "@googletest//:gtest_main",
+        "@google_benchmark//:benchmark_main",
     ],
 )
 
