@@ -136,13 +136,13 @@ TEST(LazyTraversal, FastClassSingleGraph) {
 
 TEST(LazyTraversal, FastFlatSingleGraph) {
   hhds::GraphLibrary lib;
-  const hhds::Gid    gid = lib.create_graph();
-  auto&              g   = lib.get_graph(gid);
+  auto               g   = lib.create_graph();
+  const hhds::Gid    gid = g->get_gid();
 
-  (void)g.create_node();
-  (void)g.create_node();
+  (void)g->create_node();
+  (void)g->create_node();
 
-  auto nodes = g.fast_flat();
+  auto nodes = g->fast_flat();
 
   // 3 built-ins + 2 created nodes
   EXPECT_EQ(nodes.size(), 5);
@@ -155,27 +155,26 @@ TEST(LazyTraversal, FastFlatSingleGraph) {
 
 TEST(LazyTraversal, FastFlatHierarchy) {
   hhds::GraphLibrary lib;
-  const hhds::Gid    root_gid  = lib.create_graph();
-  const hhds::Gid    child_gid = lib.create_graph();
-  const hhds::Gid    leaf_gid  = lib.create_graph();
+  auto               root      = lib.create_graph();
+  auto               child     = lib.create_graph();
+  auto               leaf      = lib.create_graph();
+  const hhds::Gid    root_gid  = root->get_gid();
+  const hhds::Gid    child_gid = child->get_gid();
+  const hhds::Gid    leaf_gid  = leaf->get_gid();
 
-  auto& root  = lib.get_graph(root_gid);
-  auto& child = lib.get_graph(child_gid);
-  auto& leaf  = lib.get_graph(leaf_gid);
+  (void)root->create_node();
+  auto root_sub = root->create_node();
+  (void)root->create_node();
+  root->set_subnode(root_sub, child_gid);
 
-  (void)root.create_node();
-  auto root_sub = root.create_node();
-  (void)root.create_node();
-  root.set_subnode(root_sub, child_gid);
+  (void)child->create_node();
+  auto child_sub = child->create_node();
+  (void)child->create_node();
+  child->set_subnode(child_sub, leaf_gid);
 
-  (void)child.create_node();
-  auto child_sub = child.create_node();
-  (void)child.create_node();
-  child.set_subnode(child_sub, leaf_gid);
+  (void)leaf->create_node();
 
-  (void)leaf.create_node();
-
-  auto nodes = root.fast_flat();
+  auto nodes = root->fast_flat();
 
   EXPECT_EQ(nodes.size(), 14);
 

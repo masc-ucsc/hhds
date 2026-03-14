@@ -473,13 +473,13 @@ void test_large_fanin_deletion() {
 
 void test_fast_iter_flat() {
   GraphLibrary lib;
-  const Gid    gid = lib.create_graph();
-  Graph&       g   = lib.get_graph(gid);
+  auto         g   = lib.create_graph();
+  const Gid    gid = g->get_gid();
 
-  (void)g.create_node();  // node 4
-  (void)g.create_node();  // node 5
+  (void)g->create_node();  // node 4
+  (void)g->create_node();  // node 5
 
-  const auto out = g.fast_iter(false, 0, 0);
+  const auto out = g->fast_iter(false, 0, 0);
   assert(out.size() == 5 && "test_fast_iter_flat: expected 5 nodes (1..5)");
 
   const std::vector<Nid> expected_ids = {1ULL << 2, 2ULL << 2, 3ULL << 2, 4ULL << 2, 5ULL << 2};
@@ -506,27 +506,26 @@ void assert_fast_iter_vector_eq(const std::vector<Graph::FastIterator>& actual, 
 
 void test_fast_iter_hierarchy() {
   GraphLibrary lib;
-  const Gid    root_gid  = lib.create_graph();
-  const Gid    child_gid = lib.create_graph();
-  const Gid    leaf_gid  = lib.create_graph();
+  auto         root      = lib.create_graph();
+  auto         child     = lib.create_graph();
+  auto         leaf      = lib.create_graph();
+  const Gid    root_gid  = root->get_gid();
+  const Gid    child_gid = child->get_gid();
+  const Gid    leaf_gid  = leaf->get_gid();
 
-  Graph& root  = lib.get_graph(root_gid);
-  Graph& child = lib.get_graph(child_gid);
-  Graph& leaf  = lib.get_graph(leaf_gid);
+  (void)root->create_node();                  // node 4
+  const auto root_sub = root->create_node();  // node 5
+  (void)root->create_node();                  // node 6
+  root->set_subnode(root_sub, child_gid);     // node 5 -> graph 2 subnode
 
-  (void)root.create_node();                 // node 4
-  const Nid root_sub = root.create_node();  // node 5
-  (void)root.create_node();                 // node 6
-  root.set_subnode(root_sub, child_gid);    // node 5 -> graph 2 subnode
+  (void)child->create_node();                   // node 4
+  const auto child_sub = child->create_node();  // node 5
+  (void)child->create_node();                   // node 6
+  child->set_subnode(child_sub, leaf_gid);      // node 5 -> graph 3 subnode
 
-  (void)child.create_node();                  // node 4
-  const Nid child_sub = child.create_node();  // node 5
-  (void)child.create_node();                  // node 6
-  child.set_subnode(child_sub, leaf_gid);     // node 5 -> graph 3 subnode
+  (void)leaf->create_node();  // node 4
 
-  (void)leaf.create_node();  // node 4
-
-  const auto out = root.fast_iter(true, 0, 0);
+  const auto out = root->fast_iter(true, 0, 0);
   assert(out.size() == 14 && "test_fast_iter_hierarchy: expected DFS-expanded traversal size");
 
   const std::vector<Graph::FastIterator> expected = {
@@ -552,29 +551,28 @@ void test_fast_iter_hierarchy() {
 
 void test_fast_iter_hierarchy_multiple_subnodes() {
   GraphLibrary lib;
-  const Gid    root_gid  = lib.create_graph();
-  const Gid    child_gid = lib.create_graph();
-  const Gid    leaf_gid  = lib.create_graph();
+  auto         root      = lib.create_graph();
+  auto         child     = lib.create_graph();
+  auto         leaf      = lib.create_graph();
+  const Gid    root_gid  = root->get_gid();
+  const Gid    child_gid = child->get_gid();
+  const Gid    leaf_gid  = leaf->get_gid();
 
-  Graph& root  = lib.get_graph(root_gid);
-  Graph& child = lib.get_graph(child_gid);
-  Graph& leaf  = lib.get_graph(leaf_gid);
+  (void)root->create_node();                   // node 4
+  const auto root_sub = root->create_node();   // node 5
+  (void)root->create_node();                   // node 6
+  const auto root_sub2 = root->create_node();  // node 7
+  root->set_subnode(root_sub, child_gid);      // node 5 -> graph 2 subnode
+  root->set_subnode(root_sub2, child_gid);     // node 7 -> graph 2 subnode
 
-  (void)root.create_node();                  // node 4
-  const Nid root_sub = root.create_node();   // node 5
-  (void)root.create_node();                  // node 6
-  const Nid root_sub2 = root.create_node();  // node 7
-  root.set_subnode(root_sub, child_gid);     // node 5 -> graph 2 subnode
-  root.set_subnode(root_sub2, child_gid);    // node 7 -> graph 2 subnode
+  (void)child->create_node();                   // node 4
+  const auto child_sub = child->create_node();  // node 5
+  (void)child->create_node();                   // node 6
+  child->set_subnode(child_sub, leaf_gid);      // node 5 -> graph 3 subnode
 
-  (void)child.create_node();                  // node 4
-  const Nid child_sub = child.create_node();  // node 5
-  (void)child.create_node();                  // node 6
-  child.set_subnode(child_sub, leaf_gid);     // node 5 -> graph 3 subnode
+  (void)leaf->create_node();  // node 4
 
-  (void)leaf.create_node();  // node 4
-
-  const auto out = root.fast_iter(true, 0, 0);
+  const auto out = root->fast_iter(true, 0, 0);
   assert(out.size() == 23 && "test_fast_iter_hierarchy_multiple_subnodes: expected DFS-expanded traversal size");
 
   const std::vector<Graph::FastIterator> expected = {

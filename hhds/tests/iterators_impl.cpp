@@ -61,10 +61,10 @@ TEST(CompactTypes, NodeClassHashable) {
 
 TEST(CompactTypes, NodeCompactConversions) {
   hhds::GraphLibrary lib;
-  const hhds::Gid    gid = lib.create_graph();
-  auto&              g   = lib.get_graph(gid);
+  auto               g   = lib.create_graph();
+  const hhds::Gid    gid = g->get_gid();
 
-  auto node = g.create_node();
+  auto node = g->create_node();
 
   const auto flat_from_class = hhds::to_flat(node, gid);
   EXPECT_EQ(flat_from_class.get_root_gid(), gid);
@@ -75,7 +75,7 @@ TEST(CompactTypes, NodeCompactConversions) {
   EXPECT_EQ(class_from_flat.get_raw_nid(), node.get_raw_nid() & ~static_cast<hhds::Nid>(2));
 
   bool found_in_hier = false;
-  for (const auto& hnode : g.fast_hier()) {
+  for (const auto& hnode : g->fast_hier()) {
     if ((hnode.get_raw_nid() & ~static_cast<hhds::Nid>(2)) == (node.get_raw_nid() & ~static_cast<hhds::Nid>(2))) {
       found_in_hier              = true;
       const auto flat_from_hier  = hhds::to_flat(hnode);
@@ -92,10 +92,10 @@ TEST(CompactTypes, NodeCompactConversions) {
 
 TEST(CompactTypes, PinCompactConversions) {
   hhds::GraphLibrary lib;
-  const hhds::Gid    gid = lib.create_graph();
-  auto&              g   = lib.get_graph(gid);
+  auto               g   = lib.create_graph();
+  const hhds::Gid    gid = g->get_gid();
 
-  auto node = g.create_node();
+  auto node = g->create_node();
   auto pin  = node.create_pin(3);
 
   const auto flat_from_class = hhds::to_flat(pin, gid);
@@ -117,16 +117,16 @@ TEST(CompactTypes, PinCompactConversions) {
 
 TEST(CompactTypes, EdgeFlatConversions) {
   hhds::GraphLibrary lib;
-  const hhds::Gid    gid = lib.create_graph();
-  auto&              g   = lib.get_graph(gid);
+  auto               g   = lib.create_graph();
+  const hhds::Gid    gid = g->get_gid();
 
-  auto src = g.create_node();
-  auto dst = g.create_node();
+  auto src = g->create_node();
+  auto dst = g->create_node();
   auto sp  = src.create_pin(1);
   auto dp  = dst.create_pin(2);
-  g.add_edge(sp, dp);
+  g->add_edge(sp, dp);
 
-  auto out_edges = g.out_edges(sp);
+  auto out_edges = g->out_edges(sp);
   ASSERT_EQ(out_edges.size(), 1U);
   const auto& edge = out_edges[0];
 
@@ -149,16 +149,16 @@ TEST(CompactTypes, EdgeFlatConversions) {
 
 TEST(CompactTypes, EdgeHierConversions) {
   hhds::GraphLibrary lib;
-  const hhds::Gid    gid = lib.create_graph();
-  auto&              g   = lib.get_graph(gid);
+  auto               g   = lib.create_graph();
+  const hhds::Gid    gid = g->get_gid();
 
-  auto src = g.create_node();
-  auto dst = g.create_node();
+  auto src = g->create_node();
+  auto dst = g->create_node();
   auto sp  = src.create_pin(1);
   auto dp  = dst.create_pin(2);
-  g.add_edge(sp, dp);
+  g->add_edge(sp, dp);
 
-  auto out_edges = g.out_edges(sp);
+  auto out_edges = g->out_edges(sp);
   ASSERT_EQ(out_edges.size(), 1U);
   const auto& edge = out_edges[0];
 
@@ -469,13 +469,13 @@ TEST(LazyTraversal, FastClassSingleGraph) {
 
 TEST(LazyTraversal, FastFlatSingleGraph) {
   hhds::GraphLibrary lib;
-  const hhds::Gid    gid = lib.create_graph();
-  auto&              g   = lib.get_graph(gid);
+  auto               g   = lib.create_graph();
+  const hhds::Gid    gid = g->get_gid();
 
-  (void)g.create_node();
-  (void)g.create_node();
+  (void)g->create_node();
+  (void)g->create_node();
 
-  auto nodes = g.fast_flat();
+  auto nodes = g->fast_flat();
 
   // 3 built-ins + 2 created nodes
   EXPECT_EQ(nodes.size(), 5);
@@ -488,27 +488,26 @@ TEST(LazyTraversal, FastFlatSingleGraph) {
 
 TEST(LazyTraversal, FastFlatHierarchy) {
   hhds::GraphLibrary lib;
-  const hhds::Gid    root_gid  = lib.create_graph();
-  const hhds::Gid    child_gid = lib.create_graph();
-  const hhds::Gid    leaf_gid  = lib.create_graph();
+  auto               root      = lib.create_graph();
+  auto               child     = lib.create_graph();
+  auto               leaf      = lib.create_graph();
+  const hhds::Gid    root_gid  = root->get_gid();
+  const hhds::Gid    child_gid = child->get_gid();
+  const hhds::Gid    leaf_gid  = leaf->get_gid();
 
-  auto& root  = lib.get_graph(root_gid);
-  auto& child = lib.get_graph(child_gid);
-  auto& leaf  = lib.get_graph(leaf_gid);
+  (void)root->create_node();
+  auto root_sub = root->create_node();
+  (void)root->create_node();
+  root->set_subnode(root_sub, child_gid);
 
-  (void)root.create_node();
-  auto root_sub = root.create_node();
-  (void)root.create_node();
-  root.set_subnode(root_sub, child_gid);
+  (void)child->create_node();
+  auto child_sub = child->create_node();
+  (void)child->create_node();
+  child->set_subnode(child_sub, leaf_gid);
 
-  (void)child.create_node();
-  auto child_sub = child.create_node();
-  (void)child.create_node();
-  child.set_subnode(child_sub, leaf_gid);
+  (void)leaf->create_node();
 
-  (void)leaf.create_node();
-
-  auto nodes = root.fast_flat();
+  auto nodes = root->fast_flat();
 
   EXPECT_EQ(nodes.size(), 14);
 
@@ -624,26 +623,25 @@ TEST(LazyTraversal, ForwardClassTopologicalOrder2) {
 
 TEST(LazyTraversal, ForwardFlatHierarchyAndCacheInvalidation) {
   hhds::GraphLibrary lib;
-  const hhds::Gid    root_gid  = lib.create_graph();
-  const hhds::Gid    child_gid = lib.create_graph();
+  auto               root      = lib.create_graph();
+  auto               child     = lib.create_graph();
+  const hhds::Gid    root_gid  = root->get_gid();
+  const hhds::Gid    child_gid = child->get_gid();
 
-  auto& root  = lib.get_graph(root_gid);
-  auto& child = lib.get_graph(child_gid);
+  auto root_in  = root->create_node();
+  auto root_sub = root->create_node();
+  auto root_out = root->create_node();
+  root->add_edge(root_in, root_sub);
+  root->add_edge(root_sub, root_out);
 
-  auto root_in  = root.create_node();
-  auto root_sub = root.create_node();
-  auto root_out = root.create_node();
-  root.add_edge(root_in, root_sub);
-  root.add_edge(root_sub, root_out);
+  auto child_in  = child->create_node();
+  auto child_out = child->create_node();
+  child->add_edge(child_in, child_out);
 
-  auto child_in  = child.create_node();
-  auto child_out = child.create_node();
-  child.add_edge(child_in, child_out);
+  root->set_subnode(root_sub, child_gid);
 
-  root.set_subnode(root_sub, child_gid);
-
-  auto flat1 = root.forward_flat();
-  auto flat2 = root.forward_flat();
+  auto flat1 = root->forward_flat();
+  auto flat2 = root->forward_flat();
   EXPECT_EQ(flat1.data(), flat2.data());
 
   size_t pos_root_in  = flat1.size();
@@ -672,30 +670,29 @@ TEST(LazyTraversal, ForwardFlatHierarchyAndCacheInvalidation) {
   ASSERT_LT(last_child, pos_root_out);
 
   const size_t before_size = flat1.size();
-  (void)child.create_node();
-  auto flat3 = root.forward_flat();
+  (void)child->create_node();
+  auto flat3 = root->forward_flat();
   EXPECT_EQ(flat3.size(), before_size + 1);
 }
 
 TEST(LazyTraversal, FastHierDistinguishesInstances) {
   hhds::GraphLibrary lib;
-  const hhds::Gid    root_gid  = lib.create_graph();
-  const hhds::Gid    child_gid = lib.create_graph();
+  auto               root      = lib.create_graph();
+  auto               child     = lib.create_graph();
+  const hhds::Gid    root_gid  = root->get_gid();
+  const hhds::Gid    child_gid = child->get_gid();
 
-  auto& root  = lib.get_graph(root_gid);
-  auto& child = lib.get_graph(child_gid);
+  (void)root->create_node();
+  auto sub1 = root->create_node();
+  auto sub2 = root->create_node();
+  root->set_subnode(sub1, child_gid);
+  root->set_subnode(sub2, child_gid);
 
-  (void)root.create_node();
-  auto sub1 = root.create_node();
-  auto sub2 = root.create_node();
-  root.set_subnode(sub1, child_gid);
-  root.set_subnode(sub2, child_gid);
+  (void)child->create_node();
+  (void)child->create_node();
 
-  (void)child.create_node();
-  (void)child.create_node();
-
-  auto hier1 = root.fast_hier();
-  auto hier2 = root.fast_hier();
+  auto hier1 = root->fast_hier();
+  auto hier2 = root->fast_hier();
   EXPECT_EQ(hier1.data(), hier2.data());
 
   std::vector<hhds::Node_hier>           unique_child_nodes;
@@ -733,32 +730,31 @@ TEST(LazyTraversal, FastHierDistinguishesInstances) {
   }
 
   const size_t before_size = hier1.size();
-  (void)child.create_node();
-  auto hier3 = root.fast_hier();
+  (void)child->create_node();
+  auto hier3 = root->fast_hier();
   EXPECT_EQ(hier3.size(), before_size + 2U);  // two child instances, each gets one new node
 }
 
 TEST(LazyTraversal, ForwardHierOrderAndEpochInvalidation) {
   hhds::GraphLibrary lib;
-  const hhds::Gid    root_gid  = lib.create_graph();
-  const hhds::Gid    child_gid = lib.create_graph();
+  auto               root      = lib.create_graph();
+  auto               child     = lib.create_graph();
+  const hhds::Gid    root_gid  = root->get_gid();
+  const hhds::Gid    child_gid = child->get_gid();
 
-  auto& root  = lib.get_graph(root_gid);
-  auto& child = lib.get_graph(child_gid);
+  auto root_in  = root->create_node();
+  auto root_sub = root->create_node();
+  auto root_out = root->create_node();
+  root->add_edge(root_in, root_sub);
+  root->add_edge(root_sub, root_out);
+  root->set_subnode(root_sub, child_gid);
 
-  auto root_in  = root.create_node();
-  auto root_sub = root.create_node();
-  auto root_out = root.create_node();
-  root.add_edge(root_in, root_sub);
-  root.add_edge(root_sub, root_out);
-  root.set_subnode(root_sub, child_gid);
+  auto child_in  = child->create_node();
+  auto child_out = child->create_node();
+  child->add_edge(child_in, child_out);
 
-  auto child_in  = child.create_node();
-  auto child_out = child.create_node();
-  child.add_edge(child_in, child_out);
-
-  auto hier1 = root.forward_hier();
-  auto hier2 = root.forward_hier();
+  auto hier1 = root->forward_hier();
+  auto hier2 = root->forward_hier();
   EXPECT_EQ(hier1.data(), hier2.data());
 
   size_t pos_root_in  = hier1.size();
@@ -787,8 +783,8 @@ TEST(LazyTraversal, ForwardHierOrderAndEpochInvalidation) {
   ASSERT_LT(last_child, pos_root_out);
 
   const size_t before_size = hier1.size();
-  (void)child.create_node();
-  auto hier3 = root.forward_hier();
+  (void)child->create_node();
+  auto hier3 = root->forward_hier();
   EXPECT_EQ(hier3.size(), before_size + 1U);
 }
 
@@ -878,3 +874,43 @@ TEST(PinIteration, DriverAndSinkPins) {
   EXPECT_TRUE(contains_pin_pid(drivers, p2.get_pin_pid()));
   EXPECT_TRUE(contains_pin_pid(sinks, p2.get_pin_pid()));
 }
+TEST(CompactTypes, GraphHandlesExposeStableIdentity) {
+  hhds::GraphLibrary lib;
+  auto               g1  = lib.create_graph();
+  const hhds::Gid    gid = g1->get_gid();
+  auto               g2  = lib.get_graph(gid);
+
+  ASSERT_TRUE(g2);
+  EXPECT_EQ(g1.get(), g2.get());
+  EXPECT_EQ(g2->get_gid(), gid);
+}
+
+#if !defined(NDEBUG)
+TEST(CompactTypes, NodeAndPinHandlesDieAfterGraphDeletion) {
+  hhds::GraphLibrary lib;
+  auto               g   = lib.create_graph();
+  const hhds::Gid    gid = g->get_gid();
+
+  auto node = g->create_node();
+  auto pin  = node.create_pin(7);
+
+  lib.delete_graph(gid);
+
+  ASSERT_DEATH({ (void)node.get_raw_nid(); }, "graph is no longer valid");
+  ASSERT_DEATH({ (void)pin.get_pin_pid(); }, "graph is no longer valid");
+  ASSERT_DEATH({ (void)pin.get_master_node(); }, "graph is no longer valid");
+}
+
+TEST(CompactTypes, RejectsHandlesFromDifferentGraphs) {
+  hhds::GraphLibrary lib;
+  auto               g1 = lib.create_graph();
+  auto               g2 = lib.create_graph();
+
+  auto n1 = g1->create_node();
+  auto n2 = g2->create_node();
+  auto p1 = n1.create_pin(1);
+
+  ASSERT_DEATH({ g2->add_edge(n1, n2); }, "node handle belongs to a different graph");
+  ASSERT_DEATH({ (void)g2->out_edges(p1); }, "pin handle belongs to a different graph");
+}
+#endif
