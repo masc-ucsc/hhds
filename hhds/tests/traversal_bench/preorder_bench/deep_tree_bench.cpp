@@ -53,11 +53,11 @@ void preorder_traversal_lhtree(lh::tree<int>& tree) {
 
 #define DEFINE_TRAVERSAL_DEEP_BENCH(NAME, COUNT)                 \
   void test_deep_tree_##NAME##_hhds(benchmark::State& state) {   \
-    hhds::Tree      tree;                                        \
+    auto            tree = hhds::Tree::create();                 \
     std::vector<int> values;                                     \
-    build_hhds_tree(tree, values, COUNT);                        \
+    build_hhds_tree(*tree, values, COUNT);                       \
     for (auto _ : state) {                                       \
-      preorder_traversal_hhds(tree);                             \
+      preorder_traversal_hhds(*tree);                            \
     }                                                            \
   }                                                              \
   void test_deep_tree_##NAME##_lh(benchmark::State& state) {     \

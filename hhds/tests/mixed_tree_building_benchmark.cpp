@@ -48,24 +48,24 @@ void build_mixed_tree(hhds::Tree& tree, int depth_val) {
 
 void test_mixed_tree_building_depth_4(benchmark::State& state) {
   for (auto _ : state) {
-    hhds::Tree tree;
-    build_mixed_tree(tree, 4);
+    auto tree = hhds::Tree::create();
+    build_mixed_tree(*tree, 4);
     benchmark::DoNotOptimize(tree);
   }
 }
 
 void test_mixed_tree_building_depth_5(benchmark::State& state) {
   for (auto _ : state) {
-    hhds::Tree tree;
-    build_mixed_tree(tree, 5);
+    auto tree = hhds::Tree::create();
+    build_mixed_tree(*tree, 5);
     benchmark::DoNotOptimize(tree);
   }
 }
 
 void test_mixed_tree_building_depth_6(benchmark::State& state) {
   for (auto _ : state) {
-    hhds::Tree tree;
-    build_mixed_tree(tree, 6);
+    auto tree = hhds::Tree::create();
+    build_mixed_tree(*tree, 6);
     benchmark::DoNotOptimize(tree);
   }
 }

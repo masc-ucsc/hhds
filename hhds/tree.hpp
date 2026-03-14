@@ -110,6 +110,8 @@ static constexpr Tree_pos ROOT        = 1 << CHUNK_SHIFT;  // ROOT ID
 static constexpr uint64_t MAX_TREE_SIZE = UINT64_MAX;  // Maximum number of chunks in the tree
 
 class Forest;
+class TreeCursor;
+class ForestCursor;
 template <typename X>
 class PayloadForest;
 template <typename X>
@@ -209,12 +211,13 @@ public:
 template <typename X>
 class PayloadForest;
 
-class Tree {
+class Tree : public std::enable_shared_from_this<Tree> {
 private:
   std::vector<Tree_pointers>   pointers_stack;
   std::vector<std::bitset<64>> validity_stack;
   std::vector<Tree_pos>        subtree_refs;
   Forest*                      forest_ptr;
+  std::weak_ptr<Forest>        forest_owner_;
 
   void _ensure_subtree_ref_capacity(Tree_pos required_pos) {
     if (required_pos < static_cast<Tree_pos>(subtree_refs.size())) {
@@ -304,6 +307,7 @@ private:
   }
 
   Tree* _get_forest_tree(Tree_pos subtree_tid);
+  void  bind_forest_owner(std::weak_ptr<Forest> forest_owner) { forest_owner_ = std::move(forest_owner); }
   Tree_pos _append_after_last_sibling(Tree_pos last_sibling_pos, Tree_pos parent_pos) {
     Tree_pos new_sibling_pos = last_sibling_pos;
 
@@ -322,6 +326,10 @@ private:
   }
 
 public:
+  [[nodiscard]] static std::shared_ptr<Tree> create(Forest* forest = nullptr) {
+    return std::shared_ptr<Tree>(new Tree(forest));
+  }
+
   class Node_class {
   public:
     Node_class() = default;
@@ -405,7 +413,10 @@ public:
     friend class Tree;
   };
 
-  explicit Tree(Forest* forest = nullptr) : forest_ptr(forest) {}
+  Tree(const Tree&)            = delete;
+  Tree& operator=(const Tree&) = delete;
+  Tree(Tree&&)                 = delete;
+  Tree& operator=(Tree&&)      = delete;
 
   [[nodiscard]] static bool is_valid(Node_class node) noexcept { return node.get_current_pos() != INVALID; }
   [[nodiscard]] static bool is_valid(Node_flat node) noexcept { return node.get_current_pos() != INVALID; }
@@ -932,16 +943,31 @@ public:
     return node_pos < static_cast<Tree_pos>(subtree_refs.size()) ? subtree_refs[node_pos] : INVALID;
   }
   [[nodiscard]] Tid get_subtree_ref(Node_class node) const { return get_subtree_ref(node.get_current_pos()); }
+  [[nodiscard]] TreeCursor create_cursor(Tree_pos start = ROOT);
+  [[nodiscard]] TreeCursor create_cursor(Node_class start);
+
+  friend class Forest;
+private:
+  explicit Tree(Forest* forest = nullptr) : forest_ptr(forest) {}
 };
 
-class Forest {
+class Forest : public std::enable_shared_from_this<Forest> {
 private:
-  std::vector<std::unique_ptr<Tree>> trees;
+  std::vector<std::shared_ptr<Tree>> trees;
   std::vector<size_t>                reference_counts;
 
 public:
+  [[nodiscard]] static std::shared_ptr<Forest> create() { return std::shared_ptr<Forest>(new Forest()); }
+
+  Forest(const Forest&)            = delete;
+  Forest& operator=(const Forest&) = delete;
+  Forest(Forest&&)                 = delete;
+  Forest& operator=(Forest&&)      = delete;
+
   Tree_pos create_tree() {
-    trees.push_back(std::make_unique<Tree>(this));
+    auto tree = Tree::create(this);
+    tree->bind_forest_owner(this->weak_from_this());
+    trees.push_back(std::move(tree));
     reference_counts.push_back(0);
     return -static_cast<Tree_pos>(trees.size());
   }
@@ -952,6 +978,22 @@ public:
     I(tree_idx < trees.size(), "Tree index out of range");
     I(trees[tree_idx], "Attempting to access deleted tree");
     return *trees[tree_idx];
+  }
+
+  [[nodiscard]] std::shared_ptr<Tree> get_tree_ptr(Tree_pos tree_tid) {
+    I(tree_tid < 0, "Invalid tree reference - must be negative");
+    const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
+    I(tree_idx < trees.size(), "Tree index out of range");
+    I(trees[tree_idx], "Attempting to access deleted tree");
+    return trees[tree_idx];
+  }
+
+  [[nodiscard]] std::shared_ptr<const Tree> get_tree_ptr(Tree_pos tree_tid) const {
+    I(tree_tid < 0, "Invalid tree reference - must be negative");
+    const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
+    I(tree_idx < trees.size(), "Tree index out of range");
+    I(trees[tree_idx], "Attempting to access deleted tree");
+    return trees[tree_idx];
   }
 
   void add_reference(Tree_pos tree_tid) {
@@ -979,6 +1021,236 @@ public:
     }
     return false;
   }
+
+  [[nodiscard]] ForestCursor create_cursor(Tid tree_tid, Tree_pos start = ROOT);
+  [[nodiscard]] ForestCursor create_cursor(Tree::Node_flat node);
+  [[nodiscard]] ForestCursor create_cursor(Tree::Node_hier node);
+
+private:
+  Forest() = default;
+};
+
+class TreeCursor {
+private:
+  std::shared_ptr<Tree> tree_;
+  Tree_pos              root_pos_    = INVALID;
+  Tree_pos              current_pos_ = INVALID;
+  size_t                depth_       = 0;
+
+public:
+  TreeCursor() = default;
+  TreeCursor(std::shared_ptr<Tree> tree, Tree_pos start) : tree_(std::move(tree)), root_pos_(start), current_pos_(start) {}
+
+  [[nodiscard]] bool goto_parent() {
+    if (!tree_ || current_pos_ == root_pos_) {
+      return false;
+    }
+    const auto parent_pos = tree_->get_parent(current_pos_);
+    if (parent_pos == INVALID) {
+      return false;
+    }
+    current_pos_ = parent_pos;
+    --depth_;
+    return true;
+  }
+
+  [[nodiscard]] bool goto_first_child() {
+    if (!tree_) {
+      return false;
+    }
+    const auto child_pos = tree_->get_first_child(current_pos_);
+    if (child_pos == INVALID) {
+      return false;
+    }
+    current_pos_ = child_pos;
+    ++depth_;
+    return true;
+  }
+
+  [[nodiscard]] bool goto_last_child() {
+    if (!tree_) {
+      return false;
+    }
+    const auto child_pos = tree_->get_last_child(current_pos_);
+    if (child_pos == INVALID) {
+      return false;
+    }
+    current_pos_ = child_pos;
+    ++depth_;
+    return true;
+  }
+
+  [[nodiscard]] bool goto_next_sibling() {
+    if (!tree_ || current_pos_ == root_pos_) {
+      return false;
+    }
+    const auto sibling_pos = tree_->get_sibling_next(current_pos_);
+    if (sibling_pos == INVALID) {
+      return false;
+    }
+    current_pos_ = sibling_pos;
+    return true;
+  }
+
+  [[nodiscard]] bool goto_prev_sibling() {
+    if (!tree_ || current_pos_ == root_pos_) {
+      return false;
+    }
+    const auto sibling_pos = tree_->get_sibling_prev(current_pos_);
+    if (sibling_pos == INVALID) {
+      return false;
+    }
+    current_pos_ = sibling_pos;
+    return true;
+  }
+
+  [[nodiscard]] Tree_pos get_current_pos() const noexcept { return current_pos_; }
+  [[nodiscard]] Tree_pos get_root_pos() const noexcept { return root_pos_; }
+  [[nodiscard]] bool     is_root() const noexcept { return current_pos_ == root_pos_; }
+  [[nodiscard]] bool     is_leaf() const { return tree_ && tree_->is_leaf(current_pos_); }
+  [[nodiscard]] int      depth() const noexcept { return static_cast<int>(depth_); }
+};
+
+class ForestCursor {
+private:
+  struct ReturnFrame {
+    Tid                   parent_tid   = INVALID;
+    std::shared_ptr<Tree> parent_tree;
+    Tree_pos              caller_pos   = INVALID;
+    size_t                caller_depth = 0;
+  };
+
+  std::shared_ptr<Forest> forest_;
+  std::shared_ptr<Tree>   current_tree_;
+  Tid                     root_tid_    = INVALID;
+  Tree_pos                root_pos_    = INVALID;
+  Tid                     current_tid_ = INVALID;
+  Tree_pos                current_pos_ = INVALID;
+  size_t                  depth_       = 0;
+  std::vector<ReturnFrame> return_stack_;
+
+public:
+  ForestCursor() = default;
+  ForestCursor(std::shared_ptr<Forest> forest, std::shared_ptr<Tree> tree, Tid root_tid, Tree_pos root_pos)
+      : forest_(std::move(forest))
+      , current_tree_(std::move(tree))
+      , root_tid_(root_tid)
+      , root_pos_(root_pos)
+      , current_tid_(root_tid)
+      , current_pos_(root_pos) {}
+
+  [[nodiscard]] bool goto_parent() {
+    if (!current_tree_) {
+      return false;
+    }
+    if (current_pos_ == current_tree_->get_root() && !return_stack_.empty()) {
+      const auto frame = return_stack_.back();
+      return_stack_.pop_back();
+      current_tree_ = frame.parent_tree;
+      current_tid_  = frame.parent_tid;
+      current_pos_  = frame.caller_pos;
+      depth_        = frame.caller_depth;
+      return true;
+    }
+    if (current_tid_ == root_tid_ && current_pos_ == root_pos_) {
+      return false;
+    }
+    const auto parent_pos = current_tree_->get_parent(current_pos_);
+    if (parent_pos == INVALID) {
+      return false;
+    }
+    current_pos_ = parent_pos;
+    --depth_;
+    return true;
+  }
+
+  [[nodiscard]] bool goto_first_child() {
+    if (!current_tree_) {
+      return false;
+    }
+    const auto subtree_tid = current_tree_->get_subtree_ref(current_pos_);
+    if (subtree_tid != INVALID) {
+      auto subtree = forest_->get_tree_ptr(subtree_tid);
+      return_stack_.push_back(ReturnFrame{current_tid_, current_tree_, current_pos_, depth_});
+      current_tree_ = std::move(subtree);
+      current_tid_  = subtree_tid;
+      current_pos_  = current_tree_->get_root();
+      ++depth_;
+      return true;
+    }
+
+    const auto child_pos = current_tree_->get_first_child(current_pos_);
+    if (child_pos == INVALID) {
+      return false;
+    }
+    current_pos_ = child_pos;
+    ++depth_;
+    return true;
+  }
+
+  [[nodiscard]] bool goto_last_child() {
+    if (!current_tree_) {
+      return false;
+    }
+    const auto subtree_tid = current_tree_->get_subtree_ref(current_pos_);
+    if (subtree_tid != INVALID) {
+      auto subtree = forest_->get_tree_ptr(subtree_tid);
+      return_stack_.push_back(ReturnFrame{current_tid_, current_tree_, current_pos_, depth_});
+      current_tree_ = std::move(subtree);
+      current_tid_  = subtree_tid;
+      current_pos_  = current_tree_->get_root();
+      ++depth_;
+      return true;
+    }
+
+    const auto child_pos = current_tree_->get_last_child(current_pos_);
+    if (child_pos == INVALID) {
+      return false;
+    }
+    current_pos_ = child_pos;
+    ++depth_;
+    return true;
+  }
+
+  [[nodiscard]] bool goto_next_sibling() {
+    if (!current_tree_ || current_pos_ == current_tree_->get_root()) {
+      return false;
+    }
+    const auto sibling_pos = current_tree_->get_sibling_next(current_pos_);
+    if (sibling_pos == INVALID) {
+      return false;
+    }
+    current_pos_ = sibling_pos;
+    return true;
+  }
+
+  [[nodiscard]] bool goto_prev_sibling() {
+    if (!current_tree_ || current_pos_ == current_tree_->get_root()) {
+      return false;
+    }
+    const auto sibling_pos = current_tree_->get_sibling_prev(current_pos_);
+    if (sibling_pos == INVALID) {
+      return false;
+    }
+    current_pos_ = sibling_pos;
+    return true;
+  }
+
+  [[nodiscard]] Tid      get_current_tid() const noexcept { return current_tid_; }
+  [[nodiscard]] Tree_pos get_current_pos() const noexcept { return current_pos_; }
+  [[nodiscard]] Tid      get_root_tid() const noexcept { return root_tid_; }
+  [[nodiscard]] Tree_pos get_root_pos() const noexcept { return root_pos_; }
+  [[nodiscard]] bool     is_root() const noexcept { return current_tid_ == root_tid_ && current_pos_ == root_pos_ && return_stack_.empty(); }
+  [[nodiscard]] bool     is_leaf() const {
+    if (!current_tree_) {
+      return false;
+    }
+    if (current_tree_->get_subtree_ref(current_pos_) != INVALID) {
+      return false;
+    }
+    return current_tree_->is_leaf(current_pos_);
+  }
+  [[nodiscard]] int depth() const noexcept { return static_cast<int>(depth_); }
 };
 
 template <typename X>
@@ -1997,6 +2269,35 @@ Tree::Node_hier to_hier(Tree::Node_flat)  = delete;
 inline Tree* Tree::_get_forest_tree(Tree_pos subtree_tid) {
   I(forest_ptr != nullptr, "Tree is not attached to a forest");
   return &forest_ptr->get_tree(subtree_tid);
+}
+
+inline TreeCursor Tree::create_cursor(Tree_pos start) {
+  I(_check_idx_exists(start), "create_cursor: Node index out of range");
+  I(_contains_data(start), "create_cursor: Node does not exist");
+  auto self = this->weak_from_this().lock();
+  I(static_cast<bool>(self), "create_cursor: Tree must be managed by std::shared_ptr");
+  return TreeCursor(std::move(self), start);
+}
+
+inline TreeCursor Tree::create_cursor(Node_class start) {
+  return create_cursor(start.get_current_pos());
+}
+
+inline ForestCursor Forest::create_cursor(Tid tree_tid, Tree_pos start) {
+  auto tree = get_tree_ptr(tree_tid);
+  I(tree->_check_idx_exists(start), "create_cursor: Node index out of range");
+  I(tree->_contains_data(start), "create_cursor: Node does not exist");
+  auto self = this->weak_from_this().lock();
+  I(static_cast<bool>(self), "create_cursor: Forest must be managed by std::shared_ptr");
+  return ForestCursor(std::move(self), std::move(tree), tree_tid, start);
+}
+
+inline ForestCursor Forest::create_cursor(Tree::Node_flat node) {
+  return create_cursor(node.get_current_tid(), node.get_current_pos());
+}
+
+inline ForestCursor Forest::create_cursor(Tree::Node_hier node) {
+  return create_cursor(node.get_current_tid(), node.get_current_pos());
 }
 
 // ---------------------------------- STRUCTURAL TREE IMPLEMENTATION ---------------------------------- //

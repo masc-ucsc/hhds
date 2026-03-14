@@ -118,11 +118,11 @@ void postorder_traversal_lhtree(lh::tree<int>& tree, std::vector<int>& result) {
 
 TEST(TreeCorrectness, ChipTypicalMatchesLhtreeTraversals) {
   std::default_random_engine generator(32);
-  hhds::Tree      hhds_tree;
+  auto            hhds_tree = hhds::Tree::create();
   std::vector<int> hhds_values;
   lh::tree<int>   lh_tree;
 
-  auto hhds_root = hhds_test::add_root(hhds_tree, hhds_values, 0);
+  auto hhds_root = hhds_test::add_root(*hhds_tree, hhds_values, 0);
   lh_tree.set_root(0);
 
   std::vector<hhds::Tree::Node_class> hhds_current_level{hhds_root};
@@ -145,7 +145,7 @@ TEST(TreeCorrectness, ChipTypicalMatchesLhtreeTraversals) {
 
       for (int i = 0; i < num_children; ++i) {
         const int data  = id++;
-        const auto added = hhds_test::add_child(hhds_tree, hhds_values, hhds_node, data);
+        const auto added = hhds_test::add_child(*hhds_tree, hhds_values, hhds_node, data);
 
         hhds_next_level.push_back(added);
         next_level_ids.push_back(data);
@@ -168,9 +168,9 @@ TEST(TreeCorrectness, ChipTypicalMatchesLhtreeTraversals) {
   }
 
   std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, expected_postorder;
-  preorder_traversal_hhds(hhds_tree, hhds_values, hhds_preorder);
+  preorder_traversal_hhds(*hhds_tree, hhds_values, hhds_preorder);
   preorder_traversal_lhtree(lh_tree, lh_preorder);
-  postorder_traversal_hhds(hhds_tree, hhds_values, hhds_postorder);
+  postorder_traversal_hhds(*hhds_tree, hhds_values, hhds_postorder);
   append_reference_postorder(children_by_id, 0, expected_postorder);
 
   ASSERT_EQ(hhds_sibling_data.size(), lh_sibling_data.size());

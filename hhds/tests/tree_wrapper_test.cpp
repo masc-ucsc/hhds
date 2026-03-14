@@ -2,21 +2,22 @@
 
 #include <gtest/gtest.h>
 
+#include <memory>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "hhds/tree.hpp"
 
 TEST(TreeWrappers, NodeClassHashable) {
-  hhds::Tree tree;
+  auto tree = hhds::Tree::create();
 
-  const auto root  = tree.add_root_node();
-  const auto child = tree.add_child(root);
+  const auto root  = tree->add_root_node();
+  const auto child = tree->add_child(root);
 
   EXPECT_TRUE(hhds::Tree::is_valid(root));
   EXPECT_TRUE(hhds::Tree::is_valid(child));
   EXPECT_NE(root, child);
-  EXPECT_EQ(tree.get_parent(child), root);
+  EXPECT_EQ(tree->get_parent(child), root);
 
   absl::flat_hash_map<hhds::Tree::Node_class, int> attrs;
   attrs[root]  = 1;
@@ -27,11 +28,11 @@ TEST(TreeWrappers, NodeClassHashable) {
 }
 
 TEST(TreeWrappers, CompactConversions) {
-  hhds::Tree      tree;
+  auto            tree = hhds::Tree::create();
   const hhds::Tid current_tid = -7;
   const hhds::Tid root_tid    = -3;
 
-  const auto root = tree.add_root_node();
+  const auto root = tree->add_root_node();
   const auto flat = hhds::to_flat(root, current_tid, root_tid);
 
   EXPECT_EQ(flat.get_root_tid(), root_tid);
@@ -42,7 +43,7 @@ TEST(TreeWrappers, CompactConversions) {
   EXPECT_EQ(class_from_flat, root);
 
   const hhds::Tid hier_tid = -11;
-  const auto      hier     = tree.as_hier(root.get_current_pos(), current_tid, hier_tid, 42, root_tid);
+  const auto      hier     = tree->as_hier(root.get_current_pos(), current_tid, hier_tid, 42, root_tid);
   EXPECT_EQ(hier.get_root_tid(), root_tid);
   EXPECT_EQ(hier.get_current_tid(), current_tid);
   EXPECT_EQ(hier.get_hier_tid(), hier_tid);
@@ -56,13 +57,13 @@ TEST(TreeWrappers, CompactConversions) {
 }
 
 TEST(TreeWrappers, ForestContextAndSubtreeRefs) {
-  hhds::Forest forest;
+  auto forest = hhds::Forest::create();
 
-  const auto parent_tid = forest.create_tree();
-  const auto child_tid  = forest.create_tree();
+  const auto parent_tid = forest->create_tree();
+  const auto child_tid  = forest->create_tree();
 
-  auto& parent = forest.get_tree(parent_tid);
-  auto& child  = forest.get_tree(child_tid);
+  auto& parent = forest->get_tree(parent_tid);
+  auto& child  = forest->get_tree(child_tid);
 
   const auto parent_root = parent.add_root_node();
   const auto child_root  = child.add_root_node();
@@ -86,15 +87,15 @@ TEST(TreeWrappers, ForestContextAndSubtreeRefs) {
 }
 
 TEST(TreeWrappers, TraversalsYieldNodeClass) {
-  hhds::Tree tree;
+  auto tree = hhds::Tree::create();
 
-  const auto root   = tree.add_root_node();
-  const auto child1 = tree.add_child(root);
-  const auto child2 = tree.add_child(root);
-  const auto grand  = tree.add_child(child1);
+  const auto root   = tree->add_root_node();
+  const auto child1 = tree->add_child(root);
+  const auto child2 = tree->add_child(root);
+  const auto grand  = tree->add_child(child1);
 
   std::vector<hhds::Tree::Node_class> preorder;
-  for (auto node : tree.pre_order()) {
+  for (auto node : tree->pre_order()) {
     preorder.push_back(node);
   }
   ASSERT_EQ(preorder.size(), 4U);
@@ -104,7 +105,7 @@ TEST(TreeWrappers, TraversalsYieldNodeClass) {
   EXPECT_EQ(preorder[3], child2);
 
   std::vector<hhds::Tree::Node_class> sibling_order;
-  for (auto node : tree.sibling_order(child1)) {
+  for (auto node : tree->sibling_order(child1)) {
     sibling_order.push_back(node);
   }
   ASSERT_EQ(sibling_order.size(), 2U);
@@ -112,7 +113,7 @@ TEST(TreeWrappers, TraversalsYieldNodeClass) {
   EXPECT_EQ(sibling_order[1], child2);
 
   std::vector<hhds::Tree::Node_class> postorder;
-  for (auto node : tree.post_order(root)) {
+  for (auto node : tree->post_order(root)) {
     postorder.push_back(node);
   }
   ASSERT_EQ(postorder.size(), 4U);
@@ -120,4 +121,94 @@ TEST(TreeWrappers, TraversalsYieldNodeClass) {
   EXPECT_EQ(postorder[1], child1);
   EXPECT_EQ(postorder[2], child2);
   EXPECT_EQ(postorder[3], root);
+}
+
+TEST(TreeWrappers, TreeCursorNavigatesSingleTree) {
+  auto tree = hhds::Tree::create();
+
+  const auto root   = tree->add_root_node();
+  const auto child1 = tree->add_child(root);
+  const auto child2 = tree->add_child(root);
+  const auto grand  = tree->add_child(child1);
+
+  auto cursor = tree->create_cursor(root);
+  EXPECT_TRUE(cursor.is_root());
+  EXPECT_EQ(cursor.get_current_pos(), root.get_current_pos());
+  EXPECT_EQ(cursor.depth(), 0);
+
+  EXPECT_TRUE(cursor.goto_first_child());
+  EXPECT_EQ(cursor.get_current_pos(), child1.get_current_pos());
+  EXPECT_EQ(cursor.depth(), 1);
+
+  EXPECT_TRUE(cursor.goto_first_child());
+  EXPECT_EQ(cursor.get_current_pos(), grand.get_current_pos());
+  EXPECT_TRUE(cursor.is_leaf());
+  EXPECT_EQ(cursor.depth(), 2);
+
+  EXPECT_TRUE(cursor.goto_parent());
+  EXPECT_EQ(cursor.get_current_pos(), child1.get_current_pos());
+  EXPECT_EQ(cursor.depth(), 1);
+
+  EXPECT_TRUE(cursor.goto_next_sibling());
+  EXPECT_EQ(cursor.get_current_pos(), child2.get_current_pos());
+  EXPECT_EQ(cursor.depth(), 1);
+
+  EXPECT_TRUE(cursor.goto_prev_sibling());
+  EXPECT_EQ(cursor.get_current_pos(), child1.get_current_pos());
+  EXPECT_FALSE(cursor.goto_prev_sibling());
+}
+
+TEST(TreeWrappers, ForestCursorFollowsSubtreeRefs) {
+  auto forest = hhds::Forest::create();
+
+  const auto parent_tid = forest->create_tree();
+  const auto child_tid  = forest->create_tree();
+
+  auto& parent = forest->get_tree(parent_tid);
+  auto& child  = forest->get_tree(child_tid);
+
+  const auto parent_root  = parent.add_root_node();
+  const auto callsite     = parent.add_child(parent_root);
+  const auto parent_other = parent.add_child(parent_root);
+  const auto child_root   = child.add_root_node();
+  const auto child_leaf   = child.add_child(child_root);
+
+  parent.add_subtree_ref(callsite, child_tid);
+
+  auto cursor = forest->create_cursor(parent_tid);
+  EXPECT_TRUE(cursor.is_root());
+  EXPECT_EQ(cursor.get_current_tid(), parent_tid);
+  EXPECT_EQ(cursor.get_current_pos(), parent_root.get_current_pos());
+  EXPECT_EQ(cursor.depth(), 0);
+
+  EXPECT_TRUE(cursor.goto_first_child());
+  EXPECT_EQ(cursor.get_current_tid(), parent_tid);
+  EXPECT_EQ(cursor.get_current_pos(), callsite.get_current_pos());
+  EXPECT_EQ(cursor.depth(), 1);
+
+  EXPECT_TRUE(cursor.goto_first_child());
+  EXPECT_EQ(cursor.get_current_tid(), child_tid);
+  EXPECT_EQ(cursor.get_current_pos(), child_root.get_current_pos());
+  EXPECT_EQ(cursor.depth(), 2);
+
+  EXPECT_TRUE(cursor.goto_first_child());
+  EXPECT_EQ(cursor.get_current_tid(), child_tid);
+  EXPECT_EQ(cursor.get_current_pos(), child_leaf.get_current_pos());
+  EXPECT_TRUE(cursor.is_leaf());
+  EXPECT_EQ(cursor.depth(), 3);
+
+  EXPECT_TRUE(cursor.goto_parent());
+  EXPECT_EQ(cursor.get_current_tid(), child_tid);
+  EXPECT_EQ(cursor.get_current_pos(), child_root.get_current_pos());
+  EXPECT_EQ(cursor.depth(), 2);
+
+  EXPECT_TRUE(cursor.goto_parent());
+  EXPECT_EQ(cursor.get_current_tid(), parent_tid);
+  EXPECT_EQ(cursor.get_current_pos(), callsite.get_current_pos());
+  EXPECT_EQ(cursor.depth(), 1);
+
+  EXPECT_TRUE(cursor.goto_next_sibling());
+  EXPECT_EQ(cursor.get_current_tid(), parent_tid);
+  EXPECT_EQ(cursor.get_current_pos(), parent_other.get_current_pos());
+  EXPECT_EQ(cursor.depth(), 1);
 }

@@ -36,8 +36,8 @@ void build_lh_tree(lh::tree<int>& lh_tree, int num_nodes) {
 #define HHDS_DEEP_CASE(depth)                      \
   void test_deep_tree_##depth##_hhds(benchmark::State& state) { \
     for (auto _ : state) {                        \
-      hhds::Tree hhds_tree;                       \
-      build_hhds_tree(hhds_tree, depth);          \
+      auto hhds_tree = hhds::Tree::create();      \
+      build_hhds_tree(*hhds_tree, depth);         \
     }                                             \
   }                                               \
   void test_deep_tree_##depth##_lh(benchmark::State& state) {   \

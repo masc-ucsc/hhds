@@ -36,8 +36,8 @@ void build_lh_tree(lh::tree<int>& lh_tree, int num_nodes) {
 #define HHDS_WIDE_CASE(width)                      \
   void test_wide_tree_##width##_hhds(benchmark::State& state) { \
     for (auto _ : state) {                        \
-      hhds::Tree hhds_tree;                       \
-      build_hhds_tree(hhds_tree, width);          \
+      auto hhds_tree = hhds::Tree::create();      \
+      build_hhds_tree(*hhds_tree, width);         \
     }                                             \
   }                                               \
   void test_wide_tree_##width##_lh(benchmark::State& state) {   \

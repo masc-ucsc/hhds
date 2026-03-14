@@ -64,38 +64,38 @@ uint64_t test_hhds_navigation(const hhds::Tree& tree) {
 }
 
 void test_chip_typical_navigation_depth_2(benchmark::State& state) {
-  hhds::Tree tree;
-  build_hhds_tree(tree, 2);
+  auto tree = hhds::Tree::create();
+  build_hhds_tree(*tree, 2);
 
   for (auto _ : state) {
-    benchmark::DoNotOptimize(test_hhds_navigation(tree));
+    benchmark::DoNotOptimize(test_hhds_navigation(*tree));
   }
 }
 
 void test_chip_typical_navigation_depth_3(benchmark::State& state) {
-  hhds::Tree tree;
-  build_hhds_tree(tree, 3);
+  auto tree = hhds::Tree::create();
+  build_hhds_tree(*tree, 3);
 
   for (auto _ : state) {
-    benchmark::DoNotOptimize(test_hhds_navigation(tree));
+    benchmark::DoNotOptimize(test_hhds_navigation(*tree));
   }
 }
 
 void test_chip_typical_navigation_depth_4(benchmark::State& state) {
-  hhds::Tree tree;
-  build_hhds_tree(tree, 4);
+  auto tree = hhds::Tree::create();
+  build_hhds_tree(*tree, 4);
 
   for (auto _ : state) {
-    benchmark::DoNotOptimize(test_hhds_navigation(tree));
+    benchmark::DoNotOptimize(test_hhds_navigation(*tree));
   }
 }
 
 void test_chip_typical_navigation_depth_5(benchmark::State& state) {
-  hhds::Tree tree;
-  build_hhds_tree(tree, 5);
+  auto tree = hhds::Tree::create();
+  build_hhds_tree(*tree, 5);
 
   for (auto _ : state) {
-    benchmark::DoNotOptimize(test_hhds_navigation(tree));
+    benchmark::DoNotOptimize(test_hhds_navigation(*tree));
   }
 }
 

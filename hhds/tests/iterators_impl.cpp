@@ -162,7 +162,7 @@ TEST(CompactTypes, EdgeHierConversions) {
   ASSERT_EQ(out_edges.size(), 1U);
   const auto& edge = out_edges[0];
 
-  auto hier_ref  = std::make_shared<hhds::Tree>();
+  auto hier_ref  = hhds::Tree::create();
   auto hier_gids = std::make_shared<std::vector<hhds::Gid>>();
   auto hier_pos  = hier_ref->add_root();
   const hhds::Tid hier_tid = -9;

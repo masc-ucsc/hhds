@@ -95,12 +95,12 @@ TEST(TreeCorrectness, WideTreeMatchesLhtreeTraversals) {
   std::default_random_engine generator(42);
   const int                  num_children = 10'000'000;
 
-  hhds::Tree      hhds_tree;
+  auto            hhds_tree = hhds::Tree::create();
   std::vector<int> hhds_values;
   lh::tree<int>   lh_tree;
 
   auto data_to_add = generate_random_int(generator, 1, 100);
-  auto hhds_root   = hhds_test::add_root(hhds_tree, hhds_values, data_to_add);
+  auto hhds_root   = hhds_test::add_root(*hhds_tree, hhds_values, data_to_add);
   lh_tree.set_root(data_to_add);
   lh::Tree_index lh_root(0, 0);
   std::vector<int> expected_postorder;
@@ -108,16 +108,16 @@ TEST(TreeCorrectness, WideTreeMatchesLhtreeTraversals) {
 
   for (int i = 0; i < num_children; ++i) {
     data_to_add = generate_random_int(generator, 1, 100);
-    hhds_test::add_child(hhds_tree, hhds_values, hhds_root, data_to_add);
+    hhds_test::add_child(*hhds_tree, hhds_values, hhds_root, data_to_add);
     lh_tree.add_child(lh_root, data_to_add);
     expected_postorder.push_back(data_to_add);
   }
   expected_postorder.push_back(hhds_test::get_value(hhds_values, hhds_root));
 
   std::vector<int> hhds_preorder, lh_preorder, hhds_postorder;
-  preorder_traversal_hhds(hhds_tree, hhds_values, hhds_preorder);
+  preorder_traversal_hhds(*hhds_tree, hhds_values, hhds_preorder);
   preorder_traversal_lhtree(lh_tree, lh_preorder);
-  postorder_traversal_hhds(hhds_tree, hhds_values, hhds_postorder);
+  postorder_traversal_hhds(*hhds_tree, hhds_values, hhds_postorder);
 
   ASSERT_EQ(hhds_preorder.size(), lh_preorder.size());
   ASSERT_EQ(hhds_postorder.size(), expected_postorder.size());

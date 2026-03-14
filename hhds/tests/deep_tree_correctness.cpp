@@ -78,24 +78,24 @@ TEST(TreeCorrectness, DeepTreeMatchesLhtreePreorder) {
   std::default_random_engine generator(42);
   const int                  num_nodes = 10'000'000;
 
-  hhds::Tree      hhds_tree;
+  auto            hhds_tree = hhds::Tree::create();
   std::vector<int> hhds_values;
   lh::tree<int>   lh_tree;
 
   auto data_to_add = generate_random_int(generator, 1, 100);
-  auto hhds_root   = hhds_test::add_root(hhds_tree, hhds_values, data_to_add);
+  auto hhds_root   = hhds_test::add_root(*hhds_tree, hhds_values, data_to_add);
   lh_tree.set_root(data_to_add);
   auto           hhds_current = hhds_root;
   lh::Tree_index lh_current(0, 0);
 
   for (int i = 0; i < num_nodes; ++i) {
     data_to_add  = generate_random_int(generator, 1, 100);
-    hhds_current = hhds_test::add_child(hhds_tree, hhds_values, hhds_current, data_to_add);
+    hhds_current = hhds_test::add_child(*hhds_tree, hhds_values, hhds_current, data_to_add);
     lh_current   = lh_tree.add_child(lh_current, data_to_add);
   }
 
   std::vector<int> hhds_preorder, lh_preorder;
-  preorder_traversal_hhds(hhds_tree, hhds_values, hhds_preorder);
+  preorder_traversal_hhds(*hhds_tree, hhds_values, hhds_preorder);
   preorder_traversal_lhtree(lh_tree, lh_preorder);
 
   ASSERT_EQ(hhds_preorder.size(), lh_preorder.size());

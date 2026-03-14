@@ -810,7 +810,7 @@ void Graph::rebuild_fast_flat_cache() const {
 
 void Graph::rebuild_fast_hier_cache() const {
   fast_hier_cache_.clear();
-  fast_hier_tree_cache_ = std::make_shared<Tree>();
+  fast_hier_tree_cache_ = Tree::create();
   fast_hier_gid_cache_  = std::make_shared<std::vector<Gid>>();
   const Tid hier_tid    = self_gid_ != Gid_invalid ? static_cast<Tid>(self_gid_) : static_cast<Tid>(-1);
 
@@ -1013,7 +1013,7 @@ void Graph::rebuild_forward_flat_cache() const {
 
 void Graph::rebuild_forward_hier_cache() const {
   forward_hier_cache_.clear();
-  forward_hier_tree_cache_ = std::make_shared<Tree>();
+  forward_hier_tree_cache_ = Tree::create();
   forward_hier_gid_cache_  = std::make_shared<std::vector<Gid>>();
   const Tid hier_tid       = self_gid_ != Gid_invalid ? static_cast<Tid>(self_gid_) : static_cast<Tid>(-1);
 

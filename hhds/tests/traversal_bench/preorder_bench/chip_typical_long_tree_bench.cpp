@@ -69,11 +69,11 @@ void preorder_traversal_lhtree(lh::tree<int>& tree) {
 
 #define DEFINE_TRAVERSAL_CHIP_LONG_BENCH(NAME, COUNT)                 \
   void test_chip_typical_long_tree_##NAME##_hhds(benchmark::State& s) { \
-    hhds::Tree      tree;                                             \
+    auto            tree = hhds::Tree::create();                      \
     std::vector<int> values;                                          \
-    build_hhds_tree(tree, values, COUNT);                             \
+    build_hhds_tree(*tree, values, COUNT);                            \
     for (auto _ : s) {                                                \
-      preorder_traversal_hhds(tree);                                  \
+      preorder_traversal_hhds(*tree);                                 \
     }                                                                 \
   }                                                                   \
   void test_chip_typical_long_tree_##NAME##_lh(benchmark::State& s) { \

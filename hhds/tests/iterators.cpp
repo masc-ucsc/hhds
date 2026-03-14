@@ -1,11 +1,12 @@
 // This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 //
-// API iterator tests for the planned HHDS API (see api_todo.md).
-// These tests document the intended API usage; they will not compile
+// API iterator tests for pending HHDS API work (see api_todo.md).
+// These tests document unfinished API usage and intentionally do not compile
 // until the corresponding features are implemented.
 //
-// All public APIs return compact types (Node_class, Pin_class, Tnode_class).
-// Raw IDs (Nid, Pid, Tree_pos) are internal and never exposed to users.
+// Tree-side wrapper work is already implemented in the live API as
+// Tree::Node_class / Tree::Node_flat / Tree::Node_hier. This file keeps only
+// the still-pending pieces.
 //
 // NOTE: Runnable tests for already-implemented APIs were moved to
 // tests/iterators_impl.cpp. This file intentionally keeps only pending API
@@ -257,41 +258,6 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // }
 
 // // ---------------------------------------------------------------------------
-// // Section 9: Tree iterators return Tnode_class (api_todo.md #9)
-// // ---------------------------------------------------------------------------
-
-// TEST(TreeIterator, PreOrderYieldsTnodeClass) {
-//   hhds::tree<int> t;
-//   auto            root = t.add_root(1);  // returns Tnode_class
-//   auto            c1   = t.add_child(root, 2);
-//   t.add_child(root, 3);
-//   t.add_child(c1, 4);
-
-//   // pre_order yields Tnode_class
-//   int count = 0;
-//   for (auto tnode : t.pre_order()) {
-//     const auto& data = tnode.get_data();  // get_data() is read-only (const X&)
-//     (void)data;
-//     count++;
-//   }
-//   EXPECT_EQ(count, 4);
-// }
-
-// TEST(TreeIterator, RefDataMutableAccess) {
-//   hhds::tree<int> t;
-//   auto            root = t.add_root(10);
-
-//   // get_data() is const — read-only
-//   const auto& ro = root.get_data();
-//   EXPECT_EQ(ro, 10);
-
-//   // ref_data() gives a mutable unique_ptr handle
-//   auto ptr = root.ref_data();
-//   *ptr     = 99;
-//   EXPECT_EQ(root.get_data(), 99);
-// }
-
-// // ---------------------------------------------------------------------------
 // // Section 14: Hierarchy cursor — graphs (api_todo.md #14)
 // // ---------------------------------------------------------------------------
 
@@ -443,26 +409,27 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // // ---------------------------------------------------------------------------
 
 // TEST(ForestCursor, BasicNavigation) {
-//   hhds::Forest<int> forest;
+//   hhds::Forest forest;
 
-//   auto main_tree = forest.create_tree();  // returns shared_ptr<tree<int>>
-//   auto sub_tree  = forest.create_tree();  // returns shared_ptr<tree<int>>
-//   auto leaf_tree = forest.create_tree();  // returns shared_ptr<tree<int>>
-//   auto main_tid  = main_tree->get_tid();
-//   auto sub_tid   = sub_tree->get_tid();
-//   auto leaf_tid  = leaf_tree->get_tid();
+//   const hhds::Tid main_tid = forest.create_tree();
+//   const hhds::Tid sub_tid  = forest.create_tree();
+//   const hhds::Tid leaf_tid = forest.create_tree();
+
+//   auto& main_tree = forest.get_tree(main_tid);
+//   auto& sub_tree  = forest.get_tree(sub_tid);
+//   auto& leaf_tree = forest.get_tree(leaf_tid);
 
 //   // main_tree root has a child that references sub_tree
-//   auto root  = main_tree->add_root(1);
-//   auto child = main_tree->add_child(root, 2);
-//   main_tree->add_subtree_ref(child, sub_tid);
+//   auto root  = main_tree.add_root_node();
+//   auto child = main_tree.add_child(root);
+//   main_tree.add_subtree_ref(child, sub_tid);
 
 //   // sub_tree root has a child that references leaf_tree
-//   auto sub_root  = sub_tree->add_root(10);
-//   auto sub_child = sub_tree->add_child(sub_root, 20);
-//   sub_tree->add_subtree_ref(sub_child, leaf_tid);
+//   auto sub_root  = sub_tree.add_root_node();
+//   auto sub_child = sub_tree.add_child(sub_root);
+//   sub_tree.add_subtree_ref(sub_child, leaf_tid);
 
-//   leaf_tree->add_root(100);
+//   (void)leaf_tree.add_root_node();
 
 //   auto cursor = forest.create_cursor(main_tid);
 //   EXPECT_TRUE(cursor.is_root());
@@ -517,22 +484,25 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // }
 
 // TEST(GetCallers, ForestCallersTracking) {
-//   hhds::Forest<int> forest;
+//   hhds::Forest forest;
 
-//   auto tree_a     = forest.create_tree();  // returns shared_ptr<tree<int>>
-//   auto tree_b     = forest.create_tree();  // returns shared_ptr<tree<int>>
-//   auto shared     = forest.create_tree();  // returns shared_ptr<tree<int>>
-//   auto shared_tid = shared->get_tid();
+//   const hhds::Tid tree_a_tid = forest.create_tree();
+//   const hhds::Tid tree_b_tid = forest.create_tree();
+//   const hhds::Tid shared_tid = forest.create_tree();
 
-//   auto a_root  = tree_a->add_root(1);
-//   auto a_child = tree_a->add_child(a_root, 10);
-//   tree_a->add_subtree_ref(a_child, shared_tid);
+//   auto& tree_a = forest.get_tree(tree_a_tid);
+//   auto& tree_b = forest.get_tree(tree_b_tid);
+//   auto& shared = forest.get_tree(shared_tid);
 
-//   auto b_root  = tree_b->add_root(2);
-//   auto b_child = tree_b->add_child(b_root, 20);
-//   tree_b->add_subtree_ref(b_child, shared_tid);
+//   auto a_root  = tree_a.add_root_node();
+//   auto a_child = tree_a.add_child(a_root);
+//   tree_a.add_subtree_ref(a_child, shared_tid);
 
-//   shared->add_root(100);
+//   auto b_root  = tree_b.add_root_node();
+//   auto b_child = tree_b.add_child(b_root);
+//   tree_b.add_subtree_ref(b_child, shared_tid);
+
+//   (void)shared.add_root_node();
 
 //   // shared_tree should have 2 callers
 //   int caller_count = 0;

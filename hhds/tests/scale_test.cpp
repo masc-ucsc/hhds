@@ -55,16 +55,16 @@ void test_deep_tree(int nodes) {
   // int                        num_nodes = 100;  // Use a smaller number for testing
   int num_nodes = nodes;
 
-  hhds::Tree       hhds_tree;
+  auto             hhds_tree = hhds::Tree::create();
   std::vector<int> hhds_values;
 
   auto data_to_add  = generate_random_int(generator, 1, 100);
-  auto hhds_root    = hhds_test::add_root(hhds_tree, hhds_values, data_to_add);
+  auto hhds_root    = hhds_test::add_root(*hhds_tree, hhds_values, data_to_add);
   auto hhds_current = hhds_root;
 
   for (int i = 0; i < num_nodes; ++i) {
     data_to_add  = generate_random_int(generator, 1, 100);
-    hhds_current = hhds_test::add_child(hhds_tree, hhds_values, hhds_current, data_to_add);
+    hhds_current = hhds_test::add_child(*hhds_tree, hhds_values, hhds_current, data_to_add);
   }
 }
 
