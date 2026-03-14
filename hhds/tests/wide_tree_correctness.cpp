@@ -1,4 +1,5 @@
-#include <iostream>
+#include <gtest/gtest.h>
+
 #include <random>
 #include <vector>
 
@@ -69,6 +70,11 @@ void postorder_traversal_hhds(hhds::Tree& tree, const std::vector<int>& values, 
   hhds_test::postorder_values(tree, values, result);
 }
 
+void expected_postorder_wide(int root_value, const std::vector<int>& child_values, std::vector<int>& result) {
+  result = child_values;
+  result.push_back(root_value);
+}
+
 void preorder_traversal_lhtree(lh::tree<int>& tree, std::vector<int>& result) {
   auto                                                 root_index = lh::Tree_index(0, 0);
   typename lh::tree<int>::Tree_depth_preorder_iterator it(root_index, &tree);
@@ -85,12 +91,7 @@ void postorder_traversal_lhtree(lh::tree<int>& tree, std::vector<int>& result) {
   }
 }
 
-template <typename T>
-bool compare_vectors(const std::vector<T>& vec1, const std::vector<T>& vec2) {
-  return vec1 == vec2;
-}
-
-void test_wide_tree() {
+TEST(TreeCorrectness, WideTreeMatchesLhtreeTraversals) {
   std::default_random_engine generator(42);
   const int                  num_children = 10'000'000;
 
@@ -102,32 +103,24 @@ void test_wide_tree() {
   auto hhds_root   = hhds_test::add_root(hhds_tree, hhds_values, data_to_add);
   lh_tree.set_root(data_to_add);
   lh::Tree_index lh_root(0, 0);
+  std::vector<int> expected_postorder;
+  expected_postorder.reserve(static_cast<size_t>(num_children) + 1);
 
   for (int i = 0; i < num_children; ++i) {
     data_to_add = generate_random_int(generator, 1, 100);
     hhds_test::add_child(hhds_tree, hhds_values, hhds_root, data_to_add);
     lh_tree.add_child(lh_root, data_to_add);
+    expected_postorder.push_back(data_to_add);
   }
+  expected_postorder.push_back(hhds_test::get_value(hhds_values, hhds_root));
 
-  std::vector<int> hhds_preorder, lh_preorder, hhds_postorder, lh_postorder;
+  std::vector<int> hhds_preorder, lh_preorder, hhds_postorder;
   preorder_traversal_hhds(hhds_tree, hhds_values, hhds_preorder);
   preorder_traversal_lhtree(lh_tree, lh_preorder);
   postorder_traversal_hhds(hhds_tree, hhds_values, hhds_postorder);
-  postorder_traversal_lhtree(lh_tree, lh_postorder);
 
-  if (!compare_vectors(hhds_preorder, lh_preorder)) {
-    std::cout << "Preorder traversal mismatch in test_wide_tree" << std::endl;
-  } else {
-    std::cout << "Preorder traversal match!" << std::endl;
-  }
-  if (!compare_vectors(hhds_postorder, lh_postorder)) {
-    std::cout << "Postorder traversal mismatch in test_wide_tree" << std::endl;
-  } else {
-    std::cout << "Postorder traversal match!" << std::endl;
-  }
-}
-
-int main() {
-  test_wide_tree();
-  return 0;
+  ASSERT_EQ(hhds_preorder.size(), lh_preorder.size());
+  ASSERT_EQ(hhds_postorder.size(), expected_postorder.size());
+  EXPECT_EQ(hhds_preorder, lh_preorder);
+  EXPECT_EQ(hhds_postorder, expected_postorder);
 }

@@ -1,4 +1,5 @@
-#include <iostream>
+#include <gtest/gtest.h>
+
 #include <random>
 #include <vector>
 
@@ -73,12 +74,7 @@ void preorder_traversal_lhtree(lh::tree<int>& tree, std::vector<int>& result) {
   }
 }
 
-template <typename T>
-bool compare_vectors(const std::vector<T>& vec1, const std::vector<T>& vec2) {
-  return vec1 == vec2;
-}
-
-void test_deep_tree() {
+TEST(TreeCorrectness, DeepTreeMatchesLhtreePreorder) {
   std::default_random_engine generator(42);
   const int                  num_nodes = 10'000'000;
 
@@ -102,14 +98,6 @@ void test_deep_tree() {
   preorder_traversal_hhds(hhds_tree, hhds_values, hhds_preorder);
   preorder_traversal_lhtree(lh_tree, lh_preorder);
 
-  if (!compare_vectors(hhds_preorder, lh_preorder)) {
-    std::cout << "Preorder traversal mismatch in test_deep_tree" << std::endl;
-  } else {
-    std::cout << "Preorder traversal match!" << std::endl;
-  }
-}
-
-int main() {
-  test_deep_tree();
-  return 0;
+  ASSERT_EQ(hhds_preorder.size(), lh_preorder.size());
+  EXPECT_EQ(hhds_preorder, lh_preorder);
 }

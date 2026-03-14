@@ -216,6 +216,19 @@ private:
   std::vector<Tree_pos>        subtree_refs;
   Forest*                      forest_ptr;
 
+  void _ensure_subtree_ref_capacity(Tree_pos required_pos) {
+    if (required_pos < static_cast<Tree_pos>(subtree_refs.size())) {
+      return;
+    }
+
+    size_t new_size = subtree_refs.empty() ? static_cast<size_t>(CHUNK_SIZE * 2) : subtree_refs.size();
+    const size_t min_size = static_cast<size_t>(required_pos + 1);
+    while (new_size < min_size) {
+      new_size *= 2;
+    }
+    subtree_refs.resize(new_size, INVALID);
+  }
+
   [[nodiscard]] inline bool _check_idx_exists(const Tree_pos& idx) const noexcept {
     return idx > INVALID && idx < static_cast<Tree_pos>(pointers_stack.size() << CHUNK_SHIFT);
   }
@@ -246,7 +259,6 @@ private:
   Tree_pos _create_space() {
     const auto start_pos = static_cast<Tree_pos>(pointers_stack.size() << CHUNK_SHIFT);
     pointers_stack.emplace_back();
-    subtree_refs.resize(pointers_stack.size() << CHUNK_SHIFT, INVALID);
     _set_data_valid(start_pos);
     return static_cast<Tree_pos>(pointers_stack.size() - 1);
   }
@@ -292,6 +304,22 @@ private:
   }
 
   Tree* _get_forest_tree(Tree_pos subtree_tid);
+  Tree_pos _append_after_last_sibling(Tree_pos last_sibling_pos, Tree_pos parent_pos) {
+    Tree_pos new_sibling_pos = last_sibling_pos;
+
+    if ((new_sibling_pos & CHUNK_MASK) == CHUNK_MASK) {
+      new_sibling_pos = _insert_chunk_after(new_sibling_pos >> CHUNK_SHIFT) << CHUNK_SHIFT;
+    } else {
+      ++new_sibling_pos;
+      _set_data_valid(new_sibling_pos);
+    }
+
+    pointers_stack[new_sibling_pos >> CHUNK_SHIFT].set_num_short_del_occ(new_sibling_pos & CHUNK_MASK);
+    pointers_stack[parent_pos >> CHUNK_SHIFT].set_is_leaf(false);
+    pointers_stack[parent_pos >> CHUNK_SHIFT].set_last_child_at(static_cast<int16_t>(parent_pos & CHUNK_MASK), new_sibling_pos);
+
+    return new_sibling_pos;
+  }
 
 public:
   class Node_class {
@@ -862,7 +890,7 @@ public:
 
       if (tree_ptr->get_sibling_next(current) != INVALID) {
         auto next = tree_ptr->get_sibling_next(current);
-        while (tree_ptr->get_sibling_next(next) != INVALID) {
+        while (tree_ptr->get_first_child(next) != INVALID) {
           next = tree_ptr->get_first_child(next);
         }
 
@@ -1793,7 +1821,7 @@ public:
 
       if (tree_ptr->get_sibling_next(current) != INVALID) {
         auto next = tree_ptr->get_sibling_next(current);
-        while (tree_ptr->get_sibling_next(next) != INVALID) {
+        while (tree_ptr->get_first_child(next) != INVALID) {
           next = tree_ptr->get_first_child(next);
         }
 
@@ -1855,7 +1883,7 @@ public:
 
       if (tree_ptr->get_sibling_next(current) != INVALID) {
         auto next = tree_ptr->get_sibling_next(current);
-        while (tree_ptr->get_sibling_next(next) != INVALID) {
+        while (tree_ptr->get_first_child(next) != INVALID) {
           next = tree_ptr->get_first_child(next);
         }
         current = next;
@@ -2048,23 +2076,9 @@ inline Tree_pos Tree::get_sibling_prev(const Tree_pos& sibling_id) const {
 inline Tree_pos Tree::append_sibling(const Tree_pos& sibling_id) {
   I(_check_idx_exists(sibling_id), "append_sibling: Sibling index out of range");
 
-  const auto parent_id = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
-  auto       new_sib   = get_last_child(parent_id);
-
-  if ((new_sib & CHUNK_MASK) == CHUNK_MASK) {
-    new_sib = _insert_chunk_after(new_sib >> CHUNK_SHIFT) << CHUNK_SHIFT;
-  } else {
-    new_sib++;
-    _set_data_valid(new_sib);
-  }
-
-  pointers_stack[new_sib >> CHUNK_SHIFT].set_num_short_del_occ(new_sib & CHUNK_MASK);
-  pointers_stack[parent_id >> CHUNK_SHIFT].set_is_leaf(false);
-
-  const auto parent_offset = static_cast<int16_t>(parent_id & CHUNK_MASK);
-  pointers_stack[parent_id >> CHUNK_SHIFT].set_last_child_at(parent_offset, new_sib);
-
-  return new_sib;
+  const auto parent_pos       = pointers_stack[sibling_id >> CHUNK_SHIFT].get_parent();
+  const auto last_sibling_pos = get_last_child(parent_pos);
+  return _append_after_last_sibling(last_sibling_pos, parent_pos);
 }
 
 inline Tree_pos Tree::insert_next_sibling(const Tree_pos& sibling_id) {
@@ -2100,7 +2114,7 @@ inline Tree_pos Tree::add_child(const Tree_pos& parent_index) {
 
   const auto last_child_id = get_last_child(parent_index);
   if (last_child_id != INVALID) {
-    return append_sibling(last_child_id);
+    return _append_after_last_sibling(last_child_id, parent_index);
   }
 
   const auto child_chunk_id = _create_space();
@@ -2132,7 +2146,9 @@ inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
   const auto next_sibling_id   = get_sibling_next(leaf_index);
 
   _set_data_invalid(leaf_index);
-  subtree_refs[leaf_index] = INVALID;
+  if (leaf_index < static_cast<Tree_pos>(subtree_refs.size())) {
+    subtree_refs[leaf_index] = INVALID;
+  }
   pointers_stack[leaf_chunk_id].set_first_child_at(static_cast<int16_t>(leaf_chunk_offset), INVALID);
   pointers_stack[leaf_chunk_id].set_type_at(static_cast<int16_t>(leaf_chunk_offset), 0);
   int16_t remaining_data = 0;
@@ -2149,8 +2165,10 @@ inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
       chunk_meta.set_first_child_at(offset + 1, INVALID);
       chunk_meta.set_type_at(offset, chunk_meta.get_type_at(offset + 1));
       chunk_meta.set_type_at(offset + 1, 0);
-      subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset]     = subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1];
-      subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1] = INVALID;
+      if (((leaf_chunk_id << CHUNK_SHIFT) + offset + 1) < static_cast<Tree_pos>(subtree_refs.size())) {
+        subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset]     = subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1];
+        subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1] = INVALID;
+      }
 
       const auto moved_node = (leaf_chunk_id << CHUNK_SHIFT) + offset;
       const auto fc         = get_first_child((leaf_chunk_id << CHUNK_SHIFT) + offset + 1);
@@ -2241,6 +2259,7 @@ inline void Tree::delete_subtree(const Tree_pos& subtree_root) {
 inline void Tree::add_subtree_ref(const Tree_pos& node_pos, Tree_pos subtree_ref) {
   I(subtree_ref < 0, "Subtree reference must be negative");
   I(_check_idx_exists(node_pos), "add_subtree_ref: Node index out of range");
+  _ensure_subtree_ref_capacity(node_pos);
   subtree_refs[node_pos] = subtree_ref;
   if (forest_ptr) {
     forest_ptr->add_reference(subtree_ref);
