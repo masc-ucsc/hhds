@@ -28,35 +28,36 @@
 
 namespace hhds {
 
-Node_hier::Node_hier(std::shared_ptr<tree<Gid>> hier_ref_value, int64_t hier_pos_value, Nid raw_nid_value)
-    : hier_ref(std::move(hier_ref_value)), hier_pos(hier_pos_value), raw_nid(raw_nid_value) {}
+Node_hier::Node_hier(std::shared_ptr<Tree> hier_ref_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, int64_t hier_pos_value,
+                     Nid raw_nid_value)
+    : hier_ref(std::move(hier_ref_value)), hier_gids(std::move(hier_gids_value)), hier_pos(hier_pos_value), raw_nid(raw_nid_value) {}
 
 auto Node_hier::get_root_gid() const noexcept -> Gid {
-  if (!hier_ref) {
+  if (!hier_ref || !hier_gids || hier_ref->get_root() >= static_cast<Tree_pos>(hier_gids->size())) {
     return Gid_invalid;
   }
-  return hier_ref->get_data(hier_ref->get_root());
+  return (*hier_gids)[hier_ref->get_root()];
 }
 
 auto Node_hier::get_current_gid() const noexcept -> Gid {
-  if (!hier_ref) {
+  if (!hier_ref || !hier_gids || hier_pos >= static_cast<int64_t>(hier_gids->size())) {
     return Gid_invalid;
   }
-  return hier_ref->get_data(hier_pos);
+  return (*hier_gids)[static_cast<size_t>(hier_pos)];
 }
 
 auto Pin_hier::get_root_gid() const noexcept -> Gid {
-  if (!hier_ref) {
+  if (!hier_ref || !hier_gids || hier_ref->get_root() >= static_cast<Tree_pos>(hier_gids->size())) {
     return Gid_invalid;
   }
-  return hier_ref->get_data(hier_ref->get_root());
+  return (*hier_gids)[hier_ref->get_root()];
 }
 
 auto Pin_hier::get_current_gid() const noexcept -> Gid {
-  if (!hier_ref) {
+  if (!hier_ref || !hier_gids || hier_pos >= static_cast<int64_t>(hier_gids->size())) {
     return Gid_invalid;
   }
-  return hier_ref->get_data(hier_pos);
+  return (*hier_gids)[static_cast<size_t>(hier_pos)];
 }
 
 auto to_class(const Node_hier& v) -> Node_class { return Node_class(nullptr, v.get_raw_nid() & ~static_cast<Nid>(2)); }
@@ -110,10 +111,13 @@ auto to_flat(const Edge_hier& e) -> Edge_flat {
   return out;
 }
 
-auto to_hier(const Edge_class& e, std::shared_ptr<tree<Gid>> hier_ref, int64_t hier_pos) -> Edge_hier {
+auto to_hier(const Edge_class& e, std::shared_ptr<Tree> hier_ref, std::shared_ptr<std::vector<Gid>> hier_gids, int64_t hier_pos)
+    -> Edge_hier {
   Edge_hier out;
-  out.driver = Pin_hier(hier_ref, hier_pos, e.driver_pin.get_raw_nid(), e.driver_pin.get_port_id(), e.driver_pin.get_pin_pid());
-  out.sink = Pin_hier(std::move(hier_ref), hier_pos, e.sink_pin.get_raw_nid(), e.sink_pin.get_port_id(), e.sink_pin.get_pin_pid());
+  out.driver = Pin_hier(hier_ref, hier_gids, hier_pos, e.driver_pin.get_raw_nid(), e.driver_pin.get_port_id(),
+                        e.driver_pin.get_pin_pid());
+  out.sink = Pin_hier(std::move(hier_ref), std::move(hier_gids), hier_pos, e.sink_pin.get_raw_nid(), e.sink_pin.get_port_id(),
+                      e.sink_pin.get_pin_pid());
   return out;
 }
 
@@ -777,7 +781,9 @@ void Graph::invalidate_traversal_caches() noexcept {
   forward_flat_cache_valid_  = false;
   forward_hier_cache_valid_  = false;
   fast_hier_tree_cache_.reset();
+  fast_hier_gid_cache_.reset();
   forward_hier_tree_cache_.reset();
+  forward_hier_gid_cache_.reset();
   if (owner_lib_ != nullptr) {
     owner_lib_->note_graph_mutation();
   }
@@ -806,19 +812,22 @@ void Graph::rebuild_fast_flat_cache() const {
 
 void Graph::rebuild_fast_hier_cache() const {
   fast_hier_cache_.clear();
-  fast_hier_tree_cache_ = std::make_shared<tree<Gid>>();
+  fast_hier_tree_cache_ = std::make_shared<Tree>();
+  fast_hier_gid_cache_  = std::make_shared<std::vector<Gid>>();
 
   Gid root_gid = self_gid_;
   if (root_gid == Gid_invalid) {
     root_gid = 0;
   }
-  const Tree_pos root_pos = fast_hier_tree_cache_->add_root(root_gid);
+  const Tree_pos root_pos = fast_hier_tree_cache_->add_root();
+  fast_hier_gid_cache_->resize(static_cast<size_t>(root_pos + 1), Gid_invalid);
+  (*fast_hier_gid_cache_)[static_cast<size_t>(root_pos)] = root_gid;
 
   ankerl::unordered_dense::set<Gid> active_graphs;
   if (self_gid_ != Gid_invalid) {
     active_graphs.insert(self_gid_);
   }
-  fast_hier_impl(fast_hier_tree_cache_, root_pos, active_graphs, fast_hier_cache_);
+  fast_hier_impl(fast_hier_tree_cache_, fast_hier_gid_cache_, root_pos, active_graphs, fast_hier_cache_);
 
   fast_hier_cache_epoch_ = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
   fast_hier_cache_valid_ = true;
@@ -939,8 +948,8 @@ void Graph::forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& 
   }
 }
 
-void Graph::fast_hier_impl(std::shared_ptr<tree<Gid>> hier_ref, int64_t hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs,
-                           std::vector<Node_hier>& out) const {
+void Graph::fast_hier_impl(std::shared_ptr<Tree> hier_ref, std::shared_ptr<std::vector<Gid>> hier_gids, int64_t hier_pos,
+                           ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const {
   for (size_t i = 1; i < node_table.size(); ++i) {
     const Nid   node_id = static_cast<Nid>(i) << 2;
     const auto& node    = node_table[i];
@@ -948,19 +957,23 @@ void Graph::fast_hier_impl(std::shared_ptr<tree<Gid>> hier_ref, int64_t hier_pos
     if (node.has_subnode() && owner_lib_ != nullptr) {
       const Gid other_graph_id = node.get_subnode();
       if (owner_lib_->has_graph(other_graph_id) && active_graphs.find(other_graph_id) == active_graphs.end()) {
-        const Tree_pos child_hier_pos = hier_ref->add_child(hier_pos, other_graph_id);
+        const Tree_pos child_hier_pos = hier_ref->add_child(hier_pos);
+        if (static_cast<size_t>(child_hier_pos) >= hier_gids->size()) {
+          hier_gids->resize(static_cast<size_t>(child_hier_pos + 1), Gid_invalid);
+        }
+        (*hier_gids)[static_cast<size_t>(child_hier_pos)] = other_graph_id;
         active_graphs.insert(other_graph_id);
-        owner_lib_->get_graph(other_graph_id)->fast_hier_impl(hier_ref, child_hier_pos, active_graphs, out);
+        owner_lib_->get_graph(other_graph_id)->fast_hier_impl(hier_ref, hier_gids, child_hier_pos, active_graphs, out);
         active_graphs.erase(other_graph_id);
         continue;
       }
     }
 
-    out.emplace_back(hier_ref, hier_pos, node_id);
+    out.emplace_back(hier_ref, hier_gids, hier_pos, node_id);
   }
 }
 
-void Graph::forward_hier_impl(std::shared_ptr<tree<Gid>> hier_ref, int64_t hier_pos,
+void Graph::forward_hier_impl(std::shared_ptr<Tree> hier_ref, std::shared_ptr<std::vector<Gid>> hier_gids, int64_t hier_pos,
                               ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const {
   for (const auto& node : forward_class()) {
     const Nid   node_nid = node.get_raw_nid();
@@ -969,15 +982,19 @@ void Graph::forward_hier_impl(std::shared_ptr<tree<Gid>> hier_ref, int64_t hier_
     if (node_ref.has_subnode() && owner_lib_ != nullptr) {
       const Gid other_graph_id = node_ref.get_subnode();
       if (owner_lib_->has_graph(other_graph_id) && active_graphs.find(other_graph_id) == active_graphs.end()) {
-        const Tree_pos child_hier_pos = hier_ref->add_child(hier_pos, other_graph_id);
+        const Tree_pos child_hier_pos = hier_ref->add_child(hier_pos);
+        if (static_cast<size_t>(child_hier_pos) >= hier_gids->size()) {
+          hier_gids->resize(static_cast<size_t>(child_hier_pos + 1), Gid_invalid);
+        }
+        (*hier_gids)[static_cast<size_t>(child_hier_pos)] = other_graph_id;
         active_graphs.insert(other_graph_id);
-        owner_lib_->get_graph(other_graph_id)->forward_hier_impl(hier_ref, child_hier_pos, active_graphs, out);
+        owner_lib_->get_graph(other_graph_id)->forward_hier_impl(hier_ref, hier_gids, child_hier_pos, active_graphs, out);
         active_graphs.erase(other_graph_id);
         continue;
       }
     }
 
-    out.emplace_back(hier_ref, hier_pos, node_nid);
+    out.emplace_back(hier_ref, hier_gids, hier_pos, node_nid);
   }
 }
 
@@ -997,20 +1014,23 @@ void Graph::rebuild_forward_flat_cache() const {
 
 void Graph::rebuild_forward_hier_cache() const {
   forward_hier_cache_.clear();
-  forward_hier_tree_cache_ = std::make_shared<tree<Gid>>();
+  forward_hier_tree_cache_ = std::make_shared<Tree>();
+  forward_hier_gid_cache_  = std::make_shared<std::vector<Gid>>();
 
   Gid root_gid = self_gid_;
   if (root_gid == Gid_invalid) {
     root_gid = 0;
   }
-  const Tree_pos root_pos = forward_hier_tree_cache_->add_root(root_gid);
+  const Tree_pos root_pos = forward_hier_tree_cache_->add_root();
+  forward_hier_gid_cache_->resize(static_cast<size_t>(root_pos + 1), Gid_invalid);
+  (*forward_hier_gid_cache_)[static_cast<size_t>(root_pos)] = root_gid;
 
   ankerl::unordered_dense::set<Gid> active_graphs;
   if (self_gid_ != Gid_invalid) {
     active_graphs.insert(self_gid_);
   }
 
-  forward_hier_impl(forward_hier_tree_cache_, root_pos, active_graphs, forward_hier_cache_);
+  forward_hier_impl(forward_hier_tree_cache_, forward_hier_gid_cache_, root_pos, active_graphs, forward_hier_cache_);
 
   forward_hier_cache_epoch_ = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
   forward_hier_cache_valid_ = true;

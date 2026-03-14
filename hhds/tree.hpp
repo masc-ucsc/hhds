@@ -112,6 +112,10 @@ static constexpr uint64_t MAX_TREE_SIZE = UINT64_MAX;  // Maximum number of chun
 class Forest;
 template <typename X>
 class PayloadForest;
+template <typename X>
+class tree;
+template <typename X>
+class PayloadForest;
 
 class __attribute__((aligned(64))) Tree_pointers {  // NOLINT(readability-magic-numbers)
 private:

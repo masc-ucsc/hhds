@@ -154,8 +154,7 @@ static_assert(sizeof(Node) == 32, "Node size mismatch");
 
 class Graph;
 class Node_class;
-template <typename X>
-class tree;
+class Tree;
 
 class Pin_class {
 public:
@@ -304,7 +303,8 @@ private:
 class Node_hier {
 public:
   Node_hier() = default;
-  Node_hier(std::shared_ptr<tree<Gid>> hier_ref_value, int64_t hier_pos_value, Nid raw_nid_value);
+  Node_hier(std::shared_ptr<Tree> hier_ref_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, int64_t hier_pos_value,
+            Nid raw_nid_value);
 
   [[nodiscard]] Gid     get_root_gid() const noexcept;
   [[nodiscard]] Gid     get_current_gid() const noexcept;
@@ -322,17 +322,20 @@ public:
   }
 
 private:
-  std::shared_ptr<tree<Gid>> hier_ref;
-  int64_t                    hier_pos = 0;
-  Nid                        raw_nid  = 0;
+  std::shared_ptr<Tree>             hier_ref;
+  std::shared_ptr<std::vector<Gid>> hier_gids;
+  int64_t                           hier_pos = 0;
+  Nid                               raw_nid  = 0;
 };
 
 class Pin_hier {
 public:
   Pin_hier() = default;
-  Pin_hier(std::shared_ptr<tree<Gid>> hier_ref_value, int64_t hier_pos_value, Nid raw_nid_value, Port_id port_id_value,
+  Pin_hier(std::shared_ptr<Tree> hier_ref_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, int64_t hier_pos_value,
+           Nid raw_nid_value, Port_id port_id_value,
            Pid pin_pid_value)
       : hier_ref(std::move(hier_ref_value))
+      , hier_gids(std::move(hier_gids_value))
       , hier_pos(hier_pos_value)
       , raw_nid(raw_nid_value & ~static_cast<Nid>(2))
       , port_id(port_id_value)
@@ -355,11 +358,12 @@ public:
   }
 
 private:
-  std::shared_ptr<tree<Gid>> hier_ref;
-  int64_t                    hier_pos = 0;
-  Nid                        raw_nid  = 0;
-  Port_id                    port_id  = 0;
-  Pid                        pin_pid  = 0;
+  std::shared_ptr<Tree>             hier_ref;
+  std::shared_ptr<std::vector<Gid>> hier_gids;
+  int64_t                           hier_pos = 0;
+  Nid                               raw_nid  = 0;
+  Port_id                           port_id  = 0;
+  Pid                               pin_pid  = 0;
 };
 
 class Edge_class {
@@ -516,11 +520,11 @@ private:
   void                    rebuild_forward_hier_cache() const;
   void                    fast_iter_impl(bool hierarchy, Gid top_graph, uint32_t tree_node_num, uint32_t& next_tree_node_num,
                                          ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<FastIterator>& out) const;
-  void fast_hier_impl(std::shared_ptr<tree<Gid>> hier_ref, int64_t hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs,
-                      std::vector<Node_hier>& out) const;
+  void fast_hier_impl(std::shared_ptr<Tree> hier_ref, std::shared_ptr<std::vector<Gid>> hier_gids, int64_t hier_pos,
+                      ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const;
   void forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_flat>& out) const;
-  void forward_hier_impl(std::shared_ptr<tree<Gid>> hier_ref, int64_t hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs,
-                         std::vector<Node_hier>& out) const;
+  void forward_hier_impl(std::shared_ptr<Tree> hier_ref, std::shared_ptr<std::vector<Gid>> hier_gids, int64_t hier_pos,
+                         ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const;
 
   std::vector<Node>                  node_table;
   std::vector<Pin>                   pin_table;
@@ -530,8 +534,10 @@ private:
   mutable std::vector<Node_class>    forward_class_cache_;
   mutable std::vector<Node_flat>     forward_flat_cache_;
   mutable std::vector<Node_hier>     forward_hier_cache_;
-  mutable std::shared_ptr<tree<Gid>> fast_hier_tree_cache_;
-  mutable std::shared_ptr<tree<Gid>> forward_hier_tree_cache_;
+  mutable std::shared_ptr<Tree>             fast_hier_tree_cache_;
+  mutable std::shared_ptr<std::vector<Gid>> fast_hier_gid_cache_;
+  mutable std::shared_ptr<Tree>             forward_hier_tree_cache_;
+  mutable std::shared_ptr<std::vector<Gid>> forward_hier_gid_cache_;
   mutable bool                       fast_class_cache_valid_    = false;
   mutable bool                       fast_hier_cache_valid_     = false;
   mutable bool                       forward_class_cache_valid_ = false;
@@ -647,7 +653,8 @@ Pin_hier                to_hier(Pin_flat)  = delete;
 
 [[nodiscard]] Edge_flat  to_flat(const Edge_class& e, Gid current_gid, Gid root_gid = Gid_invalid);
 [[nodiscard]] Edge_flat  to_flat(const Edge_hier& e);
-[[nodiscard]] Edge_hier  to_hier(const Edge_class& e, std::shared_ptr<tree<Gid>> hier_ref, int64_t hier_pos);
+[[nodiscard]] Edge_hier  to_hier(const Edge_class& e, std::shared_ptr<Tree> hier_ref, std::shared_ptr<std::vector<Gid>> hier_gids,
+                                 int64_t hier_pos);
 [[nodiscard]] Edge_class to_class(const Edge_flat& e);
 [[nodiscard]] Edge_class to_class(const Edge_hier& e);
 

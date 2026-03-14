@@ -1,207 +1,80 @@
 #include <benchmark/benchmark.h>
-#include <iostream>
-#include <vector>
-#include <random>
+
 #include <chrono>
+#include <random>
+#include <vector>
 
-#include "tree.hpp"
 #include "lhtree.hpp"
+#include "tree.hpp"
 
-auto now = std::chrono::high_resolution_clock::now();
-auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+auto                       now          = std::chrono::high_resolution_clock::now();
+auto                       microseconds = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
 std::default_random_engine generator(microseconds);
 
-// Utility function to generate a random int within a range
 int generate_random_int(std::default_random_engine& generator, int min, int max) {
-    std::uniform_int_distribution<int> distribution(min, max);
-    return distribution(generator);
+  std::uniform_int_distribution<int> distribution(min, max);
+  return distribution(generator);
 }
 
-void build_hhds_tree(hhds::tree<int>& hhds_tree, int depth_val) {
-    auto hhds_root = hhds_tree.add_root(0);
+void build_hhds_tree(hhds::Tree& hhds_tree, int depth_val) {
+  std::vector<hhds::Tree::Node_class> current_level{hhds_tree.add_root_node()};
 
-    std::vector<hhds::Tree_pos> hhds_current_level{hhds_root};
+  for (int depth = 0; depth < depth_val; ++depth) {
+    std::vector<hhds::Tree::Node_class> next_level;
 
-    int id = 1;
-    for (int depth = 0; depth < depth_val; ++depth) {
-        std::vector<hhds::Tree_pos> hhds_next_level;
-        std::vector<std::vector<int>> level_data;
-
-        for (auto hhds_node : hhds_current_level) {
-            int num_children = generate_random_int(generator, 1, 7);
-            std::vector<int> children_data;
-
-            for (int i = 0; i < num_children; ++i) {
-                int data = id++;
-                auto added = hhds_tree.add_child(hhds_node, data);
-
-                hhds_next_level.push_back(added);
-                children_data.push_back(data);
-            }
-            level_data.push_back(children_data);
-        }
-
-        hhds_current_level = hhds_next_level;
+    for (auto node : current_level) {
+      int num_children = generate_random_int(generator, 1, 7);
+      for (int i = 0; i < num_children; ++i) {
+        benchmark::DoNotOptimize(generate_random_int(generator, 1, 100));
+        next_level.push_back(hhds_tree.add_child(node));
+      }
     }
+
+    current_level = std::move(next_level);
+  }
 }
 
 void build_lh_tree(lh::tree<int>& lh_tree, int depth_val) {
-    lh_tree.set_root(0);
+  lh_tree.set_root(0);
+  std::vector<lh::Tree_index> current_level{lh::Tree_index(0, 0)};
 
-    std::vector<lh::Tree_index> lh_current_level{lh::Tree_index(0, 0)};
+  for (int depth = 0; depth < depth_val; ++depth) {
+    std::vector<lh::Tree_index> next_level;
 
-    int id = 1;
-    for (int depth = 0; depth < depth_val; ++depth) {
-        std::vector<lh::Tree_index> lh_next_level;
-        std::vector<std::vector<int>> level_data;
-
-        for (auto lh_node : lh_current_level) {
-            int num_children = generate_random_int(generator, 1, 7);
-            std::vector<int> children_data;
-
-            for (int i = 0; i < num_children; ++i) {
-                int data = id++;
-                auto added = lh_tree.add_child(lh_node, data);
-
-                lh_next_level.push_back(added);
-                children_data.push_back(data);
-            }
-            level_data.push_back(children_data);
-        }
-
-        lh_current_level = lh_next_level;
+    for (auto node : current_level) {
+      int num_children = generate_random_int(generator, 1, 7);
+      for (int i = 0; i < num_children; ++i) {
+        next_level.push_back(lh_tree.add_child(node, i + 1));
+      }
     }
+
+    current_level = std::move(next_level);
+  }
 }
 
-// Tree that is 1 nodes chip_typical
-void test_chip_typical_tree_1_hhds(benchmark::State& state) {
-    int depth_val = 1;
-    for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
-    }
-}
-void test_chip_typical_tree_1_lh(benchmark::State& state) {
-    int depth_val = 1;
-    for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
-    }
-}
+#define HHDS_CHIP_CASE(depth)                      \
+  void test_chip_typical_tree_##depth##_hhds(benchmark::State& state) { \
+    for (auto _ : state) {                        \
+      hhds::Tree hhds_tree;                       \
+      build_hhds_tree(hhds_tree, depth);          \
+    }                                             \
+  }                                               \
+  void test_chip_typical_tree_##depth##_lh(benchmark::State& state) {   \
+    for (auto _ : state) {                        \
+      lh::tree<int> lh_tree;                      \
+      build_lh_tree(lh_tree, depth);              \
+    }                                             \
+  }
 
-// Tree that is 2 nodes chip_typical
-void test_chip_typical_tree_2_hhds(benchmark::State& state) {
-    int depth_val = 2;
-    for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
-    }
-}
-void test_chip_typical_tree_2_lh(benchmark::State& state) {
-    int depth_val = 2;
-    for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
-    }
-}
+HHDS_CHIP_CASE(1)
+HHDS_CHIP_CASE(2)
+HHDS_CHIP_CASE(3)
+HHDS_CHIP_CASE(4)
+HHDS_CHIP_CASE(5)
+HHDS_CHIP_CASE(6)
+HHDS_CHIP_CASE(7)
+HHDS_CHIP_CASE(8)
 
-// Tree that is 3 nodes chip_typical
-void test_chip_typical_tree_3_hhds(benchmark::State& state) {
-    int depth_val = 3;
-    for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
-    }
-}
-void test_chip_typical_tree_3_lh(benchmark::State& state) {
-    int depth_val = 3;
-    for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
-    }
-}
-
-// Tree that is 4 nodes chip_typical
-void test_chip_typical_tree_4_hhds(benchmark::State& state) {
-    int depth_val = 4;
-    for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
-    }
-}
-void test_chip_typical_tree_4_lh(benchmark::State& state) {
-    int depth_val = 4;
-    for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
-    }
-}
-
-// Tree that is 5 nodes chip_typical
-void test_chip_typical_tree_5_hhds(benchmark::State& state) {
-    int depth_val = 5;
-    for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
-    }
-}
-void test_chip_typical_tree_5_lh(benchmark::State& state) {
-    int depth_val = 5;
-    for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
-    }
-}
-
-// Tree that is 6 nodes chip_typical
-void test_chip_typical_tree_6_hhds(benchmark::State& state) {
-    int depth_val = 6;
-    for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
-    }
-}
-void test_chip_typical_tree_6_lh(benchmark::State& state) {
-    int depth_val = 6;
-    for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
-    }
-}
-
-// Tree that is 7 nodes chip_typical
-void test_chip_typical_tree_7_hhds(benchmark::State& state) {
-    int depth_val = 7;
-    for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
-    }
-}
-void test_chip_typical_tree_7_lh(benchmark::State& state) {
-    int depth_val = 7;
-    for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
-    }
-}
-
-// Tree that is 8 nodes chip_typical
-void test_chip_typical_tree_8_hhds(benchmark::State& state) {
-    int depth_val = 8;
-    for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, depth_val);
-    }
-}
-void test_chip_typical_tree_8_lh(benchmark::State& state) {
-    int depth_val = 8;
-    for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, depth_val);
-    }
-}
-
-// Benchmark registration
 BENCHMARK(test_chip_typical_tree_1_hhds);
 BENCHMARK(test_chip_typical_tree_1_lh);
 BENCHMARK(test_chip_typical_tree_2_hhds);
@@ -218,6 +91,3 @@ BENCHMARK(test_chip_typical_tree_7_hhds)->Iterations(5);
 BENCHMARK(test_chip_typical_tree_7_lh)->Iterations(5);
 BENCHMARK(test_chip_typical_tree_8_hhds)->Iterations(5);
 BENCHMARK(test_chip_typical_tree_8_lh)->Iterations(5);
-
-// Run the benchmarks
-BENCHMARK_MAIN();

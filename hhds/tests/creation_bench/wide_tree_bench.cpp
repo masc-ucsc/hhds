@@ -1,166 +1,75 @@
 #include <benchmark/benchmark.h>
-#include <iostream>
-#include <vector>
-#include <random>
+
 #include <chrono>
+#include <random>
 
-#include "tree.hpp"
 #include "lhtree.hpp"
+#include "tree.hpp"
 
-auto now = std::chrono::high_resolution_clock::now();
-auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+auto                       now          = std::chrono::high_resolution_clock::now();
+auto                       microseconds = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
 std::default_random_engine generator(microseconds);
 
-// Utility function to generate a random int within a range
 int generate_random_int(std::default_random_engine& generator, int min, int max) {
-    std::uniform_int_distribution<int> distribution(min, max);
-    return distribution(generator);
+  std::uniform_int_distribution<int> distribution(min, max);
+  return distribution(generator);
 }
 
-void build_hhds_tree(hhds::tree<int>& hhds_tree, int num_nodes) {
-    auto hhds_root = hhds_tree.add_root(generate_random_int(generator, 1, 100));
+void build_hhds_tree(hhds::Tree& hhds_tree, int num_nodes) {
+  auto root = hhds_tree.add_root_node();
 
-    for (int i = 0; i < num_nodes; ++i) {
-        hhds_tree.add_child(hhds_root, generate_random_int(generator, 1, 100));
-    }
+  for (int i = 0; i < num_nodes; ++i) {
+    benchmark::DoNotOptimize(generate_random_int(generator, 1, 100));
+    hhds_tree.add_child(root);
+  }
 }
 
 void build_lh_tree(lh::tree<int>& lh_tree, int num_nodes) {
-    lh_tree.set_root(generate_random_int(generator, 1, 100));
-    lh::Tree_index lh_current(0, 0);
+  lh_tree.set_root(generate_random_int(generator, 1, 100));
+  lh::Tree_index lh_current(0, 0);
 
-    for (int i = 0; i < num_nodes; ++i) {
-        lh_tree.add_child(lh_current, generate_random_int(generator, 1, 100));
-    }
-}
-
-// Tree that is 10 nodes wide
-void test_wide_tree_10_hhds(benchmark::State& state) {
-    int num_nodes = 10;
-    for (auto _ : state) {
-        hhds::tree<int> hhds_tree;
-        build_hhds_tree(hhds_tree, num_nodes);
-    }
-}
-void test_wide_tree_10_lh(benchmark::State& state) {
-    int num_nodes = 10;
-    for (auto _ : state) {
-        lh::tree<int> lh_tree;
-        build_lh_tree(lh_tree, num_nodes);
-    }
+  for (int i = 0; i < num_nodes; ++i) {
+    lh_tree.add_child(lh_current, generate_random_int(generator, 1, 100));
+  }
 }
 
-// Tree that is 100 nodes wide
-void test_wide_tree_100_hhds(benchmark::State& state) {
-    int num_nodes = 100;
-    for (auto _ : state) {
-    hhds::tree<int> hhds_tree;
-    build_hhds_tree(hhds_tree, num_nodes);
-    }
-}
-void test_wide_tree_100_lh(benchmark::State& state) {
-    int num_nodes = 100;
-    for (auto _ : state) {
-    lh::tree<int> lh_tree;
-    build_lh_tree(lh_tree, num_nodes);
-    }
-}
+#define HHDS_BUILD_WIDE_CASE(width)                 \
+  void test_wide_tree_##width##_hhds(benchmark::State& state) { \
+    for (auto _ : state) {                          \
+      hhds::Tree hhds_tree;                         \
+      build_hhds_tree(hhds_tree, width);            \
+      benchmark::ClobberMemory();                   \
+    }                                               \
+  }                                                 \
+  void test_wide_tree_##width##_lh(benchmark::State& state) {   \
+    for (auto _ : state) {                          \
+      lh::tree<int> lh_tree;                        \
+      build_lh_tree(lh_tree, width);                \
+      benchmark::ClobberMemory();                   \
+    }                                               \
+  }
 
-// Tree that is 1000 nodes wide
-void test_wide_tree_1000_hhds(benchmark::State& state) {
-    int num_nodes = 1000;
-    for (auto _ : state) {
-	hhds::tree<int> hhds_tree;
-	build_hhds_tree(hhds_tree, num_nodes);
-    }
-}
-void test_wide_tree_1000_lh(benchmark::State& state) {
-    lh::tree<int> lh_tree;
-    int num_nodes = 1000;
-    for (auto _ : state) {
-      build_lh_tree(lh_tree, num_nodes);
-    }
-}
+HHDS_BUILD_WIDE_CASE(10)
+HHDS_BUILD_WIDE_CASE(100)
+HHDS_BUILD_WIDE_CASE(1000)
+HHDS_BUILD_WIDE_CASE(10000)
+HHDS_BUILD_WIDE_CASE(100000)
+HHDS_BUILD_WIDE_CASE(1000000)
+HHDS_BUILD_WIDE_CASE(10000000)
 
-// Tree that is 10000 nodes wide
-void test_wide_tree_10000_hhds(benchmark::State& state) {
-    int num_nodes = 10000;
-    for (auto _ : state) {
-    hhds::tree<int> hhds_tree;
-    build_hhds_tree(hhds_tree, num_nodes);
-    }
-}
-void test_wide_tree_10000_lh(benchmark::State& state) {
-    int num_nodes = 10000;
-    for (auto _ : state) {
-    lh::tree<int> lh_tree;
-    build_lh_tree(lh_tree, num_nodes);
-    }
-}
-
-// Tree that is 100000 nodes wide
-void test_wide_tree_100000_hhds(benchmark::State& state) {
-    int num_nodes = 100000;
-    for (auto _ : state) {
-    hhds::tree<int> hhds_tree;
-	    build_hhds_tree(hhds_tree, num_nodes);
-    }
-}
-void test_wide_tree_100000_lh(benchmark::State& state) {
-    int num_nodes = 100000;
-    for (auto _ : state) {
-    lh::tree<int> lh_tree;
-	    build_lh_tree(lh_tree, num_nodes);
-    }
-}
-
-// Tree that is 1000000 nodes wide
-void test_wide_tree_1000000_hhds(benchmark::State& state) {
-    int num_nodes = 1000000;
-    for (auto _ : state) {
-    hhds::tree<int> hhds_tree;
-    build_hhds_tree(hhds_tree, num_nodes);
-    }
-}
-void test_wide_tree_1000000_lh(benchmark::State& state) {
-    int num_nodes = 1000000;
-    for (auto _ : state) {
-    lh::tree<int> lh_tree;
-    build_lh_tree(lh_tree, num_nodes);
-    }
-}
-
-// Tree that is 10000000 nodes wide
-void test_wide_tree_10000000_hhds(benchmark::State& state) {
-    int num_nodes = 10000000;
-    for (auto _ : state) {
-    hhds::tree<int> hhds_tree;
-    build_hhds_tree(hhds_tree, num_nodes);
-    }
-}
-void test_wide_tree_10000000_lh(benchmark::State& state) {
-    int num_nodes = 10000000;
-    for (auto _ : state) {
-    lh::tree<int> lh_tree;
-    build_lh_tree(lh_tree, num_nodes);
-    }
-}
-
-// Benchmark registration
 BENCHMARK(test_wide_tree_10_hhds);
-//BENCHMARK(test_wide_tree_10_lh);
+// BENCHMARK(test_wide_tree_10_lh);
 BENCHMARK(test_wide_tree_100_hhds);
-//BENCHMARK(test_wide_tree_100_lh);
+// BENCHMARK(test_wide_tree_100_lh);
 BENCHMARK(test_wide_tree_1000_hhds);
-//BENCHMARK(test_wide_tree_1000_lh);
+// BENCHMARK(test_wide_tree_1000_lh);
 BENCHMARK(test_wide_tree_10000_hhds);
-//BENCHMARK(test_wide_tree_10000_lh);
+// BENCHMARK(test_wide_tree_10000_lh);
 BENCHMARK(test_wide_tree_100000_hhds);
-//BENCHMARK(test_wide_tree_100000_lh);
+// BENCHMARK(test_wide_tree_100000_lh);
 BENCHMARK(test_wide_tree_1000000_hhds);
-//BENCHMARK(test_wide_tree_1000000_lh);
+// BENCHMARK(test_wide_tree_1000000_lh);
 BENCHMARK(test_wide_tree_10000000_hhds);
-//BENCHMARK(test_wide_tree_10000000_lh);
+// BENCHMARK(test_wide_tree_10000000_lh);
 
-// Run the benchmarks
 BENCHMARK_MAIN();

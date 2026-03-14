@@ -6,16 +6,45 @@
 
 #include "tree.hpp"
 
+#if __has_include("hhds/tests/tree_test_utils.hpp")
+#include "hhds/tests/tree_test_utils.hpp"
+#elif __has_include("tests/tree_test_utils.hpp")
+#include "tests/tree_test_utils.hpp"
+#else
+namespace hhds_test {
+
+using IntNode = hhds::Tree::Node_class;
+
+inline void ensure_size(std::vector<int>& values, hhds::Tid tid) {
+  if (tid >= static_cast<hhds::Tid>(values.size())) {
+    values.resize(static_cast<size_t>(tid + 1));
+  }
+}
+
+inline void set_value(std::vector<int>& values, IntNode node, int value) {
+  ensure_size(values, node.get_raw_tid());
+  values[static_cast<size_t>(node.get_raw_tid())] = value;
+}
+
+inline IntNode add_root(hhds::Tree& tree, std::vector<int>& values, int value) {
+  const auto node = tree.add_root_node();
+  set_value(values, node, value);
+  return node;
+}
+
+inline IntNode add_child(hhds::Tree& tree, std::vector<int>& values, IntNode parent, int value) {
+  const auto node = tree.add_child(parent);
+  set_value(values, node, value);
+  return node;
+}
+
+}  // namespace hhds_test
+#endif
+
 // Utility function to generate a random int within a range
 int generate_random_int(std::default_random_engine& generator, int min, int max) {
   std::uniform_int_distribution<int> distribution(min, max);
   return distribution(generator);
-}
-
-// Utility function to compare two vectors
-template <typename T>
-bool compare_vectors(const std::vector<T>& vec1, const std::vector<T>& vec2) {
-  return vec1 == vec2;
 }
 
 // Test 1: Very Deep Tree (Tens of Millions of Nodes)
@@ -26,15 +55,16 @@ void test_deep_tree(int nodes) {
   // int                        num_nodes = 100;  // Use a smaller number for testing
   int num_nodes = nodes;
 
-  hhds::tree<int> hhds_tree;
+  hhds::Tree       hhds_tree;
+  std::vector<int> hhds_values;
 
   auto data_to_add  = generate_random_int(generator, 1, 100);
-  auto hhds_root    = hhds_tree.add_root(data_to_add);
+  auto hhds_root    = hhds_test::add_root(hhds_tree, hhds_values, data_to_add);
   auto hhds_current = hhds_root;
 
   for (int i = 0; i < num_nodes; ++i) {
     data_to_add  = generate_random_int(generator, 1, 100);
-    hhds_current = hhds_tree.add_child(hhds_current, data_to_add);
+    hhds_current = hhds_test::add_child(hhds_tree, hhds_values, hhds_current, data_to_add);
   }
 }
 
