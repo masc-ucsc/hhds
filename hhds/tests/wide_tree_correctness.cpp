@@ -21,8 +21,8 @@ inline void ensure_size(std::vector<int>& values, hhds::Tid tid) {
 }
 
 inline void set_value(std::vector<int>& values, IntNode node, int value) {
-  ensure_size(values, node.get_raw_tid());
-  values[static_cast<size_t>(node.get_raw_tid())] = value;
+  ensure_size(values, node.get_current_pos());
+  values[static_cast<size_t>(node.get_current_pos())] = value;
 }
 
 inline IntNode add_root(hhds::Tree& tree, std::vector<int>& values, int value) {
@@ -38,7 +38,7 @@ inline IntNode add_child(hhds::Tree& tree, std::vector<int>& values, IntNode par
 }
 
 inline int get_value(const std::vector<int>& values, IntNode node) {
-  return values[static_cast<size_t>(node.get_raw_tid())];
+  return values[static_cast<size_t>(node.get_current_pos())];
 }
 
 inline void preorder_values(const hhds::Tree& tree, const std::vector<int>& values, std::vector<int>& out) {

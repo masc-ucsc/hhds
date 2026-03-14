@@ -25,12 +25,12 @@ int main() {
 
   std::cout << "Pre-order traversal\n";
   for (auto node : tree.pre_order()) {
-    std::cout << "  tid=" << node.get_raw_tid() << " name=" << names[node] << " type=" << tree.get_type(node) << "\n";
+    std::cout << "  pos=" << node.get_current_pos() << " name=" << names[node] << " type=" << tree.get_type(node) << "\n";
   }
 
   std::cout << "\nSibling order under root\n";
   for (auto node : tree.sibling_order(lhs)) {
-    std::cout << "  tid=" << node.get_raw_tid() << " name=" << names[node] << "\n";
+    std::cout << "  pos=" << node.get_current_pos() << " name=" << names[node] << "\n";
   }
 
   hhds::Forest forest;
@@ -48,14 +48,14 @@ int main() {
   top.add_subtree_ref(callsite, sub_tid);
 
   std::cout << "\nForest subtree references\n";
-  std::cout << "  top tree id=" << top_tid << " root tid=" << top_root.get_raw_tid() << "\n";
-  std::cout << "  callsite tid=" << callsite.get_raw_tid() << " subtree_ref=" << top.get_subtree_ref(callsite) << "\n";
-  std::cout << "  sub tree id=" << sub_tid << " root tid=" << sub_root.get_raw_tid() << " leaf tid=" << sub_leaf.get_raw_tid()
+  std::cout << "  top tree id=" << top_tid << " root pos=" << top_root.get_current_pos() << "\n";
+  std::cout << "  callsite pos=" << callsite.get_current_pos() << " subtree_ref=" << top.get_subtree_ref(callsite) << "\n";
+  std::cout << "  sub tree id=" << sub_tid << " root pos=" << sub_root.get_current_pos() << " leaf pos=" << sub_leaf.get_current_pos()
             << "\n";
 
-  const auto flat = tree.as_flat(lhs.get_raw_tid(), /*current_tid=*/17, /*root_tid=*/11);
+  const auto flat = tree.as_flat(lhs.get_current_pos(), /*current_tid=*/17, /*root_tid=*/11);
   std::cout << "\nFlat wrapper example: root_tid=" << flat.get_root_tid() << " current_tid=" << flat.get_current_tid()
-            << " raw_tid=" << flat.get_raw_tid() << "\n";
+            << " current_pos=" << flat.get_current_pos() << "\n";
 
   return 0;
 }

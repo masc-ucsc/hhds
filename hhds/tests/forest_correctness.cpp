@@ -10,9 +10,9 @@
 
 namespace {
 
-hhds::Tree& create_rooted_tree(hhds::Forest& forest, hhds::Tree_pos& tree_ref) {
-  tree_ref = forest.create_tree();
-  auto& tree = forest.get_tree(tree_ref);
+hhds::Tree& create_rooted_tree(hhds::Forest& forest, hhds::Tree_pos& tree_tid) {
+  tree_tid = forest.create_tree();
+  auto& tree = forest.get_tree(tree_tid);
   tree.add_root();
   return tree;
 }
@@ -22,14 +22,14 @@ hhds::Tree& create_rooted_tree(hhds::Forest& forest, hhds::Tree_pos& tree_ref) {
 void test_basic_forest_operations() {
   hhds::Forest forest;
 
-  hhds::Tree_pos tree1_ref;
-  hhds::Tree_pos tree2_ref;
-  auto&          tree1 = create_rooted_tree(forest, tree1_ref);
-  auto&          tree2 = create_rooted_tree(forest, tree2_ref);
+  hhds::Tree_pos tree1_tid;
+  hhds::Tree_pos tree2_tid;
+  auto&          tree1 = create_rooted_tree(forest, tree1_tid);
+  auto&          tree2 = create_rooted_tree(forest, tree2_tid);
 
-  I(tree1_ref < 0, "Tree reference should be negative");
-  I(tree2_ref < 0, "Tree reference should be negative");
-  I(tree1_ref != tree2_ref, "Tree references should be different");
+  I(tree1_tid < 0, "Tree reference should be negative");
+  I(tree2_tid < 0, "Tree reference should be negative");
+  I(tree1_tid != tree2_tid, "Tree references should be different");
   I(tree1.get_root() == hhds::ROOT, "Tree1 root should exist");
   I(tree2.get_root() == hhds::ROOT, "Tree2 root should exist");
 }
@@ -37,30 +37,30 @@ void test_basic_forest_operations() {
 void test_subtree_references() {
   hhds::Forest forest;
 
-  hhds::Tree_pos main_tree_ref;
-  hhds::Tree_pos sub_tree_ref;
-  auto&          main_tree = create_rooted_tree(forest, main_tree_ref);
-  auto&          sub_tree  = create_rooted_tree(forest, sub_tree_ref);
+  hhds::Tree_pos main_tree_tid;
+  hhds::Tree_pos subtree_tid;
+  auto&          main_tree = create_rooted_tree(forest, main_tree_tid);
+  auto&          sub_tree  = create_rooted_tree(forest, subtree_tid);
 
   auto child1 = main_tree.add_child(main_tree.get_root());
   main_tree.add_child(main_tree.get_root());
   sub_tree.add_child(sub_tree.get_root());
 
-  main_tree.add_subtree_ref(child1, sub_tree_ref);
+  main_tree.add_subtree_ref(child1, subtree_tid);
 
-  bool deleted = forest.delete_tree(sub_tree_ref);
+  bool deleted = forest.delete_tree(subtree_tid);
   I(!deleted, "Should not be able to delete tree with references");
-  auto& still_there = forest.get_tree(sub_tree_ref);
+  auto& still_there = forest.get_tree(subtree_tid);
   I(still_there.get_root() == hhds::ROOT, "Referenced tree should still exist");
 
   main_tree.delete_leaf(child1);
 
-  deleted = forest.delete_tree(sub_tree_ref);
+  deleted = forest.delete_tree(subtree_tid);
   I(deleted, "Should be able to delete tree with no references");
 
   bool caught_exception = false;
   try {
-    forest.get_tree(sub_tree_ref);
+    forest.get_tree(subtree_tid);
   } catch (const std::runtime_error&) {
     caught_exception = true;
   }
@@ -70,17 +70,17 @@ void test_subtree_references() {
 void test_tree_traversal_with_subtrees() {
   hhds::Forest forest;
 
-  hhds::Tree_pos main_tree_ref;
-  hhds::Tree_pos sub_tree_ref;
-  auto&          main_tree = create_rooted_tree(forest, main_tree_ref);
-  auto&          sub_tree  = create_rooted_tree(forest, sub_tree_ref);
+  hhds::Tree_pos main_tree_tid;
+  hhds::Tree_pos subtree_tid;
+  auto&          main_tree = create_rooted_tree(forest, main_tree_tid);
+  auto&          sub_tree  = create_rooted_tree(forest, subtree_tid);
 
   auto child1 = main_tree.add_child(main_tree.get_root());
   main_tree.add_child(main_tree.get_root());
   sub_tree.add_child(sub_tree.get_root());
   sub_tree.add_child(sub_tree.get_root());
 
-  main_tree.add_subtree_ref(child1, sub_tree_ref);
+  main_tree.add_subtree_ref(child1, subtree_tid);
 
   int count = 0;
   for (auto it = main_tree.pre_order_with_subtrees(main_tree.get_root(), true).begin();
@@ -126,14 +126,14 @@ void test_cycle_traversal() {
 void test_complex_forest_operations() {
   hhds::Forest forest;
 
-  hhds::Tree_pos main_tree_ref;
-  hhds::Tree_pos sub_tree1_ref;
-  hhds::Tree_pos sub_tree2_ref;
-  hhds::Tree_pos sub_tree3_ref;
-  auto&          main_tree = create_rooted_tree(forest, main_tree_ref);
-  auto&          sub_tree1 = create_rooted_tree(forest, sub_tree1_ref);
-  auto&          sub_tree2 = create_rooted_tree(forest, sub_tree2_ref);
-  auto&          sub_tree3 = create_rooted_tree(forest, sub_tree3_ref);
+  hhds::Tree_pos main_tree_tid;
+  hhds::Tree_pos subtree1_tid;
+  hhds::Tree_pos subtree2_tid;
+  hhds::Tree_pos subtree3_tid;
+  auto&          main_tree = create_rooted_tree(forest, main_tree_tid);
+  auto&          sub_tree1 = create_rooted_tree(forest, subtree1_tid);
+  auto&          sub_tree2 = create_rooted_tree(forest, subtree2_tid);
+  auto&          sub_tree3 = create_rooted_tree(forest, subtree3_tid);
 
   std::vector<hhds::Tree_pos> main_nodes{main_tree.get_root()};
   std::vector<hhds::Tree_pos> sub1_nodes{sub_tree1.get_root()};
@@ -156,18 +156,18 @@ void test_complex_forest_operations() {
     sub2_nodes.push_back(sub_tree2.add_child(parent));
   }
 
-  auto current = sub_tree3.get_root();
+  auto current_pos = sub_tree3.get_root();
   for (int i = 0; i < 100; ++i) {
-    auto new_node = sub_tree3.add_child(current);
+    auto new_node = sub_tree3.add_child(current_pos);
     sub3_nodes.push_back(new_node);
-    current = new_node;
+    current_pos = new_node;
   }
 
-  main_tree.add_subtree_ref(main_nodes[0], sub_tree1_ref);
-  sub_tree1.add_subtree_ref(sub1_nodes[0], sub_tree2_ref);
-  sub_tree2.add_subtree_ref(sub2_nodes[0], sub_tree3_ref);
+  main_tree.add_subtree_ref(main_nodes[0], subtree1_tid);
+  sub_tree1.add_subtree_ref(sub1_nodes[0], subtree2_tid);
+  sub_tree2.add_subtree_ref(sub2_nodes[0], subtree3_tid);
 
-  bool deleted = forest.delete_tree(sub_tree3_ref);
+  bool deleted = forest.delete_tree(subtree3_tid);
   I(!deleted, "Should not be able to delete heavily referenced tree");
 
   int node_count = 0;

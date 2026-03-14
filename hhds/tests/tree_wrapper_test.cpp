@@ -36,16 +36,18 @@ TEST(TreeWrappers, CompactConversions) {
 
   EXPECT_EQ(flat.get_root_tid(), root_tid);
   EXPECT_EQ(flat.get_current_tid(), current_tid);
-  EXPECT_EQ(flat.get_raw_tid(), root.get_raw_tid());
+  EXPECT_EQ(flat.get_current_pos(), root.get_current_pos());
 
   const auto class_from_flat = hhds::to_class(flat);
   EXPECT_EQ(class_from_flat, root);
 
-  const auto hier = tree.as_hier(root.get_raw_tid(), current_tid, 42, root_tid);
+  const hhds::Tid hier_tid = -11;
+  const auto      hier     = tree.as_hier(root.get_current_pos(), current_tid, hier_tid, 42, root_tid);
   EXPECT_EQ(hier.get_root_tid(), root_tid);
   EXPECT_EQ(hier.get_current_tid(), current_tid);
+  EXPECT_EQ(hier.get_hier_tid(), hier_tid);
   EXPECT_EQ(hier.get_hier_pos(), 42);
-  EXPECT_EQ(hier.get_raw_tid(), root.get_raw_tid());
+  EXPECT_EQ(hier.get_current_pos(), root.get_current_pos());
 
   const auto flat_from_hier  = hhds::to_flat(hier);
   const auto class_from_hier = hhds::to_class(hier);
@@ -71,15 +73,16 @@ TEST(TreeWrappers, ForestContextAndSubtreeRefs) {
   EXPECT_TRUE(parent.is_subtree_ref(ref_node));
   EXPECT_EQ(parent.get_subtree_ref(ref_node), child_tid);
 
-  const auto flat = parent.as_flat(ref_node.get_raw_tid(), parent_tid);
+  const auto flat = parent.as_flat(ref_node.get_current_pos(), parent_tid);
   EXPECT_EQ(flat.get_root_tid(), parent_tid);
   EXPECT_EQ(flat.get_current_tid(), parent_tid);
-  EXPECT_EQ(flat.get_raw_tid(), ref_node.get_raw_tid());
+  EXPECT_EQ(flat.get_current_pos(), ref_node.get_current_pos());
 
-  const auto hier = parent.as_hier(ref_node.get_raw_tid(), parent_tid, child_root.get_raw_tid());
+  const auto hier = parent.as_hier(ref_node.get_current_pos(), parent_tid, child_tid, child_root.get_current_pos());
   EXPECT_EQ(hier.get_root_tid(), parent_tid);
   EXPECT_EQ(hier.get_current_tid(), parent_tid);
-  EXPECT_EQ(hier.get_hier_pos(), child_root.get_raw_tid());
+  EXPECT_EQ(hier.get_hier_tid(), child_tid);
+  EXPECT_EQ(hier.get_hier_pos(), child_root.get_current_pos());
 }
 
 TEST(TreeWrappers, TraversalsYieldNodeClass) {

@@ -165,10 +165,15 @@ TEST(CompactTypes, EdgeHierConversions) {
   auto hier_ref  = std::make_shared<hhds::Tree>();
   auto hier_gids = std::make_shared<std::vector<hhds::Gid>>();
   auto hier_pos  = hier_ref->add_root();
+  const hhds::Tid hier_tid = -9;
   hier_gids->resize(static_cast<size_t>(hier_pos + 1), hhds::Gid_invalid);
   (*hier_gids)[static_cast<size_t>(hier_pos)] = gid;
 
-  const auto hier = hhds::to_hier(edge, hier_ref, hier_gids, hier_pos);
+  const auto hier = hhds::to_hier(edge, hier_tid, hier_gids, hier_pos);
+  EXPECT_EQ(hier.driver.get_hier_tid(), hier_tid);
+  EXPECT_EQ(hier.driver.get_hier_pos(), hier_pos);
+  EXPECT_EQ(hier.sink.get_hier_tid(), hier_tid);
+  EXPECT_EQ(hier.sink.get_hier_pos(), hier_pos);
   EXPECT_EQ(hier.driver.get_root_gid(), gid);
   EXPECT_EQ(hier.driver.get_current_gid(), gid);
   EXPECT_EQ(hier.sink.get_root_gid(), gid);

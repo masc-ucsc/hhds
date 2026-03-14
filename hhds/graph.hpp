@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "graph_sizing.hpp"
+#include "tree.hpp"
 #include "unordered_dense.hpp"
 
 namespace hhds {
@@ -303,39 +304,40 @@ private:
 class Node_hier {
 public:
   Node_hier() = default;
-  Node_hier(std::shared_ptr<Tree> hier_ref_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, int64_t hier_pos_value,
-            Nid raw_nid_value);
+  Node_hier(Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value, Nid raw_nid_value);
 
   [[nodiscard]] Gid     get_root_gid() const noexcept;
   [[nodiscard]] Gid     get_current_gid() const noexcept;
+  [[nodiscard]] Tid     get_hier_tid() const noexcept { return hier_tid; }
+  [[nodiscard]] Tree_pos get_hier_pos() const noexcept { return hier_pos; }
   [[nodiscard]] Port_id get_port_id() const noexcept { return 0; }
   [[nodiscard]] Nid     get_raw_nid() const noexcept { return raw_nid; }
 
   [[nodiscard]] bool operator==(const Node_hier& other) const noexcept {
-    return hier_ref.get() == other.hier_ref.get() && hier_pos == other.hier_pos && raw_nid == other.raw_nid;
+    return hier_tid == other.hier_tid && hier_pos == other.hier_pos && raw_nid == other.raw_nid;
   }
   [[nodiscard]] bool operator!=(const Node_hier& other) const noexcept { return !(*this == other); }
 
   template <typename H>
   friend H AbslHashValue(H h, const Node_hier& node) {
-    return H::combine(std::move(h), node.hier_ref.get(), node.hier_pos, node.raw_nid);
+    return H::combine(std::move(h), node.hier_tid, node.hier_pos, node.raw_nid);
   }
 
 private:
-  std::shared_ptr<Tree>             hier_ref;
   std::shared_ptr<std::vector<Gid>> hier_gids;
-  int64_t                           hier_pos = 0;
+  Tid                               hier_tid = INVALID;
+  Tree_pos                          hier_pos = INVALID;
   Nid                               raw_nid  = 0;
 };
 
 class Pin_hier {
 public:
   Pin_hier() = default;
-  Pin_hier(std::shared_ptr<Tree> hier_ref_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, int64_t hier_pos_value,
+  Pin_hier(Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value,
            Nid raw_nid_value, Port_id port_id_value,
            Pid pin_pid_value)
-      : hier_ref(std::move(hier_ref_value))
-      , hier_gids(std::move(hier_gids_value))
+      : hier_gids(std::move(hier_gids_value))
+      , hier_tid(hier_tid_value)
       , hier_pos(hier_pos_value)
       , raw_nid(raw_nid_value & ~static_cast<Nid>(2))
       , port_id(port_id_value)
@@ -343,24 +345,26 @@ public:
 
   [[nodiscard]] Gid     get_root_gid() const noexcept;
   [[nodiscard]] Gid     get_current_gid() const noexcept;
+  [[nodiscard]] Tid     get_hier_tid() const noexcept { return hier_tid; }
+  [[nodiscard]] Tree_pos get_hier_pos() const noexcept { return hier_pos; }
   [[nodiscard]] Nid     get_raw_nid() const noexcept { return raw_nid; }
   [[nodiscard]] Port_id get_port_id() const noexcept { return port_id; }
   [[nodiscard]] Pid     get_pin_pid() const noexcept { return pin_pid; }
 
   [[nodiscard]] bool operator==(const Pin_hier& other) const noexcept {
-    return hier_ref.get() == other.hier_ref.get() && hier_pos == other.hier_pos && pin_pid == other.pin_pid;
+    return hier_tid == other.hier_tid && hier_pos == other.hier_pos && pin_pid == other.pin_pid;
   }
   [[nodiscard]] bool operator!=(const Pin_hier& other) const noexcept { return !(*this == other); }
 
   template <typename H>
   friend H AbslHashValue(H h, const Pin_hier& pin) {
-    return H::combine(std::move(h), pin.hier_ref.get(), pin.hier_pos, pin.pin_pid);
+    return H::combine(std::move(h), pin.hier_tid, pin.hier_pos, pin.pin_pid);
   }
 
 private:
-  std::shared_ptr<Tree>             hier_ref;
   std::shared_ptr<std::vector<Gid>> hier_gids;
-  int64_t                           hier_pos = 0;
+  Tid                               hier_tid = INVALID;
+  Tree_pos                          hier_pos = INVALID;
   Nid                               raw_nid  = 0;
   Port_id                           port_id  = 0;
   Pid                               pin_pid  = 0;
@@ -520,10 +524,10 @@ private:
   void                    rebuild_forward_hier_cache() const;
   void                    fast_iter_impl(bool hierarchy, Gid top_graph, uint32_t tree_node_num, uint32_t& next_tree_node_num,
                                          ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<FastIterator>& out) const;
-  void fast_hier_impl(std::shared_ptr<Tree> hier_ref, std::shared_ptr<std::vector<Gid>> hier_gids, int64_t hier_pos,
+  void fast_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos,
                       ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const;
   void forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_flat>& out) const;
-  void forward_hier_impl(std::shared_ptr<Tree> hier_ref, std::shared_ptr<std::vector<Gid>> hier_gids, int64_t hier_pos,
+  void forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos,
                          ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const;
 
   std::vector<Node>                  node_table;
@@ -653,8 +657,7 @@ Pin_hier                to_hier(Pin_flat)  = delete;
 
 [[nodiscard]] Edge_flat  to_flat(const Edge_class& e, Gid current_gid, Gid root_gid = Gid_invalid);
 [[nodiscard]] Edge_flat  to_flat(const Edge_hier& e);
-[[nodiscard]] Edge_hier  to_hier(const Edge_class& e, std::shared_ptr<Tree> hier_ref, std::shared_ptr<std::vector<Gid>> hier_gids,
-                                 int64_t hier_pos);
+[[nodiscard]] Edge_hier  to_hier(const Edge_class& e, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos);
 [[nodiscard]] Edge_class to_class(const Edge_flat& e);
 [[nodiscard]] Edge_class to_class(const Edge_hier& e);
 
