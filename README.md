@@ -139,7 +139,7 @@ Trees can share subtrees via the Forest container:
 ```cpp
 Forest<int> forest;
 Tree_pos subtree = forest.create_tree(root_data);
-tree.add_subtree_ref(node_pos, subtree);
+tree.set_subnode(node_pos, subtree);
 ```
 
 The Forest manages reference counting and cleanup of shared subtrees.

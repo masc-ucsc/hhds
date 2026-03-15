@@ -767,6 +767,7 @@ void Graph::bind_library(const GraphLibrary* owner, Gid self_gid) noexcept {
 
 void Graph::invalidate_traversal_caches() noexcept {
   fast_class_cache_valid_    = false;
+  subs_cache_valid_          = false;
   fast_hier_cache_valid_     = false;
   forward_class_cache_valid_ = false;
   forward_flat_cache_valid_  = false;
@@ -790,6 +791,19 @@ void Graph::rebuild_fast_class_cache() const {
     }
   }
   fast_class_cache_valid_ = true;
+}
+
+auto Graph::get_subs() const -> std::span<const Node_class> {
+  if (!subs_cache_valid_) {
+    subs_cache_.clear();
+    for (size_t i = 1; i < node_table.size(); ++i) {
+      if (node_table[i].has_subnode()) {
+        subs_cache_.emplace_back(const_cast<Graph*>(this), static_cast<Nid>(i) << 2);
+      }
+    }
+    subs_cache_valid_ = true;
+  }
+  return subs_cache_;
 }
 
 void Graph::rebuild_fast_flat_cache() const {

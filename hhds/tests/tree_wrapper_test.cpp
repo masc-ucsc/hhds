@@ -69,10 +69,10 @@ TEST(TreeWrappers, ForestContextAndSubtreeRefs) {
   const auto child_root  = child.add_root_node();
   const auto ref_node    = parent.add_child(parent_root);
 
-  parent.add_subtree_ref(ref_node, child_tid);
+  parent.set_subnode(ref_node, child_tid);
 
-  EXPECT_TRUE(parent.is_subtree_ref(ref_node));
-  EXPECT_EQ(parent.get_subtree_ref(ref_node), child_tid);
+  EXPECT_TRUE(parent.has_subnode(ref_node));
+  EXPECT_EQ(parent.get_subnode(ref_node), child_tid);
 
   const auto flat = parent.as_flat(ref_node.get_current_pos(), parent_tid);
   EXPECT_EQ(flat.get_root_tid(), parent_tid);
@@ -173,7 +173,7 @@ TEST(TreeWrappers, ForestCursorFollowsSubtreeRefs) {
   const auto child_root   = child.add_root_node();
   const auto child_leaf   = child.add_child(child_root);
 
-  parent.add_subtree_ref(callsite, child_tid);
+  parent.set_subnode(callsite, child_tid);
 
   auto cursor = forest->create_cursor(parent_tid);
   EXPECT_TRUE(cursor.is_root());
@@ -211,4 +211,29 @@ TEST(TreeWrappers, ForestCursorFollowsSubtreeRefs) {
   EXPECT_EQ(cursor.get_current_tid(), parent_tid);
   EXPECT_EQ(cursor.get_current_pos(), parent_other.get_current_pos());
   EXPECT_EQ(cursor.depth(), 1);
+}
+
+TEST(TreeWrappers, GetSubsReturnsDirectSubtreeCallsites) {
+  auto forest = hhds::Forest::create();
+
+  const auto top_tid   = forest->create_tree();
+  const auto child_tid = forest->create_tree();
+
+  auto& top   = forest->get_tree(top_tid);
+  auto& child = forest->get_tree(child_tid);
+
+  const auto root    = top.add_root_node();
+  const auto call1   = top.add_child(root);
+  const auto regular = top.add_child(root);
+  const auto call2   = top.add_child(root);
+
+  child.add_root_node();
+  top.set_subnode(call1, child_tid);
+  top.set_subnode(call2, child_tid);
+
+  const auto subs = top.get_subs();
+  ASSERT_EQ(subs.size(), 2U);
+  EXPECT_EQ(subs[0], call1);
+  EXPECT_EQ(subs[1], call2);
+  EXPECT_NE(subs[0], regular);
 }

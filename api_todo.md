@@ -107,7 +107,7 @@ Tree and graph still use different public verbs for the same concept.
 
 Current:
 
-- tree: `add_subtree_ref`, `is_subtree_ref`, `get_subtree_ref`
+- tree: `set_subnode`, `has_subnode`, `get_subnode`
 - graph: `set_subnode`, `has_subnode`, `get_subnode`
 
 Pending:
@@ -117,12 +117,12 @@ Pending:
 
 This is mostly API cleanup, but it matters before save/load/print and cursor APIs are frozen.
 
-## 6. Hierarchy Cursor And Caller Tracking
+## 6. Hierarchy Cursor And Direct Sub-Instance Queries
 
 Tree-side cursor support is now implemented on the structural API:
 
 - `Tree::create_cursor(...)` for single-tree navigation
-- `Forest::create_cursor(...)` for hierarchy-aware navigation across subtree refs
+- `Forest::create_cursor(...)` for hierarchy-aware navigation across tree subnode refs
 - cursor state is `tid + pos` for forest traversal, matching the `_hier` identity model
 - the cursor keeps shared ownership of the active `Tree` / `Forest`, while wrappers remain pointer-free value types
 
@@ -136,11 +136,15 @@ Pending graph-side capabilities:
   - `goto_next_sibling()`
   - `goto_prev_sibling()`
 - iterate nodes at the current hierarchy level while preserving `_hier` context
-- caller tracking for shared subgraphs
+- direct subgraph enumeration from a graph:
+  - `auto subs = graph.get_subs();`
+  - each entry is the direct callsite `Node_class` whose `get_subnode(...)` points to another graph in the same library
 
 Pending tree-side capabilities:
 
-- caller tracking for referenced trees
+- none for cursoring; direct subnode enumeration is available from the tree itself:
+  - `auto subs = tree.get_subs();`
+  - each entry is the direct callsite `Node_class` whose `get_subnode(...)` points to another tree in the same forest
 
 Updated tree-side shape should follow the structural API:
 

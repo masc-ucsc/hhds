@@ -422,12 +422,12 @@ TEST(AddEdgeShorthand, NodeToNode) {
 //   // main_tree root has a child that references sub_tree
 //   auto root  = main_tree.add_root_node();
 //   auto child = main_tree.add_child(root);
-//   main_tree.add_subtree_ref(child, sub_tid);
+//   main_tree.set_subnode(child, sub_tid);
 
 //   // sub_tree root has a child that references leaf_tree
 //   auto sub_root  = sub_tree.add_root_node();
 //   auto sub_child = sub_tree.add_child(sub_root);
-//   sub_tree.add_subtree_ref(sub_child, leaf_tid);
+//   sub_tree.set_subnode(sub_child, leaf_tid);
 
 //   (void)leaf_tree.add_root_node();
 
@@ -456,10 +456,10 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // }
 
 // // ---------------------------------------------------------------------------
-// // Section 14: get_callers (api_todo.md #14)
+// // Section 14: get_subs (direct sub-instance enumeration)
 // // ---------------------------------------------------------------------------
 
-// TEST(GetCallers, GraphCallersTracking) {
+// TEST(GetSubs, GraphDirectSubnodes) {
 //   hhds::GraphLibrary lib;
 
 //   auto cpu_a   = lib.create_graph();  // returns shared_ptr<Graph>
@@ -473,70 +473,39 @@ TEST(AddEdgeShorthand, NodeToNode) {
 //   auto b_sub = cpu_b->create_node();
 //   cpu_b->set_subnode(b_sub, alu_gid);
 
-//   // ALU should have 2 callers
-//   int caller_count = 0;
-//   for (auto& c : lib.get_callers(alu_gid)) {
-//     (void)c.caller_gid;
-//     (void)c.caller_node;
-//     caller_count++;
-//   }
-//   EXPECT_EQ(caller_count, 2);
+//   const auto a_subs = cpu_a->get_subs();
+//   const auto b_subs = cpu_b->get_subs();
+//   ASSERT_EQ(a_subs.size(), 1U);
+//   ASSERT_EQ(b_subs.size(), 1U);
+//   EXPECT_EQ(a_subs[0], a_sub);
+//   EXPECT_EQ(b_subs[0], b_sub);
 // }
 
-// TEST(GetCallers, ForestCallersTracking) {
-//   hhds::Forest forest;
+// TEST(GetSubs, ForestDirectSubtrees) {
+//   auto forest = hhds::Forest::create();
 
-//   const hhds::Tid tree_a_tid = forest.create_tree();
-//   const hhds::Tid tree_b_tid = forest.create_tree();
-//   const hhds::Tid shared_tid = forest.create_tree();
+//   const hhds::Tid tree_a_tid = forest->create_tree();
+//   const hhds::Tid tree_b_tid = forest->create_tree();
+//   const hhds::Tid shared_tid = forest->create_tree();
 
-//   auto& tree_a = forest.get_tree(tree_a_tid);
-//   auto& tree_b = forest.get_tree(tree_b_tid);
-//   auto& shared = forest.get_tree(shared_tid);
+//   auto& tree_a = forest->get_tree(tree_a_tid);
+//   auto& tree_b = forest->get_tree(tree_b_tid);
+//   auto& shared = forest->get_tree(shared_tid);
 
 //   auto a_root  = tree_a.add_root_node();
 //   auto a_child = tree_a.add_child(a_root);
-//   tree_a.add_subtree_ref(a_child, shared_tid);
+//   tree_a.set_subnode(a_child, shared_tid);
 
 //   auto b_root  = tree_b.add_root_node();
 //   auto b_child = tree_b.add_child(b_root);
-//   tree_b.add_subtree_ref(b_child, shared_tid);
+//   tree_b.set_subnode(b_child, shared_tid);
 
 //   (void)shared.add_root_node();
 
-//   // shared_tree should have 2 callers
-//   int caller_count = 0;
-//   for (auto& c : forest.get_callers(shared_tid)) {
-//     (void)c.caller_tid;
-//     (void)c.caller_tnode;
-//     caller_count++;
-//   }
-//   EXPECT_EQ(caller_count, 2);
-// }
-
-// TEST(GetCallers, CreateCursorFromCaller) {
-//   hhds::GraphLibrary lib;
-
-//   auto cpu_a   = lib.create_graph();  // returns shared_ptr<Graph>
-//   auto cpu_b   = lib.create_graph();  // returns shared_ptr<Graph>
-//   auto alu     = lib.create_graph();  // returns shared_ptr<Graph>
-//   auto alu_gid = alu->get_gid();
-
-//   auto a_sub = cpu_a->create_node();
-//   cpu_a->set_subnode(a_sub, alu_gid);
-
-//   auto b_sub = cpu_b->create_node();
-//   cpu_b->set_subnode(b_sub, alu_gid);
-
-//   // Pick a caller and create a rooted cursor from it
-//   auto callers_it = lib.get_callers(alu_gid).begin();
-//   auto cursor     = lib.create_cursor(callers_it->caller_gid);
-
-//   // Descend into ALU from that specific parent
-//   EXPECT_TRUE(cursor.goto_first_child());
-//   EXPECT_EQ(cursor.get_current_gid(), alu_gid);
-
-//   // Going up returns to the caller we picked, not the other one
-//   EXPECT_TRUE(cursor.goto_parent());
-//   EXPECT_EQ(cursor.get_current_gid(), callers_it->caller_gid);
+//   const auto a_subs = tree_a.get_subs();
+//   const auto b_subs = tree_b.get_subs();
+//   ASSERT_EQ(a_subs.size(), 1U);
+//   ASSERT_EQ(b_subs.size(), 1U);
+//   EXPECT_EQ(a_subs[0], a_child);
+//   EXPECT_EQ(b_subs[0], b_child);
 // }

@@ -20,6 +20,7 @@
 #include <ostream>
 #include <queue>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -202,10 +203,10 @@ public:
   void set_num_short_del_occ(uint16_t n) { num_short_del_occ = n; }
   void set_is_leaf(bool l) { this->is_leaf = l; }
 
-  // Helper methods for subtree references
-  [[nodiscard]] bool     has_subtree_ref() const { return parent < 0; }
-  [[nodiscard]] Tree_pos get_subtree_ref() const { return parent; }
-  void                   set_subtree_ref(Tree_pos ref) { parent = ref; }
+  // Helper methods for subnode links
+  [[nodiscard]] bool     has_subnode() const { return parent < 0; }
+  [[nodiscard]] Tree_pos get_subnode() const { return parent; }
+  void                   set_subnode(Tree_pos ref) { parent = ref; }
 };  // Tree_pointers class
 
 template <typename X>
@@ -215,21 +216,21 @@ class Tree : public std::enable_shared_from_this<Tree> {
 private:
   std::vector<Tree_pointers>   pointers_stack;
   std::vector<std::bitset<64>> validity_stack;
-  std::vector<Tree_pos>        subtree_refs;
+  std::vector<Tree_pos>        subnode_refs;
   Forest*                      forest_ptr;
   std::weak_ptr<Forest>        forest_owner_;
 
-  void _ensure_subtree_ref_capacity(Tree_pos required_pos) {
-    if (required_pos < static_cast<Tree_pos>(subtree_refs.size())) {
+  void _ensure_subnode_ref_capacity(Tree_pos required_pos) {
+    if (required_pos < static_cast<Tree_pos>(subnode_refs.size())) {
       return;
     }
 
-    size_t new_size = subtree_refs.empty() ? static_cast<size_t>(CHUNK_SIZE * 2) : subtree_refs.size();
+    size_t new_size = subnode_refs.empty() ? static_cast<size_t>(CHUNK_SIZE * 2) : subnode_refs.size();
     const size_t min_size = static_cast<size_t>(required_pos + 1);
     while (new_size < min_size) {
       new_size *= 2;
     }
-    subtree_refs.resize(new_size, INVALID);
+    subnode_refs.resize(new_size, INVALID);
   }
 
   [[nodiscard]] inline bool _check_idx_exists(const Tree_pos& idx) const noexcept {
@@ -492,8 +493,8 @@ public:
   void     delete_leaf(Node_class leaf_node) { delete_leaf(leaf_node.get_current_pos()); }
   void     delete_subtree(const Tree_pos& subtree_root_pos);
   void     delete_subtree(Node_class subtree_root_node) { delete_subtree(subtree_root_node.get_current_pos()); }
-  void     add_subtree_ref(const Tree_pos& node_pos, Tree_pos subtree_tid);
-  void     add_subtree_ref(Node_class node, Tid subtree_tid) { add_subtree_ref(node.get_current_pos(), subtree_tid); }
+  void     set_subnode(const Tree_pos& node_pos, Tid subnode_tid);
+  void     set_subnode(Node_class node, Tid subnode_tid) { set_subnode(node.get_current_pos(), subnode_tid); }
   Tree_pos insert_next_sibling(const Tree_pos& sibling_pos);
   Node_class insert_next_sibling(Node_class sibling_node) { return as_class(insert_next_sibling(sibling_node.get_current_pos())); }
 
@@ -549,11 +550,11 @@ public:
     Node_class operator*() const { return tree_ptr->as_class(current); }
 
   protected:
-  Tree_pos handle_subtree_ref(Tree_pos node_pos) {
+  Tree_pos handle_subnode_ref(Tree_pos node_pos) {
       if (m_follow_subtrees && tree_ptr->forest_ptr) {
-        Tree_pos subtree_tid = tree_ptr->get_subtree_ref(node_pos);
-        if (subtree_tid != INVALID) {
-          if (subtree_tid < 0) {
+        Tree_pos subnode_tid = tree_ptr->get_subnode(node_pos);
+        if (subnode_tid != INVALID) {
+          if (subnode_tid < 0) {
             return ROOT;
           }
         }
@@ -578,9 +579,9 @@ public:
     sibling_order_iterator(Tree_pos start, Tree* tree, bool follow_refs) : base(start, tree, follow_refs) {}
 
     sibling_order_iterator& operator++() {
-      Tree_pos subtree_root = this->handle_subtree_ref(this->current);
-      if (subtree_root != INVALID) {
-        this->current = subtree_root;
+      Tree_pos subnode_root = this->handle_subnode_ref(this->current);
+      if (subnode_root != INVALID) {
+        this->current = subnode_root;
         return *this;
       }
       if (tree_ptr->get_sibling_next(current) != INVALID) {
@@ -629,9 +630,9 @@ public:
     const_sibling_order_iterator(Tree_pos start, const Tree* tree, bool follow_refs) : base(start, tree, follow_refs) {}
 
     const_sibling_order_iterator& operator++() {
-      Tree_pos subtree_root = this->handle_subtree_ref(this->current);
-      if (subtree_root != INVALID) {
-        this->current = subtree_root;
+      Tree_pos subnode_root = this->handle_subnode_ref(this->current);
+      if (subnode_root != INVALID) {
+        this->current = subnode_root;
         return *this;
       }
       if (tree_ptr->get_sibling_next(current) != INVALID) {
@@ -774,7 +775,7 @@ public:
 
     pre_order_iterator_with_subtrees& operator++() {
       if (m_follow_subtrees && current_tree->forest_ptr) {
-        Tree_pos ref = current_tree->get_subtree_ref(current);
+        Tree_pos ref = current_tree->get_subnode(current);
         if (ref != INVALID) {
           if (ref < 0 && visited_subtrees.find(ref) == visited_subtrees.end()) {
             visited_subtrees.insert(ref);
@@ -893,9 +894,9 @@ public:
     }
 
     post_order_iterator& operator++() {
-      Tree_pos subtree_root = this->handle_subtree_ref(this->current);
-      if (subtree_root != INVALID) {
-        this->current = subtree_root;
+      Tree_pos subnode_root = this->handle_subnode_ref(this->current);
+      if (subnode_root != INVALID) {
+        this->current = subnode_root;
         return *this;
       }
 
@@ -934,20 +935,34 @@ public:
     return post_order_range(start.get_current_pos(), this, follow_subtrees);
   }
 
-  [[nodiscard]] bool   is_subtree_ref(Tree_pos node_pos) const { return get_subtree_ref(node_pos) < 0; }
-  [[nodiscard]] bool   is_subtree_ref(Node_class node) const { return is_subtree_ref(node.get_current_pos()); }
-  [[nodiscard]] size_t get_subtree_index(Tree_pos node_pos) const { return static_cast<size_t>(-get_subtree_ref(node_pos) - 1); }
-  [[nodiscard]] Tree_pos make_subtree_ref(size_t subtree_index) const { return static_cast<Tree_pos>(-(subtree_index + 1)); }
-  [[nodiscard]] Tree_pos get_subtree_ref(Tree_pos node_pos) const {
-    I(_check_idx_exists(node_pos), "get_subtree_ref: Node index out of range");
-    return node_pos < static_cast<Tree_pos>(subtree_refs.size()) ? subtree_refs[node_pos] : INVALID;
+  [[nodiscard]] bool   has_subnode(Tree_pos node_pos) const { return get_subnode(node_pos) < 0; }
+  [[nodiscard]] bool   has_subnode(Node_class node) const { return has_subnode(node.get_current_pos()); }
+  [[nodiscard]] size_t get_subnode_index(Tree_pos node_pos) const { return static_cast<size_t>(-get_subnode(node_pos) - 1); }
+  [[nodiscard]] Tree_pos make_subnode_ref(size_t subnode_index) const { return static_cast<Tree_pos>(-(subnode_index + 1)); }
+  [[nodiscard]] Tree_pos get_subnode(Tree_pos node_pos) const {
+    I(_check_idx_exists(node_pos), "get_subnode: Node index out of range");
+    return node_pos < static_cast<Tree_pos>(subnode_refs.size()) ? subnode_refs[node_pos] : INVALID;
   }
-  [[nodiscard]] Tid get_subtree_ref(Node_class node) const { return get_subtree_ref(node.get_current_pos()); }
+  [[nodiscard]] Tid get_subnode(Node_class node) const { return get_subnode(node.get_current_pos()); }
+  [[nodiscard]] auto get_subs() const -> std::span<const Node_class> {
+    if (!subs_cache_valid_) {
+      subs_cache_.clear();
+      for (Tree_pos node_pos = ROOT; node_pos < static_cast<Tree_pos>(pointers_stack.size() << CHUNK_SHIFT); ++node_pos) {
+        if (_contains_data(node_pos) && get_subnode(node_pos) != INVALID) {
+          subs_cache_.push_back(Node_class(node_pos));
+        }
+      }
+      subs_cache_valid_ = true;
+    }
+    return subs_cache_;
+  }
   [[nodiscard]] TreeCursor create_cursor(Tree_pos start = ROOT);
   [[nodiscard]] TreeCursor create_cursor(Node_class start);
 
   friend class Forest;
 private:
+  mutable std::vector<Node_class> subs_cache_;
+  mutable bool                    subs_cache_valid_ = false;
   explicit Tree(Forest* forest = nullptr) : forest_ptr(forest) {}
 };
 
@@ -1168,12 +1183,12 @@ public:
     if (!current_tree_) {
       return false;
     }
-    const auto subtree_tid = current_tree_->get_subtree_ref(current_pos_);
-    if (subtree_tid != INVALID) {
-      auto subtree = forest_->get_tree_ptr(subtree_tid);
+    const auto subnode_tid = current_tree_->get_subnode(current_pos_);
+    if (subnode_tid != INVALID) {
+      auto subtree = forest_->get_tree_ptr(subnode_tid);
       return_stack_.push_back(ReturnFrame{current_tid_, current_tree_, current_pos_, depth_});
       current_tree_ = std::move(subtree);
-      current_tid_  = subtree_tid;
+      current_tid_  = subnode_tid;
       current_pos_  = current_tree_->get_root();
       ++depth_;
       return true;
@@ -1192,12 +1207,12 @@ public:
     if (!current_tree_) {
       return false;
     }
-    const auto subtree_tid = current_tree_->get_subtree_ref(current_pos_);
-    if (subtree_tid != INVALID) {
-      auto subtree = forest_->get_tree_ptr(subtree_tid);
+    const auto subnode_tid = current_tree_->get_subnode(current_pos_);
+    if (subnode_tid != INVALID) {
+      auto subtree = forest_->get_tree_ptr(subnode_tid);
       return_stack_.push_back(ReturnFrame{current_tid_, current_tree_, current_pos_, depth_});
       current_tree_ = std::move(subtree);
-      current_tid_  = subtree_tid;
+      current_tid_  = subnode_tid;
       current_pos_  = current_tree_->get_root();
       ++depth_;
       return true;
@@ -1245,7 +1260,7 @@ public:
     if (!current_tree_) {
       return false;
     }
-    if (current_tree_->get_subtree_ref(current_pos_) != INVALID) {
+    if (current_tree_->get_subnode(current_pos_) != INVALID) {
       return false;
     }
     return current_tree_->is_leaf(current_pos_);
@@ -1506,7 +1521,7 @@ public:
 
   void delete_leaf(const Tree_pos& leaf_index);
   void delete_subtree(const Tree_pos& subtree_root);
-  void add_subtree_ref(const Tree_pos& node_pos, Tree_pos subtree_ref);
+  void set_subnode(const Tree_pos& node_pos, Tree_pos subnode_ref);
 
   // INFREQUENT UPDATES
   Tree_pos insert_next_sibling(const Tree_pos& sibling_id, const X& data);
@@ -1598,12 +1613,12 @@ public:
     Tree_pos operator*() const { return current; }
 
   protected:
-    // Helper method to handle subtree references
-    Tree_pos handle_subtree_ref(Tree_pos pos) {
+    // Helper method to handle subnode references
+    Tree_pos handle_subnode_ref(Tree_pos pos) {
       if (m_follow_subtrees && tree_ptr->forest_ptr) {  // only follow if flag is true
         auto& node = tree_ptr->pointers_stack[pos >> CHUNK_SHIFT];
-        if (node.has_subtree_ref()) {
-          Tree_pos ref = node.get_subtree_ref();
+        if (node.has_subnode()) {
+          Tree_pos ref = node.get_subnode();
           if (ref < 0) {
             return ROOT;
           }
@@ -1631,9 +1646,9 @@ public:
     sibling_order_iterator(Tree_pos start, tree<X>* tree, bool follow_refs) : base(start, tree, follow_refs) {}
 
     sibling_order_iterator& operator++() {
-      Tree_pos subtree_root = this->handle_subtree_ref(this->current);
-      if (subtree_root != INVALID) {
-        this->current = subtree_root;
+      Tree_pos subnode_root = this->handle_subnode_ref(this->current);
+      if (subnode_root != INVALID) {
+        this->current = subnode_root;
         return *this;
       }
       if (tree_ptr->get_sibling_next(current) != INVALID) {
@@ -1687,9 +1702,9 @@ public:
     const_sibling_order_iterator(Tree_pos start, const tree<X>* tree, bool follow_refs) : base(start, tree, follow_refs) {}
 
     const_sibling_order_iterator& operator++() {
-      Tree_pos subtree_root = this->handle_subtree_ref(this->current);
-      if (subtree_root != INVALID) {
-        this->current = subtree_root;
+      Tree_pos subnode_root = this->handle_subnode_ref(this->current);
+      if (subnode_root != INVALID) {
+        this->current = subnode_root;
         return *this;
       }
       if (tree_ptr->get_sibling_next(current) != INVALID) {
@@ -1833,8 +1848,8 @@ public:
     pre_order_iterator_with_subtrees& operator++() {
       if (m_follow_subtrees && current_tree->forest_ptr) {
         auto& node = this->current_tree->pointers_stack[this->current >> CHUNK_SHIFT];
-        if (node.has_subtree_ref()) {
-          Tree_pos ref = node.get_subtree_ref();
+        if (node.has_subnode()) {
+          Tree_pos ref = node.get_subnode();
           if (ref < 0 && visited_subtrees.find(ref) == visited_subtrees.end()) {
             visited_subtrees.insert(ref);
             return_to_node = current;
@@ -1988,8 +2003,8 @@ public:
     const_pre_order_iterator& operator++() {
       if (m_follow_subtrees && current_tree->forest_ptr) {
         auto& node = current_tree->pointers_stack[current >> CHUNK_SHIFT];
-        if (node.has_subtree_ref()) {
-          Tree_pos ref = node.get_subtree_ref();
+        if (node.has_subnode()) {
+          Tree_pos ref = node.get_subnode();
           if (ref < 0 && visited_subtrees.find(ref) == visited_subtrees.end()) {
             visited_subtrees.insert(ref);
             return_to_node = current;
@@ -2085,9 +2100,9 @@ public:
     X get_data() const { return tree_ptr->get_data(this->current); }
 
     post_order_iterator& operator++() {
-      Tree_pos subtree_root = this->handle_subtree_ref(this->current);
-      if (subtree_root != INVALID) {
-        this->current = subtree_root;
+      Tree_pos subnode_root = this->handle_subnode_ref(this->current);
+      if (subnode_root != INVALID) {
+        this->current = subnode_root;
         return *this;
       }
 
@@ -2147,9 +2162,9 @@ public:
     const_post_order_iterator(Tree_pos start, const tree<X>* tree, bool follow_refs) : base(start, tree, follow_refs) {}
 
     const_post_order_iterator& operator++() {
-      Tree_pos subtree_root = this->handle_subtree_ref(this->current);
-      if (subtree_root != INVALID) {
-        this->current = subtree_root;
+      Tree_pos subnode_root = this->handle_subnode_ref(this->current);
+      if (subnode_root != INVALID) {
+        this->current = subnode_root;
         return *this;
       }
 
@@ -2190,13 +2205,13 @@ public:
   const_post_order_range post_order(Tree_pos start = ROOT) const { return const_post_order_range(start, this); }
 
   // move helper methods inside tree class
-  [[nodiscard]] bool is_subtree_ref(Tree_pos pos) const { return pos < 0; }
+  [[nodiscard]] bool is_subnode_ref(Tree_pos pos) const { return pos < 0; }
 
-  [[nodiscard]] size_t get_subtree_index(Tree_pos pos) const { return static_cast<size_t>(-pos - 1); }
+  [[nodiscard]] size_t get_subnode_index(Tree_pos pos) const { return static_cast<size_t>(-pos - 1); }
 
-  [[nodiscard]] Tree_pos make_subtree_ref(size_t subtree_index) const { return static_cast<Tree_pos>(-(subtree_index + 1)); }
+  [[nodiscard]] Tree_pos make_subnode_ref(size_t subnode_index) const { return static_cast<Tree_pos>(-(subnode_index + 1)); }
 
-  [[nodiscard]] Tree_pos get_subtree_ref(Tree_pos pos) const { return pointers_stack[pos >> CHUNK_SHIFT].get_subtree_ref(); }
+  [[nodiscard]] Tree_pos get_subnode(Tree_pos pos) const { return pointers_stack[pos >> CHUNK_SHIFT].get_subnode(); }
 
   // :public
 
@@ -2436,9 +2451,9 @@ inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
   I(_check_idx_exists(leaf_index), "delete_leaf: Leaf index out of range");
   I(get_first_child(leaf_index) == INVALID, "delete_leaf: Index is not a leaf");
 
-  const auto subtree_ref = get_subtree_ref(leaf_index);
-  if (subtree_ref != INVALID && forest_ptr) {
-    forest_ptr->remove_reference(subtree_ref);
+  const auto subnode_ref = get_subnode(leaf_index);
+  if (subnode_ref != INVALID && forest_ptr) {
+    forest_ptr->remove_reference(subnode_ref);
   }
 
   const auto leaf_chunk_id     = leaf_index >> CHUNK_SHIFT;
@@ -2447,8 +2462,9 @@ inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
   const auto next_sibling_id   = get_sibling_next(leaf_index);
 
   _set_data_invalid(leaf_index);
-  if (leaf_index < static_cast<Tree_pos>(subtree_refs.size())) {
-    subtree_refs[leaf_index] = INVALID;
+  subs_cache_valid_ = false;
+  if (leaf_index < static_cast<Tree_pos>(subnode_refs.size())) {
+    subnode_refs[leaf_index] = INVALID;
   }
   pointers_stack[leaf_chunk_id].set_first_child_at(static_cast<int16_t>(leaf_chunk_offset), INVALID);
   pointers_stack[leaf_chunk_id].set_type_at(static_cast<int16_t>(leaf_chunk_offset), 0);
@@ -2466,9 +2482,9 @@ inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
       chunk_meta.set_first_child_at(offset + 1, INVALID);
       chunk_meta.set_type_at(offset, chunk_meta.get_type_at(offset + 1));
       chunk_meta.set_type_at(offset + 1, 0);
-      if (((leaf_chunk_id << CHUNK_SHIFT) + offset + 1) < static_cast<Tree_pos>(subtree_refs.size())) {
-        subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset]     = subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1];
-        subtree_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1] = INVALID;
+      if (((leaf_chunk_id << CHUNK_SHIFT) + offset + 1) < static_cast<Tree_pos>(subnode_refs.size())) {
+        subnode_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset]     = subnode_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1];
+        subnode_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1] = INVALID;
       }
 
       const auto moved_node = (leaf_chunk_id << CHUNK_SHIFT) + offset;
@@ -2528,6 +2544,7 @@ inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
 
 inline void Tree::delete_subtree(const Tree_pos& subtree_root) {
   I(_check_idx_exists(subtree_root), "delete_subtree: Subtree root index out of range");
+  subs_cache_valid_ = false;
 
   std::vector<Tree_pos> nodes_to_delete;
   std::queue<Tree_pos>  q;
@@ -2544,9 +2561,9 @@ inline void Tree::delete_subtree(const Tree_pos& subtree_root) {
   }
 
   for (auto node : nodes_to_delete) {
-    const auto subtree_ref = get_subtree_ref(node);
-    if (subtree_ref != INVALID && forest_ptr) {
-      forest_ptr->remove_reference(subtree_ref);
+    const auto subnode_ref = get_subnode(node);
+    if (subnode_ref != INVALID && forest_ptr) {
+      forest_ptr->remove_reference(subnode_ref);
     }
   }
 
@@ -2557,13 +2574,14 @@ inline void Tree::delete_subtree(const Tree_pos& subtree_root) {
   }
 }
 
-inline void Tree::add_subtree_ref(const Tree_pos& node_pos, Tree_pos subtree_ref) {
-  I(subtree_ref < 0, "Subtree reference must be negative");
-  I(_check_idx_exists(node_pos), "add_subtree_ref: Node index out of range");
-  _ensure_subtree_ref_capacity(node_pos);
-  subtree_refs[node_pos] = subtree_ref;
+inline void Tree::set_subnode(const Tree_pos& node_pos, Tree_pos subnode_ref) {
+  I(subnode_ref < 0, "Subnode reference must be negative");
+  I(_check_idx_exists(node_pos), "set_subnode: Node index out of range");
+  _ensure_subnode_ref_capacity(node_pos);
+  subnode_refs[node_pos] = subnode_ref;
+  subs_cache_valid_ = false;
   if (forest_ptr) {
-    forest_ptr->add_reference(subtree_ref);
+    forest_ptr->add_reference(subnode_ref);
   }
 }
 
@@ -2872,8 +2890,8 @@ void tree<X>::delete_leaf(const Tree_pos& leaf_index) {
   I(get_first_child(leaf_index) == INVALID, "delete_leaf: Index is not a leaf");
 
   auto& node = pointers_stack[leaf_index >> CHUNK_SHIFT];
-  if (node.has_subtree_ref() && forest_ptr) {
-    forest_ptr->remove_reference(node.get_subtree_ref());
+  if (node.has_subnode() && forest_ptr) {
+    forest_ptr->remove_reference(node.get_subnode());
   }
 
   const auto leaf_chunk_id     = leaf_index >> CHUNK_SHIFT;
@@ -3000,8 +3018,8 @@ void tree<X>::delete_subtree(const Tree_pos& subtree_root) {
   // Remove subtree references first
   for (auto node : nodes_to_delete) {
     auto& node_ptr = pointers_stack[node >> CHUNK_SHIFT];
-    if (node_ptr.has_subtree_ref() && forest_ptr) {
-      forest_ptr->remove_reference(node_ptr.get_subtree_ref());
+    if (node_ptr.has_subnode() && forest_ptr) {
+      forest_ptr->remove_reference(node_ptr.get_subnode());
     }
   }
 
@@ -3014,11 +3032,11 @@ void tree<X>::delete_subtree(const Tree_pos& subtree_root) {
 }
 
 template <typename X>
-void tree<X>::add_subtree_ref(const Tree_pos& node_pos, Tree_pos subtree_ref) {
-  I(subtree_ref < 0, "Subtree reference must be negative");
-  this->pointers_stack[node_pos >> CHUNK_SHIFT].set_subtree_ref(subtree_ref);
+void tree<X>::set_subnode(const Tree_pos& node_pos, Tree_pos subnode_ref) {
+  I(subnode_ref < 0, "Subnode reference must be negative");
+  this->pointers_stack[node_pos >> CHUNK_SHIFT].set_subnode(subnode_ref);
   if (forest_ptr) {
-    forest_ptr->add_reference(subtree_ref);
+    forest_ptr->add_reference(subnode_ref);
   }
 }
 

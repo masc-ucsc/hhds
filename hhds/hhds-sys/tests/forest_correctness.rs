@@ -37,7 +37,7 @@ fn test_subtree_references() {
     let _sub_child = sub_tree.add_child(sub_tree.get_root(), 20);
 
     // add subtree_reference
-    main_tree.add_subtree_ref(child1, sub_tree_ref);
+    main_tree.set_subnode(child1, sub_tree_ref);
 
     // verify reference counting - should return false and not delete
     let deleted = forest.delete_tree(sub_tree_ref);
@@ -70,7 +70,7 @@ pub fn test_tree_traversal_with_subtrees() {
     sub_tree.add_child(sub_tree.get_root(), 12);
 
     // Add subtree reference
-    main_tree.add_subtree_ref(child1, sub_tree_ref);
+    main_tree.set_subnode(child1, sub_tree_ref);
 
     // Test subtree traversal without following subtrees
     let mut visited_values: Vec<i32> = Vec::new();
@@ -151,9 +151,9 @@ pub fn test_complex_forest_operations() {
     }
 
     // create complex reference pattern
-    main_tree.add_subtree_ref(main_nodes[0], sub_tree1_ref);
-    sub_tree1.add_subtree_ref(sub1_nodes[0], sub_tree2_ref);
-    sub_tree2.add_subtree_ref(sub2_nodes[0], sub_tree3_ref);
+    main_tree.set_subnode(main_nodes[0], sub_tree1_ref);
+    sub_tree1.set_subnode(sub1_nodes[0], sub_tree2_ref);
+    sub_tree2.set_subnode(sub2_nodes[0], sub_tree3_ref);
 
     let deleted = forest.delete_tree(sub_tree3_ref);
     assert!(!deleted);
@@ -208,7 +208,7 @@ pub fn test_edge_cases() {
         let child = current_tree.add_child(root, 10);
         assert_eq!(current_tree.get_data(child), 10);
 
-        current_tree.add_subtree_ref(child, tree_refs[1]);
+        current_tree.set_subnode(child, tree_refs[1]);
         let child = current_tree.add_child(root, 11);
         return;
     //}

@@ -221,6 +221,26 @@ TEST(CompactTypes, EdgeHierConversions) {
   EXPECT_EQ(edge_class.sink_pin.get_pin_pid(), edge.sink_pin.get_pin_pid());
 }
 
+TEST(CompactTypes, GraphGetSubsReturnsDirectSubnodes) {
+  hhds::GraphLibrary lib;
+  auto               root      = lib.create_graph();
+  auto               child     = lib.create_graph();
+  const hhds::Gid    child_gid = child->get_gid();
+
+  auto regular = root->create_node();
+  auto sub1    = root->create_node();
+  auto sub2    = root->create_node();
+
+  root->set_subnode(sub1, child_gid);
+  root->set_subnode(sub2, child_gid);
+
+  const auto subs = root->get_subs();
+  ASSERT_EQ(subs.size(), 2U);
+  EXPECT_EQ(subs[0], sub1);
+  EXPECT_EQ(subs[1], sub2);
+  EXPECT_NE(subs[0], regular);
+}
+
 // ---------------------------------------------------------------------------
 // Section 2: Direction-aware edge iteration (api_todo.md #2)
 // ---------------------------------------------------------------------------

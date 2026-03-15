@@ -46,7 +46,7 @@ TEST(ForestCorrectness, SubtreeReferences) {
   main_tree.add_child(main_tree.get_root());
   sub_tree.add_child(sub_tree.get_root());
 
-  main_tree.add_subtree_ref(child1, subtree_tid);
+  main_tree.set_subnode(child1, subtree_tid);
 
   bool deleted = forest->delete_tree(subtree_tid);
   EXPECT_FALSE(deleted);
@@ -73,7 +73,7 @@ TEST(ForestCorrectness, TreeTraversalWithSubtrees) {
   sub_tree.add_child(sub_tree.get_root());
   sub_tree.add_child(sub_tree.get_root());
 
-  main_tree.add_subtree_ref(child1, subtree_tid);
+  main_tree.set_subnode(child1, subtree_tid);
 
   int count = 0;
   for (auto it = main_tree.pre_order_with_subtrees(main_tree.get_root(), true).begin();
@@ -103,8 +103,8 @@ TEST(ForestCorrectness, CycleTraversal) {
   auto a_child_ref = a.add_child(a.get_root());
   auto b_child_ref = b.add_child(b.get_root());
 
-  a.add_subtree_ref(a_child_ref, b_ref);
-  b.add_subtree_ref(b_child_ref, a_ref);
+  a.set_subnode(a_child_ref, b_ref);
+  b.set_subnode(b_child_ref, a_ref);
 
   int count = 0;
   for (auto it = a.pre_order_with_subtrees(a.get_root(), true).begin();
@@ -156,9 +156,9 @@ TEST(ForestCorrectness, ComplexForestOperations) {
     current_pos = new_node;
   }
 
-  main_tree.add_subtree_ref(main_nodes[0], subtree1_tid);
-  sub_tree1.add_subtree_ref(sub1_nodes[0], subtree2_tid);
-  sub_tree2.add_subtree_ref(sub2_nodes[0], subtree3_tid);
+  main_tree.set_subnode(main_nodes[0], subtree1_tid);
+  sub_tree1.set_subnode(sub1_nodes[0], subtree2_tid);
+  sub_tree2.set_subnode(sub2_nodes[0], subtree3_tid);
 
   bool deleted = forest->delete_tree(subtree3_tid);
   EXPECT_FALSE(deleted);

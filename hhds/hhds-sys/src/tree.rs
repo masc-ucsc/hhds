@@ -91,8 +91,8 @@ impl Tree {
         unsafe { insert_next_sibling(self.handle, sibling_idx, data) }
     }
 
-    pub fn add_subtree_ref(&self, node_pos: hhds_Tree_pos, subtree_ref: hhds_Tree_pos) {
-        unsafe { add_subtree_ref(self.handle, node_pos, subtree_ref) }
+    pub fn set_subnode(&self, node_pos: hhds_Tree_pos, subnode_ref: hhds_Tree_pos) {
+        unsafe { add_subtree_ref(self.handle, node_pos, subnode_ref) }
     }
 
     pub fn delete_leaf(&self, node_pos: hhds_Tree_pos) {
