@@ -22,22 +22,16 @@ fn main() {
     let bindings = bindgen::Builder::default()
         // The input header we would like to generate
         // bindings for.
-        .header("../wrapper.hpp")
-        .clang_arg("-std=c++17")
-        .clang_arg("-I../../bazel-hhds/external/iassert+/src")
-        .clang_arg("-isystem/usr/include/c++/11")
-        .clang_arg("-isystem/usr/include/x86_64-linux-gnu/c++/11")
+        .header("ffi_tree.hpp")
         // functions from the wrapper we allow bindgen to process
-        .allowlist_function("forest.*")
-        .allowlist_function("tree.*")
-        .allowlist_function("print_tree.*")
+        .allowlist_function("tree_int_.*")
         .allowlist_function("get_.*")
         .allowlist_function("add_.*")
+        .allowlist_function("set_.*")
         .allowlist_function("append_.*")
         .allowlist_function("insert_.*")
         .allowlist_function("delete.*")
-        .allowlist_function(".*pre_order_iterator.*")
-        .allowlist_function(".*post_order_iterator.*")
+        .allowlist_type("hhds_Tree.*")
         // Tell cargo to invalidate the built crate whenever any of the
         // included header files changed.
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))

@@ -2,7 +2,7 @@ use anyhow::Result;
 use criterion::{criterion_group, criterion_main, Criterion};
 use hhds_sys::tree::Tree;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::env;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};

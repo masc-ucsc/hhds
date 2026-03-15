@@ -1,50 +1,16 @@
-use std::os::raw::{c_int, c_void};
+use std::os::raw::c_int;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-pub struct Forest {
-    handle: ForestIntHandle,
-}
-
-impl Default for Forest {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Forest {
-    pub fn new() -> Self {
-        Self {
-            handle: unsafe { forest_int_new() },
-        }
-    }
-
-    pub fn create_tree(&self, val: c_int) -> hhds_Tree_pos {
-        unsafe { forest_int_create_tree(self.handle, val) }
-    }
-
-    pub fn get_tree(&self, tree_ref: hhds_Tree_pos) -> Tree {
-        Tree::new(unsafe { forest_int_get_tree(self.handle, tree_ref) })
-    }
-
-    pub fn delete_tree(&self, tree_ref: hhds_Tree_pos) -> bool {
-        unsafe { forest_int_delete_tree(self.handle, tree_ref) }
-    }
-}
-
 pub struct Tree {
-    handle: *mut c_void,
+    handle: hhds_TreeHandle,
 }
 
 impl Tree {
-    // Internal function for Forest
-    fn new(tree_ref: *mut c_void) -> Self {
-        Self { handle: tree_ref }
-    }
-
     pub fn new_no_ref() -> Self {
-        let handle = unsafe { tree_int_new_empty() };
-        Self { handle }
+        Self {
+            handle: unsafe { tree_int_new_empty() },
+        }
     }
 
     pub fn get_root(&self) -> hhds_Tree_pos {
@@ -71,28 +37,20 @@ impl Tree {
         unsafe { get_sibling_prev(self.handle, sibling_pos) }
     }
 
-    pub fn get_data(&self, tree_ref: hhds_Tree_pos) -> c_int {
-        unsafe { tree_get_data(self.handle, tree_ref) }
+    pub fn add_root(&self, data_ignored: i32) -> hhds_Tree_pos {
+        unsafe { add_root(self.handle, data_ignored) }
     }
 
-    pub fn add_root(&self, data: i32) -> hhds_Tree_pos {
-        unsafe { add_root(self.handle, data) }
+    pub fn add_child(&self, parent_idx: hhds_Tree_pos, data_ignored: c_int) -> hhds_Tree_pos {
+        unsafe { add_child(self.handle, parent_idx, data_ignored) }
     }
 
-    pub fn add_child(&self, parent_idx: hhds_Tree_pos, data: c_int) -> hhds_Tree_pos {
-        unsafe { add_child(self.handle, parent_idx, data) }
+    pub fn append_sibling(&self, sibling_idx: hhds_Tree_pos, data_ignored: c_int) -> hhds_Tree_pos {
+        unsafe { append_sibling(self.handle, sibling_idx, data_ignored) }
     }
 
-    pub fn append_sibling(&self, sibling_idx: hhds_Tree_pos, data: c_int) -> hhds_Tree_pos {
-        unsafe { append_sibling(self.handle, sibling_idx, data) }
-    }
-
-    pub fn insert_next_sibling(&self, sibling_idx: hhds_Tree_pos, data: c_int) -> hhds_Tree_pos {
-        unsafe { insert_next_sibling(self.handle, sibling_idx, data) }
-    }
-
-    pub fn set_subnode(&self, node_pos: hhds_Tree_pos, subnode_ref: hhds_Tree_pos) {
-        unsafe { add_subtree_ref(self.handle, node_pos, subnode_ref) }
+    pub fn insert_next_sibling(&self, sibling_idx: hhds_Tree_pos, data_ignored: c_int) -> hhds_Tree_pos {
+        unsafe { insert_next_sibling(self.handle, sibling_idx, data_ignored) }
     }
 
     pub fn delete_leaf(&self, node_pos: hhds_Tree_pos) {
@@ -103,93 +61,77 @@ impl Tree {
         unsafe { delete_subtree(self.handle, subtree_root) }
     }
 
-    pub fn pre_ord_iter(&self, follow_subtrees: bool) -> PreOrderIterator {
-        PreOrderIterator::new(self, follow_subtrees)
+    pub fn set_subnode(&self, node_pos: hhds_Tree_pos, subnode_ref: hhds_Tree_pos) {
+        unsafe { set_subnode(self.handle, node_pos, subnode_ref) }
+    }
+
+    pub fn pre_ord_iter(&self, _follow_subnodes: bool) -> PreOrderIterator<'_> {
+        PreOrderIterator::new(self)
     }
 }
 
-pub struct PreOrderIterator {
-    pub handle: *mut c_void,
-    initial: bool,
+impl Drop for Tree {
+    fn drop(&mut self) {
+        unsafe { tree_int_delete(self.handle) }
+    }
 }
 
-impl PreOrderIterator {
-    pub fn new(tree: &Tree, follow_subtrees: bool) -> Self {
+#[derive(Clone, Copy)]
+pub struct PreOrderNode {
+    pos: hhds_Tree_pos,
+}
+
+impl PreOrderNode {
+    pub fn deref(&self) -> hhds_Tree_pos {
+        self.pos
+    }
+}
+
+pub struct PreOrderIterator<'a> {
+    tree: &'a Tree,
+    next_pos: hhds_Tree_pos,
+}
+
+impl<'a> PreOrderIterator<'a> {
+    fn new(tree: &'a Tree) -> Self {
         Self {
-            handle: unsafe {
-                get_pre_order_iterator(tree.handle, tree.get_root(), follow_subtrees)
-            },
-            initial: true,
+            tree,
+            next_pos: tree.get_root(),
         }
     }
 
-    pub fn deref(&self) -> i64 {
-        unsafe { deref_pre_order_iterator(self.handle) }
-    }
+    fn advance(&self, current: hhds_Tree_pos) -> hhds_Tree_pos {
+        let child = self.tree.get_first_child(current);
+        if child > 0 {
+            return child;
+        }
 
-    pub fn get_data(&self) -> c_int {
-        unsafe { get_data_pre_order_iter(self.handle) }
+        let mut cursor = current;
+        loop {
+            let sibling = self.tree.get_sibling_next(cursor);
+            if sibling > 0 {
+                return sibling;
+            }
+
+            let parent = self.tree.get_parent(cursor);
+            if parent <= 0 {
+                return 0;
+            }
+            cursor = parent;
+        }
     }
 }
 
-/*
- * Currently this iterates and returns reference IDs.
- * Need to call get_data() before every iteration to return data of specified reference.
- */
-impl Iterator for PreOrderIterator {
-    type Item = Self;
+impl Iterator for PreOrderIterator<'_> {
+    type Item = PreOrderNode;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.initial {
-            self.initial = false;
-            return Some(Self {
-                handle: self.handle,
-                initial: false,
-            });
+        if self.next_pos <= 0 {
+            return None;
         }
-        self.handle = unsafe { increment_pre_order_iterator(self.handle) };
-        match unsafe { deref_pre_order_iterator(self.handle) } {
-            val if val <= 0 => None,
-            _val => Some(Self {
-                handle: self.handle,
-                initial: false,
-            }),
-        }
-    }
-}
 
-// TODO: PostOrder Not implemented
-pub struct PostOrderIterator {
-    pub handle: *mut c_void,
-}
-
-impl PostOrderIterator {
-    pub fn new(tree: &Tree, follow_subtrees: bool) -> Self {
-        Self {
-            handle: unsafe {
-                get_post_order_iterator(tree.handle, tree.get_root(), follow_subtrees)
-            },
-        }
-    }
-
-    pub fn deref(&self) -> i64 {
-        unsafe { deref_post_order_iterator(self.handle) }
-    }
-
-    pub fn get_data(&self) -> c_int {
-        unsafe { get_data_post_order_iter(self.handle) }
-    }
-}
-
-impl Iterator for PostOrderIterator {
-    type Item = c_int;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let val = match unsafe { deref_post_order_iterator(self.handle) } {
-            val if val <= 0 => return None,
-            _ => Some(self.get_data()),
-        };
-        self.handle = unsafe { increment_post_order_iterator(self.handle) };
-        val
+        let current = self.next_pos;
+        self.next_pos = self.advance(current);
+        Some(PreOrderNode { pos: current })
     }
 }

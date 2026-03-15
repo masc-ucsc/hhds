@@ -42,6 +42,7 @@ cc_library(
         "tree.hpp",
         "lhtree.hpp",
         "graph_sizing.hpp",
+        "hhds-sys/ffi_tree.hpp",
     ]),
     copts = COPTS,
     defines = select({

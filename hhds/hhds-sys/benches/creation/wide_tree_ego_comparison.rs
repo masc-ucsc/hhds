@@ -2,7 +2,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use hhds_sys::tree::Tree as HhdsTree;
 use ego_tree::Tree as EgoTree;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn create_rng() -> StdRng {
