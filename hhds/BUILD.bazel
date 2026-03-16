@@ -35,11 +35,13 @@ cc_library(
     srcs = glob(
         [
             "tree.cpp",
+            "tree_print.cpp",
         ],
         exclude = ["*test*.cpp"],
     ),
     hdrs = glob([
         "tree.hpp",
+        "tree_print.hpp",
         "lhtree.hpp",
         "graph_sizing.hpp",
         "hhds-sys/ffi_tree.hpp",
@@ -72,6 +74,7 @@ cc_library(
         "graph_sizing.hpp",
         "hash_set3.hpp",
         "tree.hpp",
+        "tree_print.hpp",
         "unordered_dense.hpp",
     ],
     copts = COPTS + [
@@ -418,6 +421,16 @@ cc_binary(
 cc_binary(
     name = "tree_sample",
     srcs = ["tests/tree_sample.cpp"],
+    tags = ["manual"],
+    deps = [
+        ":core",
+        "@abseil-cpp//absl/container:flat_hash_map",
+    ],
+)
+
+cc_binary(
+    name = "print_sample",
+    srcs = ["tests/print_sample.cpp"],
     tags = ["manual"],
     deps = [
         ":core",

@@ -164,7 +164,7 @@ This is the next major cross-cutting API area from [plan.md](/Users/renau/projs/
 
 Pending:
 
-- `Tree::save/load/print`
+- `Tree::save/load`
 - `Forest::save/load`
 - `Graph::save/load/print`
 - `GraphLibrary::save/load`

@@ -34,6 +34,26 @@ int main() {
     std::cout << "  pos=" << node.get_current_pos() << " name=" << names[node] << "\n";
   }
 
+  hhds::Tree::PrintOptions print_options;
+  const hhds::Type_entry   type_table[] = {
+    {"unknown", hhds::Statement_class::Node},
+    {"add",     hhds::Statement_class::Node},
+    {"literal", hhds::Statement_class::Node},
+  };
+  print_options.type_table = type_table;
+  print_options.node_text  = [&names](const hhds::Tree::Node_class& node) {
+    auto it = names.find(node);
+    return it == names.end() ? std::string("node") : it->second;
+  };
+  print_options.attributes = {
+    {"type_id", [&tree](const hhds::Tree::Node_class& node) -> std::optional<std::string> {
+      return std::to_string(tree->get_type(node));
+    }},
+  };
+
+  std::cout << "\nLLVM-like tree print\n";
+  tree->print(std::cout, print_options);
+
   auto forest = hhds::Forest::create();
   const auto top_tid = forest->create_tree();
   const auto sub_tid = forest->create_tree();

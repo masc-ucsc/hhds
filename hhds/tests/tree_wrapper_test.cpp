@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <sstream>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
@@ -236,4 +237,77 @@ TEST(TreeWrappers, GetSubsReturnsDirectSubtreeCallsites) {
   EXPECT_EQ(subs[0], call1);
   EXPECT_EQ(subs[1], call2);
   EXPECT_NE(subs[0], regular);
+}
+
+TEST(TreeWrappers, PrintUsesTypeTableAndAttributes) {
+  auto tree = hhds::Tree::create();
+
+  const auto root  = tree->add_root_node();
+  const auto child = tree->add_child(root);
+
+  tree->set_type(root, 1);
+  tree->set_type(child, 2);
+
+  hhds::Tree::PrintOptions options;
+  const hhds::Type_entry   type_table[] = {
+    {"invalid", hhds::Statement_class::Node},
+    {"add",     hhds::Statement_class::Node},
+    {"literal", hhds::Statement_class::Node},
+  };
+  options.type_table = type_table;
+  options.attributes = {
+    {"type_id", [&tree](const hhds::Tree::Node_class& node) -> std::optional<std::string> {
+      return std::to_string(tree->get_type(node));
+    }},
+  };
+
+  std::ostringstream os;
+  tree->print(os, options);
+
+  EXPECT_EQ(os.str(), "tree {\n"
+                      "  %8  = add     @(type_id=1)\n"
+                      "  %16 = literal @(type_id=2)\n"
+                      "}\n");
+}
+
+TEST(TreeWrappers, PrintReturnsString) {
+  auto tree = hhds::Tree::create();
+  tree->set_name("mytest");
+
+  const auto root = tree->add_root_node();
+  tree->set_type(root, 0);
+
+  const auto result = tree->print();
+  EXPECT_EQ(result, "mytest {\n"
+                    "  %8 = type(0)\n"
+                    "}\n");
+}
+
+TEST(TreeWrappers, PrintScopeTypes) {
+  auto tree = hhds::Tree::create();
+  tree->set_name("scoped");
+
+  const auto root  = tree->add_root_node();
+  const auto scope = tree->add_child(root);
+  const auto leaf  = tree->add_child(scope);
+
+  tree->set_type(root, 0);
+  tree->set_type(scope, 1);
+  tree->set_type(leaf, 0);
+
+  const hhds::Type_entry type_table[] = {
+    {"node",    hhds::Statement_class::Node},
+    {"if_taken", hhds::Statement_class::Open_call},
+  };
+
+  hhds::Tree::PrintOptions options;
+  options.type_table = type_table;
+
+  const auto result = tree->print(options);
+  EXPECT_EQ(result, "scoped {\n"
+                    "  %8  = node\n"
+                    "  %16 = if_taken {\n"
+                    "    %24 = node\n"
+                    "  }\n"
+                    "}\n");
 }

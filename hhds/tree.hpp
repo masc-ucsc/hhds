@@ -17,14 +17,19 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <queue>
 #include <set>
 #include <span>
 #include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "hhds/graph_sizing.hpp"
+#include "hhds/tree_print.hpp"
 #include "iassert.hpp"
 
 #ifdef TESTING
@@ -219,6 +224,7 @@ private:
   std::vector<Tree_pos>        subnode_refs;
   Forest*                      forest_ptr;
   std::weak_ptr<Forest>        forest_owner_;
+  std::string                  name_ = "tree";
 
   void _ensure_subnode_ref_capacity(Tree_pos required_pos) {
     if (required_pos < static_cast<Tree_pos>(subnode_refs.size())) {
@@ -327,6 +333,19 @@ private:
   }
 
 public:
+  class Node_class;
+  class Node_flat;
+  class Node_hier;
+
+  struct PrintOptions {
+    std::span<const Type_entry>                   type_table = {};
+    std::function<std::string(const Node_class&)> node_text;
+    std::vector<std::pair<std::string, std::function<std::optional<std::string>(const Node_class&)>>> attributes;
+    std::string_view                              indent = "  ";
+    bool                                          show_types = true;
+    bool                                          show_subnodes = true;
+  };
+
   [[nodiscard]] static std::shared_ptr<Tree> create(Forest* forest = nullptr) {
     return std::shared_ptr<Tree>(new Tree(forest));
   }
@@ -497,6 +516,18 @@ public:
   void     set_subnode(Node_class node, Tid subnode_tid) { set_subnode(node.get_current_pos(), subnode_tid); }
   Tree_pos insert_next_sibling(const Tree_pos& sibling_pos);
   Node_class insert_next_sibling(Node_class sibling_node) { return as_class(insert_next_sibling(sibling_node.get_current_pos())); }
+  void set_name(std::string_view n) { name_ = n; }
+  [[nodiscard]] std::string_view get_name() const { return name_; }
+
+  void print(std::ostream& os) const { print(os, get_root(), PrintOptions{}); }
+  void print(std::ostream& os, const PrintOptions& options) const { print(os, get_root(), options); }
+  void print(std::ostream& os, Tree_pos start_pos, const PrintOptions& options) const;
+  void print(std::ostream& os, Node_class start_node) const { print(os, start_node.get_current_pos(), PrintOptions{}); }
+  void print(std::ostream& os, Node_class start_node, const PrintOptions& options) const { print(os, start_node.get_current_pos(), options); }
+
+  [[nodiscard]] std::string print() const { return print(PrintOptions{}); }
+  [[nodiscard]] std::string print(const PrintOptions& options) const;
+  [[nodiscard]] std::string print(Tree_pos start_pos, const PrintOptions& options) const;
 
   void print_tree(int deep = 0) {
     for (size_t i = 0; i < pointers_stack.size(); i++) {
@@ -961,6 +992,19 @@ public:
 
   friend class Forest;
 private:
+  struct PrintAlign {
+    size_t pos_width  = 0;  // max digits in %pos (to align '=')
+    size_t name_width = 0;  // max node_text length among nodes with ':' (to align ':')
+    size_t body_width = 0;  // max width between '= ' and ' @(' (to align '@')
+  };
+
+  [[nodiscard]] Type_entry  resolve_print_type(Type type, const PrintOptions& options) const;
+  [[nodiscard]] size_t      node_body_width(Tree_pos c, size_t name_width, const PrintOptions& options) const;
+  void                      print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const PrintAlign& align, const PrintOptions& options) const;
+  void                      scan_align_group(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;
+  [[nodiscard]] PrintAlign  compute_sibling_align(Tree_pos first_child, const PrintOptions& options) const;
+  void                      recompute_body_width(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;
+  void                      recompute_body_width_recurse(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;
   mutable std::vector<Node_class> subs_cache_;
   mutable bool                    subs_cache_valid_ = false;
   explicit Tree(Forest* forest = nullptr) : forest_ptr(forest) {}
