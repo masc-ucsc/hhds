@@ -337,6 +337,8 @@ public:
   class Node_flat;
   class Node_hier;
 
+  struct PrintContext;
+
   struct PrintOptions {
     std::span<const Type_entry>                   type_table = {};
     std::function<std::string(const Node_class&)> node_text;
@@ -344,6 +346,22 @@ public:
     std::string_view                              indent = "  ";
     bool                                          show_types = true;
     bool                                          show_subnodes = true;
+    std::function<bool(std::ostream&, Tree_pos, const PrintContext&)> format_node;
+  };
+
+  struct PrintContext {
+    const Tree&         tree;
+    const PrintOptions& options;
+    size_t              depth;
+    Tree_pos            node_pos;
+
+    void emit_indent(std::ostream& os) const;
+    void emit_indent(std::ostream& os, size_t d) const;
+
+    [[nodiscard]] std::vector<Tree_pos> get_children() const;
+
+    void print_children_default(std::ostream& os) const;
+    void print_child_default(std::ostream& os, Tree_pos child_pos) const;
   };
 
   [[nodiscard]] static std::shared_ptr<Tree> create(Forest* forest = nullptr) {
@@ -528,6 +546,13 @@ public:
   [[nodiscard]] std::string print() const { return print(PrintOptions{}); }
   [[nodiscard]] std::string print(const PrintOptions& options) const;
   [[nodiscard]] std::string print(Tree_pos start_pos, const PrintOptions& options) const;
+
+  void dump(std::ostream& os) const { dump(os, get_root(), PrintOptions{}); }
+  void dump(std::ostream& os, const PrintOptions& options) const { dump(os, get_root(), options); }
+  void dump(std::ostream& os, Tree_pos start_pos, const PrintOptions& options) const;
+  [[nodiscard]] std::string dump() const { return dump(PrintOptions{}); }
+  [[nodiscard]] std::string dump(const PrintOptions& options) const;
+  [[nodiscard]] std::string dump(Tree_pos start_pos, const PrintOptions& options) const;
 
   void print_tree(int deep = 0) {
     for (size_t i = 0; i < pointers_stack.size(); i++) {
@@ -1001,6 +1026,7 @@ private:
   [[nodiscard]] Type_entry  resolve_print_type(Type type, const PrintOptions& options) const;
   [[nodiscard]] size_t      node_body_width(Tree_pos c, size_t name_width, const PrintOptions& options) const;
   void                      print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const PrintAlign& align, const PrintOptions& options) const;
+  void                      dump_node(std::ostream& os, Tree_pos node_pos, const std::string& prefix, bool is_last, const PrintOptions& options) const;
   void                      scan_align_group(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;
   [[nodiscard]] PrintAlign  compute_sibling_align(Tree_pos first_child, const PrintOptions& options) const;
   void                      recompute_body_width(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;

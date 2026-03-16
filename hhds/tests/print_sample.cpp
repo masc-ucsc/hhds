@@ -22,10 +22,10 @@ int main() {
   tree->set_type(nested, 2);
 
   const hhds::Type_entry type_table[] = {
-    {"unknown", hhds::Statement_class::Node},
-    {"add",     hhds::Statement_class::Node},
-    {"literal", hhds::Statement_class::Node},
-    {"value",   hhds::Statement_class::Node},
+      {"unknown", hhds::Statement_class::Node},
+      {"add", hhds::Statement_class::Node},
+      {"literal", hhds::Statement_class::Node},
+      {"value", hhds::Statement_class::Node},
   };
 
   std::cout << "Print with type table only\n";
@@ -47,12 +47,10 @@ int main() {
     return it == names.end() ? std::string("node") : it->second;
   };
   with_attrs.attributes = {
-    {"pos", [](const hhds::Tree::Node_class& node) -> std::optional<std::string> {
-      return std::to_string(node.get_current_pos());
-    }},
-    {"type_id", [&tree](const hhds::Tree::Node_class& node) -> std::optional<std::string> {
-      return std::to_string(tree->get_type(node));
-    }},
+      {"pos",
+       [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_current_pos()); }},
+      {"type_id",
+       [&tree](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(tree->get_type(node)); }},
   };
   tree->print(std::cout, with_attrs);
 
@@ -74,16 +72,119 @@ int main() {
   tree2->set_type(g2, 3);
 
   const hhds::Type_entry scope_types[] = {
-    {"unknown",  hhds::Statement_class::Node},
-    {"add",      hhds::Statement_class::Node},
-    {"if_taken", hhds::Statement_class::Open_call},
-    {"sub",      hhds::Statement_class::Node},
+      {"unknown", hhds::Statement_class::Node},
+      {"add", hhds::Statement_class::Node},
+      {"if_taken", hhds::Statement_class::Open_call},
+      {"sub", hhds::Statement_class::Node},
   };
 
   std::cout << "\nPrint with scope types\n";
   hhds::Tree::PrintOptions scope_opts;
   scope_opts.type_table = scope_types;
   tree2->print(std::cout, scope_opts);
+
+  // Demonstrate dump (tree-command style)
+  std::cout << "\nDump with type table only\n";
+  tree->dump(std::cout, type_only);
+
+  std::cout << "\nDump with names and attributes\n";
+  tree->dump(std::cout, with_attrs);
+
+  std::cout << "\nDump scoped tree\n";
+  tree2->dump(std::cout, scope_opts);
+
+  // Demonstrate custom format_node callback (LNAST-style)
+  auto tree3 = hhds::Tree::create();
+  tree3->set_name("lnast_demo");
+
+  // Build: plus(dest, a, b) and if(cond, body_stmt)
+  const auto r3      = tree3->add_root_node();  // top-level stmts
+  const auto plus_n  = tree3->add_child(r3);
+  const auto dest    = tree3->add_child(plus_n);
+  const auto arg_a   = tree3->add_child(plus_n);
+  const auto arg_b   = tree3->add_child(plus_n);
+  const auto if_n    = tree3->add_child(r3);
+  const auto cond    = tree3->add_child(if_n);
+  const auto body_st = tree3->add_child(if_n);
+
+  // Type IDs: 0=stmts, 1=plus, 2=if, 3=ref
+  tree3->set_type(r3, 0);
+  tree3->set_type(plus_n, 1);
+  tree3->set_type(dest, 3);
+  tree3->set_type(arg_a, 3);
+  tree3->set_type(arg_b, 3);
+  tree3->set_type(if_n, 2);
+  tree3->set_type(cond, 3);
+  tree3->set_type(body_st, 3);
+
+  const hhds::Type_entry lnast_types[] = {
+      {"stmts", hhds::Statement_class::Node},
+      {"plus", hhds::Statement_class::Node},
+      {"if", hhds::Statement_class::Node},
+      {"ref", hhds::Statement_class::Node},
+  };
+
+  absl::flat_hash_map<hhds::Tree_pos, std::string> ref_names;
+  ref_names[r3.get_current_pos()]      = "top";
+  ref_names[dest.get_current_pos()]    = "result";
+  ref_names[arg_a.get_current_pos()]   = "a";
+  ref_names[arg_b.get_current_pos()]   = "b";
+  ref_names[cond.get_current_pos()]    = "flag";
+  ref_names[body_st.get_current_pos()] = "do_something";
+
+  std::cout << "\nDefault print of LNAST tree\n";
+  hhds::Tree::PrintOptions lnast_default;
+  lnast_default.type_table = lnast_types;
+  lnast_default.node_text  = [&ref_names](const hhds::Tree::Node_class& node) {
+    auto it = ref_names.find(node.get_current_pos());
+    return it == ref_names.end() ? std::string("?") : it->second;
+  };
+  tree3->print(std::cout, lnast_default);
+
+  std::cout << "\nCustom LNAST-style format_node\n";
+  hhds::Tree::PrintOptions lnast_custom;
+  lnast_custom.type_table = lnast_types;
+  lnast_custom.node_text  = lnast_default.node_text;
+
+  auto get_ref = [&ref_names](hhds::Tree_pos pos) -> std::string {
+    auto it = ref_names.find(pos);
+    return it == ref_names.end() ? "?" : it->second;
+  };
+
+  lnast_custom.format_node = [&](std::ostream& os, hhds::Tree_pos pos, const hhds::Tree::PrintContext& ctx) -> bool {
+    auto type     = ctx.tree.get_type(pos);
+    auto children = ctx.get_children();
+
+    if (type == 1) {  // plus
+      ctx.emit_indent(os);
+      os << get_ref(children[0]) << " = add(";
+      for (size_t i = 1; i < children.size(); ++i) {
+        if (i > 1) {
+          os << ", ";
+        }
+        os << get_ref(children[i]);
+      }
+      os << ")\n";
+      return true;
+    }
+
+    if (type == 2) {  // if
+      ctx.emit_indent(os);
+      os << "if (" << get_ref(children[0]) << ") {\n";
+      for (size_t i = 1; i < children.size(); ++i) {
+        ctx.print_child_default(os, children[i]);
+      }
+      ctx.emit_indent(os);
+      os << "}\n";
+      return true;
+    }
+
+    return false;  // fall back to default formatting
+  };
+  tree3->print(std::cout, lnast_custom);
+
+  std::cout << "\nDump scoped tree for LNAST tree\n";
+  tree3->dump(std::cout, lnast_default);
 
   return 0;
 }

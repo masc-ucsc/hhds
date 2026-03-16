@@ -125,7 +125,55 @@ void Tree::recompute_body_width_recurse(PrintAlign& align, Tree_pos first_child,
   }
 }
 
+// PrintContext implementations
+void Tree::PrintContext::emit_indent(std::ostream& os) const { emit_indent(os, depth); }
+
+void Tree::PrintContext::emit_indent(std::ostream& os, size_t d) const {
+  for (size_t i = 0; i < d; ++i) {
+    os << options.indent;
+  }
+}
+
+std::vector<Tree_pos> Tree::PrintContext::get_children() const {
+  std::vector<Tree_pos> result;
+  for (auto c = tree.get_first_child(node_pos); c != INVALID; c = tree.get_sibling_next(c)) {
+    result.push_back(c);
+  }
+  return result;
+}
+
+void Tree::PrintContext::print_children_default(std::ostream& os) const {
+  auto first_child = tree.get_first_child(node_pos);
+  if (first_child == INVALID) {
+    return;
+  }
+  auto child_align = tree.compute_sibling_align(first_child, options);
+  for (auto child = first_child; child != INVALID; child = tree.get_sibling_next(child)) {
+    tree.print_node(os, child, depth + 1, child_align, options);
+  }
+}
+
+void Tree::PrintContext::print_child_default(std::ostream& os, Tree_pos child_pos) const {
+  auto child_first = tree.get_first_child(child_pos);
+  PrintAlign child_align;
+  if (child_first != INVALID) {
+    child_align = tree.compute_sibling_align(child_first, options);
+  }
+  // Compute a minimal align for the single child
+  PrintAlign single_align;
+  single_align.pos_width = std::to_string(child_pos).size();
+  single_align.body_width = tree.node_body_width(child_pos, 0, options);
+  tree.print_node(os, child_pos, depth + 1, single_align, options);
+}
+
 void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const PrintAlign& align, const PrintOptions& options) const {
+  if (options.format_node) {
+    PrintContext ctx{*this, options, depth, node_pos};
+    if (options.format_node(os, node_pos, ctx)) {
+      return;
+    }
+  }
+
   const auto node     = as_class(node_pos);
   const auto type     = get_type(node_pos);
   const auto te       = resolve_print_type(type, options);
@@ -289,6 +337,91 @@ std::string Tree::print(const PrintOptions& options) const {
 std::string Tree::print(Tree_pos start_pos, const PrintOptions& options) const {
   std::ostringstream oss;
   print(oss, start_pos, options);
+  return oss.str();
+}
+
+void Tree::dump_node(std::ostream& os, Tree_pos node_pos, const std::string& prefix, bool is_last, const PrintOptions& options) const {
+  os << prefix << (is_last ? "└── " : "├── ");
+
+  // pos
+  os << '%' << node_pos;
+
+  // type
+  const auto type = get_type(node_pos);
+  const auto te   = resolve_print_type(type, options);
+  os << ' ' << te.name;
+
+  // node_text (if different from type name)
+  if (options.node_text) {
+    auto nt = options.node_text(as_class(node_pos));
+    if (std::string_view(nt) != te.name) {
+      os << " '" << nt << "'";
+    }
+  }
+
+  // attributes
+  if (!options.attributes.empty()) {
+    std::string inner;
+    for (const auto& [key, fn] : options.attributes) {
+      auto val = fn(as_class(node_pos));
+      if (val.has_value()) {
+        if (!inner.empty()) {
+          inner += ", ";
+        }
+        inner += key + "=" + *val;
+      }
+    }
+    if (!inner.empty()) {
+      os << " @(" << inner << ")";
+    }
+  }
+
+  // subnode
+  if (options.show_subnodes) {
+    const auto subnode_tid = get_subnode(node_pos);
+    if (subnode_tid != INVALID) {
+      os << " subnode @" << subnode_tid;
+    }
+  }
+
+  os << '\n';
+
+  // Collect children
+  std::vector<Tree_pos> children;
+  for (auto c = get_first_child(node_pos); c != INVALID; c = get_sibling_next(c)) {
+    children.push_back(c);
+  }
+
+  const std::string child_prefix = prefix + (is_last ? "    " : "│   ");
+  for (size_t i = 0; i < children.size(); ++i) {
+    dump_node(os, children[i], child_prefix, i == children.size() - 1, options);
+  }
+}
+
+void Tree::dump(std::ostream& os, Tree_pos start_pos, const PrintOptions& options) const {
+  I(_check_idx_exists(start_pos), "dump: Start index out of range");
+  os << name_ << '\n';
+
+  // Collect top-level siblings starting from start_pos
+  std::vector<Tree_pos> roots;
+  for (auto c = start_pos; c != INVALID; c = get_sibling_next(c)) {
+    roots.push_back(c);
+  }
+
+  for (size_t i = 0; i < roots.size(); ++i) {
+    dump_node(os, roots[i], "", i == roots.size() - 1, options);
+  }
+}
+
+std::string Tree::dump(const PrintOptions& options) const {
+  std::ostringstream oss;
+  dump(oss, options);
+  return oss.str();
+}
+
+std::string Tree::dump(Tree_pos start_pos, const PrintOptions& options) const {
+  std::ostringstream oss;
+  dump(oss, start_pos, options);
   return oss.str();
 }
 
