@@ -33,7 +33,7 @@ TEST(CompactTypes, NodeClassFromGraph) {
 TEST(CompactTypes, PinClassFromGraph) {
   hhds::Graph g;
   auto        node = g.create_node();
-  auto        pin  = node.create_pin(3);
+  auto        pin  = g.create_pin(node, 3);
 
   EXPECT_EQ(pin.get_raw_nid(), node.get_raw_nid());  // get_raw_nid() for internal cross-check only
   EXPECT_EQ(pin.get_port_id(), 3);
@@ -99,8 +99,8 @@ TEST(DelEdge, BasicRemoval) {
   hhds::Graph g;
   auto        n1 = g.create_node();
   auto        n2 = g.create_node();
-  auto        p1 = n1.create_pin(0);
-  auto        p2 = n2.create_pin(0);
+  auto        p1 = g.create_pin(n1, 0);
+  auto        p2 = g.create_pin(n2, 0);
   g.add_edge(p1, p2);
 
   g.del_edge(p1, p2);
@@ -228,9 +228,9 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // TEST(PinIteration, GetPins) {
 //   hhds::Graph g;
 //   auto        node = g.create_node();
-//   node.create_pin(1);
-//   node.create_pin(2);
-//   node.create_pin(3);
+//   g.create_pin(node, 1);
+//   g.create_pin(node, 2);
+//   g.create_pin(node, 3);
 
 //   // pin 0 is not present yet: create_node() only creates the node entry.
 //   int count = 0;
@@ -244,10 +244,10 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // TEST(PinIteration, GetPinsIncludesPin0WhenMaterialized) {
 //   hhds::Graph g;
 //   auto        node = g.create_node();
-//   node.create_pin(0);  // materialize pin 0 on this node
-//   node.create_pin(1);
-//   node.create_pin(2);
-//   node.create_pin(3);
+//   g.create_pin(node, 0);  // materialize pin 0 on this node
+//   g.create_pin(node, 1);
+//   g.create_pin(node, 2);
+//   g.create_pin(node, 3);
 
 //   int count = 0;
 //   for (auto pin : g.get_pins(node)) {

@@ -160,42 +160,26 @@ class Tree;
 class Pin_class {
 public:
   Pin_class() = default;
-  Pin_class(Graph* graph_value, Nid raw_nid_value, Port_id port_id_value, Pid pin_pid_value)
-      : graph(graph_value), raw_nid(raw_nid_value & ~static_cast<Nid>(2)), port_id(port_id_value), pin_pid(pin_pid_value) {}
   Pin_class(Nid raw_nid_value, Port_id port_id_value, Pid pin_pid_value)
       : raw_nid(raw_nid_value & ~static_cast<Nid>(2)), port_id(port_id_value), pin_pid(pin_pid_value) {}
 
   [[nodiscard]] Node_class get_master_node() const;
-  [[nodiscard]] Nid        get_raw_nid() const noexcept {
-    assert_accessible_handle();
-    return raw_nid;
-  }
-  [[nodiscard]] Pid get_pin_pid() const noexcept {
-    assert_accessible_handle();
-    return pin_pid;
-  }
-  [[nodiscard]] Port_id get_port_id() const noexcept {
-    assert_accessible_handle();
-    return port_id;
-  }
+  [[nodiscard]] Nid        get_raw_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] Pid        get_pin_pid() const noexcept { return pin_pid; }
+  [[nodiscard]] Port_id    get_port_id() const noexcept { return port_id; }
 
   // Interop with existing APIs that still accept raw Pid.
-  [[nodiscard]] operator Pid() const noexcept {
-    assert_accessible_handle();
-    return pin_pid;
-  }
+  [[nodiscard]] operator Pid() const noexcept { return pin_pid; }
 
-  [[nodiscard]] bool operator==(const Pin_class& other) const noexcept { return graph == other.graph && pin_pid == other.pin_pid; }
+  [[nodiscard]] bool operator==(const Pin_class& other) const noexcept { return pin_pid == other.pin_pid; }
   [[nodiscard]] bool operator!=(const Pin_class& other) const noexcept { return !(*this == other); }
 
   template <typename H>
   friend H AbslHashValue(H h, const Pin_class& pin) {
-    return H::combine(std::move(h), pin.graph, pin.pin_pid);
+    return H::combine(std::move(h), pin.pin_pid);
   }
 
 private:
-  void    assert_accessible_handle() const noexcept;
-  Graph*  graph   = nullptr;
   Nid     raw_nid = 0;
   Port_id port_id = 0;
   Pid     pin_pid = 0;
@@ -206,35 +190,23 @@ private:
 class Node_class {
 public:
   Node_class() = default;
-  Node_class(Graph* graph_value, Nid raw_nid_value) : graph(graph_value), raw_nid(raw_nid_value) {}
+  explicit Node_class(Nid raw_nid_value) : raw_nid(raw_nid_value) {}
 
-  [[nodiscard]] Port_id get_port_id() const noexcept {
-    assert_accessible_handle();
-    return 0;
-  }
-  [[nodiscard]] Nid get_raw_nid() const noexcept {
-    assert_accessible_handle();
-    return raw_nid;
-  }
-  [[nodiscard]] Pin_class create_pin(Port_id port_id) const;
+  [[nodiscard]] Port_id get_port_id() const noexcept { return 0; }
+  [[nodiscard]] Nid     get_raw_nid() const noexcept { return raw_nid; }
 
   // Interop with existing APIs that still accept raw Nid.
-  [[nodiscard]] operator Nid() const noexcept {
-    assert_accessible_handle();
-    return raw_nid;
-  }
+  [[nodiscard]] operator Nid() const noexcept { return raw_nid; }
 
-  [[nodiscard]] bool operator==(const Node_class& other) const noexcept { return graph == other.graph && raw_nid == other.raw_nid; }
+  [[nodiscard]] bool operator==(const Node_class& other) const noexcept { return raw_nid == other.raw_nid; }
   [[nodiscard]] bool operator!=(const Node_class& other) const noexcept { return !(*this == other); }
 
   template <typename H>
   friend H AbslHashValue(H h, const Node_class& node) {
-    return H::combine(std::move(h), node.graph, node.raw_nid);
+    return H::combine(std::move(h), node.raw_nid);
   }
 
 private:
-  void   assert_accessible_handle() const noexcept;
-  Graph* graph   = nullptr;
   Nid    raw_nid = 0;
 
   friend class Graph;
@@ -418,7 +390,7 @@ class GraphLibrary;
 class Graph {
 public:
   Graph();
-  // Graphs are owned via handles; copying or moving would break identity and stale-handle checks.
+  // Graphs are owned via handles; copying or moving would break library identity and traversal caches.
   Graph(const Graph&)            = delete;
   Graph& operator=(const Graph&) = delete;
   Graph(Graph&&)                 = delete;
@@ -426,6 +398,7 @@ public:
   void   clear_graph();
 
   [[nodiscard]] Node_class create_node();
+  [[nodiscard]] Pin_class  create_pin(Node_class node, Port_id port_id);
   [[nodiscard]] Pid        create_pin(Nid nid, Port_id port_id);
   [[nodiscard]] Gid        get_gid() const noexcept { return self_gid_; }
 
@@ -442,23 +415,23 @@ public:
   [[nodiscard]] auto ref_pin(Pid id) const -> Pin*;
 
   void add_edge(Node_class driver_node, Node_class sink_node) {
-    assert_compatible(driver_node);
-    assert_compatible(sink_node);
+    assert_node_exists(driver_node);
+    assert_node_exists(sink_node);
     add_edge(driver_node.get_raw_nid(), sink_node.get_raw_nid());
   }
   void add_edge(Node_class driver_node, Pin_class sink_pin) {
-    assert_compatible(driver_node);
-    assert_compatible(sink_pin);
+    assert_node_exists(driver_node);
+    assert_pin_exists(sink_pin);
     add_edge(driver_node.get_raw_nid(), sink_pin.get_pin_pid());
   }
   void add_edge(Pin_class driver_pin, Node_class sink_node) {
-    assert_compatible(driver_pin);
-    assert_compatible(sink_node);
+    assert_pin_exists(driver_pin);
+    assert_node_exists(sink_node);
     add_edge(driver_pin.get_pin_pid(), sink_node.get_raw_nid());
   }
   void add_edge(Pin_class driver_pin, Pin_class sink_pin) {
-    assert_compatible(driver_pin);
-    assert_compatible(sink_pin);
+    assert_pin_exists(driver_pin);
+    assert_pin_exists(sink_pin);
     add_edge(driver_pin.get_pin_pid(), sink_pin.get_pin_pid());
   }
   void set_subnode(Node_class node, Gid gid);
@@ -507,8 +480,8 @@ public:
 
 private:
   void                    assert_accessible() const noexcept;
-  void                    assert_compatible(const Node_class& node) const noexcept;
-  void                    assert_compatible(const Pin_class& pin) const noexcept;
+  void                    assert_node_exists(const Node_class& node) const noexcept;
+  void                    assert_pin_exists(const Pin_class& pin) const noexcept;
   void                    invalidate_from_library() noexcept;
   void                    del_edge_int(Vid driver_id, Vid sink_id);
   void                    add_edge_int(Pid self_id, Pid other_id);
