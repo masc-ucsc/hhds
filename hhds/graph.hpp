@@ -163,13 +163,13 @@ public:
   Pin_class(Nid raw_nid_value, Port_id port_id_value, Pid pin_pid_value)
       : raw_nid(raw_nid_value & ~static_cast<Nid>(2)), port_id(port_id_value), pin_pid(pin_pid_value) {}
 
-  [[nodiscard]] Node_class get_master_node() const;
-  [[nodiscard]] Nid        get_raw_nid() const noexcept { return raw_nid; }
-  [[nodiscard]] Pid        get_pin_pid() const noexcept { return pin_pid; }
-  [[nodiscard]] Port_id    get_port_id() const noexcept { return port_id; }
+  [[nodiscard]] Node_class        get_master_node() const;
+  [[nodiscard]] constexpr Nid     get_raw_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] constexpr Pid     get_pin_pid() const noexcept { return pin_pid; }
+  [[nodiscard]] constexpr Port_id get_port_id() const noexcept { return port_id; }
 
   // Interop with existing APIs that still accept raw Pid.
-  [[nodiscard]] operator Pid() const noexcept { return pin_pid; }
+  [[nodiscard]] constexpr operator Pid() const noexcept { return pin_pid; }
 
   [[nodiscard]] bool operator==(const Pin_class& other) const noexcept { return pin_pid == other.pin_pid; }
   [[nodiscard]] bool operator!=(const Pin_class& other) const noexcept { return !(*this == other); }
@@ -192,11 +192,11 @@ public:
   Node_class() = default;
   explicit Node_class(Nid raw_nid_value) : raw_nid(raw_nid_value) {}
 
-  [[nodiscard]] Port_id get_port_id() const noexcept { return 0; }
-  [[nodiscard]] Nid     get_raw_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] constexpr Port_id get_port_id() const noexcept { return 0; }
+  [[nodiscard]] constexpr Nid     get_raw_nid() const noexcept { return raw_nid; }
 
   // Interop with existing APIs that still accept raw Nid.
-  [[nodiscard]] operator Nid() const noexcept { return raw_nid; }
+  [[nodiscard]] constexpr operator Nid() const noexcept { return raw_nid; }
 
   [[nodiscard]] bool operator==(const Node_class& other) const noexcept { return raw_nid == other.raw_nid; }
   [[nodiscard]] bool operator!=(const Node_class& other) const noexcept { return !(*this == other); }
@@ -207,7 +207,7 @@ public:
   }
 
 private:
-  Nid    raw_nid = 0;
+  Nid raw_nid = 0;
 
   friend class Graph;
 };
@@ -218,10 +218,10 @@ public:
   Node_flat(Gid root_gid_value, Gid current_gid_value, Nid raw_nid_value)
       : root_gid(root_gid_value), current_gid(current_gid_value), raw_nid(raw_nid_value) {}
 
-  [[nodiscard]] Gid     get_root_gid() const noexcept { return root_gid; }
-  [[nodiscard]] Gid     get_current_gid() const noexcept { return current_gid; }
-  [[nodiscard]] Port_id get_port_id() const noexcept { return 0; }
-  [[nodiscard]] Nid     get_raw_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] constexpr Gid     get_root_gid() const noexcept { return root_gid; }
+  [[nodiscard]] constexpr Gid     get_current_gid() const noexcept { return current_gid; }
+  [[nodiscard]] constexpr Port_id get_port_id() const noexcept { return 0; }
+  [[nodiscard]] constexpr Nid     get_raw_nid() const noexcept { return raw_nid; }
 
   [[nodiscard]] bool operator==(const Node_flat& other) const noexcept {
     return root_gid == other.root_gid && current_gid == other.current_gid && raw_nid == other.raw_nid;
@@ -249,11 +249,11 @@ public:
       , port_id(port_id_value)
       , pin_pid(pin_pid_value) {}
 
-  [[nodiscard]] Gid     get_root_gid() const noexcept { return root_gid; }
-  [[nodiscard]] Gid     get_current_gid() const noexcept { return current_gid; }
-  [[nodiscard]] Nid     get_raw_nid() const noexcept { return raw_nid; }
-  [[nodiscard]] Port_id get_port_id() const noexcept { return port_id; }
-  [[nodiscard]] Pid     get_pin_pid() const noexcept { return pin_pid; }
+  [[nodiscard]] constexpr Gid     get_root_gid() const noexcept { return root_gid; }
+  [[nodiscard]] constexpr Gid     get_current_gid() const noexcept { return current_gid; }
+  [[nodiscard]] constexpr Nid     get_raw_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] constexpr Port_id get_port_id() const noexcept { return port_id; }
+  [[nodiscard]] constexpr Pid     get_pin_pid() const noexcept { return pin_pid; }
 
   [[nodiscard]] bool operator==(const Pin_flat& other) const noexcept {
     return root_gid == other.root_gid && current_gid == other.current_gid && pin_pid == other.pin_pid;
@@ -278,12 +278,12 @@ public:
   Node_hier() = default;
   Node_hier(Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value, Nid raw_nid_value);
 
-  [[nodiscard]] Gid     get_root_gid() const noexcept;
-  [[nodiscard]] Gid     get_current_gid() const noexcept;
-  [[nodiscard]] Tid     get_hier_tid() const noexcept { return hier_tid; }
-  [[nodiscard]] Tree_pos get_hier_pos() const noexcept { return hier_pos; }
-  [[nodiscard]] Port_id get_port_id() const noexcept { return 0; }
-  [[nodiscard]] Nid     get_raw_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] Gid                get_root_gid() const noexcept;
+  [[nodiscard]] Gid                get_current_gid() const noexcept;
+  [[nodiscard]] constexpr Tid      get_hier_tid() const noexcept { return hier_tid; }
+  [[nodiscard]] constexpr Tree_pos get_hier_pos() const noexcept { return hier_pos; }
+  [[nodiscard]] constexpr Port_id  get_port_id() const noexcept { return 0; }
+  [[nodiscard]] constexpr Nid      get_raw_nid() const noexcept { return raw_nid; }
 
   [[nodiscard]] bool operator==(const Node_hier& other) const noexcept {
     return hier_tid == other.hier_tid && hier_pos == other.hier_pos && raw_nid == other.raw_nid;
@@ -305,9 +305,8 @@ private:
 class Pin_hier {
 public:
   Pin_hier() = default;
-  Pin_hier(Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value,
-           Nid raw_nid_value, Port_id port_id_value,
-           Pid pin_pid_value)
+  Pin_hier(Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value, Nid raw_nid_value,
+           Port_id port_id_value, Pid pin_pid_value)
       : hier_gids(std::move(hier_gids_value))
       , hier_tid(hier_tid_value)
       , hier_pos(hier_pos_value)
@@ -315,13 +314,13 @@ public:
       , port_id(port_id_value)
       , pin_pid(pin_pid_value) {}
 
-  [[nodiscard]] Gid     get_root_gid() const noexcept;
-  [[nodiscard]] Gid     get_current_gid() const noexcept;
-  [[nodiscard]] Tid     get_hier_tid() const noexcept { return hier_tid; }
-  [[nodiscard]] Tree_pos get_hier_pos() const noexcept { return hier_pos; }
-  [[nodiscard]] Nid     get_raw_nid() const noexcept { return raw_nid; }
-  [[nodiscard]] Port_id get_port_id() const noexcept { return port_id; }
-  [[nodiscard]] Pid     get_pin_pid() const noexcept { return pin_pid; }
+  [[nodiscard]] Gid                get_root_gid() const noexcept;
+  [[nodiscard]] Gid                get_current_gid() const noexcept;
+  [[nodiscard]] constexpr Tid      get_hier_tid() const noexcept { return hier_tid; }
+  [[nodiscard]] constexpr Tree_pos get_hier_pos() const noexcept { return hier_pos; }
+  [[nodiscard]] constexpr Nid      get_raw_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] constexpr Port_id  get_port_id() const noexcept { return port_id; }
+  [[nodiscard]] constexpr Pid      get_pin_pid() const noexcept { return pin_pid; }
 
   [[nodiscard]] bool operator==(const Pin_hier& other) const noexcept {
     return hier_tid == other.hier_tid && hier_pos == other.hier_pos && pin_pid == other.pin_pid;
@@ -396,6 +395,13 @@ public:
   Graph(Graph&&)                 = delete;
   Graph& operator=(Graph&&)      = delete;
   void   clear_graph();
+
+  [[nodiscard]] static constexpr bool is_valid(Node_class node) noexcept { return node.get_raw_nid() != 0; }
+  [[nodiscard]] static constexpr bool is_valid(Pin_class pin) noexcept { return pin.get_pin_pid() != 0; }
+  [[nodiscard]] static constexpr bool is_valid(Node_flat node) noexcept { return node.get_raw_nid() != 0; }
+  [[nodiscard]] static constexpr bool is_valid(Pin_flat pin) noexcept { return pin.get_pin_pid() != 0; }
+  [[nodiscard]] static constexpr bool is_valid(const Node_hier& node) noexcept { return node.get_raw_nid() != 0; }
+  [[nodiscard]] static constexpr bool is_valid(const Pin_hier& pin) noexcept { return pin.get_pin_pid() != 0; }
 
   [[nodiscard]] Node_class create_node();
   [[nodiscard]] Pin_class  create_pin(Node_class node, Port_id port_id);
@@ -500,32 +506,32 @@ private:
   void fast_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos,
                       ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const;
   void forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_flat>& out) const;
-  void forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos,
-                         ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const;
+  void forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids,
+                         Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const;
 
-  std::vector<Node>                  node_table;
-  std::vector<Pin>                   pin_table;
-  mutable std::vector<Node_class>    fast_class_cache_;
-  mutable std::vector<Node_flat>     fast_flat_cache_;
-  mutable std::vector<Node_hier>     fast_hier_cache_;
-  mutable std::vector<Node_class>    forward_class_cache_;
-  mutable std::vector<Node_flat>     forward_flat_cache_;
-  mutable std::vector<Node_hier>     forward_hier_cache_;
+  std::vector<Node>                         node_table;
+  std::vector<Pin>                          pin_table;
+  mutable std::vector<Node_class>           fast_class_cache_;
+  mutable std::vector<Node_flat>            fast_flat_cache_;
+  mutable std::vector<Node_hier>            fast_hier_cache_;
+  mutable std::vector<Node_class>           forward_class_cache_;
+  mutable std::vector<Node_flat>            forward_flat_cache_;
+  mutable std::vector<Node_hier>            forward_hier_cache_;
   mutable std::shared_ptr<Tree>             fast_hier_tree_cache_;
   mutable std::shared_ptr<std::vector<Gid>> fast_hier_gid_cache_;
   mutable std::shared_ptr<Tree>             forward_hier_tree_cache_;
   mutable std::shared_ptr<std::vector<Gid>> forward_hier_gid_cache_;
-  mutable bool                       fast_class_cache_valid_    = false;
-  mutable bool                       fast_hier_cache_valid_     = false;
-  mutable bool                       forward_class_cache_valid_ = false;
-  mutable bool                       forward_flat_cache_valid_  = false;
-  mutable bool                       forward_hier_cache_valid_  = false;
-  mutable uint64_t                   fast_hier_cache_epoch_     = 0;
-  mutable uint64_t                   forward_flat_cache_epoch_  = 0;
-  mutable uint64_t                   forward_hier_cache_epoch_  = 0;
-  const GraphLibrary*                owner_lib_                 = nullptr;
-  Gid                                self_gid_                  = Gid_invalid;
-  bool                               deleted_                   = false;
+  mutable bool                              fast_class_cache_valid_    = false;
+  mutable bool                              fast_hier_cache_valid_     = false;
+  mutable bool                              forward_class_cache_valid_ = false;
+  mutable bool                              forward_flat_cache_valid_  = false;
+  mutable bool                              forward_hier_cache_valid_  = false;
+  mutable uint64_t                          fast_hier_cache_epoch_     = 0;
+  mutable uint64_t                          forward_flat_cache_epoch_  = 0;
+  mutable uint64_t                          forward_hier_cache_epoch_  = 0;
+  const GraphLibrary*                       owner_lib_                 = nullptr;
+  Gid                                       self_gid_                  = Gid_invalid;
+  bool                                      deleted_                   = false;
 
   friend class Node_class;
   friend class Pin_class;

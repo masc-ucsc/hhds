@@ -115,6 +115,39 @@ TEST(CompactTypes, PinCompactConversions) {
   EXPECT_EQ(attrs[flat_from_class], 7);
 }
 
+TEST(CompactTypes, GraphIsValidParity) {
+  EXPECT_FALSE(hhds::Graph::is_valid(hhds::Node_class()));
+  EXPECT_FALSE(hhds::Graph::is_valid(hhds::Pin_class()));
+  EXPECT_FALSE(hhds::Graph::is_valid(hhds::Node_flat()));
+  EXPECT_FALSE(hhds::Graph::is_valid(hhds::Pin_flat()));
+  EXPECT_FALSE(hhds::Graph::is_valid(hhds::Node_hier()));
+  EXPECT_FALSE(hhds::Graph::is_valid(hhds::Pin_hier()));
+
+  hhds::GraphLibrary lib;
+  auto               g   = lib.create_graph();
+  const hhds::Gid    gid = g->get_gid();
+
+  const auto node = g->create_node();
+  const auto pin  = g->create_pin(node, 3);
+
+  EXPECT_TRUE(hhds::Graph::is_valid(node));
+  EXPECT_TRUE(hhds::Graph::is_valid(pin));
+
+  const auto node_flat = hhds::to_flat(node, gid);
+  const auto pin_flat  = hhds::to_flat(pin, gid);
+  EXPECT_TRUE(hhds::Graph::is_valid(node_flat));
+  EXPECT_TRUE(hhds::Graph::is_valid(pin_flat));
+
+  auto hier_gids = std::make_shared<std::vector<hhds::Gid>>(static_cast<size_t>(hhds::ROOT + 1), hhds::Gid_invalid);
+  (*hier_gids)[static_cast<size_t>(hhds::ROOT)] = gid;
+  const hhds::Tid hier_tid                      = -9;
+
+  const hhds::Node_hier node_hier(hier_tid, hier_gids, hhds::ROOT, node.get_raw_nid());
+  const hhds::Pin_hier  pin_hier(hier_tid, hier_gids, hhds::ROOT, pin.get_raw_nid(), pin.get_port_id(), pin.get_pin_pid());
+  EXPECT_TRUE(hhds::Graph::is_valid(node_hier));
+  EXPECT_TRUE(hhds::Graph::is_valid(pin_hier));
+}
+
 TEST(CompactTypes, EdgeFlatConversions) {
   hhds::GraphLibrary lib;
   auto               g   = lib.create_graph();
@@ -162,10 +195,10 @@ TEST(CompactTypes, EdgeHierConversions) {
   ASSERT_EQ(out_edges.size(), 1U);
   const auto& edge = out_edges[0];
 
-  auto hier_ref  = hhds::Tree::create();
-  auto hier_gids = std::make_shared<std::vector<hhds::Gid>>();
-  auto hier_pos  = hier_ref->add_root();
-  const hhds::Tid hier_tid = -9;
+  auto            hier_ref  = hhds::Tree::create();
+  auto            hier_gids = std::make_shared<std::vector<hhds::Gid>>();
+  auto            hier_pos  = hier_ref->add_root();
+  const hhds::Tid hier_tid  = -9;
   hier_gids->resize(static_cast<size_t>(hier_pos + 1), hhds::Gid_invalid);
   (*hier_gids)[static_cast<size_t>(hier_pos)] = gid;
 

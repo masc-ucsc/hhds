@@ -28,7 +28,8 @@
 
 namespace hhds {
 
-Node_hier::Node_hier(Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value, Nid raw_nid_value)
+Node_hier::Node_hier(Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value,
+                     Nid raw_nid_value)
     : hier_gids(std::move(hier_gids_value)), hier_tid(hier_tid_value), hier_pos(hier_pos_value), raw_nid(raw_nid_value) {}
 
 auto Node_hier::get_root_gid() const noexcept -> Gid {
@@ -112,9 +113,13 @@ auto to_flat(const Edge_hier& e) -> Edge_flat {
 
 auto to_hier(const Edge_class& e, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos) -> Edge_hier {
   Edge_hier out;
-  out.driver = Pin_hier(hier_tid, hier_gids, hier_pos, e.driver_pin.get_raw_nid(), e.driver_pin.get_port_id(),
-                        e.driver_pin.get_pin_pid());
-  out.sink = Pin_hier(hier_tid, std::move(hier_gids), hier_pos, e.sink_pin.get_raw_nid(), e.sink_pin.get_port_id(),
+  out.driver
+      = Pin_hier(hier_tid, hier_gids, hier_pos, e.driver_pin.get_raw_nid(), e.driver_pin.get_port_id(), e.driver_pin.get_pin_pid());
+  out.sink = Pin_hier(hier_tid,
+                      std::move(hier_gids),
+                      hier_pos,
+                      e.sink_pin.get_raw_nid(),
+                      e.sink_pin.get_port_id(),
                       e.sink_pin.get_pin_pid());
   return out;
 }
@@ -935,8 +940,8 @@ void Graph::forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& 
   }
 }
 
-void Graph::fast_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos,
-                           ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const {
+void Graph::fast_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids,
+                           Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const {
   for (size_t i = 1; i < node_table.size(); ++i) {
     const Nid   node_id = static_cast<Nid>(i) << 2;
     const auto& node    = node_table[i];
@@ -960,8 +965,9 @@ void Graph::fast_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::s
   }
 }
 
-void Graph::forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos,
-                              ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const {
+void Graph::forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids,
+                              Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs,
+                              std::vector<Node_hier>& out) const {
   for (const auto& node : forward_class()) {
     const Nid   node_nid = node.get_raw_nid();
     const auto& node_ref = node_table[static_cast<size_t>(node_nid >> 2)];
@@ -975,7 +981,8 @@ void Graph::forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std
         }
         (*hier_gids)[static_cast<size_t>(child_hier_pos)] = other_graph_id;
         active_graphs.insert(other_graph_id);
-        owner_lib_->get_graph(other_graph_id)->forward_hier_impl(hier_tree, hier_tid, hier_gids, child_hier_pos, active_graphs, out);
+        owner_lib_->get_graph(other_graph_id)
+            ->forward_hier_impl(hier_tree, hier_tid, hier_gids, child_hier_pos, active_graphs, out);
         active_graphs.erase(other_graph_id);
         continue;
       }
@@ -1103,9 +1110,7 @@ auto Graph::make_pin_class(Pid pin_pid) const -> Pin_class {
   return Pin_class(pin->get_master_nid(), pin->get_port_id(), pin_pid);
 }
 
-auto Pin_class::get_master_node() const -> Node_class {
-  return Node_class(raw_nid);
-}
+auto Pin_class::get_master_node() const -> Node_class { return Node_class(raw_nid); }
 
 void Graph::set_subnode(Node_class node, Gid gid) {
   assert_node_exists(node);
