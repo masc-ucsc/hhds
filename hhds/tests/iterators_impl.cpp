@@ -39,7 +39,7 @@ TEST(CompactTypes, NodeClassFromGraph) {
 TEST(CompactTypes, PinClassFromGraph) {
   hhds::Graph g;
   auto        node = g.create_node();
-  auto        pin  = node.create_pin(3);
+  auto        pin  = g.create_pin(node, 3);
 
   EXPECT_EQ(pin.get_raw_nid(), node.get_raw_nid());  // get_raw_nid() for internal cross-check only
   EXPECT_EQ(pin.get_port_id(), 3);
@@ -96,7 +96,7 @@ TEST(CompactTypes, PinCompactConversions) {
   const hhds::Gid    gid = g->get_gid();
 
   auto node = g->create_node();
-  auto pin  = node.create_pin(3);
+  auto pin  = g->create_pin(node, 3);
 
   const auto flat_from_class = hhds::to_flat(pin, gid);
   EXPECT_EQ(flat_from_class.get_root_gid(), gid);
@@ -115,6 +115,39 @@ TEST(CompactTypes, PinCompactConversions) {
   EXPECT_EQ(attrs[flat_from_class], 7);
 }
 
+TEST(CompactTypes, GraphIsValidParity) {
+  EXPECT_FALSE(hhds::Graph::is_valid(hhds::Node_class()));
+  EXPECT_FALSE(hhds::Graph::is_valid(hhds::Pin_class()));
+  EXPECT_FALSE(hhds::Graph::is_valid(hhds::Node_flat()));
+  EXPECT_FALSE(hhds::Graph::is_valid(hhds::Pin_flat()));
+  EXPECT_FALSE(hhds::Graph::is_valid(hhds::Node_hier()));
+  EXPECT_FALSE(hhds::Graph::is_valid(hhds::Pin_hier()));
+
+  hhds::GraphLibrary lib;
+  auto               g   = lib.create_graph();
+  const hhds::Gid    gid = g->get_gid();
+
+  const auto node = g->create_node();
+  const auto pin  = g->create_pin(node, 3);
+
+  EXPECT_TRUE(hhds::Graph::is_valid(node));
+  EXPECT_TRUE(hhds::Graph::is_valid(pin));
+
+  const auto node_flat = hhds::to_flat(node, gid);
+  const auto pin_flat  = hhds::to_flat(pin, gid);
+  EXPECT_TRUE(hhds::Graph::is_valid(node_flat));
+  EXPECT_TRUE(hhds::Graph::is_valid(pin_flat));
+
+  auto hier_gids = std::make_shared<std::vector<hhds::Gid>>(static_cast<size_t>(hhds::ROOT + 1), hhds::Gid_invalid);
+  (*hier_gids)[static_cast<size_t>(hhds::ROOT)] = gid;
+  const hhds::Tid hier_tid                      = -9;
+
+  const hhds::Node_hier node_hier(hier_tid, hier_gids, hhds::ROOT, node.get_raw_nid());
+  const hhds::Pin_hier  pin_hier(hier_tid, hier_gids, hhds::ROOT, pin.get_raw_nid(), pin.get_port_id(), pin.get_pin_pid());
+  EXPECT_TRUE(hhds::Graph::is_valid(node_hier));
+  EXPECT_TRUE(hhds::Graph::is_valid(pin_hier));
+}
+
 TEST(CompactTypes, EdgeFlatConversions) {
   hhds::GraphLibrary lib;
   auto               g   = lib.create_graph();
@@ -122,8 +155,8 @@ TEST(CompactTypes, EdgeFlatConversions) {
 
   auto src = g->create_node();
   auto dst = g->create_node();
-  auto sp  = src.create_pin(1);
-  auto dp  = dst.create_pin(2);
+  auto sp  = g->create_pin(src, 1);
+  auto dp  = g->create_pin(dst, 2);
   g->add_edge(sp, dp);
 
   auto out_edges = g->out_edges(sp);
@@ -154,18 +187,18 @@ TEST(CompactTypes, EdgeHierConversions) {
 
   auto src = g->create_node();
   auto dst = g->create_node();
-  auto sp  = src.create_pin(1);
-  auto dp  = dst.create_pin(2);
+  auto sp  = g->create_pin(src, 1);
+  auto dp  = g->create_pin(dst, 2);
   g->add_edge(sp, dp);
 
   auto out_edges = g->out_edges(sp);
   ASSERT_EQ(out_edges.size(), 1U);
   const auto& edge = out_edges[0];
 
-  auto hier_ref  = hhds::Tree::create();
-  auto hier_gids = std::make_shared<std::vector<hhds::Gid>>();
-  auto hier_pos  = hier_ref->add_root();
-  const hhds::Tid hier_tid = -9;
+  auto            hier_ref  = hhds::Tree::create();
+  auto            hier_gids = std::make_shared<std::vector<hhds::Gid>>();
+  auto            hier_pos  = hier_ref->add_root();
+  const hhds::Tid hier_tid  = -9;
   hier_gids->resize(static_cast<size_t>(hier_pos + 1), hhds::Gid_invalid);
   (*hier_gids)[static_cast<size_t>(hier_pos)] = gid;
 
@@ -276,8 +309,8 @@ TEST(BitEncoding, PinToPin) {
   hhds::Graph g;
   auto        n1 = g.create_node();
   auto        n2 = g.create_node();
-  auto        p1 = n1.create_pin(1);
-  auto        p2 = n2.create_pin(2);
+  auto        p1 = g.create_pin(n1, 1);
+  auto        p2 = g.create_pin(n2, 2);
   g.add_edge(p1, p2);
 
   auto out = g.out_edges(p1);
@@ -292,7 +325,7 @@ TEST(BitEncoding, NodeToPin) {
   hhds::Graph g;
   auto        n1 = g.create_node();
   auto        n2 = g.create_node();
-  auto        p2 = n2.create_pin(2);
+  auto        p2 = g.create_pin(n2, 2);
   g.add_edge(n1, p2);
 
   auto out = g.out_edges(n1);
@@ -307,7 +340,7 @@ TEST(BitEncoding, PinToNode) {
   hhds::Graph g;
   auto        n1 = g.create_node();
   auto        n2 = g.create_node();
-  auto        p1 = n1.create_pin(1);
+  auto        p1 = g.create_pin(n1, 1);
   g.add_edge(p1, n2);
 
   auto out = g.out_edges(p1);
@@ -326,8 +359,8 @@ TEST(DelEdge, BasicRemoval) {
   hhds::Graph g;
   auto        n1 = g.create_node();
   auto        n2 = g.create_node();
-  auto        p1 = n1.create_pin(0);
-  auto        p2 = n2.create_pin(0);
+  auto        p1 = g.create_pin(n1, 0);
+  auto        p2 = g.create_pin(n2, 0);
   g.add_edge(p1, p2);
 
   int count = 0;
@@ -548,8 +581,8 @@ TEST(LazyTraversal, ForwardClassTopologicalOrder) {
   auto        n3 = g.create_node();
   auto        n4 = g.create_node();
 
-  auto n2p1 = n2.create_pin(1);
-  auto n4p1 = n4.create_pin(1);
+  auto n2p1 = g.create_pin(n2, 1);
+  auto n4p1 = g.create_pin(n4, 1);
 
   g.add_edge(n1, n2);
   g.add_edge(n1, n3);
@@ -823,9 +856,9 @@ TEST(AddEdgeShorthand, NodeToNode) {
 TEST(PinIteration, GetPins) {
   hhds::Graph g;
   auto        node = g.create_node();
-  auto        p1   = node.create_pin(1);
-  auto        p2   = node.create_pin(2);
-  auto        p3   = node.create_pin(3);
+  auto        p1   = g.create_pin(node, 1);
+  auto        p2   = g.create_pin(node, 2);
+  auto        p3   = g.create_pin(node, 3);
 
   auto pins = g.get_pins(node);
   ASSERT_EQ(pins.size(), 3);
@@ -837,10 +870,10 @@ TEST(PinIteration, GetPins) {
 TEST(PinIteration, GetPinsIncludesPin0WhenMaterialized) {
   hhds::Graph g;
   auto        node = g.create_node();
-  auto        p0   = node.create_pin(0);
-  auto        p1   = node.create_pin(1);
-  auto        p2   = node.create_pin(2);
-  auto        p3   = node.create_pin(3);
+  auto        p0   = g.create_pin(node, 0);
+  auto        p1   = g.create_pin(node, 1);
+  auto        p2   = g.create_pin(node, 2);
+  auto        p3   = g.create_pin(node, 3);
 
   auto pins = g.get_pins(node);
   ASSERT_EQ(pins.size(), 4);
@@ -855,12 +888,12 @@ TEST(PinIteration, DriverAndSinkPins) {
   auto        n1 = g.create_node();
   auto        n2 = g.create_node();
 
-  auto p0 = n1.create_pin(0);  // driver-only
-  auto p1 = n1.create_pin(1);  // sink-only
-  auto p2 = n1.create_pin(2);  // both
+  auto p0 = g.create_pin(n1, 0);  // driver-only
+  auto p1 = g.create_pin(n1, 1);  // sink-only
+  auto p2 = g.create_pin(n1, 2);  // both
 
-  auto n2p0 = n2.create_pin(0);
-  auto n2p1 = n2.create_pin(1);
+  auto n2p0 = g.create_pin(n2, 0);
+  auto n2p1 = g.create_pin(n2, 1);
 
   g.add_edge(p0, n2p0);
   g.add_edge(n2p1, p1);
@@ -893,32 +926,25 @@ TEST(CompactTypes, GraphHandlesExposeStableIdentity) {
   EXPECT_EQ(g2->get_gid(), gid);
 }
 
-#if !defined(NDEBUG)
-TEST(CompactTypes, NodeAndPinHandlesDieAfterGraphDeletion) {
-  hhds::GraphLibrary lib;
-  auto               g   = lib.create_graph();
-  const hhds::Gid    gid = g->get_gid();
-
-  auto node = g->create_node();
-  auto pin  = node.create_pin(7);
-
-  lib.delete_graph(gid);
-
-  ASSERT_DEATH({ (void)node.get_raw_nid(); }, "graph is no longer valid");
-  ASSERT_DEATH({ (void)pin.get_pin_pid(); }, "graph is no longer valid");
-  ASSERT_DEATH({ (void)pin.get_master_node(); }, "graph is no longer valid");
-}
-
-TEST(CompactTypes, RejectsHandlesFromDifferentGraphs) {
+TEST(CompactTypes, ClassWrappersArePureLocalValues) {
   hhds::GraphLibrary lib;
   auto               g1 = lib.create_graph();
   auto               g2 = lib.create_graph();
 
   auto n1 = g1->create_node();
   auto n2 = g2->create_node();
-  auto p1 = n1.create_pin(1);
+  auto p1 = g1->create_pin(n1, 1);
+  auto p2 = g2->create_pin(n2, 1);
 
-  ASSERT_DEATH({ g2->add_edge(n1, n2); }, "node handle belongs to a different graph");
-  ASSERT_DEATH({ (void)g2->out_edges(p1); }, "pin handle belongs to a different graph");
+  EXPECT_EQ(n1, n2);
+  EXPECT_EQ(p1, p2);
+  EXPECT_EQ(p1.get_master_node(), n1);
+  EXPECT_EQ(p2.get_master_node(), n2);
+
+  EXPECT_NE(hhds::to_flat(n1, g1->get_gid()), hhds::to_flat(n2, g2->get_gid()));
+  EXPECT_NE(hhds::to_flat(p1, g1->get_gid()), hhds::to_flat(p2, g2->get_gid()));
+
+  lib.delete_graph(g1->get_gid());
+  EXPECT_EQ(n1.get_raw_nid(), n2.get_raw_nid());
+  EXPECT_EQ(p1.get_pin_pid(), p2.get_pin_pid());
 }
-#endif

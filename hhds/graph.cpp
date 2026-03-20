@@ -28,7 +28,8 @@
 
 namespace hhds {
 
-Node_hier::Node_hier(Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value, Nid raw_nid_value)
+Node_hier::Node_hier(Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value,
+                     Nid raw_nid_value)
     : hier_gids(std::move(hier_gids_value)), hier_tid(hier_tid_value), hier_pos(hier_pos_value), raw_nid(raw_nid_value) {}
 
 auto Node_hier::get_root_gid() const noexcept -> Gid {
@@ -59,13 +60,13 @@ auto Pin_hier::get_current_gid() const noexcept -> Gid {
   return (*hier_gids)[static_cast<size_t>(hier_pos)];
 }
 
-auto to_class(const Node_hier& v) -> Node_class { return Node_class(nullptr, v.get_raw_nid() & ~static_cast<Nid>(2)); }
+auto to_class(const Node_hier& v) -> Node_class { return Node_class(v.get_raw_nid() & ~static_cast<Nid>(2)); }
 
 auto to_flat(const Node_hier& v) -> Node_flat {
   return Node_flat(v.get_root_gid(), v.get_current_gid(), v.get_raw_nid() & ~static_cast<Nid>(2));
 }
 
-auto to_class(const Node_flat& v) -> Node_class { return Node_class(nullptr, v.get_raw_nid() & ~static_cast<Nid>(2)); }
+auto to_class(const Node_flat& v) -> Node_class { return Node_class(v.get_raw_nid() & ~static_cast<Nid>(2)); }
 
 auto to_flat(const Node_class& v, Gid current_gid, Gid root_gid) -> Node_flat {
   if (root_gid == Gid_invalid) {
@@ -112,9 +113,13 @@ auto to_flat(const Edge_hier& e) -> Edge_flat {
 
 auto to_hier(const Edge_class& e, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos) -> Edge_hier {
   Edge_hier out;
-  out.driver = Pin_hier(hier_tid, hier_gids, hier_pos, e.driver_pin.get_raw_nid(), e.driver_pin.get_port_id(),
-                        e.driver_pin.get_pin_pid());
-  out.sink = Pin_hier(hier_tid, std::move(hier_gids), hier_pos, e.sink_pin.get_raw_nid(), e.sink_pin.get_port_id(),
+  out.driver
+      = Pin_hier(hier_tid, hier_gids, hier_pos, e.driver_pin.get_raw_nid(), e.driver_pin.get_port_id(), e.driver_pin.get_pin_pid());
+  out.sink = Pin_hier(hier_tid,
+                      std::move(hier_gids),
+                      hier_pos,
+                      e.sink_pin.get_raw_nid(),
+                      e.sink_pin.get_port_id(),
                       e.sink_pin.get_pin_pid());
   return out;
 }
@@ -123,8 +128,8 @@ auto to_class(const Edge_flat& e) -> Edge_class {
   Edge_class out{};
   out.driver_pin = to_class(e.driver);
   out.sink_pin   = to_class(e.sink);
-  out.driver     = Node_class(nullptr, out.driver_pin.get_raw_nid() | static_cast<Nid>(2));
-  out.sink       = Node_class(nullptr, out.sink_pin.get_raw_nid() & ~static_cast<Nid>(2));
+  out.driver     = Node_class(out.driver_pin.get_raw_nid() | static_cast<Nid>(2));
+  out.sink       = Node_class(out.sink_pin.get_raw_nid() & ~static_cast<Nid>(2));
   out.type       = 2;  // p -> p
   return out;
 }
@@ -133,8 +138,8 @@ auto to_class(const Edge_hier& e) -> Edge_class {
   Edge_class out{};
   out.driver_pin = to_class(e.driver);
   out.sink_pin   = to_class(e.sink);
-  out.driver     = Node_class(nullptr, out.driver_pin.get_raw_nid() | static_cast<Nid>(2));
-  out.sink       = Node_class(nullptr, out.sink_pin.get_raw_nid() & ~static_cast<Nid>(2));
+  out.driver     = Node_class(out.driver_pin.get_raw_nid() | static_cast<Nid>(2));
+  out.sink       = Node_class(out.sink_pin.get_raw_nid() & ~static_cast<Nid>(2));
   out.type       = 2;  // p -> p
   return out;
 }
@@ -703,32 +708,20 @@ Graph::Graph() { clear_graph(); }
 
 void Graph::assert_accessible() const noexcept { assert(!deleted_ && "graph is no longer valid"); }
 
-void Node_class::assert_accessible_handle() const noexcept {
-  if (graph != nullptr) {
-    graph->assert_accessible();
-  }
-}
-
-void Pin_class::assert_accessible_handle() const noexcept {
-  if (graph != nullptr) {
-    graph->assert_accessible();
-  }
-}
-
-void Graph::assert_compatible(const Node_class& node) const noexcept {
+void Graph::assert_node_exists(const Node_class& node) const noexcept {
   assert_accessible();
-  if (node.graph != nullptr) {
-    node.graph->assert_accessible();
-    assert(node.graph == this && "node handle belongs to a different graph");
-  }
+  const Nid raw_nid   = node.get_raw_nid();
+  const Nid actual_id = raw_nid >> 2;
+  assert((raw_nid & static_cast<Nid>(1)) == 0 && "node handle is not a node");
+  assert(actual_id > 0 && actual_id < node_table.size() && "node handle is invalid for this graph");
 }
 
-void Graph::assert_compatible(const Pin_class& pin) const noexcept {
+void Graph::assert_pin_exists(const Pin_class& pin) const noexcept {
   assert_accessible();
-  if (pin.graph != nullptr) {
-    pin.graph->assert_accessible();
-    assert(pin.graph == this && "pin handle belongs to a different graph");
-  }
+  const Pid raw_pid   = pin.get_pin_pid();
+  const Pid actual_id = raw_pid >> 2;
+  assert((raw_pid & static_cast<Pid>(1)) == static_cast<Pid>(1) && "pin handle is not a pin");
+  assert(actual_id > 0 && actual_id < pin_table.size() && "pin handle is invalid for this graph");
 }
 
 void Graph::invalidate_from_library() noexcept {
@@ -793,7 +786,7 @@ void Graph::rebuild_fast_class_cache() const {
     fast_class_cache_.reserve(node_table.size() - 1);
     for (size_t i = 1; i < node_table.size(); ++i) {
       const Nid raw_nid = static_cast<Nid>(i) << 2;
-      fast_class_cache_.emplace_back(const_cast<Graph*>(this), raw_nid);
+      fast_class_cache_.emplace_back(raw_nid);
     }
   }
   fast_class_cache_valid_ = true;
@@ -905,7 +898,7 @@ void Graph::rebuild_forward_class_cache() const {
     }
 
     emitted[node_idx] = true;
-    forward_class_cache_.emplace_back(const_cast<Graph*>(this), static_cast<Nid>(node_idx) << 2);
+    forward_class_cache_.emplace_back(static_cast<Nid>(node_idx) << 2);
 
     for (auto sink_idx : adjacency[node_idx]) {
       if (indegree[sink_idx] == 0) {
@@ -921,7 +914,7 @@ void Graph::rebuild_forward_class_cache() const {
   // Preserve determinism under cycles by appending unresolved nodes by ID.
   for (size_t idx = first_user_node_idx; idx < node_count; ++idx) {
     if (!emitted[idx]) {
-      forward_class_cache_.emplace_back(const_cast<Graph*>(this), static_cast<Nid>(idx) << 2);
+      forward_class_cache_.emplace_back(static_cast<Nid>(idx) << 2);
     }
   }
 
@@ -947,8 +940,8 @@ void Graph::forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& 
   }
 }
 
-void Graph::fast_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos,
-                           ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const {
+void Graph::fast_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids,
+                           Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const {
   for (size_t i = 1; i < node_table.size(); ++i) {
     const Nid   node_id = static_cast<Nid>(i) << 2;
     const auto& node    = node_table[i];
@@ -972,8 +965,9 @@ void Graph::fast_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::s
   }
 }
 
-void Graph::forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos,
-                              ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const {
+void Graph::forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids,
+                              Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs,
+                              std::vector<Node_hier>& out) const {
   for (const auto& node : forward_class()) {
     const Nid   node_nid = node.get_raw_nid();
     const auto& node_ref = node_table[static_cast<size_t>(node_nid >> 2)];
@@ -987,7 +981,8 @@ void Graph::forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std
         }
         (*hier_gids)[static_cast<size_t>(child_hier_pos)] = other_graph_id;
         active_graphs.insert(other_graph_id);
-        owner_lib_->get_graph(other_graph_id)->forward_hier_impl(hier_tree, hier_tid, hier_gids, child_hier_pos, active_graphs, out);
+        owner_lib_->get_graph(other_graph_id)
+            ->forward_hier_impl(hier_tree, hier_tid, hier_gids, child_hier_pos, active_graphs, out);
         active_graphs.erase(other_graph_id);
         continue;
       }
@@ -1088,13 +1083,20 @@ auto Graph::create_node() -> Node_class {
   node_table.emplace_back(id);
   invalidate_traversal_caches();
   Nid raw_nid = id << 2 | 0;
-  return Node_class(this, raw_nid);
+  return Node_class(raw_nid);
+}
+
+auto Graph::create_pin(Node_class node, Port_id port_id) -> Pin_class {
+  assert_node_exists(node);
+  const Pid pin_pid = create_pin(node.get_raw_nid(), port_id);
+  return Pin_class(node.get_raw_nid(), port_id, pin_pid);
 }
 
 auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
   assert_accessible();
-  // nid is << 2 here but port_id is not << 2 id (here but pin id in actual) is also not << 2
   nid &= ~static_cast<Nid>(2);  // Pin ownership is by node identity, independent of edge role bit.
+  const Nid actual_nid = nid >> 2;
+  assert(actual_nid > 0 && actual_nid < node_table.size() && "create_pin: node handle is invalid for this graph");
   Pid id = pin_table.size();
   assert(id);
   pin_table.emplace_back(nid, pid);
@@ -1105,27 +1107,13 @@ auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
 
 auto Graph::make_pin_class(Pid pin_pid) const -> Pin_class {
   const auto* pin = ref_pin(pin_pid);
-  return Pin_class(const_cast<Graph*>(this), pin->get_master_nid(), pin->get_port_id(), pin_pid);
+  return Pin_class(pin->get_master_nid(), pin->get_port_id(), pin_pid);
 }
 
-auto Pin_class::get_master_node() const -> Node_class {
-  assert_accessible_handle();
-  if (graph != nullptr && pin_pid != 0) {
-    const auto* pin = graph->ref_pin(pin_pid);
-    return Node_class(graph, pin->get_master_nid());
-  }
-  return Node_class(graph, raw_nid);
-}
-
-auto Node_class::create_pin(Port_id port_id_value) const -> Pin_class {
-  assert_accessible_handle();
-  assert(graph != nullptr);
-  const Pid pin_pid = graph->create_pin(raw_nid, port_id_value);
-  return Pin_class(graph, raw_nid, port_id_value, pin_pid);
-}
+auto Pin_class::get_master_node() const -> Node_class { return Node_class(raw_nid); }
 
 void Graph::set_subnode(Node_class node, Gid gid) {
-  assert_compatible(node);
+  assert_node_exists(node);
   set_subnode(node.get_raw_nid(), gid);
 }
 
@@ -1158,32 +1146,32 @@ void Graph::add_edge(Vid driver_id, Vid sink_id) {
 
 void Graph::del_edge(Node_class node1, Node_class node2) {
   assert_accessible();
-  assert_compatible(node1);
-  assert_compatible(node2);
+  assert_node_exists(node1);
+  assert_node_exists(node2);
   del_edge_int(node1.get_raw_nid(), node2.get_raw_nid());
   invalidate_traversal_caches();
 }
 
 void Graph::del_edge(Node_class node, Pin_class pin) {
   assert_accessible();
-  assert_compatible(node);
-  assert_compatible(pin);
+  assert_node_exists(node);
+  assert_pin_exists(pin);
   del_edge_int(node.get_raw_nid(), pin.get_pin_pid());
   invalidate_traversal_caches();
 }
 
 void Graph::del_edge(Pin_class pin, Node_class node) {
   assert_accessible();
-  assert_compatible(pin);
-  assert_compatible(node);
+  assert_pin_exists(pin);
+  assert_node_exists(node);
   del_edge_int(pin.get_pin_pid(), node.get_raw_nid());
   invalidate_traversal_caches();
 }
 
 void Graph::del_edge(Pin_class pin1, Pin_class pin2) {
   assert_accessible();
-  assert_compatible(pin1);
-  assert_compatible(pin2);
+  assert_pin_exists(pin1);
+  assert_pin_exists(pin2);
   del_edge_int(pin1.get_pin_pid(), pin2.get_pin_pid());
   invalidate_traversal_caches();
 }
@@ -1256,12 +1244,12 @@ void Graph::del_edge_int(Vid driver_id, Vid sink_id) {
 
 auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
   assert_accessible();
-  assert_compatible(node);
+  assert_node_exists(node);
   std::vector<Edge_class> out;
   const Nid               self_nid = node.get_raw_nid() & ~static_cast<Nid>(2);
   auto*                   self     = ref_node(self_nid);
   auto                    edges    = self->get_edges(self_nid);
-  const Node_class        self_driver(this, self_nid | static_cast<Nid>(2));
+  const Node_class        self_driver(self_nid | static_cast<Nid>(2));
 
   for (auto vid : edges) {
     if (vid & 2) {
@@ -1283,7 +1271,7 @@ auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
       Edge_class e{};
       e.type   = 1;  // n -> n
       e.driver = self_driver;
-      e.sink   = Node_class(this, sink_nid);  // keep your existing ctor usage
+      e.sink   = Node_class(sink_nid);
       // e.driver_pin / e.sink_pin remain default
       out.push_back(e);
     }
@@ -1293,12 +1281,12 @@ auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
 
 auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
   assert_accessible();
-  assert_compatible(node);
+  assert_node_exists(node);
   std::vector<Edge_class> out;
   const Nid               self_nid = node.get_raw_nid() & ~static_cast<Nid>(2);
   auto*                   self     = ref_node(self_nid);
   auto                    edges    = self->get_edges(self_nid);
-  const Node_class        self_sink(this, self_nid & ~static_cast<Nid>(2));
+  const Node_class        self_sink(self_nid & ~static_cast<Nid>(2));
 
   for (auto vid : edges) {
     if (!(vid & 2)) {
@@ -1319,7 +1307,7 @@ auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
 
       Edge_class e{};
       e.type   = 1;  // n -> n
-      e.driver = Node_class(this, driver_nid);
+      e.driver = Node_class(driver_nid);
       e.sink   = self_sink;
       // e.driver_pin / e.sink_pin remain default
       out.push_back(e);
@@ -1330,7 +1318,7 @@ auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
 
 auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
   assert_accessible();
-  assert_compatible(pin);
+  assert_pin_exists(pin);
   std::vector<Edge_class> out;
   const Pid               self_pid        = pin.get_pin_pid();
   const Pid               self_pid_lookup = (self_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
@@ -1358,7 +1346,7 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
     Edge_class e{};
     e.type       = 4;  // p -> n
     e.driver_pin = self_driver_pin;
-    e.sink       = Node_class(this, sink_nid);
+    e.sink       = Node_class(sink_nid);
     out.push_back(e);
   }
 
@@ -1367,7 +1355,7 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
 
 auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
   assert_accessible();
-  assert_compatible(pin);
+  assert_pin_exists(pin);
   std::vector<Edge_class> out;
   const Pid               self_pid      = pin.get_pin_pid();
   const Pid               self_pid_sink = (self_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
@@ -1394,7 +1382,7 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
 
     Edge_class e{};
     e.type     = 3;  // n -> p
-    e.driver   = Node_class(this, driver_nid);
+    e.driver   = Node_class(driver_nid);
     e.sink_pin = self_sink_pin;
     out.push_back(e);
   }
@@ -1404,7 +1392,7 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
 
 auto Graph::get_pins(Node_class node) -> std::vector<Pin_class> {
   assert_accessible();
-  assert_compatible(node);
+  assert_node_exists(node);
   std::vector<Pin_class> out;
   const Nid              self_nid = node.get_raw_nid() & ~static_cast<Nid>(2);
   auto*                  self     = ref_node(self_nid);
@@ -1421,7 +1409,7 @@ auto Graph::get_pins(Node_class node) -> std::vector<Pin_class> {
 
 auto Graph::get_driver_pins(Node_class node) -> std::vector<Pin_class> {
   assert_accessible();
-  assert_compatible(node);
+  assert_node_exists(node);
   std::vector<Pin_class> out;
   for (const auto& pin : get_pins(node)) {
     const Pid pid_lookup = (pin.get_pin_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
@@ -1441,7 +1429,7 @@ auto Graph::get_driver_pins(Node_class node) -> std::vector<Pin_class> {
 
 auto Graph::get_sink_pins(Node_class node) -> std::vector<Pin_class> {
   assert_accessible();
-  assert_compatible(node);
+  assert_node_exists(node);
   std::vector<Pin_class> out;
   for (const auto& pin : get_pins(node)) {
     const Pid pid_lookup = (pin.get_pin_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
