@@ -186,5 +186,61 @@ int main() {
   std::cout << "\nDump scoped tree for LNAST tree\n";
   tree3->dump(std::cout, lnast_default);
 
+  // Demonstrate write_dump / read_dump round-trip
+  std::cout << "\n--- write_dump / read_dump round-trip ---\n";
+
+  // Write tree to file
+  const std::string filename = "/tmp/test_tree.hhds";
+  tree->write_dump(filename, with_attrs);
+  std::cout << "Wrote tree to " << filename << "\n";
+
+  // Read it back
+  auto [loaded_tree, loaded_nodes] = hhds::Tree::read_dump(filename, type_table);
+
+  std::cout << "\nLoaded tree dump:\n";
+  hhds::Tree::PrintOptions loaded_opts;
+  loaded_opts.type_table = type_table;
+
+  // Build node_text from loaded NodeData
+  absl::flat_hash_map<hhds::Tree_pos, std::string> loaded_names;
+  for (const auto& nd : loaded_nodes) {
+    loaded_names[nd.pos] = nd.node_text;
+  }
+  loaded_opts.node_text = [&loaded_names](const hhds::Tree::Node_class& node) {
+    auto it = loaded_names.find(node.get_current_pos());
+    return it == loaded_names.end() ? std::string("?") : it->second;
+  };
+
+  // Rebuild attributes from loaded NodeData
+  absl::flat_hash_map<hhds::Tree_pos, std::vector<std::pair<std::string, std::string>>> loaded_attrs;
+  for (const auto& nd : loaded_nodes) {
+    if (!nd.attributes.empty()) {
+      loaded_attrs[nd.pos] = nd.attributes;
+    }
+  }
+  loaded_opts.attributes = {
+      {"pos",
+       [&loaded_attrs](const hhds::Tree::Node_class& node) -> std::optional<std::string> {
+         auto it = loaded_attrs.find(node.get_current_pos());
+         if (it != loaded_attrs.end()) {
+           for (const auto& [k, v] : it->second) {
+             if (k == "pos") return v;
+           }
+         }
+         return std::nullopt;
+       }},
+      {"type_id",
+       [&loaded_attrs](const hhds::Tree::Node_class& node) -> std::optional<std::string> {
+         auto it = loaded_attrs.find(node.get_current_pos());
+         if (it != loaded_attrs.end()) {
+           for (const auto& [k, v] : it->second) {
+             if (k == "type_id") return v;
+           }
+         }
+         return std::nullopt;
+       }},
+  };
+  loaded_tree->dump(std::cout, loaded_opts);
+
   return 0;
 }

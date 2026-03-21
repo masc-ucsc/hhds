@@ -554,6 +554,24 @@ public:
   [[nodiscard]] std::string dump(const PrintOptions& options) const;
   [[nodiscard]] std::string dump(Tree_pos start_pos, const PrintOptions& options) const;
 
+  // Per-node data recovered during read_dump (node_text and attributes are not stored in tree)
+  struct NodeData {
+    Tree_pos                                         pos;
+    std::string                                      node_text;
+    std::vector<std::pair<std::string, std::string>> attributes;
+  };
+
+  struct ReadDumpResult {
+    std::shared_ptr<Tree>  tree;
+    std::vector<NodeData>  nodes;  // one per node, in pre-order
+  };
+
+  void write_dump(std::ostream& os, const PrintOptions& options) const;
+  void write_dump(const std::string& filename, const PrintOptions& options) const;
+
+  [[nodiscard]] static ReadDumpResult read_dump(std::istream& is, std::span<const Type_entry> type_table);
+  [[nodiscard]] static ReadDumpResult read_dump(const std::string& filename, std::span<const Type_entry> type_table);
+
   void print_tree(int deep = 0) {
     for (size_t i = 0; i < pointers_stack.size(); i++) {
       std::cout << "Index: " << (i << CHUNK_SHIFT) << " Parent: " << pointers_stack[i].get_parent()
@@ -1027,6 +1045,7 @@ private:
   [[nodiscard]] size_t      node_body_width(Tree_pos c, size_t name_width, const PrintOptions& options) const;
   void                      print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const PrintAlign& align, const PrintOptions& options) const;
   void                      dump_node(std::ostream& os, Tree_pos node_pos, const std::string& prefix, bool is_last, const PrintOptions& options) const;
+  void                      write_dump_node(std::ostream& os, Tree_pos node_pos, const std::string& prefix, bool is_last, const PrintOptions& options) const;
   void                      scan_align_group(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;
   [[nodiscard]] PrintAlign  compute_sibling_align(Tree_pos first_child, const PrintOptions& options) const;
   void                      recompute_body_width(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;

@@ -36,6 +36,7 @@ cc_library(
         [
             "tree.cpp",
             "tree_print.cpp",
+            "tree_serial.cpp",
         ],
         exclude = ["*test*.cpp"],
     ),

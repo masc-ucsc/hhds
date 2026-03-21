@@ -455,7 +455,6 @@ public:
   [[nodiscard]] std::vector<Pin_class>  get_pins(Node_class node);
   [[nodiscard]] std::vector<Pin_class>  get_driver_pins(Node_class node);
   [[nodiscard]] std::vector<Pin_class>  get_sink_pins(Node_class node);
-  [[nodiscard]] auto                    get_subs() const -> std::span<const Node_class>;
   [[nodiscard]] auto                    fast_class() const -> std::span<const Node_class>;
   [[nodiscard]] auto                    forward_class() const -> std::span<const Node_class>;
   [[nodiscard]] auto                    fast_flat() const -> std::span<const Node_flat>;
