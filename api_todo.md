@@ -19,25 +19,7 @@ See:
 
 The old `tree<X>`, `Forest<X>`, `Tnode_*`, `get_data()`, and `ref_data()` sketches are obsolete and intentionally removed from this TODO.
 
-## 1. Graph Wrapper Cleanup
-
-Graph wrappers are still behind the tree-side model.
-
-Pending:
-
-- remove stored `Graph*` from `Node_class` and `Pin_class`
-- make graph wrappers pure ID/context holders, matching tree wrappers
-- move wrapper-owned creation helpers onto the container API:
-  - current: `node.create_pin(port_id)`
-  - target: `graph.create_pin(node, port_id)`
-- keep `Node_flat`, `Pin_flat`, `Node_hier`, and `Pin_hier` as hashable value types
-
-Notes:
-
-- `Node_hier` / `Pin_hier` should keep explicit hierarchy identity (`hier_tid`, `hier_pos`)
-- this is the main remaining graph/tree asymmetry from the original unification plan
-
-## 2. Named Library / Forest Lookup
+## 1. Named Library / Forest Lookup
 
 `GraphLibrary` currently supports numeric IDs only. `Forest` currently supports numeric `Tid` only.
 
@@ -63,7 +45,7 @@ Tree-side note:
 - keep the current structural `Forest` ownership model
 - do not reintroduce `tree<X>` or `shared_ptr<tree<X>>`
 
-## 3. Forest / GraphLibrary Iteration Helpers
+## 2. Forest / GraphLibrary Iteration Helpers
 
 Pending:
 
@@ -80,28 +62,23 @@ size_t tree_count() const;
 
 If span-based iteration is added, it should avoid exposing tombstones as live entries.
 
-## 4. Graph `is_valid()` Parity
+## 3. Graph Node Type And `loop_last`
 
-Tree wrappers already have:
+Graph nodes already carry inline `Type`.
 
-```cpp
-Tree::is_valid(Tree::Node_class)
-Tree::is_valid(Tree::Node_flat)
-Tree::is_valid(Tree::Node_hier)
-```
+Pending:
 
-Pending on graph side:
+- add one more inline node property: `loop_last`
+- expose container-level or node-level API to read/write the flag
+- define forward traversal semantics for `loop_last`:
+  - when forward traversal reaches a node marked `loop_last`, stop traversal expansion there
+  - continue the rest of the traversal first
+  - after the remaining traversal finishes, resume traversal using that `loop_last` node as the new source
+- add tests that lock down the expected visitation order
 
-```cpp
-static constexpr bool is_valid(Node_class node);
-static constexpr bool is_valid(Pin_class pin);
-static constexpr bool is_valid(Node_flat node);
-static constexpr bool is_valid(Pin_flat pin);
-static constexpr bool is_valid(Node_hier node);
-static constexpr bool is_valid(Pin_hier pin);
-```
+This is specifically about forward traversal behavior, not tree traversal.
 
-## 5. Hierarchy Naming Consistency
+## 4. Hierarchy Naming Consistency
 
 Tree and graph still use different public verbs for the same concept.
 
@@ -117,7 +94,7 @@ Pending:
 
 This is mostly API cleanup, but it matters before save/load/print and cursor APIs are frozen.
 
-## 6. Hierarchy Cursor And Direct Sub-Instance Queries
+## 5. Hierarchy Cursor And Direct Sub-Instance Queries
 
 Tree-side cursor support is now implemented on the structural API:
 
@@ -158,7 +135,7 @@ auto cursor = forest->create_cursor(top_tid, top_root.get_current_pos());
 
 Not the old payload-owning `Forest<X>` / `tree<X>` model.
 
-## 7. Save / Load / Print
+## 6. Save / Load / Print
 
 This is the next major cross-cutting API area from [plan.md](/Users/renau/projs/hhds/plan.md).
 
@@ -176,7 +153,7 @@ Direction:
 - printed output may optionally include external metadata through callbacks
 - saved IDs must remain stable across round-trips
 
-## 8. Documentation Cleanup Around Pending APIs
+## 7. Documentation Cleanup Around Pending APIs
 
 When the pending items above move forward, keep these documentation rules:
 
