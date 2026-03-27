@@ -25,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -534,7 +535,7 @@ public:
   void     set_subnode(Node_class node, Tid subnode_tid) { set_subnode(node.get_current_pos(), subnode_tid); }
   Tree_pos insert_next_sibling(const Tree_pos& sibling_pos);
   Node_class insert_next_sibling(Node_class sibling_node) { return as_class(insert_next_sibling(sibling_node.get_current_pos())); }
-  void set_name(std::string_view n) { name_ = n; }
+  void set_name(std::string_view n);
   [[nodiscard]] std::string_view get_name() const { return name_; }
 
   void print(std::ostream& os) const { print(os, get_root(), PrintOptions{}); }
@@ -1059,6 +1060,7 @@ class Forest : public std::enable_shared_from_this<Forest> {
 private:
   std::vector<std::shared_ptr<Tree>> trees;
   std::vector<size_t>                reference_counts;
+  std::unordered_map<std::string, Tid> tree_name_to_tid_;
 
 public:
   [[nodiscard]] static std::shared_ptr<Forest> create() { return std::shared_ptr<Forest>(new Forest()); }
@@ -1068,13 +1070,10 @@ public:
   Forest(Forest&&)                 = delete;
   Forest& operator=(Forest&&)      = delete;
 
-  Tree_pos create_tree() {
-    auto tree = Tree::create(this);
-    tree->bind_forest_owner(this->weak_from_this());
-    trees.push_back(std::move(tree));
-    reference_counts.push_back(0);
-    return -static_cast<Tree_pos>(trees.size());
-  }
+  Tree_pos create_tree() { return create_tree_impl(-static_cast<Tree_pos>(trees.size() + 1), {}); }
+  Tree_pos create_tree(std::string_view name) { return create_tree_impl(-static_cast<Tree_pos>(trees.size() + 1), name); }
+  Tree_pos create_tree(Tid tree_tid) { return create_tree_impl(tree_tid, {}); }
+  Tree_pos create_tree(Tid tree_tid, std::string_view name) { return create_tree_impl(tree_tid, name); }
 
   Tree& get_tree(Tree_pos tree_tid) {
     I(tree_tid < 0, "Invalid tree reference - must be negative");
@@ -1100,6 +1099,42 @@ public:
     return trees[tree_idx];
   }
 
+  [[nodiscard]] Tree* find_tree(std::string_view name) {
+    if (name.empty()) {
+      return nullptr;
+    }
+
+    const auto it = tree_name_to_tid_.find(std::string(name));
+    if (it == tree_name_to_tid_.end()) {
+      return nullptr;
+    }
+
+    const auto tree_idx = static_cast<size_t>(-it->second - 1);
+    if (tree_idx >= trees.size() || !trees[tree_idx]) {
+      return nullptr;
+    }
+
+    return trees[tree_idx].get();
+  }
+
+  [[nodiscard]] const Tree* find_tree(std::string_view name) const {
+    if (name.empty()) {
+      return nullptr;
+    }
+
+    const auto it = tree_name_to_tid_.find(std::string(name));
+    if (it == tree_name_to_tid_.end()) {
+      return nullptr;
+    }
+
+    const auto tree_idx = static_cast<size_t>(-it->second - 1);
+    if (tree_idx >= trees.size() || !trees[tree_idx]) {
+      return nullptr;
+    }
+
+    return trees[tree_idx].get();
+  }
+
   void add_reference(Tree_pos tree_tid) {
     const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
     reference_counts[tree_idx]++;
@@ -1120,6 +1155,10 @@ public:
     }
 
     if (trees[tree_idx]) {
+      auto it = tree_name_to_tid_.find(std::string(trees[tree_idx]->get_name()));
+      if (it != tree_name_to_tid_.end() && it->second == tree_tid) {
+        tree_name_to_tid_.erase(it);
+      }
       trees[tree_idx].reset();
       return true;
     }
@@ -1131,8 +1170,88 @@ public:
   [[nodiscard]] ForestCursor create_cursor(Tree::Node_hier node);
 
 private:
+  Tree_pos create_tree_impl(Tid tree_tid, std::string_view name) {
+    I(tree_tid < 0, "create_tree: tree id must be negative");
+    assert_name_available(name);
+
+    const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
+    if (tree_idx < trees.size()) {
+      I(!trees[tree_idx], "create_tree: explicit id already exists or is reserved");
+    } else {
+      trees.resize(tree_idx + 1);
+      reference_counts.resize(tree_idx + 1, 0);
+    }
+
+    auto tree = Tree::create(this);
+    tree->bind_forest_owner(this->weak_from_this());
+    if (!name.empty()) {
+      tree->name_ = std::string(name);
+      tree_name_to_tid_.emplace(tree->name_, tree_tid);
+    }
+
+    trees[tree_idx]            = std::move(tree);
+    reference_counts[tree_idx] = 0;
+    return tree_tid;
+  }
+
+  void assert_name_available(std::string_view name, Tid self_tid = INVALID) const {
+    if (name.empty()) {
+      return;
+    }
+
+    const auto it = tree_name_to_tid_.find(std::string(name));
+    if (it == tree_name_to_tid_.end() || it->second == self_tid) {
+      return;
+    }
+
+    I(false, "create_tree: tree name already exists");
+  }
+
+  [[nodiscard]] Tid get_tree_tid(const Tree* tree) const {
+    for (size_t i = 0; i < trees.size(); ++i) {
+      if (trees[i].get() == tree) {
+        return -static_cast<Tid>(i + 1);
+      }
+    }
+
+    I(false, "set_name: tree is not owned by this forest");
+    return INVALID;
+  }
+
+  void handle_tree_rename(Tree* tree, std::string_view old_name, std::string_view new_name) {
+    const Tid tree_tid = get_tree_tid(tree);
+    assert_name_available(new_name, tree_tid);
+
+    if (!old_name.empty()) {
+      const auto old_it = tree_name_to_tid_.find(std::string(old_name));
+      if (old_it != tree_name_to_tid_.end() && old_it->second == tree_tid) {
+        tree_name_to_tid_.erase(old_it);
+      }
+    }
+
+    tree->name_ = std::string(new_name);
+    if (!new_name.empty()) {
+      tree_name_to_tid_[tree->name_] = tree_tid;
+    }
+  }
+
   Forest() = default;
+  friend class Tree;
 };
+
+inline void Tree::set_name(std::string_view n) {
+  if (name_ == n) {
+    return;
+  }
+
+  auto owner = forest_owner_.lock();
+  if (!owner) {
+    name_ = std::string(n);
+    return;
+  }
+
+  owner->handle_tree_rename(this, name_, n);
+}
 
 class TreeCursor {
 private:

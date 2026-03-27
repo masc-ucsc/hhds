@@ -197,3 +197,83 @@ TEST(ForestCorrectness, TombstoneDeletion) {
   create_rooted_tree(*forest, t4);
   EXPECT_EQ(t4, -4);
 }
+
+TEST(ForestCorrectness, CreateAndFindByName) {
+  auto forest = hhds::Forest::create();
+
+  const hhds::Tid parser_tid = forest->create_tree("parser");
+  auto*           parser     = forest->find_tree("parser");
+
+  ASSERT_NE(parser, nullptr);
+  EXPECT_EQ(parser_tid, -1);
+  EXPECT_EQ(parser->get_name(), "parser");
+  EXPECT_EQ(parser, &forest->get_tree(parser_tid));
+  EXPECT_EQ(forest->find_tree("missing"), nullptr);
+}
+
+TEST(ForestCorrectness, ExplicitIdCreationSupportsReloadWorkflows) {
+  auto forest = hhds::Forest::create();
+
+  const hhds::Tid parser_tid = forest->create_tree(-7, "parser");
+  auto*           parser     = forest->find_tree("parser");
+
+  ASSERT_NE(parser, nullptr);
+  EXPECT_EQ(parser_tid, -7);
+  EXPECT_EQ(parser, &forest->get_tree(parser_tid));
+  EXPECT_EQ(parser->get_name(), "parser");
+
+  const hhds::Tid next_tid = forest->create_tree();
+  EXPECT_EQ(next_tid, -8);
+}
+
+TEST(ForestCorrectness, DeleteTreeRemovesNameLookup) {
+  auto forest = hhds::Forest::create();
+
+  const hhds::Tid parser_tid = forest->create_tree("parser");
+  ASSERT_NE(forest->find_tree("parser"), nullptr);
+
+  EXPECT_TRUE(forest->delete_tree(parser_tid));
+  EXPECT_EQ(forest->find_tree("parser"), nullptr);
+}
+
+TEST(ForestCorrectness, RenameUpdatesLookup) {
+  auto forest = hhds::Forest::create();
+
+  const hhds::Tid parser_tid = forest->create_tree("parser");
+  auto&           parser     = forest->get_tree(parser_tid);
+
+  parser.set_name("lexer");
+
+  EXPECT_EQ(forest->find_tree("parser"), nullptr);
+  EXPECT_EQ(forest->find_tree("lexer"), &parser);
+  EXPECT_EQ(parser.get_name(), "lexer");
+}
+
+TEST(ForestCorrectness, DuplicateNamesRejected) {
+  auto forest = hhds::Forest::create();
+  (void)forest->create_tree("parser");
+
+  EXPECT_THROW(static_cast<void>(forest->create_tree("parser")), std::runtime_error);
+}
+
+TEST(ForestCorrectness, ExplicitIdConflictsRejected) {
+  auto forest = hhds::Forest::create();
+  (void)forest->create_tree(-7, "parser");
+
+  EXPECT_THROW(static_cast<void>(forest->create_tree(-7, "lexer")), std::runtime_error);
+  EXPECT_THROW(static_cast<void>(forest->create_tree(-9, "parser")), std::runtime_error);
+}
+
+TEST(ForestCorrectness, RenameToDuplicateNameRejected) {
+  auto forest = hhds::Forest::create();
+
+  const hhds::Tid parser_tid = forest->create_tree("parser");
+  const hhds::Tid lexer_tid  = forest->create_tree("lexer");
+
+  auto& parser = forest->get_tree(parser_tid);
+  auto& lexer  = forest->get_tree(lexer_tid);
+
+  EXPECT_THROW(parser.set_name("lexer"), std::runtime_error);
+  EXPECT_EQ(forest->find_tree("parser"), &parser);
+  EXPECT_EQ(forest->find_tree("lexer"), &lexer);
+}

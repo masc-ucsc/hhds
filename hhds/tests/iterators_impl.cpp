@@ -148,6 +148,71 @@ TEST(CompactTypes, GraphIsValidParity) {
   EXPECT_TRUE(hhds::Graph::is_valid(pin_hier));
 }
 
+TEST(GraphNaming, CreateAndFindByName) {
+  hhds::GraphLibrary lib;
+  auto               alu = lib.create_graph("alu");
+
+  ASSERT_TRUE(alu);
+  EXPECT_EQ(alu->get_gid(), 1);
+  EXPECT_EQ(alu->get_name(), "alu");
+  EXPECT_EQ(lib.find_graph("alu"), alu);
+  EXPECT_FALSE(lib.find_graph("missing"));
+}
+
+TEST(GraphNaming, ExplicitIdCreationSupportsReloadWorkflows) {
+  hhds::GraphLibrary lib;
+  auto               parser = lib.create_graph(static_cast<hhds::Gid>(7), "parser");
+
+  ASSERT_TRUE(parser);
+  EXPECT_EQ(parser->get_gid(), 7);
+  EXPECT_EQ(parser->get_name(), "parser");
+  EXPECT_EQ(lib.find_graph("parser"), parser);
+  EXPECT_FALSE(lib.has_graph(1));
+
+  auto next = lib.create_graph();
+  ASSERT_TRUE(next);
+  EXPECT_EQ(next->get_gid(), 8);
+}
+
+TEST(GraphNaming, DeleteGraphRemovesNameLookup) {
+  hhds::GraphLibrary lib;
+  auto               alu = lib.create_graph("alu");
+  const hhds::Gid    gid = alu->get_gid();
+
+  lib.delete_graph(gid);
+
+  EXPECT_FALSE(lib.has_graph(gid));
+  EXPECT_FALSE(lib.find_graph("alu"));
+}
+
+TEST(GraphNaming, DuplicateNameRejected) {
+  hhds::GraphLibrary lib;
+  (void)lib.create_graph("alu");
+
+  EXPECT_DEATH(
+      {
+        (void)lib.create_graph("alu");
+      },
+      "graph name already exists");
+}
+
+TEST(GraphNaming, ExplicitIdConflictsRejected) {
+  hhds::GraphLibrary lib;
+  (void)lib.create_graph(static_cast<hhds::Gid>(7), "alu");
+
+  EXPECT_DEATH(
+      {
+        (void)lib.create_graph(static_cast<hhds::Gid>(7), "mul");
+      },
+      "explicit id already exists or is reserved");
+
+  EXPECT_DEATH(
+      {
+        (void)lib.create_graph(static_cast<hhds::Gid>(9), "alu");
+      },
+      "graph name already exists");
+}
+
 TEST(CompactTypes, EdgeFlatConversions) {
   hhds::GraphLibrary lib;
   auto               g   = lib.create_graph();

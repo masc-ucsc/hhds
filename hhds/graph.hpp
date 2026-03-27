@@ -9,6 +9,8 @@
 #include <iterator>
 #include <memory>
 #include <span>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -407,6 +409,7 @@ public:
   [[nodiscard]] Pin_class  create_pin(Node_class node, Port_id port_id);
   [[nodiscard]] Pid        create_pin(Nid nid, Port_id port_id);
   [[nodiscard]] Gid        get_gid() const noexcept { return self_gid_; }
+  [[nodiscard]] std::string_view get_name() const noexcept { return name_; }
 
   // Built-in nodes created by Graph::clear_graph()
   static constexpr Nid INPUT_NODE  = (static_cast<Nid>(1) << 2);
@@ -494,6 +497,7 @@ private:
   void                    set_next_pin(Nid nid, Pid next_pin);
   [[nodiscard]] Pin_class make_pin_class(Pid pin_pid) const;
   void                    bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
+  void                    set_name(std::string_view name) { name_ = name; }
   void                    invalidate_traversal_caches() noexcept;
   void                    rebuild_fast_class_cache() const;
   void                    rebuild_fast_flat_cache() const;
@@ -532,6 +536,7 @@ private:
   const GraphLibrary*                       owner_lib_                 = nullptr;
   Gid                                       self_gid_                  = Gid_invalid;
   bool                                      deleted_                   = false;
+  std::string                               name_;
 
   friend class Node_class;
   friend class Pin_class;
@@ -562,13 +567,19 @@ public:
 
   // Create a new graph and return shared ownership.
   [[nodiscard]] std::shared_ptr<Graph> create_graph() {
-    const Gid              id    = static_cast<Gid>(graphs_.size());
-    std::shared_ptr<Graph> graph = std::make_shared<Graph>();
-    graph->bind_library(this, id);
-    graphs_.push_back(graph);
-    ++live_count_;
-    note_graph_mutation();
-    return graph;
+    return create_graph_impl(static_cast<Gid>(graphs_.size()), {});
+  }
+
+  [[nodiscard]] std::shared_ptr<Graph> create_graph(std::string_view name) {
+    return create_graph_impl(static_cast<Gid>(graphs_.size()), name);
+  }
+
+  [[nodiscard]] std::shared_ptr<Graph> create_graph(Gid id) {
+    return create_graph_impl(id, {});
+  }
+
+  [[nodiscard]] std::shared_ptr<Graph> create_graph(Gid id, std::string_view name) {
+    return create_graph_impl(id, name);
   }
 
   [[nodiscard]] bool has_graph(Gid id) const noexcept {
@@ -586,6 +597,32 @@ public:
     return graphs_[static_cast<size_t>(id)];
   }
 
+  [[nodiscard]] std::shared_ptr<Graph> find_graph(std::string_view name) {
+    if (name.empty()) {
+      return {};
+    }
+
+    const auto it = graph_name_to_id_.find(std::string(name));
+    if (it == graph_name_to_id_.end() || !has_graph(it->second)) {
+      return {};
+    }
+
+    return graphs_[static_cast<size_t>(it->second)];
+  }
+
+  [[nodiscard]] std::shared_ptr<const Graph> find_graph(std::string_view name) const {
+    if (name.empty()) {
+      return {};
+    }
+
+    const auto it = graph_name_to_id_.find(std::string(name));
+    if (it == graph_name_to_id_.end() || !has_graph(it->second)) {
+      return {};
+    }
+
+    return graphs_[static_cast<size_t>(it->second)];
+  }
+
   [[nodiscard]] uint64_t mutation_epoch() const noexcept { return mutation_epoch_; }
 
   // Tombstone-delete (IDs are not reused).
@@ -595,6 +632,9 @@ public:
     }
     auto& slot = graphs_[static_cast<size_t>(id)];
     if (slot && !slot->deleted_) {
+      if (!slot->get_name().empty()) {
+        graph_name_to_id_.erase(std::string(slot->get_name()));
+      }
       slot->invalidate_from_library();
       --live_count_;
       note_graph_mutation();
@@ -608,9 +648,50 @@ public:
   [[nodiscard]] Gid live_count() const noexcept { return live_count_; }
 
 private:
+  [[nodiscard]] std::shared_ptr<Graph> create_graph_impl(Gid id, std::string_view name) {
+    assert(id != invalid_id && "create_graph: graph id 0 is reserved");
+    assert_name_available(name);
+
+    const size_t idx = static_cast<size_t>(id);
+    if (idx < graphs_.size()) {
+      assert(graphs_[idx] == nullptr && "create_graph: explicit id already exists or is reserved");
+    }
+
+    std::shared_ptr<Graph> graph = std::make_shared<Graph>();
+    graph->bind_library(this, id);
+    graph->set_name(name);
+
+    if (idx < graphs_.size()) {
+      graphs_[idx] = graph;
+    } else if (idx == graphs_.size()) {
+      graphs_.push_back(graph);
+    } else {
+      graphs_.resize(idx + 1);
+      graphs_[idx] = graph;
+    }
+
+    if (!name.empty()) {
+      graph_name_to_id_.emplace(std::string(name), id);
+    }
+
+    ++live_count_;
+    note_graph_mutation();
+    return graph;
+  }
+
+  void assert_name_available(std::string_view name) const noexcept {
+    if (name.empty()) {
+      return;
+    }
+
+    const auto it = graph_name_to_id_.find(std::string(name));
+    assert(it == graph_name_to_id_.end() && "create_graph: graph name already exists");
+  }
+
   void note_graph_mutation() const noexcept { ++mutation_epoch_; }
 
   std::vector<std::shared_ptr<Graph>> graphs_;
+  ankerl::unordered_dense::map<std::string, Gid> graph_name_to_id_;
   // count of live graphs
   Gid              live_count_     = 0;
   mutable uint64_t mutation_epoch_ = 1;
