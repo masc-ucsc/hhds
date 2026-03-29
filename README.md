@@ -1,153 +1,135 @@
-
 # HHDS: Hardware Hierarchical Dynamic Structure
 
-> [!Note]
-> Currently Iassert, tree-sitter, tree-sitter-cpp are hard-coded. They are required repos to be installed in order for certain tests and builds to complete.
+HHDS is a C++23 library for compact tree and graph data structures intended for
+EDA and compiler workloads. The focus is on memory efficiency, stable identity,
+and a clean hierarchy model that can support translation between tree and graph
+representations.
 
-This repository contains a highly optimized graph and tree data structure. The
-structure is optimized for handling graphs/trees structures typically found in
-hardware tools. 
+The repository is being simplified toward a clean standalone API. The current
+implementation already contains the core structural containers, but the public
+surface is being cleaned up around a declaration-centric model. The roadmap for
+that work lives in [`TODO.md`](/Users/renau/projs/hhds/TODO.md), and the
+intended public API shape lives in [`api.md`](/Users/renau/projs/hhds/api.md).
 
+## Design goals
 
-## Graph
+- Clean standalone library first.
+- Stable tombstone-style internal IDs.
+- Required immutable names for user-facing objects.
+- Structural containers with external metadata.
+- Similar `Forest` / `GraphLibrary` APIs where it is natural.
+- Lazy loading for large graph/tree bodies.
+- Assertions for invalid usage instead of exceptions.
 
-Some of the key characteristics:
+## Core concepts
 
--Graph mutates (add/remove edges and nodes)
+### Tree side
 
--At most 32 bit ID for node (graph would be partitioned if larger is needed)
+- `Forest` owns named tree declarations and tree bodies.
+- `TreeIO` is the declaration object.
+- `Tree` is the optional implementation body attached to a `TreeIO`.
+- Trees stay generic and structural. There is no built-in input/output model on
+  the tree side.
+- Tree bodies can be empty.
 
--Once an ID is created, even if node is deleted, it can not be reused. This
-sometimes called a "tombstone deletion"
+### Graph side
 
--Delete node is frequent (code optimization)
+- `GraphLibrary` owns named graph declarations and graph bodies.
+- `GraphIO` is the declaration object.
+- `Graph` is the optional implementation body attached to a `GraphIO`.
+- `GraphIO` owns ordered input/output declarations.
+- `Graph` owns only the implementation body, not the declaration interface.
+- Graph bodies can be empty.
 
--2 main types of traversal (any order or topological sort)
+### Metadata
 
--Add edges is not so frequent after the 1st phase of graph creation
+HHDS is intended to stay structural. User metadata should live in external
+maps keyed by wrapper objects such as:
 
--Nodes have several "pins" and the edges are bi-directional
+- `Node_class`
+- `Node_flat`
+- `Node_hier`
+- `Pin_class`
+- `Pin_flat`
+- `Pin_hier`
 
--In practice (topological sort), most edges are "short" no need to keep large
-32 bit integer. Delta optimization to fit more edges.
+Future metadata registration belongs at `Forest` / `GraphLibrary`, not at
+individual `Tree` / `Graph` objects.
 
--Meta information (attributes) are kept separate with the exception of type
+## Structural properties
 
--Most nodes have under 8 edges, but some (reset/clk) have LOTS of edges
+### Graph
 
--The graph operations do NOT need to be multithreaded with updates. The
-parallelism is extracted from parallel thread operations. (parallel read-only
-may happen).
+- Mutable graph with node and pin deletion.
+- Ordered pins matter.
+- Tombstone deletion: IDs are never reused.
+- Small-edge optimization with overflow handling for high-degree cases.
+- Inline `Type` field for structure-relevant semantics.
+- Parallel read-only access is expected; mutations are single-threaded.
 
-### Related works
+### Tree
 
-Some related (but different) graph representations:
+- Optimized for AST-like traversal and mutation patterns.
+- Chunked storage with 8-node blocks.
+- Efficient sibling traversal.
+- Tombstone deletion: IDs are never reused.
+- Subtree references through `Forest`.
+- Three natural traversal modes: pre-order, post-order, and sibling-order.
+- Inline `Type` field for structure-relevant semantics.
 
-Pandey, Prashant, et al. "Terrace: A hierarchical graph container for skewed
-dynamic graphs." Proceedings of the 2021 International Conference on
-Management of Data. 2021.
+## Planned public direction
 
-Winter, Martin, et al. "faimGraph: high performance management of
-fully-dynamic graphs under tight memory constraints on the GPU." SC18:
-International Conference for High Performance Computing, Networking, Storage
-and Analysis. IEEE, 2018.
+The intended public model is declaration-first:
 
-Bader, David A., et al. "Stinger: Spatio-temporal interaction networks and
-graphs (sting) extensible representation." Georgia Institute of Technology,
-Tech. Rep (2009).
-
-Feng, Guanyu, et al. "Risgraph: A real-time streaming system for evolving
-graphs to support sub-millisecond per-update analysis at millions ops/s."
-Proceedings of the 2021 International Conference on Management of Data. 2021.
-
-### Overall data structure:
-
-Vector with 4 types of nodes: Free, Node, Pin, Overflow
-
-Node/Pin are 16 byte, Overflow 32 byte
-
-Node is the master node and also the output pin
-
-Pin is either of the other node pins (input 0, output 1....)
-
-Node/Pin have a very small amount of edges. If more are needed, the overflow
-is used. If more are needed an index to emhash8::HashSet is used (overflow is
-deleted and moved to the set)
-
-The overflow are just a continuous (not sorted) array. Scanning is needed if
-overflow is used.
-
-
-## Tree
-
-The tree data structure is optimized for typical AST traversal and operations.
-Once a tree is created, the common operation is to delete nodes, and at most
-insert phi nodes (SSA). This means that the insertion is for a few entries, not
-large subtrees.
-
-### Key Features
-
-- Efficient sibling traversal with next/previous pointers
-- Optimized for append operations rather than random insertions
-- Support for subtree references and sharing between trees via Forest container
-- Three traversal modes: pre-order, post-order, and sibling-order
-- Memory-efficient storage using chunks of 8 nodes
-- Delta-compressed child pointers for common cases
-- Tombstone deletion (IDs are not reused)
-- Leaf-focused operations (delete_leaf is optimized)
-
-### Data Structure Design
-
-The tree uses a chunked storage approach where nodes are stored in fixed-size chunks of 8 entries. Each chunk contains:
-
-- Long pointers (49-bit) for first/last child when needed
-- Delta-compressed short pointers (18-bit) for child references within nearby chunks
-- Next/Previous sibling pointers for efficient sibling traversal
-- Parent pointers for upward traversal
-- Leaf flag for quick leaf checks
-- Support for subtree references
-
-The structure is particularly optimized for:
-1. Append operations (adding siblings or children at the end)
-2. Leaf deletion
-3. Sibling traversal
-4. Child traversal for small families (< 8 children)
-
-### Traversal Support
-
-The tree provides three iterator types:
 ```cpp
-// Pre-order traversal (parent then children)
-for(auto node : tree.pre_order(start_pos)) { ... }
+auto glib = std::make_shared<hhds::GraphLibrary>();
+auto gio  = glib->create_graphio("alu");
+auto g    = gio->create_graph();
 
-// Post-order traversal (children then parent) 
-for(auto node : tree.post_order(start_pos)) { ... }
-
-// Sibling-order traversal (iterate through siblings)
-for(auto node : tree.sibling_order(start_pos)) { ... }
+auto forest = std::make_shared<hhds::Forest>();
+auto tio    = forest->create_treeio("parser");
+auto t      = tio->create_tree();
 ```
 
-Each traversal mode also supports following subtree references via an optional flag:
-```cpp
-// Follow subtree references during traversal
-for(auto node : tree.pre_order(start_pos, true)) { ... }
+Key behavior targets:
+
+- Names are required and immutable.
+- `Tree` / `Graph` bodies are created only through `TreeIO` / `GraphIO`.
+- Deleting a body clears only the implementation.
+- Deleting a declaration removes declaration plus body, while tombstone identity
+  stays internal.
+- Normal `find_*` APIs ignore tombstones and return `nullptr`.
+- `GraphIO` owns graph IO declarations and should be the only public API for
+  graph IO mutation.
+
+## Build
+
+```bash
+bazel build //hhds:all
+bazel build //hhds:core
+bazel build //hhds:graph
 ```
 
-### Forest Support
+## Test
 
-Trees can share subtrees via the Forest container:
-```cpp
-Forest<int> forest;
-Tree_pos subtree = forest.create_tree(root_data);
-tree.set_subnode(node_pos, subtree);
+```bash
+bazel test //hhds:all
+
+bazel run //hhds:deep_tree_correctness
+bazel run //hhds:wide_tree_correctness
+bazel run //hhds:chip_typical_correctness
+bazel run //hhds:chip_typical_long_correctness
+bazel run //hhds:forest_correctness
+
+bazel test //hhds:graph_test
+bazel test //hhds:graph_bench
 ```
 
-The Forest manages reference counting and cleanup of shared subtrees.
+## Notes
 
-### Related
-
-Not same, but similar idea and different representation:
-
-Meyerovich, Leo A., Todd Mytkowicz, and Wolfram Schulte. "Data parallel programming for irregular tree computations." (2011).
-
-Vollmer, Michael, Sarah Spall, Buddhika Chamith, Laith Sakka, Chaitanya Koparkar, Milind Kulkarni, Sam Tobin-Hochstadt, and Ryan R. Newton. "Compiling tree transforms to operate on packed representations." (2017): 26.
+- Binary persistence is the intended normal format.
+- Text read/write is useful for debugging and manual intervention, but does not
+  need a stable long-term format.
+- Declaration and body persistence should be separate.
+- Large bodies should support automatic unload/reload based on `shared_ptr`
+  lifetime.
