@@ -1,6 +1,6 @@
 // This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 //
-// API iterator tests for pending HHDS API work (see api_todo.md).
+// API iterator tests for pending HHDS API work (see api.md and TODO.md).
 // These tests document unfinished API usage and intentionally do not compile
 // until the corresponding features are implemented.
 //
@@ -19,7 +19,7 @@
 #include "hhds/tree.hpp"
 
 // ---------------------------------------------------------------------------
-// Section 1: Compact ID types (api_todo.md #1)
+// Section 1: Compact ID types
 // ---------------------------------------------------------------------------
 
 TEST(CompactTypes, NodeClassFromGraph) {
@@ -54,7 +54,7 @@ TEST(CompactTypes, NodeClassHashable) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 2: Direction-aware edge iteration (api_todo.md #2)
+// Section 2: Direction-aware edge iteration
 // ---------------------------------------------------------------------------
 
 TEST(EdgeIteration, OutEdges) {
@@ -92,7 +92,7 @@ TEST(EdgeIteration, InpEdges) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 3: del_edge (api_todo.md #3)
+// Section 3: del_edge
 // ---------------------------------------------------------------------------
 
 TEST(DelEdge, BasicRemoval) {
@@ -114,7 +114,7 @@ TEST(DelEdge, BasicRemoval) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 4: Lazy graph traversal (api_todo.md #4)
+// Section 4: Lazy graph traversal
 // ---------------------------------------------------------------------------
 
 TEST(LazyTraversal, FastClassSingleGraph) {
@@ -222,7 +222,7 @@ TEST(AddEdgeShorthand, NodeToNode) {
 }
 
 // // ---------------------------------------------------------------------------
-// // Section 8: Node pin iteration (api_todo.md #8)
+// // Section 8: Node pin iteration
 // // ---------------------------------------------------------------------------
 
 // TEST(PinIteration, GetPins) {
@@ -258,7 +258,7 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // }
 
 // // ---------------------------------------------------------------------------
-// // Section 14: Hierarchy cursor — graphs (api_todo.md #14)
+// // Section 14: Hierarchy cursor — graphs
 // // ---------------------------------------------------------------------------
 
 // TEST(HierCursor, GraphBasicNavigation) {
@@ -405,7 +405,7 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // }
 
 // // ---------------------------------------------------------------------------
-// // Section 14: Hierarchy cursor — trees/forest (api_todo.md #14)
+// // Section 14: Hierarchy cursor — trees/forest
 // // ---------------------------------------------------------------------------
 
 // TEST(ForestCursor, BasicNavigation) {

@@ -4,7 +4,6 @@
 #include <random>
 #include <vector>
 
-#include "lhtree.hpp"
 #include "tests/tree_test_utils.hpp"
 #include "tree.hpp"
 
@@ -24,14 +23,6 @@ void build_hhds_tree(hhds::Tree& tree, std::vector<int>& values, int num_nodes) 
   }
 }
 
-void build_lh_tree(lh::tree<int>& lh_tree, int num_nodes) {
-  lh_tree.set_root(generate_random_int(generator, 1, 100));
-  lh::Tree_index lh_root(0, 0);
-  for (int i = 0; i < num_nodes; ++i) {
-    lh_tree.add_child(lh_root, generate_random_int(generator, 1, 100));
-  }
-}
-
 void preorder_traversal_hhds(hhds::Tree& tree) {
   int cnt = 0;
   for (auto node : tree.pre_order()) {
@@ -41,31 +32,14 @@ void preorder_traversal_hhds(hhds::Tree& tree) {
   benchmark::DoNotOptimize(cnt);
 }
 
-void preorder_traversal_lhtree(lh::tree<int>& tree) {
-  auto                                                 root_index = lh::Tree_index(0, 0);
-  typename lh::tree<int>::Tree_depth_preorder_iterator it(root_index, &tree);
-  int                                                  cnt = 0;
-  for (auto node_it = it.begin(); node_it != it.end(); ++node_it) {
-    ++cnt;
-  }
-  benchmark::DoNotOptimize(cnt);
-}
-
-#define DEFINE_TRAVERSAL_WIDE_BENCH(NAME, COUNT)                 \
-  void test_wide_tree_##NAME##_hhds(benchmark::State& state) {   \
-    auto            tree = hhds::Tree::create();                 \
-    std::vector<int> values;                                     \
-    build_hhds_tree(*tree, values, COUNT);                       \
-    for (auto _ : state) {                                       \
-      preorder_traversal_hhds(*tree);                            \
-    }                                                            \
-  }                                                              \
-  void test_wide_tree_##NAME##_lh(benchmark::State& state) {     \
-    lh::tree<int> tree;                                          \
-    build_lh_tree(tree, COUNT);                                  \
-    for (auto _ : state) {                                       \
-      preorder_traversal_lhtree(tree);                           \
-    }                                                            \
+#define DEFINE_TRAVERSAL_WIDE_BENCH(NAME, COUNT)                \
+  void test_wide_tree_##NAME##_hhds(benchmark::State& state) {  \
+    auto            tree = hhds::Tree::create();                \
+    std::vector<int> values;                                    \
+    build_hhds_tree(*tree, values, COUNT);                      \
+    for (auto _ : state) {                                      \
+      preorder_traversal_hhds(*tree);                           \
+    }                                                           \
   }
 
 DEFINE_TRAVERSAL_WIDE_BENCH(10, 10)

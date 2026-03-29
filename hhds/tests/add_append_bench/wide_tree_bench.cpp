@@ -3,7 +3,6 @@
 #include <chrono>
 #include <random>
 
-#include "lhtree.hpp"
 #include "tree.hpp"
 
 auto                       now          = std::chrono::high_resolution_clock::now();
@@ -24,27 +23,12 @@ void build_hhds_tree(hhds::Tree& hhds_tree, int num_nodes) {
   }
 }
 
-void build_lh_tree(lh::tree<int>& lh_tree, int num_nodes) {
-  lh_tree.set_root(generate_random_int(generator, 1, 100));
-  lh::Tree_index lh_current(0, 0);
-
-  for (int i = 0; i < num_nodes; ++i) {
-    lh_tree.add_child(lh_current, generate_random_int(generator, 1, 100));
-  }
-}
-
-#define HHDS_WIDE_CASE(width)                      \
+#define HHDS_WIDE_CASE(width)                             \
   void test_wide_tree_##width##_hhds(benchmark::State& state) { \
-    for (auto _ : state) {                        \
-      auto hhds_tree = hhds::Tree::create();      \
-      build_hhds_tree(*hhds_tree, width);         \
-    }                                             \
-  }                                               \
-  void test_wide_tree_##width##_lh(benchmark::State& state) {   \
-    for (auto _ : state) {                        \
-      lh::tree<int> lh_tree;                      \
-      build_lh_tree(lh_tree, width);              \
-    }                                             \
+    for (auto _ : state) {                               \
+      auto hhds_tree = hhds::Tree::create();             \
+      build_hhds_tree(*hhds_tree, width);                \
+    }                                                    \
   }
 
 HHDS_WIDE_CASE(10)
@@ -56,18 +40,10 @@ HHDS_WIDE_CASE(1000000)
 HHDS_WIDE_CASE(10000000)
 
 BENCHMARK(test_wide_tree_10_hhds);
-BENCHMARK(test_wide_tree_10_lh);
 BENCHMARK(test_wide_tree_100_hhds);
-BENCHMARK(test_wide_tree_100_lh);
 BENCHMARK(test_wide_tree_1000_hhds);
-BENCHMARK(test_wide_tree_1000_lh);
 BENCHMARK(test_wide_tree_10000_hhds);
-BENCHMARK(test_wide_tree_10000_lh);
 BENCHMARK(test_wide_tree_100000_hhds);
-BENCHMARK(test_wide_tree_100000_lh);
 BENCHMARK(test_wide_tree_1000000_hhds);
-BENCHMARK(test_wide_tree_1000000_lh);
 BENCHMARK(test_wide_tree_10000000_hhds);
-BENCHMARK(test_wide_tree_10000000_lh);
-
 BENCHMARK_MAIN();

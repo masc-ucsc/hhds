@@ -143,6 +143,22 @@ Primary API references:
 - `api.md` `Public creation flow`
 - `api.md` `APIs to remove or restrict`
 
+Suggested steps:
+
+1. Rewrite `README.md` to describe the declaration-centric direction instead of the old payload-era API.
+2. Keep a single planning entry point in `TODO.md`.
+3. Add and maintain `api.md` as the target public contract.
+4. Remove stale planning docs that point to superseded migration strategies.
+5. Remove old examples that show payload-bearing trees or direct body creation.
+6. Remove or simplify dependency notes that are no longer part of the intended default build.
+
+Exit criteria:
+
+- top-level docs are internally consistent
+- old API examples are gone from the main docs
+- there is one roadmap doc and one API target doc
+- stale tracked planning files are removed
+
 ### Phase 2: Declaration-centric API
 
 - Add `TreeIO` and `GraphIO`.
@@ -166,6 +182,50 @@ Primary API references:
 - `api.md` `Lookup and find semantics`
 - `api.md` `APIs to remove or restrict`
 
+Suggested steps:
+
+1. Add declaration object types:
+   - `TreeIO`
+   - `GraphIO`
+2. Add declaration ownership inside:
+   - `Forest`
+   - `GraphLibrary`
+3. Move required immutable name ownership from body-centric APIs into declaration objects.
+4. Add public creation entry points:
+   - `Forest::create_treeio(name)`
+   - `GraphLibrary::create_graphio(name)`
+5. Add public lookup entry points:
+   - `find_treeio(name)`
+   - `find_graphio(name)`
+   - `find_tree(name)`
+   - `find_graph(name)`
+6. Add body accessors from declarations:
+   - `TreeIO::get_tree()`
+   - `GraphIO::get_graph()`
+7. Add body creation from declarations:
+   - `TreeIO::create_tree()`
+   - `GraphIO::create_graph()`
+8. Remove or deprecate direct public body creation paths from:
+   - `Tree`
+   - `Graph`
+   - `Forest`
+   - `GraphLibrary`
+9. Remove public explicit-ID creation APIs and migrate tests to name-based declaration creation.
+10. Ensure declaration and body share the same internal ID.
+
+Implementation notes:
+
+- keep the old internals only as temporary bridges if they reduce churn
+- avoid adding compatibility layers that survive beyond this phase
+- update tests as soon as the new declaration creation path exists
+
+Exit criteria:
+
+- bodies cannot be created publicly without a declaration
+- names are required at declaration creation
+- name-based lookup is the normal public path
+- explicit-ID public creation is gone
+
 ### Phase 3: Graph IO ownership refactor
 
 - Move graph IO declaration into `GraphIO`.
@@ -186,6 +246,45 @@ Primary API references:
 - `api.md` `Graph declarations and bodies`
 - `api.md` `Graph API direction`
 - `api.md` `Deletion semantics`
+
+Suggested steps:
+
+1. Define the internal storage model for `GraphIO` ports:
+   - port name
+   - direction
+   - stable port identifier / order
+   - any minimal built-in declaration metadata that must stay in-core
+2. Add `GraphIO` public mutation APIs:
+   - `add_input`
+   - `add_output`
+   - `delete_input`
+   - `delete_output`
+3. Add `GraphIO` public query APIs:
+   - `has_input`
+   - `has_output`
+   - port-id lookup
+   - ordered iteration helpers if needed
+4. Define how a newly created `Graph` body auto-materializes declaration IOs.
+5. Remove direct graph-side IO mutation from `Graph`.
+6. Redirect any remaining graph IO creation paths through `GraphIO`.
+7. Define body synchronization when `GraphIO` changes after a body already exists.
+8. Update tests to validate:
+   - declaration-only graphs
+   - body creation from declaration
+   - adding/removing ports through `GraphIO`
+   - body staying consistent with `GraphIO`
+
+Implementation notes:
+
+- this phase should happen early because it changes graph identity, deletion, and persistence shape
+- preserve the current `Port_ID` ordering model
+- allow declaration-only entries with no body for library-style use cases
+
+Exit criteria:
+
+- `GraphIO` is the only public place to mutate graph interface ports
+- `Graph` body creation reflects declaration ports automatically
+- declaration-only graphs are first-class
 
 ### Phase 4: Lifetime and deletion semantics
 
@@ -208,6 +307,39 @@ Primary API references:
 - `api.md` `Deletion semantics`
 - `api.md` `Validity checks`
 
+Suggested steps:
+
+1. Split body deletion from declaration deletion.
+2. Implement body-only deletion semantics:
+   - `delete_tree(tree)` clears only the tree body
+   - `delete_graph(graph)` clears only the graph body
+3. Implement declaration deletion semantics:
+   - `delete_treeio(tio)` deletes declaration plus body
+   - `delete_graphio(gio)` deletes declaration plus body
+4. Preserve internal tombstone identity for deleted declarations.
+5. Make normal `find_*` APIs ignore deleted declarations and return `nullptr`.
+6. Add node/pin validity checks:
+   - `is_valid()`
+   - `is_invalid()`
+7. Audit graph/tree operations to assert in debug mode when called on invalid references.
+8. Update tests to cover:
+   - body clear while declaration persists
+   - declaration delete while tombstone remains internal
+   - missing lookups returning `nullptr`
+   - stale node/pin reference validity behavior
+
+Implementation notes:
+
+- the graph special case is important: declaration IO must survive body deletion
+- declaration deletion should not expose tombstones through normal APIs
+- keep invalid-reference checks cheap in release builds
+
+Exit criteria:
+
+- deletion semantics are unambiguous and test-covered
+- stale handles can be queried for validity
+- lookups skip tombstoned declarations
+
 ### Phase 5: Metadata registration
 
 - Add map registration on `Forest` / `GraphLibrary`.
@@ -226,6 +358,41 @@ Primary API references:
 - `api.md` `Metadata registration direction`
 - `api.md` `Tree wrappers`
 - `api.md` `Graph wrappers`
+
+Suggested steps:
+
+1. Define the registration API shape on:
+   - `Forest`
+   - `GraphLibrary`
+2. Define which key families are supported first:
+   - `_class`
+   - `_flat`
+   - `_hier`
+3. Define which object families are supported first:
+   - tree nodes
+   - graph nodes
+   - graph pins
+4. Decide the minimum adapter or concept requirements for external maps.
+5. Implement map registration without forcing a single map type.
+6. Make save/print skip deleted objects even before eager metadata cleanup exists.
+7. Add automatic cleanup hooks on delete when practical.
+8. Add tests for:
+   - external map registration
+   - wrapper-keyed metadata lookup
+   - deleted entries being ignored by save/print
+   - optional cleanup on delete
+
+Implementation notes:
+
+- do not let metadata registration distort the structural core
+- start with the minimum registration API needed by later save/print phases
+- cleanup can be incremental as long as deleted data does not leak into output
+
+Exit criteria:
+
+- metadata registration exists at container level
+- multiple external map types can participate
+- deleted metadata does not appear in output paths
 
 ### Phase 6: Persistence and lazy bodies
 
@@ -249,6 +416,48 @@ Primary API references:
 - `api.md` `Ownership and lifetime`
 - `api.md` `Lookup and find semantics`
 
+Suggested steps:
+
+1. Define declaration persistence format:
+   - names
+   - stable internal IDs
+   - tombstone information if needed
+   - graph declaration IO data
+2. Define body persistence format:
+   - tree structure
+   - graph structure
+   - stable internal IDs
+   - deleted-body behavior
+3. Implement declaration save/load first.
+4. Implement tree body save/load.
+5. Implement graph body save/load.
+6. Split declaration and body storage cleanly so bodies can stay unloaded.
+7. Add lazy load on:
+   - `find_tree(name)`
+   - `find_graph(name)`
+8. Add automatic body unload when no body `shared_ptr` remains.
+9. Add debug-oriented text import/export after binary paths are stable.
+10. Add tests for:
+   - declaration-only load
+   - lazy body load
+   - unload/reload via `shared_ptr` lifetime
+   - stable name/ID mapping
+   - tree round-trip
+   - graph round-trip
+
+Implementation notes:
+
+- declarations should be much cheaper to load than bodies
+- text format is for debugging, not compatibility
+- stable IDs matter more than compacting away tombstones
+
+Exit criteria:
+
+- declarations can load without bodies
+- body loading is demand-driven
+- body unload/reload is automatic
+- binary round-trips preserve stable identity
+
 ### Phase 7: Debugging and printing
 
 - Keep tree printing useful early.
@@ -267,6 +476,72 @@ Primary API references:
 - `api.md` `Persistence direction`
 - `api.md` `Deletion semantics`
 - `api.md` `Metadata registration direction`
+
+Suggested steps:
+
+1. Preserve and adapt tree printing to work with declaration-first ownership.
+2. Decide whether print entry points live on:
+   - `Tree`
+   - `TreeIO`
+   - both, with different roles
+3. Add graph printing only after the declaration/body split is stable.
+4. Keep graph printing intentionally simpler than persistence.
+5. Add optional metadata printing hooks through registered maps when available.
+6. Ensure deleted nodes/pins/declarations do not appear in standard output paths.
+7. Add tests for:
+   - tree debug print after declaration/body split
+   - graph print on declaration-only and body-loaded cases
+   - output skipping deleted data
+
+Implementation notes:
+
+- tree printing is more important early because it helps during refactor/debug work
+- graph printing should avoid driving unnecessary format commitments
+
+Exit criteria:
+
+- tree printing remains practical during development
+- graph printing exists in a simple useful form
+- deleted data is consistently hidden from printed output
+
+## Suggested sequencing inside implementation work
+
+### Sequence A: API skeleton
+
+1. land `TreeIO` / `GraphIO` types
+2. land declaration-first creation and lookup
+3. remove direct body creation APIs
+
+### Sequence B: Graph declaration ownership
+
+1. move graph IO declaration into `GraphIO`
+2. auto-materialize `Graph` bodies from `GraphIO`
+3. remove direct graph IO mutation from `Graph`
+
+### Sequence C: Lifecycle
+
+1. split body delete from declaration delete
+2. add tombstone-hiding lookups
+3. add validity checks for stale node/pin references
+
+### Sequence D: Output and state
+
+1. metadata registration minimum API
+2. declaration persistence
+3. body persistence
+4. lazy load/unload
+5. tree print
+6. graph print
+
+## Suggested future task extraction format
+
+When turning a phase into implementation tasks later, create tasks with:
+
+1. API surface to add/remove
+2. internal data model changes
+3. migration of current tests
+4. new tests for the new semantics
+5. cleanup/removal of superseded APIs
 
 ## Immediate Tasks
 

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 HHDS (Hardware Hierarchical Dynamic Structure) is a C++23 library providing highly optimized graph and tree data structures for hardware EDA tools and compilers. These are common representations in EDA/compiler workflows where translating between tree and graph forms is frequent.
 
-The library is space-efficient by design, as EDA graphs can grow to billions of nodes. Other languages (Rust) exist in the repo only for benchmarking comparisons.
+The library is space-efficient by design, as EDA graphs can grow to billions of nodes.
 
 ## Build Commands
 

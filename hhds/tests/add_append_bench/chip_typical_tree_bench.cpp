@@ -4,7 +4,6 @@
 #include <random>
 #include <vector>
 
-#include "lhtree.hpp"
 #include "tree.hpp"
 
 auto                       now          = std::chrono::high_resolution_clock::now();
@@ -34,36 +33,12 @@ void build_hhds_tree(hhds::Tree& hhds_tree, int depth_val) {
   }
 }
 
-void build_lh_tree(lh::tree<int>& lh_tree, int depth_val) {
-  lh_tree.set_root(0);
-  std::vector<lh::Tree_index> current_level{lh::Tree_index(0, 0)};
-
-  for (int depth = 0; depth < depth_val; ++depth) {
-    std::vector<lh::Tree_index> next_level;
-
-    for (auto node : current_level) {
-      int num_children = generate_random_int(generator, 1, 7);
-      for (int i = 0; i < num_children; ++i) {
-        next_level.push_back(lh_tree.add_child(node, i + 1));
-      }
-    }
-
-    current_level = std::move(next_level);
-  }
-}
-
-#define HHDS_CHIP_CASE(depth)                      \
+#define HHDS_CHIP_CASE(depth)                             \
   void test_chip_typical_tree_##depth##_hhds(benchmark::State& state) { \
-    for (auto _ : state) {                        \
-      auto hhds_tree = hhds::Tree::create();      \
-      build_hhds_tree(*hhds_tree, depth);         \
-    }                                             \
-  }                                               \
-  void test_chip_typical_tree_##depth##_lh(benchmark::State& state) {   \
-    for (auto _ : state) {                        \
-      lh::tree<int> lh_tree;                      \
-      build_lh_tree(lh_tree, depth);              \
-    }                                             \
+    for (auto _ : state) {                               \
+      auto hhds_tree = hhds::Tree::create();             \
+      build_hhds_tree(*hhds_tree, depth);                \
+    }                                                    \
   }
 
 HHDS_CHIP_CASE(1)
@@ -76,18 +51,11 @@ HHDS_CHIP_CASE(7)
 HHDS_CHIP_CASE(8)
 
 BENCHMARK(test_chip_typical_tree_1_hhds);
-BENCHMARK(test_chip_typical_tree_1_lh);
 BENCHMARK(test_chip_typical_tree_2_hhds);
-BENCHMARK(test_chip_typical_tree_2_lh);
 BENCHMARK(test_chip_typical_tree_3_hhds);
-BENCHMARK(test_chip_typical_tree_3_lh);
 BENCHMARK(test_chip_typical_tree_4_hhds);
-BENCHMARK(test_chip_typical_tree_4_lh);
 BENCHMARK(test_chip_typical_tree_5_hhds);
-BENCHMARK(test_chip_typical_tree_5_lh);
 BENCHMARK(test_chip_typical_tree_6_hhds);
-BENCHMARK(test_chip_typical_tree_6_lh);
 BENCHMARK(test_chip_typical_tree_7_hhds)->Iterations(5);
-BENCHMARK(test_chip_typical_tree_7_lh)->Iterations(5);
 BENCHMARK(test_chip_typical_tree_8_hhds)->Iterations(5);
-BENCHMARK(test_chip_typical_tree_8_lh)->Iterations(5);
+BENCHMARK_MAIN();

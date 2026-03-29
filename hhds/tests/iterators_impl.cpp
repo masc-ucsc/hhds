@@ -25,7 +25,7 @@ bool contains_pin_pid(const std::vector<hhds::Pin_class>& pins, hhds::Pid pid) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// Section 1: Compact ID types (api_todo.md #1)
+// Section 1: Compact ID types
 // ---------------------------------------------------------------------------
 
 TEST(CompactTypes, NodeClassFromGraph) {
@@ -307,7 +307,7 @@ TEST(CompactTypes, GraphGetSubsReturnsDirectSubnodes) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 2: Direction-aware edge iteration (api_todo.md #2)
+// Section 2: Direction-aware edge iteration
 // ---------------------------------------------------------------------------
 
 TEST(EdgeIteration, OutEdges) {
@@ -437,7 +437,7 @@ TEST(BitEncoding, PinToNode) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 3: del_edge (api_todo.md #3)
+// Section 3: del_edge
 // ---------------------------------------------------------------------------
 
 TEST(DelEdge, BasicRemoval) {
@@ -572,7 +572,7 @@ TEST(DelEdge, BasicRemoval) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 4: Lazy graph traversal (api_todo.md #4)
+// Section 4: Lazy graph traversal
 // ---------------------------------------------------------------------------
 
 TEST(LazyTraversal, FastClassSingleGraph) {
@@ -935,7 +935,7 @@ TEST(AddEdgeShorthand, NodeToNode) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 8: Node pin iteration (api_todo.md #8)
+// Section 8: Node pin iteration
 // ---------------------------------------------------------------------------
 
 TEST(PinIteration, GetPins) {

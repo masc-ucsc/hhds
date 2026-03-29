@@ -3,7 +3,6 @@
 #include <random>
 #include <vector>
 
-#include "lhtree.hpp"
 #include "tree.hpp"
 
 #if __has_include("hhds/tests/tree_test_utils.hpp")
@@ -66,38 +65,29 @@ void preorder_traversal_hhds(hhds::Tree& tree, const std::vector<int>& values, s
   hhds_test::preorder_values(tree, values, result);
 }
 
-void preorder_traversal_lhtree(lh::tree<int>& tree, std::vector<int>& result) {
-  auto                                                 root_index = lh::Tree_index(0, 0);
-  typename lh::tree<int>::Tree_depth_preorder_iterator it(root_index, &tree);
-  for (auto node_it = it.begin(); node_it != it.end(); ++node_it) {
-    result.push_back(tree.get_data(*node_it));
-  }
-}
-
-TEST(TreeCorrectness, DeepTreeMatchesLhtreePreorder) {
+TEST(TreeCorrectness, DeepTreePreorder) {
   std::default_random_engine generator(42);
   const int                  num_nodes = 10'000'000;
 
   auto            hhds_tree = hhds::Tree::create();
   std::vector<int> hhds_values;
-  lh::tree<int>   lh_tree;
+  std::vector<int> expected_preorder;
+  expected_preorder.reserve(static_cast<size_t>(num_nodes) + 1);
 
   auto data_to_add = generate_random_int(generator, 1, 100);
   auto hhds_root   = hhds_test::add_root(*hhds_tree, hhds_values, data_to_add);
-  lh_tree.set_root(data_to_add);
+  expected_preorder.push_back(data_to_add);
   auto           hhds_current = hhds_root;
-  lh::Tree_index lh_current(0, 0);
 
   for (int i = 0; i < num_nodes; ++i) {
     data_to_add  = generate_random_int(generator, 1, 100);
     hhds_current = hhds_test::add_child(*hhds_tree, hhds_values, hhds_current, data_to_add);
-    lh_current   = lh_tree.add_child(lh_current, data_to_add);
+    expected_preorder.push_back(data_to_add);
   }
 
-  std::vector<int> hhds_preorder, lh_preorder;
+  std::vector<int> hhds_preorder;
   preorder_traversal_hhds(*hhds_tree, hhds_values, hhds_preorder);
-  preorder_traversal_lhtree(lh_tree, lh_preorder);
 
-  ASSERT_EQ(hhds_preorder.size(), lh_preorder.size());
-  EXPECT_EQ(hhds_preorder, lh_preorder);
+  ASSERT_EQ(hhds_preorder.size(), expected_preorder.size());
+  EXPECT_EQ(hhds_preorder, expected_preorder);
 }

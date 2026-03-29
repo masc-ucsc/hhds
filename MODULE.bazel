@@ -9,25 +9,11 @@ git_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:git.bzl", "g
 
 
 bazel_dep(name = "rules_cc", version = "0.2.17")
-bazel_dep(name = "rules_foreign_cc", version = "0.15.1")
-
-
 bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
 bazel_dep(name = "google_benchmark", version = "1.9.5")
 
 bazel_dep(name = "abseil-cpp", version = "20250814.2") # 20240722.0.bcr.2")
-bazel_dep(name = "rules_rust", version = "0.69.0")
-bazel_dep(name = "rules_rust_bindgen", version = "0.69.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
-
-
-
-# tree-sitter
-git_repository(
-	name = "tree_sitter_cpp",
-	remote = "https://github.com/tree-sitter/tree-sitter-cpp.git",
-	commit = "8b5b49eb196bec7040441bee33b2c9a4838d6967"
-)
 
 # Perfetto
 http_archive(
@@ -73,26 +59,6 @@ archive_override(
 #    urls = ["https://github.com/bazelbuild/bazel-skylib/releases/download/1.0.0/bazel-skylib-1.0.0.tar.gz"],
 #    sha256 = "f7b2b61e6de49f602af263649604ec2460fcd8bdb9d4306a7bb9a5f74fc6e53e",
 #)
-
-# Rust
-#rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
-#rust.toolchain(versions = ["1.75.0"])
-#register_toolchains("@rules_rust_bindgen//:default_bindgen_toolchain")
-
-#crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-#use_repo(crate, "crate_index")
-
-#crate.from_cargo(
-#    name = "crate_index",
-#    cargo_lockfile = "//hhds/rust:Cargo.lock",
-    #cargo_toml = "//:Cargo.toml",
-#    manifests = [
-#    "//hhds/rust:Cargo.toml",
-#    "//hhds/rust/hello-world:Cargo.toml",
-#    "//hhds/rust/hello_lib:Cargo.toml",
-#    ],
-#)
-
 
 ## llvm
 #bazel_dep(name = "toolchains_llvm", version = "1.4.0")

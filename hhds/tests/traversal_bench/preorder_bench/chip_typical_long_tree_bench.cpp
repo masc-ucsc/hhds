@@ -4,7 +4,6 @@
 #include <random>
 #include <vector>
 
-#include "lhtree.hpp"
 #include "tests/tree_test_utils.hpp"
 #include "tree.hpp"
 
@@ -32,22 +31,6 @@ void build_hhds_tree(hhds::Tree& tree, std::vector<int>& values, int depth_val) 
   }
 }
 
-void build_lh_tree(lh::tree<int>& lh_tree, int depth_val) {
-  lh_tree.set_root(0);
-  std::vector<lh::Tree_index> current_level{lh::Tree_index(0, 0)};
-  int                         id = 1;
-  for (int depth = 0; depth < depth_val; ++depth) {
-    std::vector<lh::Tree_index> next_level;
-    for (auto node : current_level) {
-      const int num_children = generate_random_int(generator, 1, 20);
-      for (int i = 0; i < num_children; ++i) {
-        next_level.push_back(lh_tree.add_child(node, id++));
-      }
-    }
-    current_level = next_level;
-  }
-}
-
 void preorder_traversal_hhds(hhds::Tree& tree) {
   int cnt = 0;
   for (auto node : tree.pre_order()) {
@@ -57,31 +40,14 @@ void preorder_traversal_hhds(hhds::Tree& tree) {
   benchmark::DoNotOptimize(cnt);
 }
 
-void preorder_traversal_lhtree(lh::tree<int>& tree) {
-  auto                                                 root_index = lh::Tree_index(0, 0);
-  typename lh::tree<int>::Tree_depth_preorder_iterator it(root_index, &tree);
-  int                                                  cnt = 0;
-  for (auto node_it = it.begin(); node_it != it.end(); ++node_it) {
-    ++cnt;
-  }
-  benchmark::DoNotOptimize(cnt);
-}
-
-#define DEFINE_TRAVERSAL_CHIP_LONG_BENCH(NAME, COUNT)                 \
+#define DEFINE_TRAVERSAL_CHIP_LONG_BENCH(NAME, COUNT)                \
   void test_chip_typical_long_tree_##NAME##_hhds(benchmark::State& s) { \
-    auto            tree = hhds::Tree::create();                      \
-    std::vector<int> values;                                          \
-    build_hhds_tree(*tree, values, COUNT);                            \
-    for (auto _ : s) {                                                \
-      preorder_traversal_hhds(*tree);                                 \
-    }                                                                 \
-  }                                                                   \
-  void test_chip_typical_long_tree_##NAME##_lh(benchmark::State& s) { \
-    lh::tree<int> tree;                                               \
-    build_lh_tree(tree, COUNT);                                       \
-    for (auto _ : s) {                                                \
-      preorder_traversal_lhtree(tree);                                \
-    }                                                                 \
+    auto            tree = hhds::Tree::create();                     \
+    std::vector<int> values;                                         \
+    build_hhds_tree(*tree, values, COUNT);                           \
+    for (auto _ : s) {                                               \
+      preorder_traversal_hhds(*tree);                                \
+    }                                                                \
   }
 
 DEFINE_TRAVERSAL_CHIP_LONG_BENCH(1, 1)
@@ -94,14 +60,9 @@ DEFINE_TRAVERSAL_CHIP_LONG_BENCH(7, 7)
 DEFINE_TRAVERSAL_CHIP_LONG_BENCH(8, 8)
 
 BENCHMARK(test_chip_typical_long_tree_1_hhds);
-BENCHMARK(test_chip_typical_long_tree_1_lh);
 BENCHMARK(test_chip_typical_long_tree_2_hhds);
-BENCHMARK(test_chip_typical_long_tree_2_lh);
 BENCHMARK(test_chip_typical_long_tree_3_hhds);
-BENCHMARK(test_chip_typical_long_tree_3_lh);
 BENCHMARK(test_chip_typical_long_tree_4_hhds);
-BENCHMARK(test_chip_typical_long_tree_4_lh);
 BENCHMARK(test_chip_typical_long_tree_5_hhds);
-BENCHMARK(test_chip_typical_long_tree_5_lh);
 
 BENCHMARK_MAIN();
