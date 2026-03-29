@@ -201,6 +201,11 @@ reg_gio->add_output("q", 0, /*loop_last=*/true);
 assert(reg_gio->is_loop_last("d"));
 assert(reg_gio->is_loop_last("q"));
 
+// Concat: fixed output "y", variable numbered inputs (like mux sink pins).
+// No add_input declarations — sink pins are created with numeric names.
+auto cat_gio = glib->create_graphio("concat");
+cat_gio->add_output("y", 0);
+
 auto fa_gio = glib->create_graphio("FullAdder");
 fa_gio->add_input("in1",  1);
 fa_gio->add_input("in2",  2);
@@ -337,8 +342,9 @@ for (auto sel : {sel_b0, sel_b1, sel_b2, sel_b3}) {
 // Constant zero node for the first carry-in (driver pin 0, no sinks)
 auto const0 = top->create_node();  const0.set_name("1'b0");
 
-// Concatenation node: sink pins 1..4 gather bits, driver pin 0 = result
+// Concatenation node: variable numbered sink pins, output "y"
 auto cat = top->create_node();  cat.set_name("concat_sum");
+top->set_subnode(cat, cat_gio);
 
 // FullAdder instances — set_subnode links to the GraphIO declaration,
 // which means the node's pins are named by the declaration ports.
@@ -382,12 +388,12 @@ top->create_sink_pin(fa3, "in1").connect_driver(sel_a3);
 top->create_sink_pin(fa3, "in2").connect_driver(sel_b3);
 top->create_sink_pin(fa3, "cin").connect_driver(top->create_driver_pin(fa2, "cout"));
 
-// FA sum outputs → concat sink pins
-top->create_sink_pin(cat, 1).connect_driver(top->create_driver_pin(fa0, "out"));
-top->create_sink_pin(cat, 2).connect_driver(top->create_driver_pin(fa1, "out"));
-top->create_sink_pin(cat, 3).connect_driver(top->create_driver_pin(fa2, "out"));
-top->create_sink_pin(cat, 4).connect_driver(top->create_driver_pin(fa3, "out"));
-cat.connect_sink(top_sum);  // concat driver pin 0 → top output
+// FA sum outputs → concat numbered sink pins, concat "y" → top output
+top->create_sink_pin(cat, "0").connect_driver(top->create_driver_pin(fa0, "out"));
+top->create_sink_pin(cat, "1").connect_driver(top->create_driver_pin(fa1, "out"));
+top->create_sink_pin(cat, "2").connect_driver(top->create_driver_pin(fa2, "out"));
+top->create_sink_pin(cat, "3").connect_driver(top->create_driver_pin(fa3, "out"));
+top->create_driver_pin(cat, "y").connect_sink(top_sum);
 
 // fa3.cout → top cout
 top->create_driver_pin(fa3, "cout").connect_sink(top_cout);
