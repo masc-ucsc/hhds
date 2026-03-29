@@ -117,6 +117,7 @@ static constexpr Tree_pos ROOT        = 1 << CHUNK_SHIFT;  // ROOT ID
 static constexpr uint64_t MAX_TREE_SIZE = UINT64_MAX;  // Maximum number of chunks in the tree
 
 class Forest;
+class TreeIO;
 class TreeCursor;
 class ForestCursor;
 template <typename X>
@@ -225,6 +226,8 @@ private:
   std::vector<Tree_pos>        subnode_refs;
   Forest*                      forest_ptr;
   std::weak_ptr<Forest>        forest_owner_;
+  std::weak_ptr<TreeIO>        treeio_owner_;
+  Tid                          self_tid_ = INVALID;
   std::string                  name_ = "tree";
 
   void _ensure_subnode_ref_capacity(Tree_pos required_pos) {
@@ -316,6 +319,11 @@ private:
 
   Tree* _get_forest_tree(Tree_pos subtree_tid);
   void  bind_forest_owner(std::weak_ptr<Forest> forest_owner) { forest_owner_ = std::move(forest_owner); }
+  void  bind_treeio_owner(std::weak_ptr<TreeIO> treeio_owner, Tid self_tid, std::string_view name) {
+    treeio_owner_ = std::move(treeio_owner);
+    self_tid_     = self_tid;
+    name_         = std::string(name);
+  }
   Tree_pos _append_after_last_sibling(Tree_pos last_sibling_pos, Tree_pos parent_pos) {
     Tree_pos new_sibling_pos = last_sibling_pos;
 
@@ -537,6 +545,8 @@ public:
   Node_class insert_next_sibling(Node_class sibling_node) { return as_class(insert_next_sibling(sibling_node.get_current_pos())); }
   void set_name(std::string_view n);
   [[nodiscard]] std::string_view get_name() const { return name_; }
+  [[nodiscard]] Tid              get_tid() const noexcept { return self_tid_; }
+  [[nodiscard]] std::shared_ptr<TreeIO> get_treeio() const { return treeio_owner_.lock(); }
 
   void print(std::ostream& os) const { print(os, get_root(), PrintOptions{}); }
   void print(std::ostream& os, const PrintOptions& options) const { print(os, get_root(), options); }
@@ -1056,11 +1066,42 @@ private:
   explicit Tree(Forest* forest = nullptr) : forest_ptr(forest) {}
 };
 
+class TreeIO : public std::enable_shared_from_this<TreeIO> {
+private:
+  std::weak_ptr<Forest> forest_owner_;
+  Tid                   tid_;
+  std::string           name_;
+
+  TreeIO(std::weak_ptr<Forest> forest_owner, Tid tid, std::string name)
+      : forest_owner_(std::move(forest_owner)), tid_(tid), name_(std::move(name)) {}
+
+public:
+  TreeIO(const TreeIO&)            = delete;
+  TreeIO& operator=(const TreeIO&) = delete;
+  TreeIO(TreeIO&&)                 = delete;
+  TreeIO& operator=(TreeIO&&)      = delete;
+
+  [[nodiscard]] Tid              get_tid() const noexcept { return tid_; }
+  [[nodiscard]] std::string_view get_name() const noexcept { return name_; }
+  [[nodiscard]] std::shared_ptr<Forest> get_forest() const { return forest_owner_.lock(); }
+  [[nodiscard]] std::shared_ptr<Tree>       get_tree();
+  [[nodiscard]] std::shared_ptr<const Tree> get_tree() const;
+  [[nodiscard]] std::shared_ptr<Tree>       create_tree();
+  [[nodiscard]] bool                        has_tree() const;
+
+  friend class Forest;
+};
+
 class Forest : public std::enable_shared_from_this<Forest> {
 private:
-  std::vector<std::shared_ptr<Tree>> trees;
-  std::vector<size_t>                reference_counts;
+  std::vector<std::shared_ptr<TreeIO>> tree_ios_;
+  std::vector<std::shared_ptr<Tree>>   trees;
+  std::vector<size_t>                  reference_counts;
   std::unordered_map<std::string, Tid> tree_name_to_tid_;
+
+  [[nodiscard]] static std::string make_legacy_treeio_name(size_t index) {
+    return "__legacy_treeio_" + std::to_string(index);
+  }
 
 public:
   [[nodiscard]] static std::shared_ptr<Forest> create() { return std::shared_ptr<Forest>(new Forest()); }
@@ -1070,17 +1111,72 @@ public:
   Forest(Forest&&)                 = delete;
   Forest& operator=(Forest&&)      = delete;
 
-  Tree_pos create_tree() { return create_tree_impl(-static_cast<Tree_pos>(trees.size() + 1), {}); }
-  Tree_pos create_tree(std::string_view name) { return create_tree_impl(-static_cast<Tree_pos>(trees.size() + 1), name); }
-  Tree_pos create_tree(Tid tree_tid) { return create_tree_impl(tree_tid, {}); }
-  Tree_pos create_tree(Tid tree_tid, std::string_view name) { return create_tree_impl(tree_tid, name); }
+  [[nodiscard]] std::shared_ptr<TreeIO> create_treeio(std::string_view name) {
+    I(!name.empty(), "create_treeio: name is required");
+    return create_treeio_impl(-static_cast<Tree_pos>(tree_ios_.size() + 1), name);
+  }
+
+  [[nodiscard]] std::shared_ptr<TreeIO> find_treeio(std::string_view name) {
+    if (name.empty()) {
+      return nullptr;
+    }
+
+    const auto it = tree_name_to_tid_.find(std::string(name));
+    if (it == tree_name_to_tid_.end()) {
+      return nullptr;
+    }
+
+    const auto tree_idx = static_cast<size_t>(-it->second - 1);
+    if (tree_idx >= tree_ios_.size()) {
+      return nullptr;
+    }
+
+    return tree_ios_[tree_idx];
+  }
+
+  [[nodiscard]] std::shared_ptr<const TreeIO> find_treeio(std::string_view name) const {
+    if (name.empty()) {
+      return nullptr;
+    }
+
+    const auto it = tree_name_to_tid_.find(std::string(name));
+    if (it == tree_name_to_tid_.end()) {
+      return nullptr;
+    }
+
+    const auto tree_idx = static_cast<size_t>(-it->second - 1);
+    if (tree_idx >= tree_ios_.size()) {
+      return nullptr;
+    }
+
+    return tree_ios_[tree_idx];
+  }
+
+  // Legacy bridge until all call sites move to create_treeio(...)->create_tree().
+  Tree_pos create_tree() {
+    const auto tio = create_treeio_impl(-static_cast<Tree_pos>(tree_ios_.size() + 1), make_legacy_treeio_name(tree_ios_.size() + 1));
+    (void)tio->create_tree();
+    return tio->get_tid();
+  }
+  Tree_pos create_tree(std::string_view name) {
+    const auto tio = create_treeio(name);
+    (void)tio->create_tree();
+    return tio->get_tid();
+  }
+  Tree_pos create_tree(Tid tree_tid) {
+    const auto tio = create_treeio_impl(tree_tid, make_legacy_treeio_name(static_cast<size_t>(-tree_tid)));
+    (void)tio->create_tree();
+    return tio->get_tid();
+  }
+  Tree_pos create_tree(Tid tree_tid, std::string_view name) {
+    const auto tio = create_treeio_impl(tree_tid, name.empty() ? make_legacy_treeio_name(static_cast<size_t>(-tree_tid)) : std::string(name));
+    (void)tio->create_tree();
+    return tio->get_tid();
+  }
 
   Tree& get_tree(Tree_pos tree_tid) {
     I(tree_tid < 0, "Invalid tree reference - must be negative");
-    const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
-    I(tree_idx < trees.size(), "Tree index out of range");
-    I(trees[tree_idx], "Attempting to access deleted tree");
-    return *trees[tree_idx];
+    return *get_tree_ptr(tree_tid);
   }
 
   [[nodiscard]] std::shared_ptr<Tree> get_tree_ptr(Tree_pos tree_tid) {
@@ -1099,40 +1195,20 @@ public:
     return trees[tree_idx];
   }
 
-  [[nodiscard]] Tree* find_tree(std::string_view name) {
-    if (name.empty()) {
+  [[nodiscard]] std::shared_ptr<Tree> find_tree(std::string_view name) {
+    auto tio = find_treeio(name);
+    if (!tio) {
       return nullptr;
     }
-
-    const auto it = tree_name_to_tid_.find(std::string(name));
-    if (it == tree_name_to_tid_.end()) {
-      return nullptr;
-    }
-
-    const auto tree_idx = static_cast<size_t>(-it->second - 1);
-    if (tree_idx >= trees.size() || !trees[tree_idx]) {
-      return nullptr;
-    }
-
-    return trees[tree_idx].get();
+    return tio->get_tree();
   }
 
-  [[nodiscard]] const Tree* find_tree(std::string_view name) const {
-    if (name.empty()) {
+  [[nodiscard]] std::shared_ptr<const Tree> find_tree(std::string_view name) const {
+    auto tio = find_treeio(name);
+    if (!tio) {
       return nullptr;
     }
-
-    const auto it = tree_name_to_tid_.find(std::string(name));
-    if (it == tree_name_to_tid_.end()) {
-      return nullptr;
-    }
-
-    const auto tree_idx = static_cast<size_t>(-it->second - 1);
-    if (tree_idx >= trees.size() || !trees[tree_idx]) {
-      return nullptr;
-    }
-
-    return trees[tree_idx].get();
+    return tio->get_tree();
   }
 
   void add_reference(Tree_pos tree_tid) {
@@ -1154,15 +1230,32 @@ public:
       return false;
     }
 
-    if (trees[tree_idx]) {
-      auto it = tree_name_to_tid_.find(std::string(trees[tree_idx]->get_name()));
+    if (tree_idx < tree_ios_.size() && tree_ios_[tree_idx]) {
+      auto it = tree_name_to_tid_.find(std::string(tree_ios_[tree_idx]->get_name()));
       if (it != tree_name_to_tid_.end() && it->second == tree_tid) {
         tree_name_to_tid_.erase(it);
       }
+      tree_ios_[tree_idx].reset();
+    }
+
+    if (trees[tree_idx]) {
       trees[tree_idx].reset();
       return true;
     }
     return false;
+  }
+
+  void delete_treeio(const std::shared_ptr<TreeIO>& tio) {
+    I(tio != nullptr, "delete_treeio: null TreeIO");
+    (void)delete_tree(tio->get_tid());
+  }
+
+  void delete_treeio(std::string_view name) {
+    auto tio = find_treeio(name);
+    if (!tio) {
+      return;
+    }
+    delete_treeio(tio);
   }
 
   [[nodiscard]] ForestCursor create_cursor(Tid tree_tid, Tree_pos start = ROOT);
@@ -1170,28 +1263,44 @@ public:
   [[nodiscard]] ForestCursor create_cursor(Tree::Node_hier node);
 
 private:
-  Tree_pos create_tree_impl(Tid tree_tid, std::string_view name) {
+  [[nodiscard]] std::shared_ptr<TreeIO> create_treeio_impl(Tid tree_tid, std::string_view name) {
     I(tree_tid < 0, "create_tree: tree id must be negative");
+    I(!name.empty(), "create_treeio: name is required");
     assert_name_available(name);
 
     const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
-    if (tree_idx < trees.size()) {
-      I(!trees[tree_idx], "create_tree: explicit id already exists or is reserved");
+    if (tree_idx < tree_ios_.size()) {
+      I(!tree_ios_[tree_idx], "create_treeio: explicit id already exists or is reserved");
     } else {
+      tree_ios_.resize(tree_idx + 1);
       trees.resize(tree_idx + 1);
       reference_counts.resize(tree_idx + 1, 0);
     }
 
-    auto tree = Tree::create(this);
-    tree->bind_forest_owner(this->weak_from_this());
-    if (!name.empty()) {
-      tree->name_ = std::string(name);
-      tree_name_to_tid_.emplace(tree->name_, tree_tid);
+    auto tio = std::shared_ptr<TreeIO>(new TreeIO(this->weak_from_this(), tree_tid, std::string(name)));
+    tree_ios_[tree_idx]         = tio;
+    tree_name_to_tid_.emplace(std::string(name), tree_tid);
+    reference_counts[tree_idx] = 0;
+    return tio;
+  }
+
+  [[nodiscard]] std::shared_ptr<Tree> create_tree_body(const std::shared_ptr<TreeIO>& tio) {
+    I(tio != nullptr, "create_tree_body: null TreeIO");
+
+    const auto tree_idx = static_cast<size_t>(-tio->get_tid() - 1);
+    I(tree_idx < tree_ios_.size(), "create_tree_body: tree declaration index out of range");
+    I(tree_ios_[tree_idx] == tio, "create_tree_body: TreeIO is not owned by this forest");
+
+    if (trees[tree_idx]) {
+      return trees[tree_idx];
     }
 
-    trees[tree_idx]            = std::move(tree);
-    reference_counts[tree_idx] = 0;
-    return tree_tid;
+    auto tree = Tree::create(this);
+    tree->bind_forest_owner(this->weak_from_this());
+    tree->bind_treeio_owner(tio, tio->get_tid(), tio->get_name());
+
+    trees[tree_idx] = tree;
+    return tree;
   }
 
   void assert_name_available(std::string_view name, Tid self_tid = INVALID) const {
@@ -1207,50 +1316,57 @@ private:
     I(false, "create_tree: tree name already exists");
   }
 
-  [[nodiscard]] Tid get_tree_tid(const Tree* tree) const {
-    for (size_t i = 0; i < trees.size(); ++i) {
-      if (trees[i].get() == tree) {
-        return -static_cast<Tid>(i + 1);
-      }
-    }
-
-    I(false, "set_name: tree is not owned by this forest");
-    return INVALID;
-  }
-
-  void handle_tree_rename(Tree* tree, std::string_view old_name, std::string_view new_name) {
-    const Tid tree_tid = get_tree_tid(tree);
-    assert_name_available(new_name, tree_tid);
-
-    if (!old_name.empty()) {
-      const auto old_it = tree_name_to_tid_.find(std::string(old_name));
-      if (old_it != tree_name_to_tid_.end() && old_it->second == tree_tid) {
-        tree_name_to_tid_.erase(old_it);
-      }
-    }
-
-    tree->name_ = std::string(new_name);
-    if (!new_name.empty()) {
-      tree_name_to_tid_[tree->name_] = tree_tid;
-    }
-  }
-
   Forest() = default;
   friend class Tree;
+  friend class TreeIO;
 };
 
+inline std::shared_ptr<Tree> TreeIO::get_tree() {
+  auto forest = forest_owner_.lock();
+  if (!forest) {
+    return nullptr;
+  }
+  const auto tree_idx = static_cast<size_t>(-tid_ - 1);
+  if (tree_idx >= forest->trees.size()) {
+    return nullptr;
+  }
+  return forest->trees[tree_idx];
+}
+
+inline std::shared_ptr<const Tree> TreeIO::get_tree() const {
+  auto forest = forest_owner_.lock();
+  if (!forest) {
+    return nullptr;
+  }
+  const auto tree_idx = static_cast<size_t>(-tid_ - 1);
+  if (tree_idx >= forest->trees.size()) {
+    return nullptr;
+  }
+  return forest->trees[tree_idx];
+}
+
+inline std::shared_ptr<Tree> TreeIO::create_tree() {
+  auto forest = forest_owner_.lock();
+  I(forest != nullptr, "create_tree: TreeIO is no longer attached to a forest");
+  return forest->create_tree_body(shared_from_this());
+}
+
+inline bool TreeIO::has_tree() const {
+  auto forest = forest_owner_.lock();
+  if (!forest) {
+    return false;
+  }
+  const auto tree_idx = static_cast<size_t>(-tid_ - 1);
+  return tree_idx < forest->trees.size() && forest->trees[tree_idx] != nullptr;
+}
+
 inline void Tree::set_name(std::string_view n) {
-  if (name_ == n) {
+  auto tio = treeio_owner_.lock();
+  if (tio) {
+    I(name_ == n, "set_name: tree names are immutable once attached to a TreeIO");
     return;
   }
-
-  auto owner = forest_owner_.lock();
-  if (!owner) {
-    name_ = std::string(n);
-    return;
-  }
-
-  owner->handle_tree_rename(this, name_, n);
+  name_ = std::string(n);
 }
 
 class TreeCursor {

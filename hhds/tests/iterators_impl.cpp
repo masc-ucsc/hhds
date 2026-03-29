@@ -150,67 +150,73 @@ TEST(CompactTypes, GraphIsValidParity) {
 
 TEST(GraphNaming, CreateAndFindByName) {
   hhds::GraphLibrary lib;
-  auto               alu = lib.create_graph("alu");
+  auto               gio = lib.create_graphio("alu");
+  auto               alu = gio->create_graph();
 
+  ASSERT_TRUE(gio);
   ASSERT_TRUE(alu);
+  EXPECT_EQ(gio->get_gid(), 1);
+  EXPECT_EQ(gio->get_name(), "alu");
   EXPECT_EQ(alu->get_gid(), 1);
   EXPECT_EQ(alu->get_name(), "alu");
+  EXPECT_EQ(alu->get_graphio(), gio);
+  EXPECT_EQ(lib.find_graphio("alu"), gio);
   EXPECT_EQ(lib.find_graph("alu"), alu);
   EXPECT_FALSE(lib.find_graph("missing"));
 }
 
-TEST(GraphNaming, ExplicitIdCreationSupportsReloadWorkflows) {
+TEST(GraphNaming, GraphIOCanExistWithoutBody) {
   hhds::GraphLibrary lib;
-  auto               parser = lib.create_graph(static_cast<hhds::Gid>(7), "parser");
+  auto               gio = lib.create_graphio("parser");
 
+  ASSERT_TRUE(gio);
+  EXPECT_EQ(gio->get_gid(), 1);
+  EXPECT_EQ(gio->get_name(), "parser");
+  EXPECT_FALSE(gio->has_graph());
+  EXPECT_FALSE(gio->get_graph());
+  EXPECT_EQ(lib.find_graphio("parser"), gio);
+  EXPECT_FALSE(lib.find_graph("parser"));
+
+  auto parser = gio->create_graph();
   ASSERT_TRUE(parser);
-  EXPECT_EQ(parser->get_gid(), 7);
-  EXPECT_EQ(parser->get_name(), "parser");
+  EXPECT_TRUE(gio->has_graph());
+  EXPECT_EQ(gio->get_graph(), parser);
   EXPECT_EQ(lib.find_graph("parser"), parser);
-  EXPECT_FALSE(lib.has_graph(1));
-
-  auto next = lib.create_graph();
-  ASSERT_TRUE(next);
-  EXPECT_EQ(next->get_gid(), 8);
 }
 
 TEST(GraphNaming, DeleteGraphRemovesNameLookup) {
   hhds::GraphLibrary lib;
-  auto               alu = lib.create_graph("alu");
+  auto               gio = lib.create_graphio("alu");
+  auto               alu = gio->create_graph();
   const hhds::Gid    gid = alu->get_gid();
 
   lib.delete_graph(gid);
 
   EXPECT_FALSE(lib.has_graph(gid));
+  EXPECT_FALSE(lib.find_graphio("alu"));
   EXPECT_FALSE(lib.find_graph("alu"));
 }
 
 TEST(GraphNaming, DuplicateNameRejected) {
   hhds::GraphLibrary lib;
-  (void)lib.create_graph("alu");
+  (void)lib.create_graphio("alu");
 
   EXPECT_DEATH(
       {
-        (void)lib.create_graph("alu");
+        (void)lib.create_graphio("alu");
       },
       "graph name already exists");
 }
 
-TEST(GraphNaming, ExplicitIdConflictsRejected) {
+TEST(GraphNaming, GraphCreationIsIdempotentPerGraphIO) {
   hhds::GraphLibrary lib;
-  (void)lib.create_graph(static_cast<hhds::Gid>(7), "alu");
+  auto               gio = lib.create_graphio("alu");
+  auto               g1  = gio->create_graph();
+  auto               g2  = gio->create_graph();
 
-  EXPECT_DEATH(
-      {
-        (void)lib.create_graph(static_cast<hhds::Gid>(7), "mul");
-      },
-      "explicit id already exists or is reserved");
-
-  EXPECT_DEATH(
-      {
-        (void)lib.create_graph(static_cast<hhds::Gid>(9), "alu");
-      },
-      "graph name already exists");
+  ASSERT_TRUE(g1);
+  EXPECT_EQ(g1, g2);
+  EXPECT_EQ(g1->get_gid(), gio->get_gid());
 }
 
 TEST(CompactTypes, EdgeFlatConversions) {

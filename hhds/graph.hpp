@@ -156,6 +156,7 @@ private:
 static_assert(sizeof(Node) == 32, "Node size mismatch");
 
 class Graph;
+class GraphIO;
 class Node_class;
 class Tree;
 
@@ -410,6 +411,7 @@ public:
   [[nodiscard]] Pid        create_pin(Nid nid, Port_id port_id);
   [[nodiscard]] Gid        get_gid() const noexcept { return self_gid_; }
   [[nodiscard]] std::string_view get_name() const noexcept { return name_; }
+  [[nodiscard]] std::shared_ptr<GraphIO> get_graphio() const { return graphio_owner_.lock(); }
 
   // Built-in nodes created by Graph::clear_graph()
   static constexpr Nid INPUT_NODE  = (static_cast<Nid>(1) << 2);
@@ -534,12 +536,39 @@ private:
   mutable uint64_t                          forward_flat_cache_epoch_  = 0;
   mutable uint64_t                          forward_hier_cache_epoch_  = 0;
   const GraphLibrary*                       owner_lib_                 = nullptr;
+  std::weak_ptr<GraphIO>                    graphio_owner_;
   Gid                                       self_gid_                  = Gid_invalid;
   bool                                      deleted_                   = false;
   std::string                               name_;
 
   friend class Node_class;
   friend class Pin_class;
+  friend class GraphIO;
+  friend class GraphLibrary;
+};
+
+class GraphIO : public std::enable_shared_from_this<GraphIO> {
+private:
+  GraphLibrary* owner_lib_ = nullptr;
+  Gid           gid_       = Gid_invalid;
+  std::string   name_;
+
+  GraphIO(GraphLibrary* owner_lib, Gid gid, std::string name) : owner_lib_(owner_lib), gid_(gid), name_(std::move(name)) {}
+
+public:
+  GraphIO(const GraphIO&)            = delete;
+  GraphIO& operator=(const GraphIO&) = delete;
+  GraphIO(GraphIO&&)                 = delete;
+  GraphIO& operator=(GraphIO&&)      = delete;
+
+  [[nodiscard]] Gid              get_gid() const noexcept { return gid_; }
+  [[nodiscard]] std::string_view get_name() const noexcept { return name_; }
+  [[nodiscard]] GraphLibrary*    get_library() const noexcept { return owner_lib_; }
+  [[nodiscard]] std::shared_ptr<Graph>       get_graph();
+  [[nodiscard]] std::shared_ptr<const Graph> get_graph() const;
+  [[nodiscard]] std::shared_ptr<Graph>       create_graph();
+  [[nodiscard]] bool                         has_graph() const;
+
   friend class GraphLibrary;
 };
 
@@ -554,6 +583,7 @@ public:
 
   GraphLibrary() {
     // reserve slot 0 for invalid_id
+    graph_ios_.push_back(nullptr);
     graphs_.push_back(nullptr);
   }
 
@@ -565,21 +595,64 @@ public:
     }
   }
 
-  // Create a new graph and return shared ownership.
+  [[nodiscard]] std::shared_ptr<GraphIO> create_graphio(std::string_view name) {
+    assert(!name.empty() && "create_graphio: name is required");
+    return create_graphio_impl(static_cast<Gid>(graph_ios_.size()), name);
+  }
+
+  [[nodiscard]] std::shared_ptr<GraphIO> find_graphio(std::string_view name) {
+    if (name.empty()) {
+      return {};
+    }
+
+    const auto it = graph_name_to_id_.find(std::string(name));
+    if (it == graph_name_to_id_.end()) {
+      return {};
+    }
+
+    const size_t idx = static_cast<size_t>(it->second);
+    if (idx >= graph_ios_.size()) {
+      return {};
+    }
+
+    return graph_ios_[idx];
+  }
+
+  [[nodiscard]] std::shared_ptr<const GraphIO> find_graphio(std::string_view name) const {
+    if (name.empty()) {
+      return {};
+    }
+
+    const auto it = graph_name_to_id_.find(std::string(name));
+    if (it == graph_name_to_id_.end()) {
+      return {};
+    }
+
+    const size_t idx = static_cast<size_t>(it->second);
+    if (idx >= graph_ios_.size()) {
+      return {};
+    }
+
+    return graph_ios_[idx];
+  }
+
+  // Legacy bridge until all call sites move to create_graphio(...)->create_graph().
   [[nodiscard]] std::shared_ptr<Graph> create_graph() {
-    return create_graph_impl(static_cast<Gid>(graphs_.size()), {});
+    const auto gio = create_graphio_impl(static_cast<Gid>(graph_ios_.size()), "__legacy_graphio_" + std::to_string(graph_ios_.size()));
+    return gio->create_graph();
   }
 
   [[nodiscard]] std::shared_ptr<Graph> create_graph(std::string_view name) {
-    return create_graph_impl(static_cast<Gid>(graphs_.size()), name);
+    return create_graphio(name)->create_graph();
   }
 
   [[nodiscard]] std::shared_ptr<Graph> create_graph(Gid id) {
-    return create_graph_impl(id, {});
+    const auto gio = create_graphio_impl(id, "__legacy_graphio_" + std::to_string(static_cast<size_t>(id)));
+    return gio->create_graph();
   }
 
   [[nodiscard]] std::shared_ptr<Graph> create_graph(Gid id, std::string_view name) {
-    return create_graph_impl(id, name);
+    return create_graphio_impl(id, name.empty() ? "__legacy_graphio_" + std::to_string(static_cast<size_t>(id)) : std::string(name))->create_graph();
   }
 
   [[nodiscard]] bool has_graph(Gid id) const noexcept {
@@ -598,29 +671,19 @@ public:
   }
 
   [[nodiscard]] std::shared_ptr<Graph> find_graph(std::string_view name) {
-    if (name.empty()) {
+    auto gio = find_graphio(name);
+    if (!gio) {
       return {};
     }
-
-    const auto it = graph_name_to_id_.find(std::string(name));
-    if (it == graph_name_to_id_.end() || !has_graph(it->second)) {
-      return {};
-    }
-
-    return graphs_[static_cast<size_t>(it->second)];
+    return gio->get_graph();
   }
 
   [[nodiscard]] std::shared_ptr<const Graph> find_graph(std::string_view name) const {
-    if (name.empty()) {
+    auto gio = find_graphio(name);
+    if (!gio) {
       return {};
     }
-
-    const auto it = graph_name_to_id_.find(std::string(name));
-    if (it == graph_name_to_id_.end() || !has_graph(it->second)) {
-      return {};
-    }
-
-    return graphs_[static_cast<size_t>(it->second)];
+    return gio->get_graph();
   }
 
   [[nodiscard]] uint64_t mutation_epoch() const noexcept { return mutation_epoch_; }
@@ -635,6 +698,9 @@ public:
       if (!slot->get_name().empty()) {
         graph_name_to_id_.erase(std::string(slot->get_name()));
       }
+      if (static_cast<size_t>(id) < graph_ios_.size()) {
+        graph_ios_[static_cast<size_t>(id)].reset();
+      }
       slot->invalidate_from_library();
       --live_count_;
       note_graph_mutation();
@@ -648,31 +714,58 @@ public:
   [[nodiscard]] Gid live_count() const noexcept { return live_count_; }
 
 private:
-  [[nodiscard]] std::shared_ptr<Graph> create_graph_impl(Gid id, std::string_view name) {
-    assert(id != invalid_id && "create_graph: graph id 0 is reserved");
+  [[nodiscard]] std::shared_ptr<GraphIO> create_graphio_impl(Gid id, std::string_view name) {
+    assert(id != invalid_id && "create_graphio: graph id 0 is reserved");
+    assert(!name.empty() && "create_graphio: name is required");
     assert_name_available(name);
 
     const size_t idx = static_cast<size_t>(id);
-    if (idx < graphs_.size()) {
-      assert(graphs_[idx] == nullptr && "create_graph: explicit id already exists or is reserved");
+    if (idx < graph_ios_.size()) {
+      assert(graph_ios_[idx] == nullptr && "create_graphio: explicit id already exists or is reserved");
+    }
+
+    std::shared_ptr<GraphIO> graphio = std::shared_ptr<GraphIO>(new GraphIO(this, id, std::string(name)));
+
+    if (idx < graph_ios_.size()) {
+      graph_ios_[idx] = graphio;
+      if (idx >= graphs_.size()) {
+        graphs_.resize(idx + 1);
+      }
+    } else if (idx == graph_ios_.size()) {
+      graph_ios_.push_back(graphio);
+      if (idx >= graphs_.size()) {
+        graphs_.push_back(nullptr);
+      }
+    } else {
+      graph_ios_.resize(idx + 1);
+      graph_ios_[idx] = graphio;
+      graphs_.resize(idx + 1);
+    }
+
+    graph_name_to_id_.emplace(std::string(name), id);
+    note_graph_mutation();
+    return graphio;
+  }
+
+  [[nodiscard]] std::shared_ptr<Graph> create_graph_body(const std::shared_ptr<GraphIO>& graphio) {
+    assert(graphio != nullptr && "create_graph_body: null GraphIO");
+
+    const size_t idx = static_cast<size_t>(graphio->get_gid());
+    assert(idx < graph_ios_.size() && graph_ios_[idx] == graphio && "create_graph_body: GraphIO is not owned by this library");
+
+    if (idx < graphs_.size() && graphs_[idx] != nullptr && !graphs_[idx]->deleted_) {
+      return graphs_[idx];
     }
 
     std::shared_ptr<Graph> graph = std::make_shared<Graph>();
-    graph->bind_library(this, id);
-    graph->set_name(name);
+    graph->bind_library(this, graphio->get_gid());
+    graph->set_name(graphio->get_name());
+    graph->graphio_owner_ = graphio;
 
-    if (idx < graphs_.size()) {
-      graphs_[idx] = graph;
-    } else if (idx == graphs_.size()) {
-      graphs_.push_back(graph);
-    } else {
+    if (idx >= graphs_.size()) {
       graphs_.resize(idx + 1);
-      graphs_[idx] = graph;
     }
-
-    if (!name.empty()) {
-      graph_name_to_id_.emplace(std::string(name), id);
-    }
+    graphs_[idx] = graph;
 
     ++live_count_;
     note_graph_mutation();
@@ -690,6 +783,7 @@ private:
 
   void note_graph_mutation() const noexcept { ++mutation_epoch_; }
 
+  std::vector<std::shared_ptr<GraphIO>> graph_ios_;
   std::vector<std::shared_ptr<Graph>> graphs_;
   ankerl::unordered_dense::map<std::string, Gid> graph_name_to_id_;
   // count of live graphs
@@ -697,7 +791,42 @@ private:
   mutable uint64_t mutation_epoch_ = 1;
 
   friend class Graph;
+  friend class GraphIO;
 };
+
+inline std::shared_ptr<Graph> GraphIO::get_graph() {
+  if (owner_lib_ == nullptr) {
+    return {};
+  }
+  const size_t idx = static_cast<size_t>(gid_);
+  if (idx >= owner_lib_->graphs_.size()) {
+    return {};
+  }
+  return owner_lib_->graphs_[idx];
+}
+
+inline std::shared_ptr<const Graph> GraphIO::get_graph() const {
+  if (owner_lib_ == nullptr) {
+    return {};
+  }
+  const size_t idx = static_cast<size_t>(gid_);
+  if (idx >= owner_lib_->graphs_.size()) {
+    return {};
+  }
+  return owner_lib_->graphs_[idx];
+}
+
+inline std::shared_ptr<Graph> GraphIO::create_graph() {
+  assert(owner_lib_ != nullptr && "create_graph: GraphIO is no longer attached to a library");
+  return owner_lib_->create_graph_body(shared_from_this());
+}
+
+inline bool GraphIO::has_graph() const {
+  if (owner_lib_ == nullptr) {
+    return false;
+  }
+  return owner_lib_->has_graph(gid_);
+}
 
 // Compact-tier conversions: information can be discarded (_hier/_flat -> _class),
 // but hierarchy context cannot be reconstructed from _class/_flat alone.
