@@ -193,6 +193,14 @@ auto or_gio = glib->create_graphio("or");
 or_gio->add_input("a", 0);
 or_gio->add_output("y", 0);
 
+// Registers use loop_last to break cycles in topological traversal.
+// All ports on a register are typically loop_last.
+auto reg_gio = glib->create_graphio("register");
+reg_gio->add_input("d", 0, /*loop_last=*/true);
+reg_gio->add_output("q", 0, /*loop_last=*/true);
+assert(reg_gio->is_loop_last("d"));
+assert(reg_gio->is_loop_last("q"));
+
 auto fa_gio = glib->create_graphio("FullAdder");
 fa_gio->add_input("in1",  1);
 fa_gio->add_input("in2",  2);
@@ -229,6 +237,8 @@ assert(xor1.get_name() == "xor1");
 
 // Mark gate types — pins inherit from the GraphIO declaration.
 // All inputs are "a" (commutative), output is "y" (pin 0 default).
+// set_subnode stores the GraphIO ID in the node's 16-bit type field
+// when the ID fits (< 2^16), keeping the compact representation.
 fa->set_subnode(xor1, xor_gio);
 fa->set_subnode(xor2, xor_gio);
 fa->set_subnode(and1, and_gio);
@@ -236,6 +246,10 @@ fa->set_subnode(and2, and_gio);
 fa->set_subnode(and3, and_gio);
 fa->set_subnode(or1,  or_gio);
 fa->set_subnode(or2,  or_gio);
+
+// After set_subnode, get_type returns the GraphIO's ID
+assert(fa->get_type(xor1) == xor_gio->get_gid());
+assert(fa->get_type(and1) == and_gio->get_gid());
 
 // Graph IO pins (auto-materialized from FullAdder's GraphIO declaration)
 // get_input_pin returns a driver inside the body (data flows in)

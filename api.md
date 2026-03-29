@@ -135,13 +135,14 @@ public:
   [[nodiscard]] std::shared_ptr<Graph>       create_graph();
   [[nodiscard]] bool                         has_graph() const;
 
-  void add_input(std::string_view name, Port_ID port_id);
-  void add_output(std::string_view name, Port_ID port_id);
+  void add_input(std::string_view name, Port_ID port_id, bool loop_last = false);
+  void add_output(std::string_view name, Port_ID port_id, bool loop_last = false);
   void delete_input(std::string_view name);
   void delete_output(std::string_view name);
 
   [[nodiscard]] bool has_input(std::string_view name) const;
   [[nodiscard]] bool has_output(std::string_view name) const;
+  [[nodiscard]] bool is_loop_last(std::string_view name) const;
   [[nodiscard]] Port_ID get_input_port_id(std::string_view name) const;
   [[nodiscard]] Port_ID get_output_port_id(std::string_view name) const;
 };
@@ -155,6 +156,9 @@ Notes:
 - Creating a `Graph` body should auto-materialize the IO structure described by
   `GraphIO`.
 - Editing `GraphIO` while a body exists should update the body consistently.
+- `loop_last` is a per-port property set at `add_input` / `add_output` time.
+  It marks ports as loop-breaking points for the forward topological iterator.
+  Common use: registers where all ports are `loop_last`.
 
 ## Lookup and find semantics
 

@@ -58,6 +58,8 @@ code and this roadmap, follow `api.md`.
 
 - `GraphIO` owns ordered graph input/output declarations.
 - Port order follows the existing `Port_ID` model.
+- Ports have an optional `loop_last` property, set per-port at `add_input` / `add_output` time.
+- `loop_last` marks ports as loop-breaking points for the forward topological iterator (e.g. register outputs).
 - Creating a `Graph` from `GraphIO` should auto-materialize the graph IOs in the body.
 - Direct graph IO mutation on `Graph` should be removed.
 - IO mutation should happen through `GraphIO` only.
@@ -78,6 +80,10 @@ code and this roadmap, follow `api.md`.
 - `add_edge` and `create_pin` are removed entirely.
 - Graph IO pins are accessed via `Graph::get_input_pin("name")` / `get_output_pin("name")`.
 - `set_subnode` accepts `TreeIO` / `GraphIO` shared_ptr directly (no raw ID extraction needed).
+- `set_subnode` stores the `GraphIO` ID in the node's 16-bit type field when the ID fits (< 2^16).
+  This keeps the compact node representation for common EDA cells.
+  IDs >= 2^16 fall back to the overflow edge representation.
+  After `set_subnode`, `get_type(node)` returns the `GraphIO` ID.
 - See `api.md`:
   - `Pin direction split`
   - `Connect API`
@@ -296,15 +302,17 @@ Suggested steps:
    - port name
    - direction
    - stable port identifier / order
+   - `loop_last` flag (per-port, default false)
    - any minimal built-in declaration metadata that must stay in-core
 2. Add `GraphIO` public mutation APIs:
-   - `add_input`
-   - `add_output`
+   - `add_input(name, port_id, loop_last = false)`
+   - `add_output(name, port_id, loop_last = false)`
    - `delete_input`
    - `delete_output`
 3. Add `GraphIO` public query APIs:
    - `has_input`
    - `has_output`
+   - `is_loop_last`
    - port-id lookup
    - ordered iteration helpers if needed
 4. Define how a newly created `Graph` body auto-materializes declaration IOs.
@@ -327,7 +335,8 @@ Suggested steps:
     - backed by internal `absl::flat_hash_map`, auto-registered via `add_map` at construction
 12. Add `Pin_class::get_pin_name` to return the port name from the node's `GraphIO` declaration.
 13. Make `set_subnode` accept `TreeIO` / `GraphIO` shared_ptr directly.
-14. Update tests to validate:
+14. Store `GraphIO` ID in the node's 16-bit type field when ID < 2^16; overflow to edge representation otherwise. `get_type(node)` returns the `GraphIO` ID after `set_subnode`.
+15. Update tests to validate:
     - declaration-only graphs
     - body creation from declaration
     - adding/removing ports through `GraphIO`
