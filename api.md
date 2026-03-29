@@ -44,6 +44,8 @@ The companion roadmap lives in [`TODO.md`](/Users/renau/projs/hhds/TODO.md).
 - `Forest`, `GraphLibrary`, `TreeIO`, `GraphIO`, `Tree`, and `Graph` should be
   public concrete types.
 - Public ownership should use `std::shared_ptr`.
+- `Forest` and `GraphLibrary` constructors take a path (directory) for
+  persistence. This path is where declarations and bodies are saved/loaded.
 - When the last `std::shared_ptr<Tree>` or `std::shared_ptr<Graph>` disappears,
   the body may be unloaded automatically.
 - A later lookup may reload the body automatically.
@@ -56,7 +58,7 @@ The companion roadmap lives in [`TODO.md`](/Users/renau/projs/hhds/TODO.md).
 Target shape:
 
 ```cpp
-auto forest = std::make_shared<hhds::Forest>();
+auto forest = std::make_shared<hhds::Forest>("/path/to/db");
 
 auto tio = forest->create_treeio("parser");
 auto t   = tio->create_tree();
@@ -99,7 +101,7 @@ Notes:
 Target shape:
 
 ```cpp
-auto glib = std::make_shared<hhds::GraphLibrary>();
+auto glib = std::make_shared<hhds::GraphLibrary>("/path/to/db");
 
 auto gio = glib->create_graphio("alu");
 gio->add_input("a", 1);
@@ -212,16 +214,17 @@ The existing structural tree API remains the direction:
 ```cpp
 auto root  = tree->add_root_node();
 auto child = tree->add_child(root);
-tree->set_subnode(node, subtree);
+tree->set_subnode(node, sub_tio);   // pass TreeIO directly
 ```
 
 Expected shape:
 
 - keep structural creation and mutation
-- keep subtree references
+- keep subtree references (accept `TreeIO` / `GraphIO` objects directly)
 - keep traversal helpers
 - keep cursor support
 - keep inline `Type`
+- add built-in `set_name` / `get_name` / `has_name` on tree nodes
 
 ### Tree wrappers
 
@@ -252,6 +255,82 @@ They should:
 - inline `Type`
 
 `Graph` should no longer own declaration-side graph IO editing.
+
+### Pin direction split
+
+Pins have an explicit direction. `create_pin` is replaced by `create_driver_pin`
+and `create_sink_pin`:
+
+```cpp
+// On Graph — create pins with direction
+[[nodiscard]] Pin_class create_driver_pin(Node_class node);                      // default port 0
+[[nodiscard]] Pin_class create_driver_pin(Node_class node, Port_ID port_id);
+[[nodiscard]] Pin_class create_driver_pin(Node_class node, std::string_view name); // resolve via sub-node GraphIO
+
+[[nodiscard]] Pin_class create_sink_pin(Node_class node);                        // default port 0
+[[nodiscard]] Pin_class create_sink_pin(Node_class node, Port_ID port_id);
+[[nodiscard]] Pin_class create_sink_pin(Node_class node, std::string_view name);   // resolve via sub-node GraphIO
+```
+
+For sub-nodes (nodes linked to a `GraphIO` via `set_subnode`), the string
+overloads resolve the port name through the sub-node's `GraphIO` declaration.
+
+### Graph IO pin access
+
+Graph body IO pins are accessed by name from the `GraphIO` declaration:
+
+```cpp
+// On Graph — access auto-materialized IO pins
+[[nodiscard]] Pin_class get_input_pin(std::string_view name);   // driver inside body
+[[nodiscard]] Pin_class get_output_pin(std::string_view name);  // sink inside body
+```
+
+### Connect API
+
+Edges are created through `connect_driver` and `connect_sink` on `Node_class`
+and `Pin_class`, not through `add_edge`:
+
+```cpp
+// On Node_class
+void connect_sink(const Node_class& sink_node) const;
+void connect_sink(const Pin_class& sink_pin) const;
+void connect_driver(const Node_class& driver_node) const;
+void connect_driver(const Pin_class& driver_pin) const;
+
+// On Pin_class
+void connect_sink(const Node_class& sink_node) const;
+void connect_sink(const Pin_class& sink_pin) const;
+void connect_driver(const Node_class& driver_node) const;
+void connect_driver(const Pin_class& driver_pin) const;
+```
+
+`connect_driver` on a sink means "attach a driver to me."
+`connect_sink` on a driver means "attach a sink to me."
+When called on a `Node_class`, the default pin 0 is used.
+
+### Built-in node and pin names
+
+Node and pin instance names are built-in. Internally they use an
+`absl::flat_hash_map` that is auto-registered via `add_map` at `Graph`/`Tree`
+construction:
+
+```cpp
+// On Node_class and Pin_class
+void             set_name(std::string_view name);
+[[nodiscard]] std::string_view get_name() const;
+[[nodiscard]] bool             has_name() const noexcept;
+```
+
+Port names from the `GraphIO` declaration are accessed separately:
+
+```cpp
+// On Pin_class
+[[nodiscard]] std::string_view get_pin_name() const;
+```
+
+`get_pin_name` returns the port name from the node's `GraphIO` declaration
+(e.g. `"a"` for an or-gate sink, `"cout"` for a FullAdder output). It works on
+sub-node pins and on graph IO pins.
 
 ### Graph wrappers
 
@@ -351,5 +430,7 @@ API now.
 - standalone public `Graph` creation
 - public explicit-ID creation APIs
 - direct graph IO mutation on `Graph`
+- `create_pin` (replaced by `create_driver_pin` / `create_sink_pin`)
+- `add_edge` (replaced by `connect_driver` / `connect_sink`)
 - payload-owning tree APIs
 - exception-based public error handling

@@ -41,6 +41,7 @@ code and this roadmap, follow `api.md`.
 - `Graph` bodies are created only through `GraphIO`.
 - `Tree` and `Graph` remain public concrete types.
 - `std::shared_ptr` is the intended ownership model for declarations and bodies.
+- `Forest` and `GraphLibrary` constructors take a directory path for persistence.
 - See `api.md`:
   - `Public creation flow`
   - `Ownership and lifetime`
@@ -65,6 +66,30 @@ code and this roadmap, follow `api.md`.
   - `Graph declarations and bodies`
   - `Graph API direction`
   - `APIs to remove or restrict`
+
+### Pin direction and edge creation
+
+- Pins have explicit direction: `create_driver_pin` / `create_sink_pin` replace `create_pin`.
+- Overloads: `(node)` for default port 0, `(node, port_id)`, `(node, "name")` for sub-node port resolution via `GraphIO`.
+- Edges are created via `connect_driver` / `connect_sink` on `Node_class` and `Pin_class`, not `add_edge`.
+- `connect_driver` on a sink means "attach a driver to me."
+- `connect_sink` on a driver means "attach a sink to me."
+- When called on a `Node_class`, the default pin 0 is used.
+- `add_edge` and `create_pin` are removed entirely.
+- Graph IO pins are accessed via `Graph::get_input_pin("name")` / `get_output_pin("name")`.
+- `set_subnode` accepts `TreeIO` / `GraphIO` shared_ptr directly (no raw ID extraction needed).
+- See `api.md`:
+  - `Pin direction split`
+  - `Connect API`
+  - `Graph IO pin access`
+
+### Built-in node and pin names
+
+- Node and pin instance names are built-in via `set_name` / `get_name` / `has_name`.
+- Internally backed by `absl::flat_hash_map`, auto-registered via `add_map` at `Graph`/`Tree` construction.
+- `Pin_class::get_pin_name` returns the port name from the node's `GraphIO` declaration.
+- See `api.md`:
+  - `Built-in node and pin names`
 
 ### Deletion semantics
 
@@ -226,12 +251,18 @@ Exit criteria:
 - name-based lookup is the normal public path
 - explicit-ID public creation is gone
 
-### Phase 3: Graph IO ownership refactor
+### Phase 3: Graph IO ownership and pin/connect refactor
 
 - Move graph IO declaration into `GraphIO`.
 - Remove direct graph IO mutation from `Graph`.
 - Auto-create graph IO structures in a newly created `Graph` body from `GraphIO`.
 - Keep `GraphIO` and `Graph` synchronized when IOs change.
+- Replace `create_pin` with direction-aware `create_driver_pin` / `create_sink_pin`.
+- Replace `add_edge` with `connect_driver` / `connect_sink` on nodes and pins.
+- Add `get_input_pin` / `get_output_pin` on `Graph` for accessing auto-materialized IO pins.
+- Add built-in node and pin instance names (`set_name` / `get_name` / `has_name`).
+- Add `get_pin_name` for resolving port names from the `GraphIO` declaration.
+- Accept `TreeIO` / `GraphIO` objects directly in `set_subnode` (no raw ID extraction).
 
 Detailed scope:
 
@@ -240,11 +271,23 @@ Detailed scope:
 - define how `Graph` auto-materializes graph IO nodes/pins from `GraphIO`
 - make body reload and body recreation preserve the declaration-side interface
 - remove old graph-side public APIs that mutate declaration IO directly
+- replace `create_pin` with `create_driver_pin` and `create_sink_pin`
+- add overloads: `(node)` for default pin 0, `(node, port_id)`, `(node, "name")` for sub-node port resolution
+- replace `add_edge` with `connect_driver` / `connect_sink` on `Node_class` and `Pin_class`
+- add `Graph::get_input_pin("name")` and `Graph::get_output_pin("name")`
+- add `Node_class::set_name` / `get_name` / `has_name` (backed by internal `absl::flat_hash_map`, auto-registered via `add_map`)
+- add `Pin_class::set_name` / `get_name` / `has_name`
+- add `Pin_class::get_pin_name` to return the port name from the node's `GraphIO` declaration
+- make `set_subnode` accept `TreeIO` / `GraphIO` shared_ptr directly (library extracts IDs internally)
 
 Primary API references:
 
 - `api.md` `Graph declarations and bodies`
 - `api.md` `Graph API direction`
+- `api.md` `Pin direction split`
+- `api.md` `Connect API`
+- `api.md` `Graph IO pin access`
+- `api.md` `Built-in node and pin names`
 - `api.md` `Deletion semantics`
 
 Suggested steps:
@@ -265,26 +308,55 @@ Suggested steps:
    - port-id lookup
    - ordered iteration helpers if needed
 4. Define how a newly created `Graph` body auto-materializes declaration IOs.
-5. Remove direct graph-side IO mutation from `Graph`.
-6. Redirect any remaining graph IO creation paths through `GraphIO`.
-7. Define body synchronization when `GraphIO` changes after a body already exists.
-8. Update tests to validate:
-   - declaration-only graphs
-   - body creation from declaration
-   - adding/removing ports through `GraphIO`
-   - body staying consistent with `GraphIO`
+5. Add `Graph::get_input_pin("name")` and `Graph::get_output_pin("name")`.
+6. Remove direct graph-side IO mutation from `Graph`.
+7. Redirect any remaining graph IO creation paths through `GraphIO`.
+8. Define body synchronization when `GraphIO` changes after a body already exists.
+9. Replace `create_pin` with `create_driver_pin` / `create_sink_pin`:
+   - overloads: `(node)`, `(node, port_id)`, `(node, "name")`
+   - string overload resolves port name through the sub-node's `GraphIO`
+   - remove `create_pin` entirely
+10. Replace `add_edge` with `connect_driver` / `connect_sink`:
+    - on `Node_class`: uses default pin 0
+    - on `Pin_class`: uses the specific pin
+    - `connect_driver` on a sink means "attach a driver to me"
+    - `connect_sink` on a driver means "attach a sink to me"
+    - remove `add_edge` entirely
+11. Add built-in node and pin names:
+    - `set_name` / `get_name` / `has_name` on `Node_class` and `Pin_class`
+    - backed by internal `absl::flat_hash_map`, auto-registered via `add_map` at construction
+12. Add `Pin_class::get_pin_name` to return the port name from the node's `GraphIO` declaration.
+13. Make `set_subnode` accept `TreeIO` / `GraphIO` shared_ptr directly.
+14. Update tests to validate:
+    - declaration-only graphs
+    - body creation from declaration
+    - adding/removing ports through `GraphIO`
+    - body staying consistent with `GraphIO`
+    - driver/sink pin creation and connect
+    - get_input_pin / get_output_pin on graph body
+    - node/pin set_name / get_name / has_name / get_pin_name
+    - sub-node pin name resolution from GraphIO
+    - RCA adder example as integration test
 
 Implementation notes:
 
 - this phase should happen early because it changes graph identity, deletion, and persistence shape
 - preserve the current `Port_ID` ordering model
 - allow declaration-only entries with no body for library-style use cases
+- no backwards compatibility with old `create_pin` / `add_edge` APIs
 
 Exit criteria:
 
 - `GraphIO` is the only public place to mutate graph interface ports
 - `Graph` body creation reflects declaration ports automatically
 - declaration-only graphs are first-class
+- all pins are created with explicit direction (`create_driver_pin` / `create_sink_pin`)
+- all edges are created via `connect_driver` / `connect_sink`
+- `create_pin` and `add_edge` are removed
+- node/pin names are built-in and queryable
+- `get_pin_name` resolves port names from `GraphIO` declarations
+- `set_subnode` accepts declaration objects directly
+- the `sample.md` RCA adder example works end-to-end
 
 ### Phase 4: Lifetime and deletion semantics
 
@@ -512,11 +584,17 @@ Exit criteria:
 2. land declaration-first creation and lookup
 3. remove direct body creation APIs
 
-### Sequence B: Graph declaration ownership
+### Sequence B: Graph declaration ownership and pin/connect refactor
 
 1. move graph IO declaration into `GraphIO`
 2. auto-materialize `Graph` bodies from `GraphIO`
-3. remove direct graph IO mutation from `Graph`
+3. add `get_input_pin` / `get_output_pin` on `Graph`
+4. replace `create_pin` with `create_driver_pin` / `create_sink_pin`
+5. replace `add_edge` with `connect_driver` / `connect_sink`
+6. add built-in node/pin names (`set_name` / `get_name` / `has_name` / `get_pin_name`)
+7. make `set_subnode` accept declaration objects directly
+8. remove direct graph IO mutation from `Graph`
+9. remove `create_pin` and `add_edge`
 
 ### Sequence C: Lifecycle
 
