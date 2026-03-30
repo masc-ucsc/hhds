@@ -245,6 +245,23 @@ They should:
 - stay pointer-free
 - remain useful as metadata keys
 
+Wrapper conversion direction:
+
+```cpp
+// On Tree
+[[nodiscard]] Node_flat  get_flat(const Node_hier& node) const;
+[[nodiscard]] Node_class get_class(const Node_flat& node) const noexcept;
+[[nodiscard]] Node_class get_class(const Node_hier& node) const noexcept;
+```
+
+Notes:
+
+- `_hier -> _flat` must be supported.
+- `_flat/_hier -> _class` must be supported.
+- Reverse conversion from `_class` into `_flat` or `_hier` is not generally
+  possible without traversal context and should not be implied by the wrapper
+  API.
+
 ## Graph API direction
 
 ### Graph structure operations
@@ -314,21 +331,26 @@ When called on a `Node_class`, the default pin 0 is used.
 
 ### Built-in node and pin names
 
-Node and pin instance names are built-in. Internally they use an
-`absl::flat_hash_map` that is auto-registered via `add_map` at `Graph`/`Tree`
-construction:
+Node and pin instance names are built-in attributes using the standard
+attribute mechanism described in
+[`api_attribute.md`](/Users/renau/projs/hhds/api_attribute.md):
 
 ```cpp
-// On Node_class and Pin_class
-void             set_name(std::string_view name);
-[[nodiscard]] std::string_view get_name() const;
-[[nodiscard]] bool             has_name() const noexcept;
+// On Node and Pin via attr()
+node.attr(hhds::attrs::name).set("adder");
+auto n = node.attr(hhds::attrs::name).get();
+bool b = node.attr(hhds::attrs::name).has();
+
+pin.attr(hhds::attrs::name).set("carry");
 ```
+
+Storage is lazy — created automatically on `GraphLibrary` on first use. No
+explicit registration needed.
 
 Port names from the `GraphIO` declaration are accessed separately:
 
 ```cpp
-// On Pin_class
+// On Pin
 [[nodiscard]] std::string_view get_pin_name() const;
 ```
 
@@ -352,6 +374,28 @@ Direction:
 - lightweight key/context objects should avoid shared ownership
 - they remain usable to construct richer operations
 - they remain valid metadata keys
+
+Wrapper conversion direction:
+
+```cpp
+// On Graph
+[[nodiscard]] Node_flat  get_flat(const Node_hier& node) const;
+[[nodiscard]] Pin_flat   get_flat(const Pin_hier& pin) const;
+
+[[nodiscard]] Node_class get_class(const Node_flat& node) const noexcept;
+[[nodiscard]] Node_class get_class(const Node_hier& node) const noexcept;
+[[nodiscard]] Pin_class  get_class(const Pin_flat& pin) const noexcept;
+[[nodiscard]] Pin_class  get_class(const Pin_hier& pin) const noexcept;
+```
+
+Notes:
+
+- `_hier -> _flat` must be supported for nodes and pins.
+- `_flat/_hier -> _class` must be supported for nodes and pins.
+- These conversions are enough to replace the common
+  `get_non_hierarchical()`/`get_compact_class()` style workflows.
+- Public up/down boundary-walking helpers are optional and should be justified
+  separately from these wrapper conversions.
 
 ### Validity checks
 
@@ -384,29 +428,47 @@ Normal operation methods may assert in debug mode if called when invalid.
 - The top of a hierarchical traversal is selected by the caller, not stored as
   a permanent property of `GraphLibrary`.
 
-## Metadata registration direction
+## Attribute and metadata direction
 
-Metadata remains external, but the long-term API should support registration on
-`Forest` and `GraphLibrary`.
+Metadata remains external to the core structure. The attribute mechanism uses
+ADL-based customization with tag objects and lazy typed storage on
+`GraphLibrary` (and `Forest` for trees).
+
+The dedicated attribute API direction lives in
+[`api_attribute.md`](/Users/renau/projs/hhds/api_attribute.md).
 
 Expected direction:
 
 ```cpp
-forest->add_map(node_names);
-forest->add_map(node_attrs);
-glib->add_map(pin_widths);
-glib->add_map(node_names);
+// Built-in HHDS attributes
+node.attr(hhds::attrs::name).set("adder");
+pin.attr(hhds::attrs::pin_name).get();
+
+// Downstream attributes (no HHDS edits needed)
+node.attr(livehd::attrs::bits).set(32);
+pin.attr(livehd::attrs::delay).set(1.5f);
+
+// Delete single entry
+node.attr(livehd::attrs::bits).del();
+
+// Clear all entries for one attribute
+glib->attr_clear(livehd::attrs::bits);
+
+// Clear all attribute data across all tags
+glib->attr_clear();
 ```
 
-Requirements:
+Key properties:
 
-- support wrapper-keyed maps
-- support `_class`, `_flat`, and `_hier` keys
+- `Node`/`Pin` are the API surface (`node.attr(tag)`)
+- lightweight ID types (`_class`, `_flat`, `_hier`) are storage keys
+- each tag declares its `value_type` and `key_type`
+- storage is lazy — created automatically on first `set()`
+- downstream projects add attributes by defining tag objects and ADL overloads
+  in their own namespace
+- unsupported owner/tag combinations fail at compile time
 - cleanup should happen on delete eventually
 - deleted objects should not print or save
-
-This registration is a later phase and should not distort the core structure
-API now.
 
 ## Persistence direction
 

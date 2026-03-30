@@ -171,7 +171,7 @@ nodes, and topological traversal.
 
 ```cpp
 #include "hhds/graph.hpp"
-#include "absl/container/flat_hash_map.h"
+#include "hhds/attrs/name.hpp"
 
 auto glib = std::make_shared<hhds::GraphLibrary>("/tmp/rca");
 
@@ -228,17 +228,19 @@ fa_gio->add_output("cout", 5);
 //
 auto fa = fa_gio->create_graph();
 
-// Node names are built-in — no external map needed
-auto xor1 = fa->create_node();  xor1.set_name("xor1");
-auto xor2 = fa->create_node();  xor2.set_name("xor2");
-auto and1 = fa->create_node();  and1.set_name("and1");
-auto and2 = fa->create_node();  and2.set_name("and2");
-auto and3 = fa->create_node();  and3.set_name("and3");
-auto or1  = fa->create_node();  or1.set_name("or1");
-auto or2  = fa->create_node();  or2.set_name("or2");
+// Node names use the built-in attribute — storage is lazy, no registration needed
+using hhds::attrs::name;
 
-assert(xor1.has_name());
-assert(xor1.get_name() == "xor1");
+auto xor1 = fa->create_node();  xor1.attr(name).set("xor1");
+auto xor2 = fa->create_node();  xor2.attr(name).set("xor2");
+auto and1 = fa->create_node();  and1.attr(name).set("and1");
+auto and2 = fa->create_node();  and2.attr(name).set("and2");
+auto and3 = fa->create_node();  and3.attr(name).set("and3");
+auto or1  = fa->create_node();  or1.attr(name).set("or1");
+auto or2  = fa->create_node();  or2.attr(name).set("or2");
+
+assert(xor1.attr(name).has());
+assert(xor1.attr(name).get() == "xor1");
 
 // Mark gate types — pins inherit from the GraphIO declaration.
 // All inputs are "a" (commutative), output is "y" (pin 0 default).
@@ -322,14 +324,14 @@ auto top_sum  = top->get_output_pin("sum");
 auto top_cout = top->get_output_pin("cout");
 
 // Bit-select nodes: each has one sink (the bus) and driver pin 0 (selected bit)
-auto sel_a0 = top->create_node();  sel_a0.set_name("sel_a[0]");
-auto sel_a1 = top->create_node();  sel_a1.set_name("sel_a[1]");
-auto sel_a2 = top->create_node();  sel_a2.set_name("sel_a[2]");
-auto sel_a3 = top->create_node();  sel_a3.set_name("sel_a[3]");
-auto sel_b0 = top->create_node();  sel_b0.set_name("sel_b[0]");
-auto sel_b1 = top->create_node();  sel_b1.set_name("sel_b[1]");
-auto sel_b2 = top->create_node();  sel_b2.set_name("sel_b[2]");
-auto sel_b3 = top->create_node();  sel_b3.set_name("sel_b[3]");
+auto sel_a0 = top->create_node();  sel_a0.attr(name).set("sel_a[0]");
+auto sel_a1 = top->create_node();  sel_a1.attr(name).set("sel_a[1]");
+auto sel_a2 = top->create_node();  sel_a2.attr(name).set("sel_a[2]");
+auto sel_a3 = top->create_node();  sel_a3.attr(name).set("sel_a[3]");
+auto sel_b0 = top->create_node();  sel_b0.attr(name).set("sel_b[0]");
+auto sel_b1 = top->create_node();  sel_b1.attr(name).set("sel_b[1]");
+auto sel_b2 = top->create_node();  sel_b2.attr(name).set("sel_b[2]");
+auto sel_b3 = top->create_node();  sel_b3.attr(name).set("sel_b[3]");
 
 // Connect top input a/b → each bit-select sink
 for (auto sel : {sel_a0, sel_a1, sel_a2, sel_a3}) {
@@ -340,18 +342,18 @@ for (auto sel : {sel_b0, sel_b1, sel_b2, sel_b3}) {
 }
 
 // Constant zero node for the first carry-in (driver pin 0, no sinks)
-auto const0 = top->create_node();  const0.set_name("1'b0");
+auto const0 = top->create_node();  const0.attr(name).set("1'b0");
 
 // Concatenation node: variable numbered sink pins, output "y"
-auto cat = top->create_node();  cat.set_name("concat_sum");
+auto cat = top->create_node();  cat.attr(name).set("concat_sum");
 top->set_subnode(cat, cat_gio);
 
 // FullAdder instances — set_subnode links to the GraphIO declaration,
 // which means the node's pins are named by the declaration ports.
-auto fa0 = top->create_node();  fa0.set_name("fa0");
-auto fa1 = top->create_node();  fa1.set_name("fa1");
-auto fa2 = top->create_node();  fa2.set_name("fa2");
-auto fa3 = top->create_node();  fa3.set_name("fa3");
+auto fa0 = top->create_node();  fa0.attr(name).set("fa0");
+auto fa1 = top->create_node();  fa1.attr(name).set("fa1");
+auto fa2 = top->create_node();  fa2.attr(name).set("fa2");
+auto fa3 = top->create_node();  fa3.attr(name).set("fa3");
 
 top->set_subnode(fa0, fa_gio);
 top->set_subnode(fa1, fa_gio);
@@ -365,8 +367,8 @@ top->set_subnode(fa3, fa_gio);
 // get_pin_name on sub-node pins returns the GraphIO port name
 auto fa0_in1_pin = top->create_sink_pin(fa0, "in1");
 assert(fa0_in1_pin.get_pin_name() == "in1");
-assert(fa0.get_name() == "fa0");
-assert(fa0.has_name());
+assert(fa0.attr(name).get() == "fa0");
+assert(fa0.attr(name).has());
 
 // fa0: sel_a[0] → in1, sel_b[0] → in2, const0 → cin
 fa0_in1_pin.connect_driver(sel_a0);
@@ -403,7 +405,7 @@ top->create_driver_pin(fa3, "cout").connect_sink(top_cout);
 // ---------------------------------------------------------------
 std::cout << "Topological order (adder top-level):\n";
 for (auto node : top->forward_class()) {
-  std::cout << "  " << (node.has_name() ? node.get_name() : "?") << "\n";
+  std::cout << "  " << (node.attr(name).has() ? node.attr(name).get() : "?") << "\n";
 }
 // Expected order respects dataflow:
 //   const0, sel_a[0..3], sel_b[0..3] (inputs, any order among them)
@@ -414,124 +416,97 @@ for (auto node : top->forward_class()) {
 ## Wrapper types and compact conversions
 
 ```cpp
-hhds::Graph g;
-auto node = g.create_node();
-auto pin  = g.create_sink_pin(node, 3);
+auto g    = gio->create_graph();
+auto node = g->create_node();
+auto pin  = g->create_sink_pin(node, 3);
 
 // Node_class / Pin_class — lightweight keys within a single graph
-hhds::Node_class nc = node;
-hhds::Pin_class  pc = pin;
+hhds::Node_class nc = node.nclass();
+hhds::Pin_class  pc = pin.pclass();
 
-// Flat conversions — pass the graph directly for cross-graph use
-auto node_flat = hhds::to_flat(node, g);
-auto pin_flat  = hhds::to_flat(pin, g);
+// Flat conversions — for cross-graph use
+auto nf = node.flat();
+auto pf = pin.flat();
 
-// Round-trip back to class
-auto nc2 = hhds::to_class(node_flat);
-auto pc2 = hhds::to_class(pin_flat);
-
-// All wrapper types are hashable — usable as metadata keys
-absl::flat_hash_map<hhds::Node_class, int>  node_attrs;
-absl::flat_hash_map<hhds::Pin_flat, double>  pin_delays;
+// All lightweight ID types are hashable — usable as attribute storage keys
+// Attributes use these internally (each tag declares its key_type)
 ```
 
-## Metadata registration
+## Downstream attributes
 
-Metadata lives in external maps. Registering maps with `Forest` or
-`GraphLibrary` enables automatic cleanup on delete, save/load with persistence,
-and print integration.
+Downstream projects add attributes without editing HHDS. Each attribute is a
+tag object with ADL overloads in one header file. See
+[`api_attribute.md`](/Users/renau/projs/hhds/api_attribute.md) for the full
+design.
 
-### Common types (built-in serialization)
-
-For `std::string`, integer types, `float`, and `double`, no custom serializer is
-needed:
+### Defining a downstream attribute
 
 ```cpp
-auto forest = std::make_shared<hhds::Forest>("/tmp/my_project");
+// livehd/attrs/bits.hpp
+#pragma once
+#include "hhds/attr.hpp"
 
-absl::flat_hash_map<hhds::Tree::Node_class, std::string> node_names;
-absl::flat_hash_map<hhds::Tree::Node_class, int>         node_weights;
+namespace livehd::attrs {
 
-// Built-in serialization for common types
-forest->add_map<hhds::Tree::Node_class>(node_names);
-forest->add_map<hhds::Tree::Node_class>(node_weights);
+struct bits_t {
+  using value_type = int;
+  using key_type   = hhds::Node_flat;  // keyed globally across hierarchy
+};
+inline constexpr bits_t bits{};
 
-auto tio = forest->create_treeio("ast");
-auto t   = tio->create_tree();
+inline int hhds_attr_get(bits_t, const hhds::Node& n) {
+  return n.glib().attr_store(bits).at(n.flat());
+}
+inline void hhds_attr_set(bits_t, const hhds::Node& n, int v) {
+  n.glib().attr_store(bits)[n.flat()] = v;
+}
+inline bool hhds_attr_has(bits_t, const hhds::Node& n) {
+  return n.glib().attr_store(bits).contains(n.flat());
+}
+inline void hhds_attr_del(bits_t, const hhds::Node& n) {
+  n.glib().attr_store(bits).erase(n.flat());
+}
 
-auto root = t->add_root_node();
-node_names[root]   = "top";
-node_weights[root] = 42;
-
-// When the forest saves, registered maps are saved too.
-// When a node is deleted, registered maps clean up the entry.
+}  // namespace livehd::attrs
 ```
 
-### Custom types (user-provided adapter)
-
-For structs or other types, inherit from `MapAdapterBase` to provide
-erase/save/load:
+### Using downstream attributes
 
 ```cpp
-struct PinTiming {
-  double rise;
-  double fall;
-};
+#include "livehd/attrs/bits.hpp"
 
-class PinTimingAdapter : public hhds::MapAdapterBase {
-  absl::flat_hash_map<hhds::Pin_class, PinTiming>& map_;
-public:
-  explicit PinTimingAdapter(absl::flat_hash_map<hhds::Pin_class, PinTiming>& m)
-      : map_(m) {}
+node.attr(livehd::attrs::bits).set(32);
+int b = node.attr(livehd::attrs::bits).get();   // int by value
 
-  void erase(uint64_t raw_id) override {
-    map_.erase(hhds::Pin_class(raw_id));
-  }
-  void save(std::ostream& os) const override {
-    // write map size, then key/value pairs
-    uint64_t n = map_.size();
-    os.write(reinterpret_cast<const char*>(&n), sizeof(n));
-    for (const auto& [k, v] : map_) {
-      uint64_t id = k.get_raw_id();
-      os.write(reinterpret_cast<const char*>(&id), sizeof(id));
-      os.write(reinterpret_cast<const char*>(&v), sizeof(v));
-    }
-  }
-  void load(std::istream& is) override {
-    uint64_t n;
-    is.read(reinterpret_cast<char*>(&n), sizeof(n));
-    for (uint64_t i = 0; i < n; ++i) {
-      uint64_t id;
-      PinTiming v;
-      is.read(reinterpret_cast<char*>(&id), sizeof(id));
-      is.read(reinterpret_cast<char*>(&v), sizeof(v));
-      map_[hhds::Pin_class(id)] = v;
-    }
-  }
-};
+if (node.attr(livehd::attrs::bits).has()) {
+  node.attr(livehd::attrs::bits).del();          // delete single entry
+}
 
-auto glib = std::make_shared<hhds::GraphLibrary>("/tmp/my_graphs");
+// Clear all bits data across the library
+glib->attr_clear(livehd::attrs::bits);
 
-absl::flat_hash_map<hhds::Pin_class, PinTiming> timing;
-glib->add_map(std::make_unique<PinTimingAdapter>(timing));
+// Clear all attribute data across all tags
+glib->attr_clear();
 ```
 
 ## Persistence and lazy loading
 
 ```cpp
+#include "hhds/tree.hpp"
+#include "hhds/attrs/name.hpp"
+
+using hhds::attrs::name;
+
 // Create and populate
 {
   auto forest = std::make_shared<hhds::Forest>("/tmp/persistent_trees");
 
-  absl::flat_hash_map<hhds::Tree::Node_class, std::string> names;
-  forest->add_map<hhds::Tree::Node_class>(names);
-
   auto tio = forest->create_treeio("big_ast");
   auto t   = tio->create_tree();
   auto root = t->add_root_node();
-  names[root] = "program";
+  root.attr(name).set("program");
 
-  // Declarations and registered maps are saved to /tmp/persistent_trees/
+  // Declarations and attribute data are saved to /tmp/persistent_trees/
   // When t (the shared_ptr<Tree>) goes out of scope, the body may be
   // unloaded automatically and saved to disk.
 }
@@ -569,15 +544,20 @@ assert(pin.is_invalid());    // pin is also invalid
 ## Debug printing
 
 ```cpp
+#include "hhds/tree.hpp"
+#include "hhds/attrs/name.hpp"
+
+using hhds::attrs::name;
+
 auto forest = std::make_shared<hhds::Forest>("/tmp/debug_trees");
 auto tio = forest->create_treeio("example");
 auto t   = tio->create_tree();
 
-auto root  = t->add_root_node();  root.set_name("add");
-auto child = t->add_child(root); child.set_name("literal");
+auto root  = t->add_root_node();  root.attr(name).set("add");
+auto child = t->add_child(root);  child.attr(name).set("literal");
 t->set_type(root, 1);
 
-// print uses built-in node names automatically
+// print uses built-in name attribute automatically
 t->print(std::cout);
 
 // PrintOptions can still customize output with extra attributes

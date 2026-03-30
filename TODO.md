@@ -91,9 +91,10 @@ code and this roadmap, follow `api.md`.
 
 ### Built-in node and pin names
 
-- Node and pin instance names are built-in via `set_name` / `get_name` / `has_name`.
-- Internally backed by `absl::flat_hash_map`, auto-registered via `add_map` at `Graph`/`Tree` construction.
-- `Pin_class::get_pin_name` returns the port name from the node's `GraphIO` declaration.
+- Node and pin instance names are built-in attributes using the standard
+  attribute mechanism (`node.attr(hhds::attrs::name)`).
+- Storage is lazy on `GraphLibrary` — no explicit registration needed.
+- `Pin::get_pin_name` returns the port name from the node's `GraphIO` declaration.
 - See `api.md`:
   - `Built-in node and pin names`
 
@@ -108,16 +109,26 @@ code and this roadmap, follow `api.md`.
   - `Lookup and find semantics`
   - `Deletion semantics`
 
-### Metadata
+### Attributes and metadata
 
 - HHDS stays structural.
-- User metadata should live in external maps keyed by wrapper objects.
-- Future map registration belongs at `Forest` / `GraphLibrary`, not at `Tree` / `Graph`.
-- Valid future map keys include `Node_class`, `Node_flat`, `Node_hier`, `Pin_class`, `Pin_flat`, and `Pin_hier`.
+- User metadata should live in external attribute storage keyed by lightweight
+  ID types (`_class`, `_flat`, `_hier`).
+- `Node`/`Pin` wrappers are the API surface for attribute access
+  (`node.attr(tag).get()`).
+- Attributes use ADL-based customization with tag objects.
+- Each tag declares its `value_type` and `key_type`.
+- `GraphLibrary` (and `Forest` for trees) provides lazy typed storage — no
+  explicit registration step.
+- Downstream projects add attributes by defining tags and ADL overloads in
+  their own namespace, without editing HHDS.
+- The detailed attribute direction lives in
+  [`api_attribute.md`](/Users/renau/projs/hhds/api_attribute.md).
 - Deleted objects should not be saved or printed.
-- Automatic metadata cleanup on delete is desirable, but does not block the first cleanup phase.
+- Automatic metadata cleanup on delete is desirable, but does not block the
+  first cleanup phase.
 - See `api.md`:
-  - `Metadata registration direction`
+  - `Attribute and metadata direction`
   - `Tree wrappers`
   - `Graph wrappers`
 
@@ -125,6 +136,11 @@ code and this roadmap, follow `api.md`.
 
 - Wrapper objects remain plain value-key objects.
 - Graph/tree bodies are the main operation objects, passed around through `std::shared_ptr`.
+- Add wrapper conversion APIs:
+  - tree: `_hier -> _flat`, `_flat/_hier -> _class`
+  - graph: `_hier -> _flat`, `_flat/_hier -> _class`
+- Reverse conversion from `_class` into `_flat` or `_hier` should not be part
+  of the base wrapper contract because it requires traversal context.
 - Add `is_valid()` / `is_invalid()` style checks for node/pin references where stale handles are possible.
 - Operations may assert in debug mode if called on invalid references.
 - See `api.md`:
@@ -284,6 +300,7 @@ Detailed scope:
 - add `Node_class::set_name` / `get_name` / `has_name` (backed by internal `absl::flat_hash_map`, auto-registered via `add_map`)
 - add `Pin_class::set_name` / `get_name` / `has_name`
 - add `Pin_class::get_pin_name` to return the port name from the node's `GraphIO` declaration
+- add built-in `name` attribute on `Node` and `Pin` using the standard attribute mechanism (`node.attr(hhds::attrs::name)`)
 - make `set_subnode` accept `TreeIO` / `GraphIO` shared_ptr directly (library extracts IDs internally)
 
 Primary API references:
@@ -330,10 +347,8 @@ Suggested steps:
     - `connect_driver` on a sink means "attach a driver to me"
     - `connect_sink` on a driver means "attach a sink to me"
     - remove `add_edge` entirely
-11. Add built-in node and pin names:
-    - `set_name` / `get_name` / `has_name` on `Node_class` and `Pin_class`
-    - backed by internal `absl::flat_hash_map`, auto-registered via `add_map` at construction
-12. Add `Pin_class::get_pin_name` to return the port name from the node's `GraphIO` declaration.
+11. Add built-in `name` attribute on `Node` and `Pin` using the standard attribute mechanism (`node.attr(hhds::attrs::name)`).
+12. Add `Pin::get_pin_name` to return the port name from the node's `GraphIO` declaration.
 13. Make `set_subnode` accept `TreeIO` / `GraphIO` shared_ptr directly.
 14. Store `GraphIO` ID in the node's 16-bit type field when ID < 2^16; overflow to edge representation otherwise. `get_type(node)` returns the `GraphIO` ID after `set_subnode`.
 15. Update tests to validate:
@@ -421,59 +436,69 @@ Exit criteria:
 - stale handles can be queried for validity
 - lookups skip tombstoned declarations
 
-### Phase 5: Metadata registration
+### Phase 5: Attribute infrastructure
 
-- Add map registration on `Forest` / `GraphLibrary`.
-- Support wrapper-keyed metadata consistently.
-- Make delete/save/print interact correctly with registered metadata.
+- Implement the ADL-based attribute mechanism on `GraphLibrary` and `Forest`.
+- Implement lazy typed storage for attributes.
+- Support `Node`/`Pin` as the API surface with lightweight ID keys.
+- Make delete/save/print interact correctly with attribute data.
 
 Detailed scope:
 
-- allow registration of external metadata maps at `Forest` / `GraphLibrary`
-- support `_class`, `_flat`, and `_hier` wrapper-keyed maps
+- implement `Attribute` concept, `attr_result_t`, CPO entry points
+- implement `AttrRef` proxy with `get` / `set` / `has` / `del`
+- implement lazy `attr_store` on `GraphLibrary` and `Forest`
+- implement `attr_clear(tag)` and `attr_clear()` on `GraphLibrary` and `Forest`
+- implement built-in `name` and `pin_name` attributes as ADL overloads
+- support `_class`, `_flat`, and `_hier` as storage keys (per tag's `key_type`)
 - define cleanup behavior for deleted nodes/pins/trees/graphs
-- ensure deleted metadata is ignored by save/print even before eager cleanup exists
+- ensure deleted attribute data is ignored by save/print even before eager cleanup exists
 
 Primary API references:
 
-- `api.md` `Metadata registration direction`
+- `api_attribute.md` (full attribute design)
+- `api.md` `Attribute and metadata direction`
 - `api.md` `Tree wrappers`
 - `api.md` `Graph wrappers`
 
 Suggested steps:
 
-1. Define the registration API shape on:
-   - `Forest`
-   - `GraphLibrary`
-2. Define which key families are supported first:
-   - `_class`
-   - `_flat`
-   - `_hier`
-3. Define which object families are supported first:
-   - tree nodes
-   - graph nodes
-   - graph pins
-4. Decide the minimum adapter or concept requirements for external maps.
-5. Implement map registration without forcing a single map type.
-6. Make save/print skip deleted objects even before eager metadata cleanup exists.
-7. Add automatic cleanup hooks on delete when practical.
-8. Add tests for:
-   - external map registration
-   - wrapper-keyed metadata lookup
+1. Implement core attribute infrastructure in `hhds/attr.hpp`:
+   - `Attribute` concept
+   - `attr_result_t`
+   - CPO entry points (`attr_get`, `attr_set`, `attr_has`, `attr_del`)
+   - `AttrRef` proxy
+2. Implement lazy typed storage on `GraphLibrary` and `Forest`:
+   - type-erased map store keyed by `std::type_index`
+   - `attr_store(Tag)` accessor
+   - `attr_clear_all(Tag)` to wipe all data for a given attribute
+3. Add `attr()` template method on `Node` and `Pin`.
+4. Implement built-in HHDS attributes:
+   - `hhds::attrs::name` in `hhds/attrs/name.hpp`
+   - `hhds::attrs::pin_name` in `hhds/attrs/pin_name.hpp`
+5. Make save/print skip deleted objects even before eager attribute cleanup exists.
+6. Add automatic cleanup hooks on delete when practical.
+7. Add tests for:
+   - built-in attribute get/set/has/clear
+   - downstream attribute extension (simulated)
+   - compile-time failure on unsupported owner/tag combinations
+   - `attr_clear_all` on GraphLibrary
    - deleted entries being ignored by save/print
    - optional cleanup on delete
 
 Implementation notes:
 
-- do not let metadata registration distort the structural core
-- start with the minimum registration API needed by later save/print phases
+- do not let attribute infrastructure distort the structural core
+- start with the minimum infrastructure needed by later save/print phases
 - cleanup can be incremental as long as deleted data does not leak into output
 
 Exit criteria:
 
-- metadata registration exists at container level
-- multiple external map types can participate
-- deleted metadata does not appear in output paths
+- `node.attr(tag).get()` / `.set()` / `.has()` / `.del()` works for built-in attributes
+- `glib->attr_clear(tag)` wipes all data for a given attribute
+- `glib->attr_clear()` wipes all attribute data across all tags
+- downstream projects can add attributes via ADL overloads without editing HHDS
+- deleted attribute data does not appear in output paths
 
 ### Phase 6: Persistence and lazy bodies
 
@@ -613,7 +638,7 @@ Exit criteria:
 
 ### Sequence D: Output and state
 
-1. metadata registration minimum API
+1. attribute infrastructure minimum API
 2. declaration persistence
 3. body persistence
 4. lazy load/unload
