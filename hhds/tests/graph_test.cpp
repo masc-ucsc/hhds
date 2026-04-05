@@ -7,16 +7,31 @@
 
 using namespace hhds;
 
+namespace {
+
+std::shared_ptr<Graph> create_declared_graph(GraphLibrary& lib, std::string_view prefix) {
+  static int next_graph_id = 0;
+  auto       gio           = lib.create_graphio(std::string(prefix) + "_" + std::to_string(++next_graph_id));
+  return gio->create_graph();
+}
+
+}  // namespace
+
 void test_add_input_output_create_pins_on_builtin_nodes() {
-  Graph g;
+  GraphLibrary lib;
+  auto         gio = lib.create_graphio("io_ports");
+  gio->add_input("clk", 10);
+  gio->add_input("rst", 11);
+  gio->add_output("out", 20);
+  auto g = gio->create_graph();
 
-  Pid in0  = g.add_input(10);
-  Pid in1  = g.add_input(11);
-  Pid out0 = g.add_output(20);
+  const Pid in0  = g->get_input_pin("clk").get_pin_pid() & ~static_cast<Pid>(2);
+  const Pid in1  = g->get_input_pin("rst").get_pin_pid() & ~static_cast<Pid>(2);
+  const Pid out0 = g->get_output_pin("out").get_pin_pid() & ~static_cast<Pid>(2);
 
-  auto* in0_pin  = g.ref_pin(in0);  // return: std:unique_ptr<Pin>&
-  auto* in1_pin  = g.ref_pin(in1);
-  auto* out0_pin = g.ref_pin(out0);
+  auto* in0_pin  = g->ref_pin(in0);
+  auto* in1_pin  = g->ref_pin(in1);
+  auto* out0_pin = g->ref_pin(out0);
 
   assert(in0_pin->get_master_nid() == Graph::INPUT_NODE && "add_input must attach to input node");
   assert(in1_pin->get_master_nid() == Graph::INPUT_NODE && "add_input must attach to input node");
@@ -27,15 +42,15 @@ void test_add_input_output_create_pins_on_builtin_nodes() {
   assert(out0_pin->get_port_id() == 20 && "add_output must preserve port id");
 
   // Input node should chain both created input pins in creation order.
-  auto* input_node = g.ref_node(Graph::INPUT_NODE);
+  auto* input_node = g->ref_node(Graph::INPUT_NODE);
   assert(input_node->get_next_pin_id() == in0 && "input node first pin mismatch");
-  assert(g.ref_pin(in0)->get_next_pin_id() == in1 && "input pin chain mismatch");
-  assert(g.ref_pin(in1)->get_next_pin_id() == 0 && "input pin chain must terminate");
+  assert(g->ref_pin(in0)->get_next_pin_id() == in1 && "input pin chain mismatch");
+  assert(g->ref_pin(in1)->get_next_pin_id() == 0 && "input pin chain must terminate");
 
   // Output node should point to its first output pin.
-  auto* output_node = g.ref_node(Graph::OUTPUT_NODE);
+  auto* output_node = g->ref_node(Graph::OUTPUT_NODE);
   assert(output_node->get_next_pin_id() == out0 && "output node first pin mismatch");
-  assert(g.ref_pin(out0)->get_next_pin_id() == 0 && "single output pin chain must terminate");
+  assert(g->ref_pin(out0)->get_next_pin_id() == 0 && "single output pin chain must terminate");
 
   std::cout << "test_add_input_output_create_pins_on_builtin_nodes passed\n";
 }
@@ -306,12 +321,17 @@ void test_overflow_handling() {
 }
 
 void test_large_fanin_deletion() {
-  Graph g;
+  GraphLibrary lib;
+  auto         gio = lib.create_graphio("large_fanin");
+  gio->add_input("in1", 1);
+  gio->add_input("in2", 2);
+  gio->add_output("out", 1);
+  auto g = gio->create_graph();
 
   // Create graph with 2 inputs and 1 output
-  Pid input1 = g.add_input(1);
-  Pid input2 = g.add_input(2);
-  Pid output = g.add_output(1);
+  Pid input1 = g->get_input_pin("in1").get_pin_pid() & ~static_cast<Pid>(2);
+  Pid input2 = g->get_input_pin("in2").get_pin_pid() & ~static_cast<Pid>(2);
+  Pid output = g->get_output_pin("out").get_pin_pid() & ~static_cast<Pid>(2);
 
   assert(input1 == ((1 << 2) | 1) && "test_large_fanin_deletion: input1 should be pin 1 on input node");
   assert(input2 == ((2 << 2) | 1) && "test_large_fanin_deletion: input2 should be pin 2 on input node");
@@ -323,14 +343,14 @@ void test_large_fanin_deletion() {
   // node : 3 to 1002
   // total nodes: 1002 (including input and output and 0)
   for (int i = 0; i < 1000; ++i) {
-    intermediate_nodes.push_back(g.create_node());
+    intermediate_nodes.push_back(g->create_node());
   }
 
   // Create the central node with 3 input pins
-  Nid central_node = g.create_node();                // node: 1003
-  Pid central_pin0 = g.create_pin(central_node, 0);  // pin: 4 attached to node 1003
-  Pid central_pin1 = g.create_pin(central_node, 1);  // pin: 5 attached to node 1003
-  Pid central_pin2 = g.create_pin(central_node, 2);  // pin: 6 attached to node 1003
+  Nid central_node = g->create_node();                // node: 1003
+  Pid central_pin0 = g->create_pin(central_node, 0);  // pin: 4 attached to node 1003
+  Pid central_pin1 = g->create_pin(central_node, 1);  // pin: 5 attached to node 1003
+  Pid central_pin2 = g->create_pin(central_node, 2);  // pin: 6 attached to node 1003
 
   // Random number generator for distributing connections
   std::random_device              rd;
@@ -350,36 +370,36 @@ void test_large_fanin_deletion() {
   std::cout << "test_large_fanin_deletion: created central node and pins\n";
 
   // assert next pin of each node and pin is correct
-  assert(g.ref_node(central_node)->get_next_pin_id() == central_pin0
+  assert(g->ref_node(central_node)->get_next_pin_id() == central_pin0
          && "test_large_fanin_deletion: central node next pin should be central_pin0");
-  assert(g.ref_pin(central_pin0)->get_next_pin_id() == central_pin1
+  assert(g->ref_pin(central_pin0)->get_next_pin_id() == central_pin1
          && "test_large_fanin_deletion: central_pin0 next pin should be central_pin1");
-  assert(g.ref_pin(central_pin1)->get_next_pin_id() == central_pin2
+  assert(g->ref_pin(central_pin1)->get_next_pin_id() == central_pin2
          && "test_large_fanin_deletion: central_pin1 next pin should be central_pin2");
-  assert(g.ref_pin(central_pin2)->get_next_pin_id() == 0 && "test_large_fanin_deletion: central_pin2 should terminate pin chain");
+  assert(g->ref_pin(central_pin2)->get_next_pin_id() == 0 && "test_large_fanin_deletion: central_pin2 should terminate pin chain");
 
   // assert master node of each pin is correct
-  assert(g.ref_pin(central_pin0)->get_master_nid() == central_node
+  assert(g->ref_pin(central_pin0)->get_master_nid() == central_node
          && "test_large_fanin_deletion: central_pin0 master nid should be central_node");
-  assert(g.ref_pin(central_pin1)->get_master_nid() == central_node
+  assert(g->ref_pin(central_pin1)->get_master_nid() == central_node
          && "test_large_fanin_deletion: central_pin1 master nid should be central_node");
-  assert(g.ref_pin(central_pin2)->get_master_nid() == central_node
+  assert(g->ref_pin(central_pin2)->get_master_nid() == central_node
          && "test_large_fanin_deletion: central_pin2 master nid should be central_node");
 
   std::cout << "test_large_fanin_deletion: verified central node and pin setup\n";
 
   for (int i = 0; i < 1000; ++i) {
     // Connect intermediate node to input1
-    g.add_edge(input1, intermediate_nodes[i]);
+    g->add_edge(input1, intermediate_nodes[i]);
 
     // Randomly select which central pin to connect to
     int pin_idx = pin_dist(gen);
-    g.add_edge(intermediate_nodes[i], central_pins[pin_idx]);
+    g->add_edge(intermediate_nodes[i], central_pins[pin_idx]);
     pin_connection_counts[central_pins[pin_idx]]++;
   }
 
   // Connect central node to output
-  g.add_edge(central_node, output);
+  g->add_edge(central_node, output);
 
   std::cout << "test_large_fanin_deletion: created 1000 nodes + 1 central node\n";
   std::cout << "  connections to central_pin0: " << pin_connection_counts[central_pin0] << "\n";
@@ -389,7 +409,7 @@ void test_large_fanin_deletion() {
   // Verify edges exist before deletion
   // Check that central node has edge to output
   {
-    auto edges        = g.ref_node(central_node)->get_edges(central_node);
+    auto edges        = g->ref_node(central_node)->get_edges(central_node);
     bool found_output = false;
     for (auto e : edges) {
       if ((e & ~3) == (output & ~3)) {
@@ -402,7 +422,7 @@ void test_large_fanin_deletion() {
 
   // Check that each intermediate node has edges
   for (int i = 0; i < 1000; ++i) {
-    auto edges      = g.ref_node(intermediate_nodes[i])->get_edges(intermediate_nodes[i]);
+    auto edges      = g->ref_node(intermediate_nodes[i])->get_edges(intermediate_nodes[i]);
     int  edge_count = 0;
     for (auto e : edges) {
       (void)e;
@@ -413,7 +433,7 @@ void test_large_fanin_deletion() {
 
   // Check that central pins have edges
   for (auto pin : central_pins) {
-    auto edges     = g.ref_pin(pin)->get_edges(pin);
+    auto edges     = g->ref_pin(pin)->get_edges(pin);
     bool has_edges = false;
     for (auto e : edges) {
       (void)e;
@@ -426,14 +446,14 @@ void test_large_fanin_deletion() {
   std::cout << "test_large_fanin_deletion: verified edges exist\n";
 
   // Delete the central node
-  g.delete_node(central_node);
+  g->delete_node(central_node);
 
   std::cout << "test_large_fanin_deletion: deleted central node\n";
 
   // Verify edges are gone after deletion
   // Check that central node has no edges to output
   {
-    auto edges      = g.ref_node(central_node)->get_edges(central_node);
+    auto edges      = g->ref_node(central_node)->get_edges(central_node);
     int  edge_count = 0;
     for (auto e : edges) {
       (void)e;
@@ -444,7 +464,7 @@ void test_large_fanin_deletion() {
 
   // Check that intermediate nodes' edges to central node are gone
   for (int i = 0; i < 1000; ++i) {
-    auto edges         = g.ref_node(intermediate_nodes[i])->get_edges(intermediate_nodes[i]);
+    auto edges         = g->ref_node(intermediate_nodes[i])->get_edges(intermediate_nodes[i]);
     bool found_central = false;
     for (auto e : edges) {
       Vid e_base = (e >> 2) << 2;
@@ -458,7 +478,7 @@ void test_large_fanin_deletion() {
 
   // Check that central pins have no edges
   for (auto pin : central_pins) {
-    auto edges      = g.ref_pin(pin)->get_edges(pin);
+    auto edges      = g->ref_pin(pin)->get_edges(pin);
     int  edge_count = 0;
     for (auto e : edges) {
       (void)e;
@@ -473,7 +493,7 @@ void test_large_fanin_deletion() {
 
 void test_fast_iter_flat() {
   GraphLibrary lib;
-  auto         g   = lib.create_graph();
+  auto         g   = create_declared_graph(lib, "flat");
   const Gid    gid = g->get_gid();
 
   (void)g->create_node();  // node 4
@@ -506,9 +526,9 @@ void assert_fast_iter_vector_eq(const std::vector<Graph::FastIterator>& actual, 
 
 void test_fast_iter_hierarchy() {
   GraphLibrary lib;
-  auto         root      = lib.create_graph();
-  auto         child     = lib.create_graph();
-  auto         leaf      = lib.create_graph();
+  auto         root      = create_declared_graph(lib, "root");
+  auto         child     = create_declared_graph(lib, "child");
+  auto         leaf      = create_declared_graph(lib, "leaf");
   const Gid    root_gid  = root->get_gid();
   const Gid    child_gid = child->get_gid();
   const Gid    leaf_gid  = leaf->get_gid();
@@ -551,9 +571,9 @@ void test_fast_iter_hierarchy() {
 
 void test_fast_iter_hierarchy_multiple_subnodes() {
   GraphLibrary lib;
-  auto         root      = lib.create_graph();
-  auto         child     = lib.create_graph();
-  auto         leaf      = lib.create_graph();
+  auto         root      = create_declared_graph(lib, "root");
+  auto         child     = create_declared_graph(lib, "child");
+  auto         leaf      = create_declared_graph(lib, "leaf");
   const Gid    root_gid  = root->get_gid();
   const Gid    child_gid = child->get_gid();
   const Gid    leaf_gid  = leaf->get_gid();

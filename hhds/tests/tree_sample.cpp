@@ -55,22 +55,23 @@ int main() {
   tree->print(std::cout, print_options);
 
   auto forest = hhds::Forest::create();
-  const auto top_tid = forest->create_tree();
-  const auto sub_tid = forest->create_tree();
+  auto top_tio = forest->create_treeio("top");
+  auto sub_tio = forest->create_treeio("sub");
+  auto top     = top_tio->create_tree();
+  auto sub     = sub_tio->create_tree();
+  const auto top_tid = top_tio->get_tid();
+  const auto sub_tid = sub_tio->get_tid();
 
-  auto& top = forest->get_tree(top_tid);
-  auto& sub = forest->get_tree(sub_tid);
+  const auto top_root = top->add_root_node();
+  const auto callsite = top->add_child(top_root);
+  const auto sub_root = sub->add_root_node();
+  const auto sub_leaf = sub->add_child(sub_root);
 
-  const auto top_root = top.add_root_node();
-  const auto callsite = top.add_child(top_root);
-  const auto sub_root = sub.add_root_node();
-  const auto sub_leaf = sub.add_child(sub_root);
-
-  top.set_subnode(callsite, sub_tid);
+  top->set_subnode(callsite, sub_tid);
 
   std::cout << "\nForest subnode references\n";
   std::cout << "  top tree id=" << top_tid << " root pos=" << top_root.get_current_pos() << "\n";
-  std::cout << "  callsite pos=" << callsite.get_current_pos() << " subnode=" << top.get_subnode(callsite) << "\n";
+  std::cout << "  callsite pos=" << callsite.get_current_pos() << " subnode=" << top->get_subnode(callsite) << "\n";
   std::cout << "  sub tree id=" << sub_tid << " root pos=" << sub_root.get_current_pos() << " leaf pos=" << sub_leaf.get_current_pos()
             << "\n";
 

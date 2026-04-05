@@ -22,6 +22,12 @@ bool contains_pin_pid(const std::vector<hhds::Pin_class>& pins, hhds::Pid pid) {
   return false;
 }
 
+std::shared_ptr<hhds::Graph> create_declared_graph(hhds::GraphLibrary& lib, std::string_view prefix) {
+  static int next_graph_id = 0;
+  auto       gio           = lib.create_graphio(std::string(prefix) + "_" + std::to_string(++next_graph_id));
+  return gio->create_graph();
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -61,7 +67,7 @@ TEST(CompactTypes, NodeClassHashable) {
 
 TEST(CompactTypes, NodeCompactConversions) {
   hhds::GraphLibrary lib;
-  auto               g   = lib.create_graph();
+  auto               g   = create_declared_graph(lib, "node_compact");
   const hhds::Gid    gid = g->get_gid();
 
   auto node = g->create_node();
@@ -92,7 +98,7 @@ TEST(CompactTypes, NodeCompactConversions) {
 
 TEST(CompactTypes, PinCompactConversions) {
   hhds::GraphLibrary lib;
-  auto               g   = lib.create_graph();
+  auto               g   = create_declared_graph(lib, "pin_compact");
   const hhds::Gid    gid = g->get_gid();
 
   auto node = g->create_node();
@@ -124,7 +130,7 @@ TEST(CompactTypes, GraphIsValidParity) {
   EXPECT_FALSE(hhds::Graph::is_valid(hhds::Pin_hier()));
 
   hhds::GraphLibrary lib;
-  auto               g   = lib.create_graph();
+  auto               g   = create_declared_graph(lib, "validity");
   const hhds::Gid    gid = g->get_gid();
 
   const auto node = g->create_node();
@@ -184,28 +190,36 @@ TEST(GraphNaming, GraphIOCanExistWithoutBody) {
   EXPECT_EQ(lib.find_graph("parser"), parser);
 }
 
-TEST(GraphNaming, DeleteGraphRemovesNameLookup) {
+TEST(GraphNaming, DeleteGraphPreservesDeclarationLookup) {
   hhds::GraphLibrary lib;
   auto               gio = lib.create_graphio("alu");
-  auto               alu = gio->create_graph();
-  const hhds::Gid    gid = alu->get_gid();
+  gio->add_input("a", 1);
+  gio->add_output("y", 2);
+  auto            alu = gio->create_graph();
+  const hhds::Gid gid = alu->get_gid();
 
-  lib.delete_graph(gid);
+  lib.delete_graph(alu);
 
   EXPECT_FALSE(lib.has_graph(gid));
-  EXPECT_FALSE(lib.find_graphio("alu"));
+  EXPECT_EQ(lib.find_graphio("alu"), gio);
   EXPECT_FALSE(lib.find_graph("alu"));
+  EXPECT_FALSE(gio->has_graph());
+  EXPECT_FALSE(gio->get_graph());
+  EXPECT_TRUE(gio->has_input("a"));
+  EXPECT_TRUE(gio->has_output("y"));
+
+  auto recreated = gio->create_graph();
+  ASSERT_TRUE(recreated);
+  EXPECT_EQ(lib.find_graph("alu"), recreated);
+  EXPECT_EQ(recreated->get_input_pin("a").get_port_id(), 1);
+  EXPECT_EQ(recreated->get_output_pin("y").get_port_id(), 2);
 }
 
 TEST(GraphNaming, DuplicateNameRejected) {
   hhds::GraphLibrary lib;
   (void)lib.create_graphio("alu");
 
-  EXPECT_DEATH(
-      {
-        (void)lib.create_graphio("alu");
-      },
-      "graph name already exists");
+  EXPECT_DEATH({ (void)lib.create_graphio("alu"); }, "graph name already exists");
 }
 
 TEST(GraphNaming, GraphCreationIsIdempotentPerGraphIO) {
@@ -219,9 +233,114 @@ TEST(GraphNaming, GraphCreationIsIdempotentPerGraphIO) {
   EXPECT_EQ(g1->get_gid(), gio->get_gid());
 }
 
+TEST(GraphNaming, DeleteGraphIODeletesDeclarationAndBody) {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_graphio("alu");
+  gio->add_input("a", 1);
+  gio->add_output("y", 2);
+  auto            graph = gio->create_graph();
+  const hhds::Gid gid   = graph->get_gid();
+
+  lib.delete_graphio("alu");
+
+  EXPECT_FALSE(lib.find_graphio("alu"));
+  EXPECT_FALSE(lib.find_graph("alu"));
+  EXPECT_FALSE(lib.has_graph(gid));
+  EXPECT_FALSE(gio->has_graph());
+  EXPECT_FALSE(gio->get_graph());
+}
+
+TEST(GraphPorts, DeclarationQueriesAndMaterializedPins) {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_graphio("register");
+  gio->add_input("d", 0, true);
+  gio->add_output("q", 0, true);
+
+  EXPECT_TRUE(gio->has_input("d"));
+  EXPECT_TRUE(gio->has_output("q"));
+  EXPECT_EQ(gio->get_input_port_id("d"), 0);
+  EXPECT_EQ(gio->get_output_port_id("q"), 0);
+  EXPECT_TRUE(gio->is_loop_last("d"));
+  EXPECT_TRUE(gio->is_loop_last("q"));
+  EXPECT_FALSE(gio->has_graph());
+
+  auto graph = gio->create_graph();
+  ASSERT_TRUE(graph);
+
+  const auto input_pin  = graph->get_input_pin("d");
+  const auto output_pin = graph->get_output_pin("q");
+  EXPECT_EQ(input_pin.get_master_node().get_raw_nid(), hhds::Graph::INPUT_NODE);
+  EXPECT_EQ(output_pin.get_master_node().get_raw_nid(), hhds::Graph::OUTPUT_NODE);
+  EXPECT_EQ(input_pin.get_port_id(), 0);
+  EXPECT_EQ(output_pin.get_port_id(), 0);
+}
+
+TEST(GraphPorts, DuplicateDeclaredIoPinNamesRejected) {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_graphio("dup_ports");
+  gio->add_input("a", 1);
+
+  EXPECT_DEATH({ gio->add_output("a", 2); }, "output pin name already exists");
+}
+
+TEST(GraphPorts, EditingDeclarationUpdatesExistingBody) {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_graphio("alu");
+  gio->add_input("a", 1);
+  gio->add_output("y", 2);
+  auto graph = gio->create_graph();
+  ASSERT_TRUE(graph);
+
+  auto node = graph->create_node();
+  graph->add_edge(graph->get_input_pin("a"), node);
+  graph->add_edge(node, graph->get_output_pin("y"));
+  EXPECT_EQ(graph->inp_edges(node).size(), 1U);
+  EXPECT_EQ(graph->out_edges(node).size(), 1U);
+
+  gio->delete_input("a");
+  EXPECT_FALSE(gio->has_input("a"));
+  EXPECT_TRUE(graph->inp_edges(node).empty());
+
+  gio->delete_output("y");
+  EXPECT_FALSE(gio->has_output("y"));
+  EXPECT_TRUE(graph->out_edges(node).empty());
+
+  gio->add_input("b", 7);
+  gio->add_output("z", 8);
+  EXPECT_EQ(graph->get_input_pin("b").get_port_id(), 7);
+  EXPECT_EQ(graph->get_output_pin("z").get_port_id(), 8);
+}
+
+TEST(GraphPorts, DeletingDeclaredIoPinsReindexesRemainingNames) {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_graphio("reindex_ports");
+  gio->add_input("a", 1);
+  gio->add_input("b", 2);
+  gio->add_input("c", 3);
+  gio->add_output("x", 4);
+  gio->add_output("y", 5);
+  auto graph = gio->create_graph();
+  ASSERT_TRUE(graph);
+
+  gio->delete_input("b");
+  gio->delete_output("x");
+
+  EXPECT_TRUE(gio->has_input("a"));
+  EXPECT_TRUE(gio->has_input("c"));
+  EXPECT_FALSE(gio->has_input("b"));
+  EXPECT_TRUE(gio->has_output("y"));
+  EXPECT_FALSE(gio->has_output("x"));
+  EXPECT_EQ(gio->get_input_port_id("a"), 1);
+  EXPECT_EQ(gio->get_input_port_id("c"), 3);
+  EXPECT_EQ(gio->get_output_port_id("y"), 5);
+  EXPECT_EQ(graph->get_input_pin("a").get_port_id(), 1);
+  EXPECT_EQ(graph->get_input_pin("c").get_port_id(), 3);
+  EXPECT_EQ(graph->get_output_pin("y").get_port_id(), 5);
+}
+
 TEST(CompactTypes, EdgeFlatConversions) {
   hhds::GraphLibrary lib;
-  auto               g   = lib.create_graph();
+  auto               g   = create_declared_graph(lib, "edge_flat");
   const hhds::Gid    gid = g->get_gid();
 
   auto src = g->create_node();
@@ -253,7 +372,7 @@ TEST(CompactTypes, EdgeFlatConversions) {
 
 TEST(CompactTypes, EdgeHierConversions) {
   hhds::GraphLibrary lib;
-  auto               g   = lib.create_graph();
+  auto               g   = create_declared_graph(lib, "edge_hier");
   const hhds::Gid    gid = g->get_gid();
 
   auto src = g->create_node();
@@ -294,8 +413,8 @@ TEST(CompactTypes, EdgeHierConversions) {
 
 TEST(CompactTypes, GraphGetSubsReturnsDirectSubnodes) {
   hhds::GraphLibrary lib;
-  auto               root      = lib.create_graph();
-  auto               child     = lib.create_graph();
+  auto               root      = create_declared_graph(lib, "root");
+  auto               child     = create_declared_graph(lib, "child");
   const hhds::Gid    child_gid = child->get_gid();
 
   auto regular = root->create_node();
@@ -601,7 +720,7 @@ TEST(LazyTraversal, FastClassSingleGraph) {
 
 TEST(LazyTraversal, FastFlatSingleGraph) {
   hhds::GraphLibrary lib;
-  auto               g   = lib.create_graph();
+  auto               g   = create_declared_graph(lib, "flat");
   const hhds::Gid    gid = g->get_gid();
 
   (void)g->create_node();
@@ -620,9 +739,9 @@ TEST(LazyTraversal, FastFlatSingleGraph) {
 
 TEST(LazyTraversal, FastFlatHierarchy) {
   hhds::GraphLibrary lib;
-  auto               root      = lib.create_graph();
-  auto               child     = lib.create_graph();
-  auto               leaf      = lib.create_graph();
+  auto               root      = create_declared_graph(lib, "root");
+  auto               child     = create_declared_graph(lib, "child");
+  auto               leaf      = create_declared_graph(lib, "leaf");
   const hhds::Gid    root_gid  = root->get_gid();
   const hhds::Gid    child_gid = child->get_gid();
   const hhds::Gid    leaf_gid  = leaf->get_gid();
@@ -707,14 +826,19 @@ TEST(LazyTraversal, ForwardClassTopologicalOrder) {
 }
 
 TEST(LazyTraversal, ForwardClassTopologicalOrder2) {
-  hhds::Graph g;
-  auto        n1 = g.create_node();
-  auto        n2 = g.create_node();
-  auto        n3 = g.create_node();
-  auto        n4 = g.create_node();
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_graphio("forward_declared");
+  gio->add_input("inp", 23);
+  gio->add_output("out", 40);
+  auto g = gio->create_graph();
 
-  auto inp1 = g.add_input(23);
-  auto out1 = g.add_output(40);
+  auto n1 = g->create_node();
+  auto n2 = g->create_node();
+  auto n3 = g->create_node();
+  auto n4 = g->create_node();
+
+  auto inp1 = g->get_input_pin("inp");
+  auto out1 = g->get_output_pin("out");
 
   // n4 -> n3 -> n1 -> n2
   std::vector<hhds::Node_class> expected;
@@ -723,30 +847,31 @@ TEST(LazyTraversal, ForwardClassTopologicalOrder2) {
   expected.emplace_back(n1);
   expected.emplace_back(n2);
 
-  g.add_edge(inp1, n4);
-  g.add_edge(n4, n3);
-  g.add_edge(n3, n1);
-  g.add_edge(n1, n2);
-  g.add_edge(n2, out1);
+  g->add_edge(inp1, n4);
+  g->add_edge(n4, n3);
+  g->add_edge(n3, n1);
+  g->add_edge(n1, n2);
+  g->add_edge(n2, out1);
 
   int pos = 0;
-  for (auto node : g.forward_class()) {
+  for (auto node : g->forward_class()) {
     EXPECT_EQ(expected[pos], node);
     pos++;
   }
   EXPECT_EQ(pos, expected.size());
 
-  g.add_edge(n3, out1);  // Still should be the same
+  g->add_edge(n3, out1);  // Still should be the same
   pos = 0;
-  for (auto node : g.forward_class()) {
+  for (auto node : g->forward_class()) {
     EXPECT_EQ(expected[pos], node);
     pos++;
   }
   EXPECT_EQ(pos, expected.size());
 
-  g.set_subnode(n3, 1023);  // Force a future GiD is valid
+  auto child = create_declared_graph(lib, "forward_child");
+  g->set_subnode(n3, child->get_gid());
   pos = 0;
-  for (auto node : g.forward_class()) {
+  for (auto node : g->forward_class()) {
     EXPECT_EQ(expected[pos], node);
     pos++;
   }
@@ -755,8 +880,8 @@ TEST(LazyTraversal, ForwardClassTopologicalOrder2) {
 
 TEST(LazyTraversal, ForwardFlatHierarchyAndCacheInvalidation) {
   hhds::GraphLibrary lib;
-  auto               root      = lib.create_graph();
-  auto               child     = lib.create_graph();
+  auto               root      = create_declared_graph(lib, "root");
+  auto               child     = create_declared_graph(lib, "child");
   const hhds::Gid    root_gid  = root->get_gid();
   const hhds::Gid    child_gid = child->get_gid();
 
@@ -809,8 +934,8 @@ TEST(LazyTraversal, ForwardFlatHierarchyAndCacheInvalidation) {
 
 TEST(LazyTraversal, FastHierDistinguishesInstances) {
   hhds::GraphLibrary lib;
-  auto               root      = lib.create_graph();
-  auto               child     = lib.create_graph();
+  auto               root      = create_declared_graph(lib, "root");
+  auto               child     = create_declared_graph(lib, "child");
   const hhds::Gid    root_gid  = root->get_gid();
   const hhds::Gid    child_gid = child->get_gid();
 
@@ -869,8 +994,8 @@ TEST(LazyTraversal, FastHierDistinguishesInstances) {
 
 TEST(LazyTraversal, ForwardHierOrderAndEpochInvalidation) {
   hhds::GraphLibrary lib;
-  auto               root      = lib.create_graph();
-  auto               child     = lib.create_graph();
+  auto               root      = create_declared_graph(lib, "root");
+  auto               child     = create_declared_graph(lib, "child");
   const hhds::Gid    root_gid  = root->get_gid();
   const hhds::Gid    child_gid = child->get_gid();
 
@@ -1008,7 +1133,7 @@ TEST(PinIteration, DriverAndSinkPins) {
 }
 TEST(CompactTypes, GraphHandlesExposeStableIdentity) {
   hhds::GraphLibrary lib;
-  auto               g1  = lib.create_graph();
+  auto               g1  = create_declared_graph(lib, "g1");
   const hhds::Gid    gid = g1->get_gid();
   auto               g2  = lib.get_graph(gid);
 
@@ -1019,8 +1144,8 @@ TEST(CompactTypes, GraphHandlesExposeStableIdentity) {
 
 TEST(CompactTypes, ClassWrappersArePureLocalValues) {
   hhds::GraphLibrary lib;
-  auto               g1 = lib.create_graph();
-  auto               g2 = lib.create_graph();
+  auto               g1 = create_declared_graph(lib, "g1");
+  auto               g2 = create_declared_graph(lib, "g2");
 
   auto n1 = g1->create_node();
   auto n2 = g2->create_node();

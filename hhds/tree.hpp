@@ -1099,10 +1099,6 @@ private:
   std::vector<size_t>                  reference_counts;
   std::unordered_map<std::string, Tid> tree_name_to_tid_;
 
-  [[nodiscard]] static std::string make_legacy_treeio_name(size_t index) {
-    return "__legacy_treeio_" + std::to_string(index);
-  }
-
 public:
   [[nodiscard]] static std::shared_ptr<Forest> create() { return std::shared_ptr<Forest>(new Forest()); }
 
@@ -1150,28 +1146,6 @@ public:
     }
 
     return tree_ios_[tree_idx];
-  }
-
-  // Legacy bridge until all call sites move to create_treeio(...)->create_tree().
-  Tree_pos create_tree() {
-    const auto tio = create_treeio_impl(-static_cast<Tree_pos>(tree_ios_.size() + 1), make_legacy_treeio_name(tree_ios_.size() + 1));
-    (void)tio->create_tree();
-    return tio->get_tid();
-  }
-  Tree_pos create_tree(std::string_view name) {
-    const auto tio = create_treeio(name);
-    (void)tio->create_tree();
-    return tio->get_tid();
-  }
-  Tree_pos create_tree(Tid tree_tid) {
-    const auto tio = create_treeio_impl(tree_tid, make_legacy_treeio_name(static_cast<size_t>(-tree_tid)));
-    (void)tio->create_tree();
-    return tio->get_tid();
-  }
-  Tree_pos create_tree(Tid tree_tid, std::string_view name) {
-    const auto tio = create_treeio_impl(tree_tid, name.empty() ? make_legacy_treeio_name(static_cast<size_t>(-tree_tid)) : std::string(name));
-    (void)tio->create_tree();
-    return tio->get_tid();
   }
 
   Tree& get_tree(Tree_pos tree_tid) {
