@@ -9,6 +9,21 @@
 #include "absl/container/flat_hash_map.h"
 #include "hhds/tree.hpp"
 
+namespace {
+
+struct DeclaredTree {
+  std::shared_ptr<hhds::TreeIO> tio;
+  std::shared_ptr<hhds::Tree>   tree;
+};
+
+DeclaredTree create_declared_tree(const std::shared_ptr<hhds::Forest>& forest, std::string_view name) {
+  auto tio  = forest->create_treeio(name);
+  auto tree = tio->create_tree();
+  return {std::move(tio), std::move(tree)};
+}
+
+}  // namespace
+
 TEST(TreeWrappers, NodeClassHashable) {
   auto tree = hhds::Tree::create();
 
@@ -60,11 +75,13 @@ TEST(TreeWrappers, CompactConversions) {
 TEST(TreeWrappers, ForestContextAndSubtreeRefs) {
   auto forest = hhds::Forest::create();
 
-  const auto parent_tid = forest->create_tree();
-  const auto child_tid  = forest->create_tree();
+  const auto parent_decl = create_declared_tree(forest, "parent");
+  const auto child_decl  = create_declared_tree(forest, "child");
+  const auto parent_tid  = parent_decl.tio->get_tid();
+  const auto child_tid   = child_decl.tio->get_tid();
 
-  auto& parent = forest->get_tree(parent_tid);
-  auto& child  = forest->get_tree(child_tid);
+  auto& parent = *parent_decl.tree;
+  auto& child  = *child_decl.tree;
 
   const auto parent_root = parent.add_root_node();
   const auto child_root  = child.add_root_node();
@@ -162,11 +179,13 @@ TEST(TreeWrappers, TreeCursorNavigatesSingleTree) {
 TEST(TreeWrappers, ForestCursorFollowsSubtreeRefs) {
   auto forest = hhds::Forest::create();
 
-  const auto parent_tid = forest->create_tree();
-  const auto child_tid  = forest->create_tree();
+  const auto parent_decl = create_declared_tree(forest, "parent");
+  const auto child_decl  = create_declared_tree(forest, "child");
+  const auto parent_tid  = parent_decl.tio->get_tid();
+  const auto child_tid   = child_decl.tio->get_tid();
 
-  auto& parent = forest->get_tree(parent_tid);
-  auto& child  = forest->get_tree(child_tid);
+  auto& parent = *parent_decl.tree;
+  auto& child  = *child_decl.tree;
 
   const auto parent_root  = parent.add_root_node();
   const auto callsite     = parent.add_child(parent_root);
@@ -217,11 +236,11 @@ TEST(TreeWrappers, ForestCursorFollowsSubtreeRefs) {
 TEST(TreeWrappers, GetSubsReturnsDirectSubtreeCallsites) {
   auto forest = hhds::Forest::create();
 
-  const auto top_tid   = forest->create_tree();
-  const auto child_tid = forest->create_tree();
+  const auto top_decl   = create_declared_tree(forest, "top");
+  const auto child_decl = create_declared_tree(forest, "child");
 
-  auto& top   = forest->get_tree(top_tid);
-  auto& child = forest->get_tree(child_tid);
+  auto& top   = *top_decl.tree;
+  auto& child = *child_decl.tree;
 
   const auto root    = top.add_root_node();
   const auto call1   = top.add_child(root);
@@ -229,8 +248,8 @@ TEST(TreeWrappers, GetSubsReturnsDirectSubtreeCallsites) {
   const auto call2   = top.add_child(root);
 
   child.add_root_node();
-  top.set_subnode(call1, child_tid);
-  top.set_subnode(call2, child_tid);
+  top.set_subnode(call1, child_decl.tio->get_tid());
+  top.set_subnode(call2, child_decl.tio->get_tid());
 
   const auto subs = top.get_subs();
   ASSERT_EQ(subs.size(), 2U);

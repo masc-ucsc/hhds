@@ -18,6 +18,16 @@
 #include "hhds/graph.hpp"
 #include "hhds/tree.hpp"
 
+namespace {
+
+std::shared_ptr<hhds::Graph> create_declared_graph(hhds::GraphLibrary& lib, std::string_view prefix) {
+  static int next_graph_id = 0;
+  auto gio = lib.create_graphio(std::string(prefix) + "_" + std::to_string(++next_graph_id));
+  return gio->create_graph();
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // Section 1: Compact ID types
 // ---------------------------------------------------------------------------
@@ -137,7 +147,7 @@ TEST(LazyTraversal, FastClassSingleGraph) {
 
 TEST(LazyTraversal, FastFlatSingleGraph) {
   hhds::GraphLibrary lib;
-  auto               g   = lib.create_graph();
+  auto               g   = create_declared_graph(lib, "flat");
   const hhds::Gid    gid = g->get_gid();
 
   (void)g->create_node();
@@ -156,9 +166,9 @@ TEST(LazyTraversal, FastFlatSingleGraph) {
 
 TEST(LazyTraversal, FastFlatHierarchy) {
   hhds::GraphLibrary lib;
-  auto               root      = lib.create_graph();
-  auto               child     = lib.create_graph();
-  auto               leaf      = lib.create_graph();
+  auto               root      = create_declared_graph(lib, "root");
+  auto               child     = create_declared_graph(lib, "child");
+  auto               leaf      = create_declared_graph(lib, "leaf");
   const hhds::Gid    root_gid  = root->get_gid();
   const hhds::Gid    child_gid = child->get_gid();
   const hhds::Gid    leaf_gid  = leaf->get_gid();
@@ -265,9 +275,12 @@ TEST(AddEdgeShorthand, NodeToNode) {
 //   hhds::GraphLibrary lib;
 
 //   // Create a 3-level hierarchy: top -> mid -> leaf
-//   auto top      = lib.create_graph();  // returns shared_ptr<Graph>
-//   auto mid      = lib.create_graph();  // returns shared_ptr<Graph>
-//   auto leaf     = lib.create_graph();  // returns shared_ptr<Graph>
+//   auto top_gio  = lib.create_graphio("top");
+//   auto mid_gio  = lib.create_graphio("mid");
+//   auto leaf_gio = lib.create_graphio("leaf");
+//   auto top      = top_gio->create_graph();
+//   auto mid      = mid_gio->create_graph();
+//   auto leaf     = leaf_gio->create_graph();
 //   auto top_gid  = top->get_gid();
 //   auto mid_gid  = mid->get_gid();
 //   auto leaf_gid = leaf->get_gid();
@@ -317,9 +330,12 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // TEST(HierCursor, GraphSiblingNavigation) {
 //   hhds::GraphLibrary lib;
 
-//   auto top     = lib.create_graph();  // returns shared_ptr<Graph>
-//   auto alu     = lib.create_graph();  // returns shared_ptr<Graph>
-//   auto reg     = lib.create_graph();  // returns shared_ptr<Graph>
+//   auto top_gio = lib.create_graphio("top");
+//   auto alu_gio = lib.create_graphio("alu");
+//   auto reg_gio = lib.create_graphio("reg");
+//   auto top     = top_gio->create_graph();
+//   auto alu     = alu_gio->create_graph();
+//   auto reg     = reg_gio->create_graph();
 //   auto top_gid = top->get_gid();
 //   auto alu_gid = alu->get_gid();
 //   auto reg_gid = reg->get_gid();
@@ -353,9 +369,12 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // TEST(HierCursor, GraphSharedModuleDisambiguation) {
 //   hhds::GraphLibrary lib;
 
-//   auto cpu_a     = lib.create_graph();  // returns shared_ptr<Graph>
-//   auto cpu_b     = lib.create_graph();  // returns shared_ptr<Graph>
-//   auto alu       = lib.create_graph();  // returns shared_ptr<Graph>
+//   auto cpu_a_gio = lib.create_graphio("cpu_a");
+//   auto cpu_b_gio = lib.create_graphio("cpu_b");
+//   auto alu_gio   = lib.create_graphio("alu");
+//   auto cpu_a     = cpu_a_gio->create_graph();
+//   auto cpu_b     = cpu_b_gio->create_graph();
+//   auto alu       = alu_gio->create_graph();
 //   auto cpu_a_gid = cpu_a->get_gid();
 //   auto cpu_b_gid = cpu_b->get_gid();
 //   auto alu_gid   = alu->get_gid();
@@ -385,7 +404,8 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // TEST(HierCursor, GraphIterateNodesAtLevel) {
 //   hhds::GraphLibrary lib;
 
-//   auto top     = lib.create_graph();  // returns shared_ptr<Graph>
+//   auto top_gio = lib.create_graphio("top");
+//   auto top     = top_gio->create_graph();
 //   auto top_gid = top->get_gid();
 
 //   top->create_node();
@@ -411,25 +431,28 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // TEST(ForestCursor, BasicNavigation) {
 //   hhds::Forest forest;
 
-//   const hhds::Tid main_tid = forest.create_tree();
-//   const hhds::Tid sub_tid  = forest.create_tree();
-//   const hhds::Tid leaf_tid = forest.create_tree();
+//   auto main_tio = forest.create_treeio("main");
+//   auto sub_tio  = forest.create_treeio("sub");
+//   auto leaf_tio = forest.create_treeio("leaf");
+//   const hhds::Tid main_tid = main_tio->get_tid();
+//   const hhds::Tid sub_tid  = sub_tio->get_tid();
+//   const hhds::Tid leaf_tid = leaf_tio->get_tid();
 
-//   auto& main_tree = forest.get_tree(main_tid);
-//   auto& sub_tree  = forest.get_tree(sub_tid);
-//   auto& leaf_tree = forest.get_tree(leaf_tid);
+//   auto main_tree = main_tio->create_tree();
+//   auto sub_tree  = sub_tio->create_tree();
+//   auto leaf_tree = leaf_tio->create_tree();
 
 //   // main_tree root has a child that references sub_tree
-//   auto root  = main_tree.add_root_node();
-//   auto child = main_tree.add_child(root);
-//   main_tree.set_subnode(child, sub_tid);
+//   auto root  = main_tree->add_root_node();
+//   auto child = main_tree->add_child(root);
+//   main_tree->set_subnode(child, sub_tid);
 
 //   // sub_tree root has a child that references leaf_tree
-//   auto sub_root  = sub_tree.add_root_node();
-//   auto sub_child = sub_tree.add_child(sub_root);
-//   sub_tree.set_subnode(sub_child, leaf_tid);
+//   auto sub_root  = sub_tree->add_root_node();
+//   auto sub_child = sub_tree->add_child(sub_root);
+//   sub_tree->set_subnode(sub_child, leaf_tid);
 
-//   (void)leaf_tree.add_root_node();
+//   (void)leaf_tree->add_root_node();
 
 //   auto cursor = forest.create_cursor(main_tid);
 //   EXPECT_TRUE(cursor.is_root());
@@ -462,9 +485,12 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // TEST(GetSubs, GraphDirectSubnodes) {
 //   hhds::GraphLibrary lib;
 
-//   auto cpu_a   = lib.create_graph();  // returns shared_ptr<Graph>
-//   auto cpu_b   = lib.create_graph();  // returns shared_ptr<Graph>
-//   auto alu     = lib.create_graph();  // returns shared_ptr<Graph>
+//   auto cpu_a_gio = lib.create_graphio("cpu_a");
+//   auto cpu_b_gio = lib.create_graphio("cpu_b");
+//   auto alu_gio   = lib.create_graphio("alu");
+//   auto cpu_a     = cpu_a_gio->create_graph();
+//   auto cpu_b     = cpu_b_gio->create_graph();
+//   auto alu       = alu_gio->create_graph();
 //   auto alu_gid = alu->get_gid();
 
 //   auto a_sub = cpu_a->create_node();
@@ -484,21 +510,24 @@ TEST(AddEdgeShorthand, NodeToNode) {
 // TEST(GetSubs, ForestDirectSubtrees) {
 //   auto forest = hhds::Forest::create();
 
-//   const hhds::Tid tree_a_tid = forest->create_tree();
-//   const hhds::Tid tree_b_tid = forest->create_tree();
-//   const hhds::Tid shared_tid = forest->create_tree();
+//   auto tree_a_tio = forest->create_treeio("tree_a");
+//   auto tree_b_tio = forest->create_treeio("tree_b");
+//   auto shared_tio = forest->create_treeio("shared");
+//   const hhds::Tid tree_a_tid = tree_a_tio->get_tid();
+//   const hhds::Tid tree_b_tid = tree_b_tio->get_tid();
+//   const hhds::Tid shared_tid = shared_tio->get_tid();
 
-//   auto& tree_a = forest->get_tree(tree_a_tid);
-//   auto& tree_b = forest->get_tree(tree_b_tid);
-//   auto& shared = forest->get_tree(shared_tid);
+//   auto tree_a = tree_a_tio->create_tree();
+//   auto tree_b = tree_b_tio->create_tree();
+//   auto shared = shared_tio->create_tree();
 
-//   auto a_root  = tree_a.add_root_node();
-//   auto a_child = tree_a.add_child(a_root);
-//   tree_a.set_subnode(a_child, shared_tid);
+//   auto a_root  = tree_a->add_root_node();
+//   auto a_child = tree_a->add_child(a_root);
+//   tree_a->set_subnode(a_child, shared_tid);
 
-//   auto b_root  = tree_b.add_root_node();
-//   auto b_child = tree_b.add_child(b_root);
-//   tree_b.set_subnode(b_child, shared_tid);
+//   auto b_root  = tree_b->add_root_node();
+//   auto b_child = tree_b->add_child(b_root);
+//   tree_b->set_subnode(b_child, shared_tid);
 
 //   (void)shared.add_root_node();
 

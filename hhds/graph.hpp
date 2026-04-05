@@ -406,21 +406,18 @@ public:
   [[nodiscard]] static constexpr bool is_valid(const Node_hier& node) noexcept { return node.get_raw_nid() != 0; }
   [[nodiscard]] static constexpr bool is_valid(const Pin_hier& pin) noexcept { return pin.get_pin_pid() != 0; }
 
-  [[nodiscard]] Node_class create_node();
-  [[nodiscard]] Pin_class  create_pin(Node_class node, Port_id port_id);
-  [[nodiscard]] Pid        create_pin(Nid nid, Port_id port_id);
-  [[nodiscard]] Gid        get_gid() const noexcept { return self_gid_; }
-  [[nodiscard]] std::string_view get_name() const noexcept { return name_; }
+  [[nodiscard]] Node_class               create_node();
+  [[nodiscard]] Pin_class                create_pin(Node_class node, Port_id port_id);
+  [[nodiscard]] Pid                      create_pin(Nid nid, Port_id port_id);
+  [[nodiscard]] Gid                      get_gid() const noexcept { return self_gid_; }
+  [[nodiscard]] std::string_view         get_name() const noexcept { return name_; }
   [[nodiscard]] std::shared_ptr<GraphIO> get_graphio() const { return graphio_owner_.lock(); }
+  [[nodiscard]] Pin_class                get_input_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class                get_output_pin(std::string_view name) const;
 
   // Built-in nodes created by Graph::clear_graph()
   static constexpr Nid INPUT_NODE  = (static_cast<Nid>(1) << 2);
   static constexpr Nid OUTPUT_NODE = (static_cast<Nid>(2) << 2);
-
-  // add_input(port): creates a pin on default input node (node 1)
-  [[nodiscard]] Pid add_input(Port_id port_id) { return create_pin(INPUT_NODE, port_id); }
-  // add_output(port): creates a pin on default output node (node 2)
-  [[nodiscard]] Pid add_output(Port_id port_id) { return create_pin(OUTPUT_NODE, port_id); }
 
   [[nodiscard]] auto ref_node(Nid id) const -> Node*;
   [[nodiscard]] auto ref_pin(Pid id) const -> Pin*;
@@ -490,13 +487,17 @@ public:
   [[nodiscard]] std::vector<FastIterator> fast_iter(bool hierarchy, Gid top_graph = 0, uint32_t tree_node_num = 0) const;
 
 private:
-  void                    assert_accessible() const noexcept;
-  void                    assert_node_exists(const Node_class& node) const noexcept;
-  void                    assert_pin_exists(const Pin_class& pin) const noexcept;
-  void                    invalidate_from_library() noexcept;
-  void                    del_edge_int(Vid driver_id, Vid sink_id);
-  void                    add_edge_int(Pid self_id, Pid other_id);
-  void                    set_next_pin(Nid nid, Pid next_pin);
+  void              assert_accessible() const noexcept;
+  void              assert_node_exists(const Node_class& node) const noexcept;
+  void              assert_pin_exists(const Pin_class& pin) const noexcept;
+  void              invalidate_from_library() noexcept;
+  [[nodiscard]] Pid materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
+                                                ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
+  void              erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
+  void              delete_pin(Pid pin_pid);
+  void              del_edge_int(Vid driver_id, Vid sink_id);
+  void              add_edge_int(Pid self_id, Pid other_id);
+  void              set_next_pin(Nid nid, Pid next_pin);
   [[nodiscard]] Pin_class make_pin_class(Pid pin_pid) const;
   void                    bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
   void                    set_name(std::string_view name) { name_ = name; }
@@ -515,31 +516,33 @@ private:
   void forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids,
                          Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node_hier>& out) const;
 
-  std::vector<Node>                         node_table;
-  std::vector<Pin>                          pin_table;
-  mutable std::vector<Node_class>           fast_class_cache_;
-  mutable std::vector<Node_flat>            fast_flat_cache_;
-  mutable std::vector<Node_hier>            fast_hier_cache_;
-  mutable std::vector<Node_class>           forward_class_cache_;
-  mutable std::vector<Node_flat>            forward_flat_cache_;
-  mutable std::vector<Node_hier>            forward_hier_cache_;
-  mutable std::shared_ptr<Tree>             fast_hier_tree_cache_;
-  mutable std::shared_ptr<std::vector<Gid>> fast_hier_gid_cache_;
-  mutable std::shared_ptr<Tree>             forward_hier_tree_cache_;
-  mutable std::shared_ptr<std::vector<Gid>> forward_hier_gid_cache_;
-  mutable bool                              fast_class_cache_valid_    = false;
-  mutable bool                              fast_hier_cache_valid_     = false;
-  mutable bool                              forward_class_cache_valid_ = false;
-  mutable bool                              forward_flat_cache_valid_  = false;
-  mutable bool                              forward_hier_cache_valid_  = false;
-  mutable uint64_t                          fast_hier_cache_epoch_     = 0;
-  mutable uint64_t                          forward_flat_cache_epoch_  = 0;
-  mutable uint64_t                          forward_hier_cache_epoch_  = 0;
-  const GraphLibrary*                       owner_lib_                 = nullptr;
-  std::weak_ptr<GraphIO>                    graphio_owner_;
-  Gid                                       self_gid_                  = Gid_invalid;
-  bool                                      deleted_                   = false;
-  std::string                               name_;
+  std::vector<Node>                              node_table;
+  std::vector<Pin>                               pin_table;
+  mutable std::vector<Node_class>                fast_class_cache_;
+  mutable std::vector<Node_flat>                 fast_flat_cache_;
+  mutable std::vector<Node_hier>                 fast_hier_cache_;
+  mutable std::vector<Node_class>                forward_class_cache_;
+  mutable std::vector<Node_flat>                 forward_flat_cache_;
+  mutable std::vector<Node_hier>                 forward_hier_cache_;
+  mutable std::shared_ptr<Tree>                  fast_hier_tree_cache_;
+  mutable std::shared_ptr<std::vector<Gid>>      fast_hier_gid_cache_;
+  mutable std::shared_ptr<Tree>                  forward_hier_tree_cache_;
+  mutable std::shared_ptr<std::vector<Gid>>      forward_hier_gid_cache_;
+  mutable bool                                   fast_class_cache_valid_    = false;
+  mutable bool                                   fast_hier_cache_valid_     = false;
+  mutable bool                                   forward_class_cache_valid_ = false;
+  mutable bool                                   forward_flat_cache_valid_  = false;
+  mutable bool                                   forward_hier_cache_valid_  = false;
+  mutable uint64_t                               fast_hier_cache_epoch_     = 0;
+  mutable uint64_t                               forward_flat_cache_epoch_  = 0;
+  mutable uint64_t                               forward_hier_cache_epoch_  = 0;
+  ankerl::unordered_dense::map<std::string, Pid> input_pins_;
+  ankerl::unordered_dense::map<std::string, Pid> output_pins_;
+  const GraphLibrary*                            owner_lib_ = nullptr;
+  std::weak_ptr<GraphIO>                         graphio_owner_;
+  Gid                                            self_gid_ = Gid_invalid;
+  bool                                           deleted_  = false;
+  std::string                                    name_;
 
   friend class Node_class;
   friend class Pin_class;
@@ -549,11 +552,31 @@ private:
 
 class GraphIO : public std::enable_shared_from_this<GraphIO> {
 private:
+  // GraphIO owns declared IO-pin metadata. Concrete Pid values only exist once a Graph body is materialized.
+  enum class IoDirection : uint8_t { Input, Output };
+
+  struct DeclaredIoPin {
+    std::string name;
+    Port_id     port_id   = 0;
+    bool        loop_last = false;
+  };
+
+  struct DeclaredIoPinRef {
+    IoDirection direction = IoDirection::Input;
+    size_t      index     = 0;
+  };
+
   GraphLibrary* owner_lib_ = nullptr;
   Gid           gid_       = Gid_invalid;
   std::string   name_;
 
+  std::vector<DeclaredIoPin>                                  input_pin_decls_;
+  std::vector<DeclaredIoPin>                                  output_pin_decls_;
+  ankerl::unordered_dense::map<std::string, DeclaredIoPinRef> declared_io_pins_;
+
   GraphIO(GraphLibrary* owner_lib, Gid gid, std::string name) : owner_lib_(owner_lib), gid_(gid), name_(std::move(name)) {}
+  void reindex_declared_io_pins(IoDirection direction, size_t start_index);
+  void invalidate_from_library() noexcept;
 
 public:
   GraphIO(const GraphIO&)            = delete;
@@ -561,13 +584,22 @@ public:
   GraphIO(GraphIO&&)                 = delete;
   GraphIO& operator=(GraphIO&&)      = delete;
 
-  [[nodiscard]] Gid              get_gid() const noexcept { return gid_; }
-  [[nodiscard]] std::string_view get_name() const noexcept { return name_; }
-  [[nodiscard]] GraphLibrary*    get_library() const noexcept { return owner_lib_; }
+  [[nodiscard]] Gid                          get_gid() const noexcept { return gid_; }
+  [[nodiscard]] std::string_view             get_name() const noexcept { return name_; }
+  [[nodiscard]] GraphLibrary*                get_library() const noexcept { return owner_lib_; }
   [[nodiscard]] std::shared_ptr<Graph>       get_graph();
   [[nodiscard]] std::shared_ptr<const Graph> get_graph() const;
   [[nodiscard]] std::shared_ptr<Graph>       create_graph();
   [[nodiscard]] bool                         has_graph() const;
+  void                                       add_input(std::string_view name, Port_id port_id, bool loop_last = false);
+  void                                       add_output(std::string_view name, Port_id port_id, bool loop_last = false);
+  void                                       delete_input(std::string_view name);
+  void                                       delete_output(std::string_view name);
+  [[nodiscard]] bool                         has_input(std::string_view name) const;
+  [[nodiscard]] bool                         has_output(std::string_view name) const;
+  [[nodiscard]] bool                         is_loop_last(std::string_view name) const;
+  [[nodiscard]] Port_id                      get_input_port_id(std::string_view name) const;
+  [[nodiscard]] Port_id                      get_output_port_id(std::string_view name) const;
 
   friend class GraphLibrary;
 };
@@ -636,25 +668,6 @@ public:
     return graph_ios_[idx];
   }
 
-  // Legacy bridge until all call sites move to create_graphio(...)->create_graph().
-  [[nodiscard]] std::shared_ptr<Graph> create_graph() {
-    const auto gio = create_graphio_impl(static_cast<Gid>(graph_ios_.size()), "__legacy_graphio_" + std::to_string(graph_ios_.size()));
-    return gio->create_graph();
-  }
-
-  [[nodiscard]] std::shared_ptr<Graph> create_graph(std::string_view name) {
-    return create_graphio(name)->create_graph();
-  }
-
-  [[nodiscard]] std::shared_ptr<Graph> create_graph(Gid id) {
-    const auto gio = create_graphio_impl(id, "__legacy_graphio_" + std::to_string(static_cast<size_t>(id)));
-    return gio->create_graph();
-  }
-
-  [[nodiscard]] std::shared_ptr<Graph> create_graph(Gid id, std::string_view name) {
-    return create_graphio_impl(id, name.empty() ? "__legacy_graphio_" + std::to_string(static_cast<size_t>(id)) : std::string(name))->create_graph();
-  }
-
   [[nodiscard]] bool has_graph(Gid id) const noexcept {
     const size_t idx = static_cast<size_t>(id);
     return idx < graphs_.size() && graphs_[idx] != nullptr && !graphs_[idx]->deleted_;
@@ -695,16 +708,45 @@ public:
     }
     auto& slot = graphs_[static_cast<size_t>(id)];
     if (slot && !slot->deleted_) {
-      if (!slot->get_name().empty()) {
-        graph_name_to_id_.erase(std::string(slot->get_name()));
-      }
-      if (static_cast<size_t>(id) < graph_ios_.size()) {
-        graph_ios_[static_cast<size_t>(id)].reset();
-      }
       slot->invalidate_from_library();
+      slot.reset();
       --live_count_;
       note_graph_mutation();
     }
+  }
+
+  void delete_graph(const std::shared_ptr<Graph>& graph) noexcept {
+    if (!graph) {
+      return;
+    }
+    delete_graph(graph->get_gid());
+  }
+
+  void delete_graphio(const std::shared_ptr<GraphIO>& graphio) noexcept {
+    if (!graphio) {
+      return;
+    }
+
+    const size_t idx = static_cast<size_t>(graphio->get_gid());
+    if (idx >= graph_ios_.size() || graph_ios_[idx] != graphio) {
+      return;
+    }
+
+    delete_graph(graphio->get_gid());
+    if (!graphio->get_name().empty()) {
+      graph_name_to_id_.erase(std::string(graphio->get_name()));
+    }
+    graphio->invalidate_from_library();
+    graph_ios_[idx].reset();
+    note_graph_mutation();
+  }
+
+  void delete_graphio(std::string_view name) noexcept {
+    auto gio = find_graphio(name);
+    if (!gio) {
+      return;
+    }
+    delete_graphio(gio);
   }
 
   // Slots (including tombstones).
@@ -761,6 +803,12 @@ private:
     graph->bind_library(this, graphio->get_gid());
     graph->set_name(graphio->get_name());
     graph->graphio_owner_ = graphio;
+    for (const auto& input : graphio->input_pin_decls_) {
+      (void)graph->materialize_declared_io_pin(input.name, input.port_id, Graph::INPUT_NODE, graph->input_pins_);
+    }
+    for (const auto& output : graphio->output_pin_decls_) {
+      (void)graph->materialize_declared_io_pin(output.name, output.port_id, Graph::OUTPUT_NODE, graph->output_pins_);
+    }
 
     if (idx >= graphs_.size()) {
       graphs_.resize(idx + 1);
@@ -783,8 +831,8 @@ private:
 
   void note_graph_mutation() const noexcept { ++mutation_epoch_; }
 
-  std::vector<std::shared_ptr<GraphIO>> graph_ios_;
-  std::vector<std::shared_ptr<Graph>> graphs_;
+  std::vector<std::shared_ptr<GraphIO>>          graph_ios_;
+  std::vector<std::shared_ptr<Graph>>            graphs_;
   ankerl::unordered_dense::map<std::string, Gid> graph_name_to_id_;
   // count of live graphs
   Gid              live_count_     = 0;
@@ -802,7 +850,11 @@ inline std::shared_ptr<Graph> GraphIO::get_graph() {
   if (idx >= owner_lib_->graphs_.size()) {
     return {};
   }
-  return owner_lib_->graphs_[idx];
+  const auto& graph = owner_lib_->graphs_[idx];
+  if (!graph || graph->deleted_) {
+    return {};
+  }
+  return graph;
 }
 
 inline std::shared_ptr<const Graph> GraphIO::get_graph() const {
@@ -813,7 +865,11 @@ inline std::shared_ptr<const Graph> GraphIO::get_graph() const {
   if (idx >= owner_lib_->graphs_.size()) {
     return {};
   }
-  return owner_lib_->graphs_[idx];
+  const auto& graph = owner_lib_->graphs_[idx];
+  if (!graph || graph->deleted_) {
+    return {};
+  }
+  return graph;
 }
 
 inline std::shared_ptr<Graph> GraphIO::create_graph() {
@@ -826,6 +882,135 @@ inline bool GraphIO::has_graph() const {
     return false;
   }
   return owner_lib_->has_graph(gid_);
+}
+
+inline void GraphIO::reindex_declared_io_pins(IoDirection direction, size_t start_index) {
+  auto& pins = direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
+  for (size_t index = start_index; index < pins.size(); ++index) {
+    auto it = declared_io_pins_.find(pins[index].name);
+    assert(it != declared_io_pins_.end() && "reindex_declared_io_pins: missing IO-pin lookup entry");
+    it->second.index = index;
+  }
+}
+
+inline void GraphIO::invalidate_from_library() noexcept {
+  owner_lib_ = nullptr;
+  input_pin_decls_.clear();
+  output_pin_decls_.clear();
+  declared_io_pins_.clear();
+}
+
+inline void GraphIO::add_input(std::string_view name, Port_id port_id, bool loop_last) {
+  assert(owner_lib_ != nullptr && "add_input: GraphIO is no longer attached to a library");
+  assert(!name.empty() && "add_input: name is required");
+
+  const std::string key(name);
+  assert(declared_io_pins_.find(key) == declared_io_pins_.end() && "add_input: input pin name already exists");
+  input_pin_decls_.push_back(DeclaredIoPin{key, port_id, loop_last});
+  declared_io_pins_.emplace(input_pin_decls_.back().name, DeclaredIoPinRef{IoDirection::Input, input_pin_decls_.size() - 1});
+
+  if (auto graph = get_graph()) {
+    (void)graph->materialize_declared_io_pin(name, port_id, Graph::INPUT_NODE, graph->input_pins_);
+  } else if (owner_lib_ != nullptr) {
+    owner_lib_->note_graph_mutation();
+  }
+}
+
+inline void GraphIO::add_output(std::string_view name, Port_id port_id, bool loop_last) {
+  assert(owner_lib_ != nullptr && "add_output: GraphIO is no longer attached to a library");
+  assert(!name.empty() && "add_output: name is required");
+
+  const std::string key(name);
+  assert(declared_io_pins_.find(key) == declared_io_pins_.end() && "add_output: output pin name already exists");
+  output_pin_decls_.push_back(DeclaredIoPin{key, port_id, loop_last});
+  declared_io_pins_.emplace(output_pin_decls_.back().name, DeclaredIoPinRef{IoDirection::Output, output_pin_decls_.size() - 1});
+
+  if (auto graph = get_graph()) {
+    (void)graph->materialize_declared_io_pin(name, port_id, Graph::OUTPUT_NODE, graph->output_pins_);
+  } else if (owner_lib_ != nullptr) {
+    owner_lib_->note_graph_mutation();
+  }
+}
+
+inline void GraphIO::delete_input(std::string_view name) {
+  assert(owner_lib_ != nullptr && "delete_input: GraphIO is no longer attached to a library");
+
+  const auto it = declared_io_pins_.find(std::string(name));
+  assert(it != declared_io_pins_.end() && "delete_input: input pin name not found");
+  assert(it->second.direction == IoDirection::Input && "delete_input: declared pin is not an input");
+
+  const size_t index = it->second.index;
+  if (auto graph = get_graph()) {
+    graph->erase_declared_io_pin(name, graph->input_pins_);
+  } else if (owner_lib_ != nullptr) {
+    owner_lib_->note_graph_mutation();
+  }
+
+  declared_io_pins_.erase(it);
+  input_pin_decls_.erase(input_pin_decls_.begin() + static_cast<std::ptrdiff_t>(index));
+  reindex_declared_io_pins(IoDirection::Input, index);
+}
+
+inline void GraphIO::delete_output(std::string_view name) {
+  assert(owner_lib_ != nullptr && "delete_output: GraphIO is no longer attached to a library");
+
+  const auto it = declared_io_pins_.find(std::string(name));
+  assert(it != declared_io_pins_.end() && "delete_output: output pin name not found");
+  assert(it->second.direction == IoDirection::Output && "delete_output: declared pin is not an output");
+
+  const size_t index = it->second.index;
+  if (auto graph = get_graph()) {
+    graph->erase_declared_io_pin(name, graph->output_pins_);
+  } else if (owner_lib_ != nullptr) {
+    owner_lib_->note_graph_mutation();
+  }
+
+  declared_io_pins_.erase(it);
+  output_pin_decls_.erase(output_pin_decls_.begin() + static_cast<std::ptrdiff_t>(index));
+  reindex_declared_io_pins(IoDirection::Output, index);
+}
+
+inline bool GraphIO::has_input(std::string_view name) const {
+  const auto it = declared_io_pins_.find(std::string(name));
+  return it != declared_io_pins_.end() && it->second.direction == IoDirection::Input;
+}
+
+inline bool GraphIO::has_output(std::string_view name) const {
+  const auto it = declared_io_pins_.find(std::string(name));
+  return it != declared_io_pins_.end() && it->second.direction == IoDirection::Output;
+}
+
+inline bool GraphIO::is_loop_last(std::string_view name) const {
+  const auto it = declared_io_pins_.find(std::string(name));
+  assert(it != declared_io_pins_.end() && "is_loop_last: declared pin name not found");
+  if (it == declared_io_pins_.end()) {
+    return false;
+  }
+
+  if (it->second.direction == IoDirection::Input) {
+    return input_pin_decls_[it->second.index].loop_last;
+  }
+  return output_pin_decls_[it->second.index].loop_last;
+}
+
+inline Port_id GraphIO::get_input_port_id(std::string_view name) const {
+  const auto it = declared_io_pins_.find(std::string(name));
+  assert(it != declared_io_pins_.end() && "get_input_port_id: input pin name not found");
+  assert(it == declared_io_pins_.end() || it->second.direction == IoDirection::Input);
+  if (it == declared_io_pins_.end() || it->second.direction != IoDirection::Input) {
+    return 0;
+  }
+  return input_pin_decls_[it->second.index].port_id;
+}
+
+inline Port_id GraphIO::get_output_port_id(std::string_view name) const {
+  const auto it = declared_io_pins_.find(std::string(name));
+  assert(it != declared_io_pins_.end() && "get_output_port_id: output pin name not found");
+  assert(it == declared_io_pins_.end() || it->second.direction == IoDirection::Output);
+  if (it == declared_io_pins_.end() || it->second.direction != IoDirection::Output) {
+    return 0;
+  }
+  return output_pin_decls_[it->second.index].port_id;
 }
 
 // Compact-tier conversions: information can be discarded (_hier/_flat -> _class),

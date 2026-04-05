@@ -259,28 +259,28 @@ Exit criteria:
 
 ### Phase 3: Graph IO ownership and pin/connect refactor
 
-- Move graph IO declaration into `GraphIO`.
+- Move graph IO declaration into `GraphIO`. [DONE 2026-04-04]
 - Remove direct graph IO mutation from `Graph`.
-- Auto-create graph IO structures in a newly created `Graph` body from `GraphIO`.
-- Keep `GraphIO` and `Graph` synchronized when IOs change.
+- Auto-create graph IO structures in a newly created `Graph` body from `GraphIO`. [DONE 2026-04-04]
+- Keep `GraphIO` and `Graph` synchronized when IOs change. [DONE 2026-04-04]
 - Replace `create_pin` with direction-aware `create_driver_pin` / `create_sink_pin`.
 - Replace `add_edge` with `connect_driver` / `connect_sink` on nodes and pins.
-- Add `get_input_pin` / `get_output_pin` on `Graph` for accessing auto-materialized IO pins.
+- Add `get_input_pin` / `get_output_pin` on `Graph` for accessing auto-materialized IO pins. [DONE 2026-04-04]
 - Add built-in node and pin instance names (`set_name` / `get_name` / `has_name`).
 - Add `get_pin_name` for resolving port names from the `GraphIO` declaration.
 - Accept `TreeIO` / `GraphIO` objects directly in `set_subnode` (no raw ID extraction).
 
 Detailed scope:
 
-- add `GraphIO::add_input`, `add_output`, `delete_input`, and `delete_output`
-- move graph port ordering ownership to `GraphIO`
-- define how `Graph` auto-materializes graph IO nodes/pins from `GraphIO`
-- make body reload and body recreation preserve the declaration-side interface
+- add `GraphIO::add_input`, `add_output`, `delete_input`, and `delete_output` [DONE 2026-04-04]
+- move graph port ordering ownership to `GraphIO` [DONE 2026-04-04]
+- define how `Graph` auto-materializes graph IO nodes/pins from `GraphIO` [DONE 2026-04-04]
+- make body reload and body recreation preserve the declaration-side interface [DONE 2026-04-04]
 - remove old graph-side public APIs that mutate declaration IO directly
 - replace `create_pin` with `create_driver_pin` and `create_sink_pin`
 - add overloads: `(node)` for default pin 0, `(node, port_id)`, `(node, "name")` for sub-node port resolution
 - replace `add_edge` with `connect_driver` / `connect_sink` on `Node_class` and `Pin_class`
-- add `Graph::get_input_pin("name")` and `Graph::get_output_pin("name")`
+- add `Graph::get_input_pin("name")` and `Graph::get_output_pin("name")` [DONE 2026-04-04]
 - add `Node_class::set_name` / `get_name` / `has_name` (backed by internal `absl::flat_hash_map`, auto-registered via `add_map`)
 - add `Pin_class::set_name` / `get_name` / `has_name`
 - add `Pin_class::get_pin_name` to return the port name from the node's `GraphIO` declaration
@@ -298,28 +298,28 @@ Primary API references:
 
 Suggested steps:
 
-1. Define the internal storage model for `GraphIO` ports:
+1. Define the internal storage model for `GraphIO` ports: [DONE 2026-04-04]
    - port name
    - direction
    - stable port identifier / order
    - `loop_last` flag (per-port, default false)
    - any minimal built-in declaration metadata that must stay in-core
-2. Add `GraphIO` public mutation APIs:
+2. Add `GraphIO` public mutation APIs: [DONE 2026-04-04]
    - `add_input(name, port_id, loop_last = false)`
    - `add_output(name, port_id, loop_last = false)`
    - `delete_input`
    - `delete_output`
-3. Add `GraphIO` public query APIs:
+3. Add `GraphIO` public query APIs: [DONE 2026-04-04]
    - `has_input`
    - `has_output`
    - `is_loop_last`
    - port-id lookup
    - ordered iteration helpers if needed
-4. Define how a newly created `Graph` body auto-materializes declaration IOs.
-5. Add `Graph::get_input_pin("name")` and `Graph::get_output_pin("name")`.
+4. Define how a newly created `Graph` body auto-materializes declaration IOs. [DONE 2026-04-04]
+5. Add `Graph::get_input_pin("name")` and `Graph::get_output_pin("name")`. [DONE 2026-04-04]
 6. Remove direct graph-side IO mutation from `Graph`.
 7. Redirect any remaining graph IO creation paths through `GraphIO`.
-8. Define body synchronization when `GraphIO` changes after a body already exists.
+8. Define body synchronization when `GraphIO` changes after a body already exists. [DONE 2026-04-04]
 9. Replace `create_pin` with `create_driver_pin` / `create_sink_pin`:
    - overloads: `(node)`, `(node, port_id)`, `(node, "name")`
    - string overload resolves port name through the sub-node's `GraphIO`

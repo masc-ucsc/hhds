@@ -745,12 +745,16 @@ void Graph::invalidate_from_library() noexcept {
   forward_hier_cache_valid_  = false;
   fast_hier_tree_cache_.reset();
   forward_hier_tree_cache_.reset();
+  input_pins_.clear();
+  output_pins_.clear();
 }
 
 void Graph::clear_graph() {
   assert_accessible();
   node_table.clear();
   pin_table.clear();
+  input_pins_.clear();
+  output_pins_.clear();
   node_table.emplace_back(0);  // Invalid ID
   node_table.emplace_back(1);  // Input node (can have many pins to node 1)
   node_table.emplace_back(2);  // Output node
@@ -1108,6 +1112,255 @@ auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
 auto Graph::make_pin_class(Pid pin_pid) const -> Pin_class {
   const auto* pin = ref_pin(pin_pid);
   return Pin_class(pin->get_master_nid(), pin->get_port_id(), pin_pid);
+}
+
+auto Graph::get_input_pin(std::string_view name) const -> Pin_class {
+  assert_accessible();
+  const auto it = input_pins_.find(std::string(name));
+  assert(it != input_pins_.end() && "get_input_pin: declared input name not found");
+  if (it == input_pins_.end()) {
+    return {};
+  }
+  return make_pin_class(it->second | static_cast<Pid>(2));
+}
+
+auto Graph::get_output_pin(std::string_view name) const -> Pin_class {
+  assert_accessible();
+  const auto it = output_pins_.find(std::string(name));
+  assert(it != output_pins_.end() && "get_output_pin: declared output name not found");
+  if (it == output_pins_.end()) {
+    return {};
+  }
+  return make_pin_class(it->second);
+}
+
+auto Graph::materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
+                                        ankerl::unordered_dense::map<std::string, Pid>& pins_by_name) -> Pid {
+  assert_accessible();
+  assert(!name.empty() && "materialize_declared_io_pin: name is required");
+
+  const auto it = pins_by_name.find(std::string(name));
+  if (it != pins_by_name.end()) {
+    return it->second;
+  }
+
+  const Pid pin_pid = create_pin(owner_nid, port_id);
+  pins_by_name.emplace(std::string(name), pin_pid);
+  return pin_pid;
+}
+
+void Graph::erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid>& pins_by_name) {
+  assert_accessible();
+  const auto it = pins_by_name.find(std::string(name));
+  assert(it != pins_by_name.end() && "erase_declared_io_pin: declared pin name not found");
+  if (it == pins_by_name.end()) {
+    return;
+  }
+
+  delete_pin(it->second);
+  pins_by_name.erase(it);
+}
+
+void Graph::delete_pin(Pid pin_pid) {
+  assert_accessible();
+
+  const Pid pin_lookup = (pin_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+  const Pid actual_id  = pin_lookup >> 2;
+  assert(actual_id > 0 && actual_id < pin_table.size() && "delete_pin: pin handle is invalid for this graph");
+
+  auto* pin = &pin_table[actual_id];
+  assert(pin->get_master_nid() != 0 && "delete_pin: pin already deleted");
+
+  std::vector<Vid> edges_to_remove;
+  for (auto edge : pin->get_edges(pin_lookup)) {
+    edges_to_remove.push_back(edge);
+  }
+
+  for (auto other_vid : edges_to_remove) {
+    if (other_vid & static_cast<Vid>(2)) {
+      // if other vid is source
+      const Vid reverse_edge = pin_lookup;
+      if (other_vid & static_cast<Vid>(1)) {
+        // other is a pin
+        auto* other_pin = ref_pin(other_vid);
+        if (other_pin->use_overflow) {
+          (void)other_pin->sedges_.set->erase(reverse_edge);
+        } else {
+          constexpr int      SHIFT      = 14;
+          constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
+          constexpr uint64_t SIGN_BIT   = 1ULL << 13;
+          constexpr uint64_t DRIVER_BIT = 1ULL << 1;
+          constexpr uint64_t PIN_BIT    = 1ULL << 0;
+          constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;
+          const uint64_t     self_num   = static_cast<uint64_t>(other_vid) >> 2;
+          for (int i = 0; i < 4; ++i) {
+            const uint64_t raw = (other_pin->sedges_.sedges >> (i * SHIFT)) & SLOT;
+            if (raw == 0) {
+              continue;
+            }
+
+            const bool     neg        = (raw & SIGN_BIT) != 0;
+            const bool     driver     = (raw & DRIVER_BIT) != 0;
+            const bool     is_pin     = (raw & PIN_BIT) != 0;
+            const uint64_t magnitude  = (raw >> 2) & MAG_MASK;
+            const int64_t  delta      = neg ? -static_cast<int64_t>(magnitude) : static_cast<int64_t>(magnitude);
+            const uint64_t target_num = self_num - delta;
+            const Vid      candidate  = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (is_pin ? PIN_BIT : 0));
+
+            if (candidate == reverse_edge) {
+              other_pin->sedges_.sedges &= ~(static_cast<int64_t>(SLOT) << (i * SHIFT));
+              break;
+            }
+          }
+          if (other_pin->ledge0 == reverse_edge) {
+            other_pin->ledge0 = 0;
+          } else if (other_pin->ledge1 == reverse_edge) {
+            other_pin->ledge1 = 0;
+          }
+        }
+      } else {
+        // if other_vid is a node
+        auto* other_node = ref_node(other_vid);
+        if (other_node->use_overflow) {
+          (void)other_node->sedges_.set->erase(reverse_edge);
+        } else {
+          constexpr int      SHIFT      = 14;
+          constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
+          constexpr uint64_t SIGN_BIT   = 1ULL << 13;
+          constexpr uint64_t DRIVER_BIT = 1ULL << 1;
+          constexpr uint64_t PIN_BIT    = 1ULL << 0;
+          constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;
+          const uint64_t     self_num   = static_cast<uint64_t>(other_vid) >> 2;
+          for (int i = 0; i < 4; ++i) {
+            const uint64_t raw = (other_node->sedges_.sedges >> (i * SHIFT)) & SLOT;
+            if (raw == 0) {
+              continue;
+            }
+
+            const bool     neg        = (raw & SIGN_BIT) != 0;
+            const bool     driver     = (raw & DRIVER_BIT) != 0;
+            const bool     is_pin     = (raw & PIN_BIT) != 0;
+            const uint64_t magnitude  = (raw >> 2) & MAG_MASK;
+            const int64_t  delta      = neg ? -static_cast<int64_t>(magnitude) : static_cast<int64_t>(magnitude);
+            const uint64_t target_num = self_num - delta;
+            const Vid      candidate  = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (is_pin ? PIN_BIT : 0));
+
+            if (candidate == reverse_edge) {
+              other_node->sedges_.sedges &= ~(static_cast<int64_t>(SLOT) << (i * SHIFT));
+              break;
+            }
+          }
+          if (other_node->ledge0 == reverse_edge) {
+            other_node->ledge0 = 0;
+          } else if (other_node->ledge1 == reverse_edge) {
+            other_node->ledge1 = 0;
+          }
+        }
+      }
+    } else {
+      // other vid is sink
+      const Vid reverse_edge = pin_lookup | static_cast<Pid>(2);
+      if (other_vid & static_cast<Vid>(1)) {
+        // other is a pin
+        auto* other_pin = ref_pin(other_vid);
+        if (other_pin->use_overflow) {
+          (void)other_pin->sedges_.set->erase(reverse_edge);
+        } else {
+          constexpr int      SHIFT      = 14;
+          constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
+          constexpr uint64_t SIGN_BIT   = 1ULL << 13;
+          constexpr uint64_t DRIVER_BIT = 1ULL << 1;
+          constexpr uint64_t PIN_BIT    = 1ULL << 0;
+          constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;
+          const uint64_t     self_num   = static_cast<uint64_t>(other_vid) >> 2;
+          for (int i = 0; i < 4; ++i) {
+            const uint64_t raw = (other_pin->sedges_.sedges >> (i * SHIFT)) & SLOT;
+            if (raw == 0) {
+              continue;
+            }
+
+            const bool     neg        = (raw & SIGN_BIT) != 0;
+            const bool     driver     = (raw & DRIVER_BIT) != 0;
+            const bool     is_pin     = (raw & PIN_BIT) != 0;
+            const uint64_t magnitude  = (raw >> 2) & MAG_MASK;
+            const int64_t  delta      = neg ? -static_cast<int64_t>(magnitude) : static_cast<int64_t>(magnitude);
+            const uint64_t target_num = self_num - delta;
+            const Vid      candidate  = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (is_pin ? PIN_BIT : 0));
+
+            if (candidate == reverse_edge) {
+              other_pin->sedges_.sedges &= ~(static_cast<int64_t>(SLOT) << (i * SHIFT));
+              break;
+            }
+          }
+          if (other_pin->ledge0 == reverse_edge) {
+            other_pin->ledge0 = 0;
+          } else if (other_pin->ledge1 == reverse_edge) {
+            other_pin->ledge1 = 0;
+          }
+        }
+      } else {
+        // other is a node
+        auto* other_node = ref_node(other_vid);
+        if (other_node->use_overflow) {
+          (void)other_node->sedges_.set->erase(reverse_edge);
+        } else {
+          constexpr int      SHIFT      = 14;
+          constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
+          constexpr uint64_t SIGN_BIT   = 1ULL << 13;
+          constexpr uint64_t DRIVER_BIT = 1ULL << 1;
+          constexpr uint64_t PIN_BIT    = 1ULL << 0;
+          constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;
+          const uint64_t     self_num   = static_cast<uint64_t>(other_vid) >> 2;
+          for (int i = 0; i < 4; ++i) {
+            const uint64_t raw = (other_node->sedges_.sedges >> (i * SHIFT)) & SLOT;
+            if (raw == 0) {
+              continue;
+            }
+
+            const bool     neg        = (raw & SIGN_BIT) != 0;
+            const bool     driver     = (raw & DRIVER_BIT) != 0;
+            const bool     is_pin     = (raw & PIN_BIT) != 0;
+            const uint64_t magnitude  = (raw >> 2) & MAG_MASK;
+            const int64_t  delta      = neg ? -static_cast<int64_t>(magnitude) : static_cast<int64_t>(magnitude);
+            const uint64_t target_num = self_num - delta;
+            const Vid      candidate  = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (is_pin ? PIN_BIT : 0));
+
+            if (candidate == reverse_edge) {
+              other_node->sedges_.sedges &= ~(static_cast<int64_t>(SLOT) << (i * SHIFT));
+              break;
+            }
+          }
+          if (other_node->ledge0 == reverse_edge) {
+            other_node->ledge0 = 0;
+          } else if (other_node->ledge1 == reverse_edge) {
+            other_node->ledge1 = 0;
+          }
+        }
+      }
+    }
+  }
+
+  const Nid owner_nid = pin->get_master_nid() & ~static_cast<Nid>(2);
+  auto*     owner     = ref_node(owner_nid);
+  if (owner->get_next_pin_id() == pin_lookup) {
+    owner->set_next_pin_id(pin->get_next_pin_id());
+  } else {
+    Pid current = owner->get_next_pin_id();
+    while (current != 0) {
+      auto* current_pin = ref_pin(current);
+      if (current_pin->get_next_pin_id() == pin_lookup) {
+        current_pin->set_next_pin_id(pin->get_next_pin_id());
+        break;
+      }
+      current = current_pin->get_next_pin_id();
+    }
+  }
+
+  if (pin->check_overflow() && pin->sedges_.set != nullptr) {
+    delete pin->sedges_.set;
+  }
+  pin_table[actual_id] = Pin();
+  invalidate_traversal_caches();
 }
 
 auto Pin_class::get_master_node() const -> Node_class { return Node_class(raw_nid); }
