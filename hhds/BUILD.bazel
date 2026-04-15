@@ -196,6 +196,16 @@ cc_test(
 )
 
 cc_test(
+    name = "test_storage",
+    srcs = ["tests/test_storage.cpp"],
+    deps = [
+        ":core",
+        ":graph",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "iterators_impl",
     srcs = ["tests/iterators_impl.cpp"],
     deps = [
