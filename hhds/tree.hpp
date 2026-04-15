@@ -380,9 +380,19 @@ public:
   class Node_class {
   public:
     Node_class() = default;
+    Node_class(Tree* tree_value, Tree_pos current_pos_value) : tree_ptr(tree_value), current_pos(current_pos_value) {}
     explicit Node_class(Tree_pos current_pos_value) : current_pos(current_pos_value) {}
 
+    [[nodiscard]] Tree*    get_tree() const noexcept { return tree_ptr; }
     [[nodiscard]] Tree_pos get_current_pos() const noexcept { return current_pos; }
+    [[nodiscard]] bool     is_valid() const noexcept { return tree_ptr != nullptr && current_pos != INVALID; }
+    [[nodiscard]] bool     is_invalid() const noexcept { return !is_valid(); }
+    [[nodiscard]] auto     add_child() const -> Node_class;
+    void                   set_subnode(const std::shared_ptr<TreeIO>& treeio) const;
+    void                   set_type(Type type) const;
+    [[nodiscard]] auto     pre_order_class() const;
+    [[nodiscard]] auto     post_order_class() const;
+    [[nodiscard]] auto     sibling_order() const;
     [[nodiscard]] bool operator==(const Node_class& other) const noexcept { return current_pos == other.current_pos; }
     [[nodiscard]] bool operator!=(const Node_class& other) const noexcept { return !(*this == other); }
 
@@ -392,6 +402,7 @@ public:
     }
 
   private:
+    Tree*    tree_ptr    = nullptr;
     Tree_pos current_pos = INVALID;
 
     friend class Tree;
@@ -470,7 +481,7 @@ public:
   [[nodiscard]] static bool is_valid(Node_hier node) noexcept { return node.get_current_pos() != INVALID; }
 
   [[nodiscard]] Node_class as_class(Tree_pos node_pos) const {
-    return (_check_idx_exists(node_pos) && _contains_data(node_pos)) ? Node_class(node_pos) : Node_class();
+    return (_check_idx_exists(node_pos) && _contains_data(node_pos)) ? Node_class(const_cast<Tree*>(this), node_pos) : Node_class();
   }
   [[nodiscard]] Node_flat as_flat(Tree_pos current_pos, Tid current_tid, Tid root_tid = INVALID) const {
     if (!_check_idx_exists(current_pos) || !_contains_data(current_pos)) {
@@ -546,7 +557,7 @@ public:
   void set_name(std::string_view n);
   [[nodiscard]] std::string_view get_name() const { return name_; }
   [[nodiscard]] Tid              get_tid() const noexcept { return self_tid_; }
-  [[nodiscard]] std::shared_ptr<TreeIO> get_treeio() const { return treeio_owner_.lock(); }
+  [[nodiscard]] std::shared_ptr<TreeIO> get_io() const { return treeio_owner_.lock(); }
 
   void print(std::ostream& os) const { print(os, get_root(), PrintOptions{}); }
   void print(std::ostream& os, const PrintOptions& options) const { print(os, get_root(), options); }
@@ -1092,6 +1103,37 @@ public:
   friend class Forest;
 };
 
+inline auto Tree::Node_class::add_child() const -> Node_class {
+  I(tree_ptr != nullptr, "add_child: node is not attached to a tree");
+  return tree_ptr->add_child(*this);
+}
+
+inline void Tree::Node_class::set_subnode(const std::shared_ptr<TreeIO>& treeio) const {
+  I(tree_ptr != nullptr, "set_subnode: node is not attached to a tree");
+  I(treeio != nullptr, "set_subnode: null TreeIO");
+  tree_ptr->set_subnode(*this, treeio->get_tid());
+}
+
+inline void Tree::Node_class::set_type(Type type) const {
+  I(tree_ptr != nullptr, "set_type: node is not attached to a tree");
+  tree_ptr->set_type(*this, type);
+}
+
+inline auto Tree::Node_class::pre_order_class() const {
+  I(tree_ptr != nullptr, "pre_order_class: node is not attached to a tree");
+  return tree_ptr->pre_order(*this);
+}
+
+inline auto Tree::Node_class::post_order_class() const {
+  I(tree_ptr != nullptr, "post_order_class: node is not attached to a tree");
+  return tree_ptr->post_order(*this);
+}
+
+inline auto Tree::Node_class::sibling_order() const {
+  I(tree_ptr != nullptr, "sibling_order: node is not attached to a tree");
+  return tree_ptr->sibling_order(*this);
+}
+
 class Forest : public std::enable_shared_from_this<Forest> {
 private:
   std::vector<std::shared_ptr<TreeIO>> tree_ios_;
@@ -1107,12 +1149,12 @@ public:
   Forest(Forest&&)                 = delete;
   Forest& operator=(Forest&&)      = delete;
 
-  [[nodiscard]] std::shared_ptr<TreeIO> create_treeio(std::string_view name) {
-    I(!name.empty(), "create_treeio: name is required");
-    return create_treeio_impl(-static_cast<Tree_pos>(tree_ios_.size() + 1), name);
+  [[nodiscard]] std::shared_ptr<TreeIO> create_io(std::string_view name) {
+    I(!name.empty(), "create_io: name is required");
+    return create_io_impl(-static_cast<Tree_pos>(tree_ios_.size() + 1), name);
   }
 
-  [[nodiscard]] std::shared_ptr<TreeIO> find_treeio(std::string_view name) {
+  [[nodiscard]] std::shared_ptr<TreeIO> find_io(std::string_view name) {
     if (name.empty()) {
       return nullptr;
     }
@@ -1130,7 +1172,7 @@ public:
     return tree_ios_[tree_idx];
   }
 
-  [[nodiscard]] std::shared_ptr<const TreeIO> find_treeio(std::string_view name) const {
+  [[nodiscard]] std::shared_ptr<const TreeIO> find_io(std::string_view name) const {
     if (name.empty()) {
       return nullptr;
     }
@@ -1170,7 +1212,7 @@ public:
   }
 
   [[nodiscard]] std::shared_ptr<Tree> find_tree(std::string_view name) {
-    auto tio = find_treeio(name);
+    auto tio = find_io(name);
     if (!tio) {
       return nullptr;
     }
@@ -1178,7 +1220,7 @@ public:
   }
 
   [[nodiscard]] std::shared_ptr<const Tree> find_tree(std::string_view name) const {
-    auto tio = find_treeio(name);
+    auto tio = find_io(name);
     if (!tio) {
       return nullptr;
     }
@@ -1225,7 +1267,7 @@ public:
   }
 
   void delete_treeio(std::string_view name) {
-    auto tio = find_treeio(name);
+    auto tio = find_io(name);
     if (!tio) {
       return;
     }
@@ -1237,14 +1279,14 @@ public:
   [[nodiscard]] ForestCursor create_cursor(Tree::Node_hier node);
 
 private:
-  [[nodiscard]] std::shared_ptr<TreeIO> create_treeio_impl(Tid tree_tid, std::string_view name) {
+  [[nodiscard]] std::shared_ptr<TreeIO> create_io_impl(Tid tree_tid, std::string_view name) {
     I(tree_tid < 0, "create_tree: tree id must be negative");
-    I(!name.empty(), "create_treeio: name is required");
+    I(!name.empty(), "create_io: name is required");
     assert_name_available(name);
 
     const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
     if (tree_idx < tree_ios_.size()) {
-      I(!tree_ios_[tree_idx], "create_treeio: explicit id already exists or is reserved");
+      I(!tree_ios_[tree_idx], "create_io: explicit id already exists or is reserved");
     } else {
       tree_ios_.resize(tree_idx + 1);
       trees.resize(tree_idx + 1);

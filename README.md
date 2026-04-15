@@ -123,7 +123,6 @@ bazel run //hhds:chip_typical_long_correctness
 bazel run //hhds:forest_correctness
 
 bazel test //hhds:graph_test
-bazel test //hhds:graph_bench
 ```
 
 ## Notes

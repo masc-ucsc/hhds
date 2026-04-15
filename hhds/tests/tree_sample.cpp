@@ -55,8 +55,8 @@ int main() {
   tree->print(std::cout, print_options);
 
   auto forest = hhds::Forest::create();
-  auto top_tio = forest->create_treeio("top");
-  auto sub_tio = forest->create_treeio("sub");
+  auto top_tio = forest->create_io("top");
+  auto sub_tio = forest->create_io("sub");
   auto top     = top_tio->create_tree();
   auto sub     = sub_tio->create_tree();
   const auto top_tid = top_tio->get_tid();

@@ -97,34 +97,34 @@ appear in user-facing function signatures.
 - [x] Add `sample.md` with target API examples.
 - [x] Consolidate planning into `todo_first.md` + `todo_attr.md`.
 - [x] Remove stale planning docs (`api.md`, `api_attribute.md`, `TODO.md`).
-- [ ] Remove old examples that show payload-bearing trees or direct body creation.
-- [ ] Remove Rust and `lhtree` comparison code from the repo.
-- [ ] Simplify build and dependency surface.
+- [x] Remove old examples that show payload-bearing trees or direct body creation.
+- [x] Remove Rust and `lhtree` comparison code from the repo.
+- [x] Simplify build and dependency surface.
 
 ## Phase 2: Declaration-centric API
 
 ### Graph side
 
-- [ ] Add `GraphLibrary::create_io(name)` returning `shared_ptr<GraphIO>`.
-- [ ] Add `GraphLibrary::find_io(name)` returning `shared_ptr<GraphIO>`.
-- [ ] Add `GraphIO::create_graph()` and `GraphIO::get_graph()`.
-- [ ] Add `Graph::get_io()` (navigate back to declaration).
-- [ ] Make graph body creation impossible without an existing `GraphIO`.
-- [ ] Remove or hide explicit-ID public graph creation APIs.
+- [x] Add `GraphLibrary::create_io(name)` returning `shared_ptr<GraphIO>`.
+- [x] Add `GraphLibrary::find_io(name)` returning `shared_ptr<GraphIO>`.
+- [x] Add `GraphIO::create_graph()` and `GraphIO::get_graph()`.
+- [x] Add `Graph::get_io()` (navigate back to declaration).
+- [x] Make graph body creation impossible without an existing `GraphIO`.
+- [x] Remove or hide explicit-ID public graph creation APIs.
 
 ### Tree side
 
-- [ ] Add `Forest::create_io(name)` returning `shared_ptr<TreeIO>`.
-- [ ] Add `Forest::find_io(name)` returning `shared_ptr<TreeIO>`.
-- [ ] Add `TreeIO::create_tree()` and `TreeIO::get_tree()`.
-- [ ] Add `Tree::get_io()` (navigate back to declaration).
-- [ ] Make tree body creation impossible without an existing `TreeIO`.
-- [ ] Remove or hide explicit-ID public tree creation APIs.
+- [x] Add `Forest::create_io(name)` returning `shared_ptr<TreeIO>`.
+- [x] Add `Forest::find_io(name)` returning `shared_ptr<TreeIO>`.
+- [x] Add `TreeIO::create_tree()` and `TreeIO::get_tree()`.
+- [x] Add `Tree::get_io()` (navigate back to declaration).
+- [x] Make tree body creation impossible without an existing `TreeIO`.
+- [x] Remove or hide explicit-ID public tree creation APIs.
 
 ### Shared
 
-- [ ] Ensure declaration and body share the same internal ID.
-- [ ] Names are required at `create_io()` time.
+- [x] Ensure declaration and body share the same internal ID.
+- [x] Names are required at `create_io()` time.
 
 Exit criteria: bodies cannot be created publicly without a declaration; names
 are required; explicit-ID public creation is gone.
@@ -141,43 +141,48 @@ are required; explicit-ID public creation is gone.
 
 ### Remaining
 
-- [ ] Remove direct graph-side IO mutation from `Graph`.
-- [ ] Replace `create_pin` with `create_driver_pin` / `create_sink_pin`:
+- [x] Remove direct graph-side IO mutation from `Graph`.
+- [x] Replace `create_pin` with `create_driver_pin` / `create_sink_pin`:
   - Overloads: `()` default, `(port_id)`, `("name")`.
   - String form resolves through sub-node's `GraphIO`.
   - Methods live on `Node`, not `Graph`.
-- [ ] Add `get_driver_pin` / `get_sink_pin` (errors if not created).
-- [ ] Replace `add_edge` with `connect_driver` / `connect_sink` on `Node`/`Pin`.
-- [ ] Add `get_pin_name()` on `Pin` (returns port name from `GraphIO`).
-- [ ] Make `set_subnode` a method on `Node` (accepts `GraphIO`/`TreeIO` shared_ptr).
+- [x] Add `get_driver_pin` / `get_sink_pin` (errors if not created).
+- [x] Replace `add_edge` with `connect_driver` / `connect_sink` on `Node`/`Pin`.
+- [x] Add `get_pin_name()` on `Pin` (returns port name from `GraphIO`).
+- [x] Make `set_subnode` a method on `Node` (accepts `GraphIO`/`TreeIO` shared_ptr).
+- [x] Graph traversals return one public `Node` handle that carries class/flat/hier context.
+- [x] Pins created from `Node` and pins returned by edge iteration inherit the originating context.
 - [ ] Store `GraphIO` ID in node's 16-bit type field when ID < 2^16.
-- [ ] Remove `create_pin` and `add_edge` entirely.
+- [x] Hide `create_pin` and `add_edge` from the public `Graph` API.
+- [ ] Remove private/internal `create_pin` and `add_edge` helpers entirely.
 
 ### Rich wrappers (graph)
 
-- [ ] Create graph `Node` class holding `Graph*` + `Nid`.
-- [ ] Create graph `Pin` class holding `Graph*` + `Nid`.
-- [ ] Move `set_subnode`, `set_type`, pin creation, connect, edge/pin iteration to wrappers.
-- [ ] Update all graph iterators to return `Node`.
+- [x] Create graph `Node` class holding `Graph*` + `Nid`.
+- [x] Create graph `Pin` class holding `Graph*` + `Nid`.
+- [x] Move `set_subnode`, `set_type`, pin creation, connect, edge/pin iteration to wrappers.
+- [x] Update graph `fast_*` / `forward_*` traversals to return the unified public `Node`.
 
 ### Rich wrappers (tree)
 
-- [ ] Create tree `Node` class holding `Tree*` + internal ID.
-- [ ] Move `add_child`, `set_subnode`, `set_type` to tree `Node`.
-- [ ] Move traversal start (`pre_order_*`, `post_order_*`, `sibling_order`) to tree `Node`.
+- [x] Create tree `Node` class holding `Tree*` + internal ID.
+- [x] Move `add_child`, `set_subnode`, `set_type` to tree `Node`.
+- [x] Move class traversal start (`pre_order_class`, `post_order_class`, `sibling_order`) to tree `Node`.
 - [ ] Update all tree iterators to return `Node`.
 - [ ] `Tree::get_root()` returns `Node`.
 
-### Iterator renames
+### Iterator renames and context
 
-- [ ] Graph: `forward_class()` / `forward_flat()` / `forward_hier(tree)`.
+- [x] Graph: `fast_class()` / `forward_class()` / `fast_flat()` /
+  `forward_flat()` / `fast_hier()` / `forward_hier()` return public `Node`
+  handles with `is_class()` / `is_flat()` / `is_hier()`.
 - [ ] Tree: `pre_order_class()` / `pre_order_flat()` / `pre_order_hier(tree)`,
   `post_order_class()` / `post_order_flat()` / `post_order_hier(tree)`,
   `sibling_order()`.
 
 Exit criteria: all pins have explicit direction; all edges via connect API;
-`create_pin`/`add_edge` removed; Node/Pin are the public API surface for both
-graph and tree.
+`create_pin`/`add_edge` hidden from the public API; Node/Pin are the public API
+surface for graph, with remaining tree traversal/root cleanup tracked above.
 
 ## Phase 4: Lifetime and deletion semantics
 

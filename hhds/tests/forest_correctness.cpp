@@ -16,7 +16,7 @@ struct DeclaredTree {
 };
 
 DeclaredTree create_rooted_tree(const std::shared_ptr<hhds::Forest>& forest, std::string_view name) {
-  auto tio  = forest->create_treeio(name);
+  auto tio  = forest->create_io(name);
   auto tree = tio->create_tree();
   tree->add_root();
   return {std::move(tio), std::move(tree)};
@@ -40,20 +40,20 @@ TEST(ForestCorrectness, BasicForestOperations) {
 TEST(ForestCorrectness, TreeIOCanExistWithoutBody) {
   auto forest = hhds::Forest::create();
 
-  auto tio = forest->create_treeio("parser");
+  auto tio = forest->create_io("parser");
 
   ASSERT_NE(tio, nullptr);
   EXPECT_EQ(tio->get_name(), "parser");
   EXPECT_FALSE(tio->has_tree());
   EXPECT_EQ(tio->get_tree(), nullptr);
-  EXPECT_EQ(forest->find_treeio("parser"), tio);
+  EXPECT_EQ(forest->find_io("parser"), tio);
   EXPECT_EQ(forest->find_tree("parser"), nullptr);
 
   auto tree = tio->create_tree();
   ASSERT_NE(tree, nullptr);
   EXPECT_TRUE(tio->has_tree());
   EXPECT_EQ(tio->get_tree(), tree);
-  EXPECT_EQ(tree->get_treeio(), tio);
+  EXPECT_EQ(tree->get_io(), tio);
   EXPECT_EQ(tree->get_tid(), tio->get_tid());
   EXPECT_EQ(forest->find_tree("parser"), tree);
 }
@@ -81,7 +81,7 @@ TEST(ForestCorrectness, SubtreeReferences) {
   deleted = forest->delete_tree(sub_tree.tio->get_tid());
   EXPECT_TRUE(deleted);
   EXPECT_EQ(forest->find_tree("sub"), nullptr);
-  EXPECT_EQ(forest->find_treeio("sub"), nullptr);
+  EXPECT_EQ(forest->find_io("sub"), nullptr);
 }
 
 TEST(ForestCorrectness, TreeTraversalWithSubtrees) {
@@ -213,7 +213,7 @@ TEST(ForestCorrectness, TombstoneDeletion) {
 TEST(ForestCorrectness, CreateAndFindByName) {
   auto forest = hhds::Forest::create();
 
-  auto parser_tio = forest->create_treeio("parser");
+  auto parser_tio = forest->create_io("parser");
   auto parser     = parser_tio->create_tree();
 
   ASSERT_NE(parser_tio, nullptr);
@@ -221,7 +221,7 @@ TEST(ForestCorrectness, CreateAndFindByName) {
   EXPECT_EQ(parser_tio->get_tid(), -1);
   EXPECT_EQ(parser_tio->get_name(), "parser");
   EXPECT_EQ(parser->get_name(), "parser");
-  EXPECT_EQ(forest->find_treeio("parser"), parser_tio);
+  EXPECT_EQ(forest->find_io("parser"), parser_tio);
   EXPECT_EQ(forest->find_tree("parser"), parser);
   EXPECT_EQ(forest->find_tree("missing"), nullptr);
 }
@@ -229,20 +229,20 @@ TEST(ForestCorrectness, CreateAndFindByName) {
 TEST(ForestCorrectness, DeleteTreeRemovesNameLookup) {
   auto forest = hhds::Forest::create();
 
-  auto parser_tio = forest->create_treeio("parser");
+  auto parser_tio = forest->create_io("parser");
   (void)parser_tio->create_tree();
   ASSERT_NE(forest->find_tree("parser"), nullptr);
-  ASSERT_NE(forest->find_treeio("parser"), nullptr);
+  ASSERT_NE(forest->find_io("parser"), nullptr);
 
   forest->delete_treeio(parser_tio);
   EXPECT_EQ(forest->find_tree("parser"), nullptr);
-  EXPECT_EQ(forest->find_treeio("parser"), nullptr);
+  EXPECT_EQ(forest->find_io("parser"), nullptr);
 }
 
 TEST(ForestCorrectness, DuplicateNamesRejected) {
   auto forest = hhds::Forest::create();
-  (void)forest->create_treeio("parser");
+  (void)forest->create_io("parser");
 
-  EXPECT_THROW(static_cast<void>(forest->create_treeio("parser")), std::runtime_error);
+  EXPECT_THROW(static_cast<void>(forest->create_io("parser")), std::runtime_error);
 }
 

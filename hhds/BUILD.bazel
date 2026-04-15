@@ -195,79 +195,9 @@ cc_test(
     deps = [":graph"],
 )
 
-cc_binary(
-    name = "graph_bench",
-    srcs = ["tests/graph_bench.cpp"],
-    tags = ["manual"],
-    deps = [
-        ":graph",
-        "@abseil-cpp//absl/container:flat_hash_map",
-        "@abseil-cpp//absl/container:flat_hash_set",
-        "@abseil-cpp//absl/container:node_hash_set",
-        "@google_benchmark//:benchmark_main",
-    ],
-)
-
-# cc_test(
-#     name = "delete_chip_typical_bench",
-#     srcs = ["tests/delete_bench/delete_leaf_bench/chip_typical_tree_bench.cpp"],
-#     deps = [
-#         "@google_benchmark//:benchmark",
-#         "@googletest//:gtest_main",
-#         ":core",
-#     ],
-# )
-
-#cc_library(
-#    name = "graph_core",
-#    srcs = glob(
-#        ["graph.cpp"],
-#        exclude = ["*graph*.cpp"],
-#    ),
-#    hdrs = glob(["graph.hpp", "graph_sizing.hpp"]),
-#    copts = COPTS,
-#    defines = select({
-#        ":use_profiling": [
-#            "HHDS_PROFILING=1",
-#        ],
-#        "//conditions:default": [],
-#    }),
-#    includes = ["."],
-#    visibility = ["//visibility:public"],
-#    deps = [
-#        "@iassert",
-#        "@emhash",
-#    ] + select({
-#        ":use_profiling": [
-#            "@com_google_perfetto//:perfetto",
-#        ],
-#        "//conditions:default": [],
-#    }),
-#)
-
-#cc_binary(
-#    name = "small_graph_test",
-#    srcs = ["tests/small_graph_test.cpp"],
-#    deps = [
-#        ":graph_core",
-#    ],
-#)
-
 cc_test(
     name = "iterators_impl",
     srcs = ["tests/iterators_impl.cpp"],
-    deps = [
-        ":core",
-        ":graph",
-        "@abseil-cpp//absl/container:flat_hash_map",
-        "@googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "iterators",
-    srcs = ["tests/iterators.cpp"],
-    tags = ["manual"],  # planned API, not yet implemented
     deps = [
         ":core",
         ":graph",

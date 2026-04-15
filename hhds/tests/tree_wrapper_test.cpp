@@ -17,7 +17,7 @@ struct DeclaredTree {
 };
 
 DeclaredTree create_declared_tree(const std::shared_ptr<hhds::Forest>& forest, std::string_view name) {
-  auto tio  = forest->create_treeio(name);
+  auto tio  = forest->create_io(name);
   auto tree = tio->create_tree();
   return {std::move(tio), std::move(tree)};
 }
