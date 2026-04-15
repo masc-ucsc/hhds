@@ -7,9 +7,11 @@ representations.
 
 The repository is being simplified toward a clean standalone API. The current
 implementation already contains the core structural containers, but the public
-surface is being cleaned up around a declaration-centric model. The roadmap for
-that work lives in [`TODO.md`](/Users/renau/projs/hhds/TODO.md), and the
-intended public API shape lives in [`api.md`](/Users/renau/projs/hhds/api.md).
+surface is being cleaned up around a declaration-centric model.
+
+- [`sample.md`](/Users/renau/projs/hhds/sample.md) — target API examples
+- [`todo_first.md`](/Users/renau/projs/hhds/todo_first.md) — structural cleanup roadmap
+- [`todo_attr.md`](/Users/renau/projs/hhds/todo_attr.md) — attribute system roadmap
 
 ## Design goals
 
@@ -43,18 +45,17 @@ intended public API shape lives in [`api.md`](/Users/renau/projs/hhds/api.md).
 
 ### Metadata
 
-HHDS is intended to stay structural. User metadata should live in external
-maps keyed by wrapper objects such as:
+HHDS is intended to stay structural. User metadata lives in attribute maps
+stored per-graph/tree, accessed through `Node`/`Pin` rich wrappers:
 
-- `Node_class`
-- `Node_flat`
-- `Node_hier`
-- `Pin_class`
-- `Pin_flat`
-- `Pin_hier`
+```cpp
+node.attr(hhds::attrs::name).set("adder");
+node.attr(livehd::attrs::bits).set(32);
+```
 
-Future metadata registration belongs at `Forest` / `GraphLibrary`, not at
-individual `Tree` / `Graph` objects.
+Downstream projects add new attributes by declaring tag structs in their own
+namespace — no HHDS edits needed. See [`todo_attr.md`](/Users/renau/projs/hhds/todo_attr.md)
+for the design.
 
 ## Structural properties
 
@@ -83,11 +84,11 @@ The intended public model is declaration-first:
 
 ```cpp
 auto glib = std::make_shared<hhds::GraphLibrary>();
-auto gio  = glib->create_graphio("alu");
+auto gio  = glib->create_io("alu");
 auto g    = gio->create_graph();
 
 auto forest = std::make_shared<hhds::Forest>();
-auto tio    = forest->create_treeio("parser");
+auto tio    = forest->create_io("parser");
 auto t      = tio->create_tree();
 ```
 
