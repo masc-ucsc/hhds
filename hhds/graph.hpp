@@ -570,6 +570,7 @@ private:
   [[nodiscard]] Pin_class create_pin(Node_class node, Port_id port_id);
   [[nodiscard]] Pid       create_pin(Nid nid, Port_id port_id);
   [[nodiscard]] Pin_class find_pin(Node_class node, Port_id port_id, bool driver) const;
+  [[nodiscard]] Pin_class find_or_create_pin(Node_class node, Port_id port_id);
   [[nodiscard]] Port_id   resolve_driver_port(Node_class node, std::string_view name) const;
   [[nodiscard]] Port_id   resolve_sink_port(Node_class node, std::string_view name) const;
   [[nodiscard]] std::string_view pin_name(Pin_class pin) const;
@@ -603,7 +604,6 @@ private:
 
   std::vector<NodeEntry>                              node_table;
   std::vector<PinEntry>                               pin_table;
-  std::vector<uint8_t>                                pin_directions_;
   mutable std::vector<Node>                      fast_class_cache_;
   mutable std::vector<Node>                      fast_flat_cache_;
   mutable std::vector<Node>                      fast_hier_cache_;

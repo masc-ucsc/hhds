@@ -196,6 +196,18 @@ Returns the port name from the node's `GraphIO` declaration. This is not a
 stored attribute — it resolves dynamically from `GraphIO`. Accessed via
 `pin.get_pin_name()` rather than the `attr()` mechanism.
 
+## Pre-requisite: Remove `tree<X>` template and `data_stack`
+
+The templated `tree<X>` class carries a `data_stack` (`std::vector<X>`) that
+stores per-node payload alongside the structural `pointers_stack`. Once the
+attribute system is in place, per-node data should be stored as attributes
+instead.
+
+- [ ] Remove the `tree<X>` template class and `PayloadForest<X>`.
+- [ ] Remove `data_stack` and all `get_data`/`set_data`/`operator[]` methods.
+- [ ] Migrate any existing users of `tree<X>` to use the `Tree` class +
+      attributes for per-node data.
+
 ## Implementation steps
 
 1. Add storage markers (`flat_storage`, `hier_storage`) and `Attribute` concept.
