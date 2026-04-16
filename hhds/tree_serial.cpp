@@ -1,6 +1,8 @@
 // This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 
+#include <filesystem>
 #include <fstream>
+#include <sstream>
 
 #include "tree.hpp"
 
@@ -328,6 +330,156 @@ Tree::ReadDumpResult Tree::read_dump(const std::string& filename, std::span<cons
   std::ifstream ifs(filename);
   I(ifs.is_open(), "read_dump: Cannot open file for reading");
   return read_dump(ifs, type_table);
+}
+
+// --------------------------------------------------------------------------
+// Binary persistence
+// --------------------------------------------------------------------------
+
+static constexpr uint32_t TREE_BODY_MAGIC   = 0x48485442;  // "HHTB"
+static constexpr uint32_t TREE_BODY_VERSION = 1;
+static constexpr uint32_t ENDIAN_CHECK      = 0x01020304;
+
+void Tree::save_body(const std::string& dir_path) const {
+  namespace fs = std::filesystem;
+  fs::create_directories(dir_path);
+
+  const auto    path = fs::path(dir_path) / "body.bin";
+  std::ofstream ofs(path, std::ios::binary);
+  assert(ofs.good() && "save_body: cannot open body.bin for writing");
+
+  const uint64_t pointers_count = pointers_stack.size();
+  const uint64_t validity_count = validity_stack.size();
+  const uint64_t subnode_count  = subnode_refs.size();
+
+  ofs.write(reinterpret_cast<const char*>(&TREE_BODY_MAGIC), sizeof(TREE_BODY_MAGIC));
+  ofs.write(reinterpret_cast<const char*>(&TREE_BODY_VERSION), sizeof(TREE_BODY_VERSION));
+  ofs.write(reinterpret_cast<const char*>(&ENDIAN_CHECK), sizeof(ENDIAN_CHECK));
+  ofs.write(reinterpret_cast<const char*>(&pointers_count), sizeof(pointers_count));
+  ofs.write(reinterpret_cast<const char*>(&validity_count), sizeof(validity_count));
+  ofs.write(reinterpret_cast<const char*>(&subnode_count), sizeof(subnode_count));
+
+  // Bulk write — all pointer-free POD arrays.
+  ofs.write(reinterpret_cast<const char*>(pointers_stack.data()),
+            static_cast<std::streamsize>(pointers_count * sizeof(Tree_pointers)));
+  ofs.write(reinterpret_cast<const char*>(validity_stack.data()),
+            static_cast<std::streamsize>(validity_count * sizeof(std::bitset<64>)));
+  ofs.write(reinterpret_cast<const char*>(subnode_refs.data()),
+            static_cast<std::streamsize>(subnode_count * sizeof(Tree_pos)));
+  dirty_ = false;
+}
+
+void Tree::load_body(const std::string& dir_path) {
+  namespace fs = std::filesystem;
+
+  const auto    path = fs::path(dir_path) / "body.bin";
+  std::ifstream ifs(path, std::ios::binary);
+  assert(ifs.good() && "load_body: cannot open body.bin for reading");
+
+  uint32_t magic = 0, version = 0, endian = 0;
+  ifs.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+  ifs.read(reinterpret_cast<char*>(&version), sizeof(version));
+  ifs.read(reinterpret_cast<char*>(&endian), sizeof(endian));
+  assert(magic == TREE_BODY_MAGIC && "load_body: bad magic");
+  assert(version == TREE_BODY_VERSION && "load_body: unsupported version");
+  assert(endian == ENDIAN_CHECK && "load_body: endian mismatch");
+
+  uint64_t pointers_count = 0, validity_count = 0, subnode_count = 0;
+  ifs.read(reinterpret_cast<char*>(&pointers_count), sizeof(pointers_count));
+  ifs.read(reinterpret_cast<char*>(&validity_count), sizeof(validity_count));
+  ifs.read(reinterpret_cast<char*>(&subnode_count), sizeof(subnode_count));
+
+  pointers_stack.resize(pointers_count);
+  ifs.read(reinterpret_cast<char*>(pointers_stack.data()),
+           static_cast<std::streamsize>(pointers_count * sizeof(Tree_pointers)));
+
+  validity_stack.resize(validity_count);
+  ifs.read(reinterpret_cast<char*>(validity_stack.data()),
+           static_cast<std::streamsize>(validity_count * sizeof(std::bitset<64>)));
+
+  subnode_refs.resize(subnode_count);
+  ifs.read(reinterpret_cast<char*>(subnode_refs.data()),
+           static_cast<std::streamsize>(subnode_count * sizeof(Tree_pos)));
+  dirty_ = false;
+}
+
+// --------------------------------------------------------------------------
+// Forest persistence
+// --------------------------------------------------------------------------
+
+void Forest::save(const std::string& db_path) const {
+  namespace fs = std::filesystem;
+  fs::create_directories(db_path);
+
+  // --- forest.txt (declarations, text format) ---
+  {
+    std::ofstream ofs(fs::path(db_path) / "forest.txt");
+    assert(ofs.good() && "Forest::save: cannot open forest.txt");
+    ofs << "hhds_forest 1\n";
+    for (size_t i = 0; i < tree_ios_.size(); ++i) {
+      const auto& tio = tree_ios_[i];
+      if (!tio) {
+        continue;
+      }
+      // tid = -(i+1)
+      ofs << "tree_io " << i << " " << tio->get_name() << "\n";
+    }
+  }
+
+  // --- tree body directories (skip clean trees) ---
+  for (size_t i = 0; i < trees.size(); ++i) {
+    if (!trees[i] || !trees[i]->is_dirty()) {
+      continue;
+    }
+    const auto dir = fs::path(db_path) / ("tree_" + std::to_string(i));
+    trees[i]->save_body(dir.string());
+  }
+}
+
+void Forest::load(const std::string& db_path) {
+  namespace fs = std::filesystem;
+
+  // Clear current state.
+  tree_ios_.clear();
+  trees.clear();
+  reference_counts.clear();
+  tree_name_to_tid_.clear();
+
+  // --- Parse forest.txt ---
+  {
+    std::ifstream ifs(fs::path(db_path) / "forest.txt");
+    assert(ifs.good() && "Forest::load: cannot open forest.txt");
+
+    std::string line;
+    std::getline(ifs, line);  // header: "hhds_forest 1"
+
+    while (std::getline(ifs, line)) {
+      if (line.empty()) {
+        continue;
+      }
+      if (line.substr(0, 8) == "tree_io ") {
+        std::istringstream ss(line.substr(8));
+        size_t      idx;
+        std::string name;
+        ss >> idx >> name;
+        Tid tid = -static_cast<Tree_pos>(idx + 1);
+        (void)create_io_impl(tid, name);
+      }
+    }
+  }
+
+  // --- Load tree bodies ---
+  for (size_t i = 0; i < tree_ios_.size(); ++i) {
+    const auto& tio = tree_ios_[i];
+    if (!tio) {
+      continue;
+    }
+    const auto dir = fs::path(db_path) / ("tree_" + std::to_string(i));
+    if (fs::exists(dir / "body.bin")) {
+      auto tree = tio->create_tree();
+      tree->load_body(dir.string());
+    }
+  }
 }
 
 }  // namespace hhds

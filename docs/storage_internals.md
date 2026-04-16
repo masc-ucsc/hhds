@@ -49,6 +49,16 @@ There is no per-pin direction vector. Direction is entirely per-edge.
 
 ## 2. Graph Storage
 
+The graph uses per-node/per-pin adjacency storage. Each NodeEntry or PinEntry
+has room for up to 6 inline adjacent endpoint references: 4 nearby delta-
+compressed references and 2 full references. If that particular entry needs
+more than 6 references, it moves its edge set to overflow storage. Edges are
+stored bidirectionally by inserting one reference in the driver endpoint and
+one reference in the sink endpoint. A direction bit on each stored reference
+tells whether that reference is an outgoing/local edge or an incoming/back
+edge, so incoming and outgoing traversals can share the same per-entry edge
+storage.
+
 ### 2.1 Top-Level Vectors
 
 A `Graph` object owns two flat vectors:
@@ -96,7 +106,7 @@ For an OR gate with one input and one output (both port 0), the single
 184     use_overflow   1b     0 = inline edges, 1 = hash-set mode
 185-191 padding        7b
 192-255 sedges union   64b     EITHER 4×14-bit packed short edges
-                              OR     pointer to HashSet<Vid>
+                              OR     uint32_t overflow_idx into Graph::overflow_sets_
  ─────────────────────────────────────────────────────────────
  Total: 256 bits = 32 bytes
 ```
@@ -114,7 +124,7 @@ For an OR gate with one input and one output (both port 0), the single
 190     use_overflow   1b     0 = inline edges, 1 = hash-set mode
         (implicit pad to byte)
 192-255 sedges union   64b     EITHER 4×14-bit packed short edges
-                              OR     pointer to HashSet<Vid>
+                              OR     uint32_t overflow_idx into Graph::overflow_sets_
  ─────────────────────────────────────────────────────────────
  Total: 256 bits = 32 bytes
 ```
@@ -156,19 +166,24 @@ long-edge fields. These are full absolute IDs (not delta-compressed).
 When all 6 inline slots (4 short + 2 long) are full, the entry transitions
 to overflow mode:
 
-1. A new `ankerl::unordered_dense::set<Vid>` is heap-allocated.
+1. A new `ankerl::unordered_dense::set<Vid>` is appended to
+   `Graph::overflow_sets_`.
 2. All existing edges (from sedges + ledge0 + ledge1) are decoded and
    inserted into the set.
-3. `use_overflow = 1`, `sedges_.set` points to the hash set, and
-   `ledge0`/`ledge1` are zeroed (except `ledge0` may hold a subnode Gid
-   for NodeEntry).
+3. `use_overflow = 1`, `sedges_.overflow_idx` stores the index into
+   `overflow_sets_`, and `ledge0`/`ledge1` are zeroed (except `ledge0`
+   may hold a subnode Gid for NodeEntry).
 4. All future edges go directly into the hash set.
 
 **This transition is one-way** — once in overflow mode, the entry never
-returns to inline mode.
+returns to inline mode. The `overflow_idx` field is a `uint32_t` stored
+in the `sedges_` union; no pointers exist inside the entry, making the
+`node_table` and `pin_table` vectors pointer-free and suitable for bulk
+binary serialization.
 
 **Cost:** ~56+ bytes per hash set (object overhead + load factor), growing
-with edge count.
+with edge count. The sets are owned by `Graph::overflow_sets_`, not by
+the individual entries.
 
 #### Subnode Storage (NodeEntry only)
 
@@ -348,3 +363,111 @@ Forest
 | Deletion             | Tombstone                | Tombstone + intra-chunk compaction |
 | Hierarchy            | Gid in ledge0 (overflow) | Negative parent = subnode Tid |
 | Backing store        | `std::vector` (flat)     | `std::vector` (flat)    |
+
+---
+
+## 5. On-Disk Persistence
+
+### 5.1 Design Principles
+
+- **Binary body format**: `node_table`, `pin_table`, and `pointers_stack` are
+  pointer-free POD arrays that are bulk-written/read in a single I/O operation.
+  This makes save/load bandwidth-limited (~3 GB/s on NVMe).
+- **Overflow sets serialized separately**: Each overflow hash set is written to
+  its own file using the `values()` / `replace()` API from
+  `ankerl::unordered_dense::set`. Only the contiguous values vector is
+  serialized; the hash bucket table is rebuilt on load.
+- **Text for declarations**: `GraphIO` and `TreeIO` metadata (names, port
+  declarations) is small and human-readable. It uses a simple text format to
+  allow manual inspection and cross-platform portability.
+- **No cross-endian support**: Binary files are same-endian only. An endian
+  marker in the header detects mismatches. For cross-platform exchange, use
+  the text-based `write_dump` / `read_dump` on trees.
+
+### 5.2 Directory Layout
+
+```
+<db_root>/
+  library.txt                    # GraphLibrary declarations (text)
+  forest.txt                     # Forest declarations (text)
+  graph_<gid>/
+    body.bin                     # node_table + pin_table (binary bulk)
+    overflow_0.bin               # overflow set 0: count + Vid[]
+    overflow_1.bin               # overflow set 1: count + Vid[]
+    ...
+  tree_<tid>/
+    body.bin                     # pointers_stack + validity_stack + subnode_refs (binary bulk)
+```
+
+### 5.3 Graph Body Format (`body.bin`)
+
+```
+ Offset  Size     Field
+ ──────────────────────────────────────────
+ 0       4B       magic: 0x48484742 ("HHGB")
+ 4       4B       version: 1
+ 8       4B       endian_check: 0x01020304
+ 12      8B       node_count (uint64_t)
+ 20      8B       pin_count (uint64_t)
+ 28      8B       overflow_count (uint64_t)
+ 36      N*32B    node_table (NodeEntry[node_count])
+ 36+N*32 M*32B    pin_table (PinEntry[pin_count])
+```
+
+NodeEntry and PinEntry are written as-is from memory. The `sedges_` union
+contains either packed short edges (when `use_overflow == 0`) or an
+`overflow_idx` (when `use_overflow == 1`). No pointers are stored on disk.
+
+### 5.4 Overflow Set Format (`overflow_<idx>.bin`)
+
+```
+ Offset  Size     Field
+ ──────────────────────────────────────────
+ 0       8B       count (uint64_t)
+ 8       K*8B     values (Vid[count])
+```
+
+Serialized via `set.values().data()`. Deserialized by reading into a
+`std::vector<Vid>` and calling `set.replace(std::move(vec))`, which
+rebuilds the hash bucket table from the values.
+
+### 5.5 Tree Body Format (`body.bin`)
+
+```
+ Offset  Size     Field
+ ──────────────────────────────────────────
+ 0       4B       magic: 0x48485442 ("HHTB")
+ 4       4B       version: 1
+ 8       4B       endian_check: 0x01020304
+ 12      8B       pointers_count (uint64_t)
+ 20      8B       validity_count (uint64_t)
+ 28      8B       subnode_count (uint64_t)
+ 36      P*192B   pointers_stack (Tree_pointers[pointers_count])
+ ...     V*8B     validity_stack (bitset<64>[validity_count])
+ ...     S*8B     subnode_refs (Tree_pos[subnode_count])
+```
+
+### 5.6 Lazy Body Loading
+
+Body files are not loaded until `get_graph()` or `get_tree()` is called.
+Declarations (names, IO pin metadata) load eagerly from the text files
+so that `find_io()` works without loading bodies.
+
+When the last `shared_ptr<Graph>` or `shared_ptr<Tree>` is released, the
+body can be unloaded (the data is dropped and will be re-read from disk on
+next access).
+
+### 5.7 Future: Attribute Sections
+
+Once the attribute system is in place, each attribute tag will be stored as
+an additional file in the graph/tree directory:
+
+```
+  graph_<gid>/
+    attr_<tag_hash>.bin          # flat: (Nid, T)[] pairs
+                                 # hier: (Tree_pos, Nid, T)[] pairs
+```
+
+Trivially copyable `T` values are bulk-written. Non-trivial types (e.g.,
+`std::string`) use length-prefixed encoding. Empty attribute maps are not
+persisted.

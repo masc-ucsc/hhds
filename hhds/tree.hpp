@@ -230,6 +230,7 @@ private:
   Tid                          self_tid_   = INVALID;
   std::string                  name_       = "tree";
   uint64_t                     generation_ = 1;
+  mutable bool                 dirty_      = true;
 
   void _ensure_subnode_ref_capacity(Tree_pos required_pos) {
     if (required_pos < static_cast<Tree_pos>(subnode_refs.size())) {
@@ -552,6 +553,7 @@ public:
   Node_class add_root_node() { return as_class(add_root()); }
   void       set_type(const Tree_pos& node_pos, Type type) {
     I(_check_idx_exists(node_pos), "set_type: Node index out of range");
+    dirty_ = true;
     const auto chunk_id     = (node_pos >> CHUNK_SHIFT);
     const auto chunk_offset = static_cast<int16_t>(node_pos & CHUNK_MASK);
     pointers_stack[chunk_id].set_type_at(chunk_offset, type);
@@ -606,6 +608,12 @@ public:
 
   [[nodiscard]] static ReadDumpResult read_dump(std::istream& is, std::span<const Type_entry> type_table);
   [[nodiscard]] static ReadDumpResult read_dump(const std::string& filename, std::span<const Type_entry> type_table);
+
+  // Binary persistence — saves/loads body data (pointers_stack, validity_stack, subnode_refs).
+  // dir_path is the tree-specific directory (e.g., "db/tree_1/").
+  void save_body(const std::string& dir_path) const;
+  void load_body(const std::string& dir_path);
+  [[nodiscard]] bool is_dirty() const noexcept { return dirty_; }
 
   void print_tree(int deep = 0) {
     for (size_t i = 0; i < pointers_stack.size(); i++) {
@@ -1329,6 +1337,10 @@ public:
   [[nodiscard]] ForestCursor create_cursor(Tid tree_tid, Tree_pos start = ROOT);
   [[nodiscard]] ForestCursor create_cursor(Tree::Node_flat node);
   [[nodiscard]] ForestCursor create_cursor(Tree::Node_hier node);
+
+  // Persistence — saves all declarations (text) and bodies (binary).
+  void save(const std::string& db_path) const;
+  void load(const std::string& db_path);
 
 private:
   [[nodiscard]] std::shared_ptr<TreeIO> create_io_impl(Tid tree_tid, std::string_view name) {
@@ -2821,6 +2833,7 @@ inline Tree_pos Tree::insert_next_sibling(const Tree_pos& sibling_id) {
 
 inline Tree_pos Tree::add_root() {
   I(pointers_stack.empty(), "add_root: Tree is not empty");
+  dirty_ = true;
 
   pointers_stack.emplace_back();
   const auto root_pos = _create_space() << CHUNK_SHIFT;
@@ -2831,6 +2844,7 @@ inline Tree_pos Tree::add_root() {
 
 inline Tree_pos Tree::add_child(const Tree_pos& parent_index) {
   I(_check_idx_exists(parent_index), "add_child: Parent index out of range");
+  dirty_ = true;
 
   const auto last_child_id = get_last_child(parent_index);
   if (last_child_id != INVALID) {
@@ -2915,6 +2929,7 @@ inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
 inline void Tree::delete_subtree(const Tree_pos& subtree_root) {
   I(_check_idx_exists(subtree_root), "delete_subtree: Subtree root index out of range");
   I(_contains_data(subtree_root), "delete_subtree: Subtree root does not exist");
+  dirty_            = true;
   subs_cache_valid_ = false;
 
   std::vector<Tree_pos> nodes_to_delete;
@@ -2946,6 +2961,7 @@ inline void Tree::delete_subtree(const Tree_pos& subtree_root) {
 }
 
 inline void Tree::clear() {
+  dirty_ = true;
   ++generation_;
   if (forest_ptr != nullptr) {
     for (Tree_pos node_pos = ROOT; node_pos < static_cast<Tree_pos>(pointers_stack.size() << CHUNK_SHIFT); ++node_pos) {
@@ -2965,6 +2981,7 @@ inline void Tree::clear() {
 }
 
 inline void Tree::set_subnode(const Tree_pos& node_pos, Tree_pos subnode_ref) {
+  dirty_ = true;
   I(subnode_ref < 0, "Subnode reference must be negative");
   I(_check_idx_exists(node_pos), "set_subnode: Node index out of range");
   _ensure_subnode_ref_capacity(node_pos);

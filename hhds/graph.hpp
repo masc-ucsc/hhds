@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdlib>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -24,6 +26,29 @@ constexpr int NUM_NODES         = 10;
 constexpr int NUM_TYPES         = 3;
 constexpr int MAX_PINS_PER_NODE = 10;
 
+using OverflowVec = std::vector<ankerl::unordered_dense::set<Vid>>;
+
+struct OverflowPool {
+  OverflowVec&           sets;
+  std::vector<uint32_t>& free_list;
+
+  uint32_t alloc() {
+    if (!free_list.empty()) {
+      uint32_t idx = free_list.back();
+      free_list.pop_back();
+      sets[idx].clear();
+      return idx;
+    }
+    sets.emplace_back();
+    return static_cast<uint32_t>(sets.size() - 1);
+  }
+
+  void free(uint32_t idx) {
+    sets[idx].clear();
+    free_list.push_back(idx);
+  }
+};
+
 class __attribute__((packed)) PinEntry {
   friend class Graph;
 
@@ -33,19 +58,20 @@ public:
 
   [[nodiscard]] Nid     get_master_nid() const;
   [[nodiscard]] Port_id get_port_id() const;
-  auto                  add_edge(Pid self_id, Pid other_id) -> bool;
-  auto                  delete_edge(Pid self_id, Pid other_id) -> bool;
+  auto                  add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
+  auto                  delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
   [[nodiscard]] bool    has_edges() const;
   [[nodiscard]] Pid     get_next_pin_id() const;
   void                  set_next_pin_id(Pid id);
   [[nodiscard]] bool    check_overflow() const { return use_overflow; }
+  [[nodiscard]] uint32_t get_overflow_idx() const { return sedges_.overflow_idx; }
 
   static constexpr size_t MAX_EDGES = 8;
 
   class EdgeRange {
   public:
     using iterator = typename ankerl::unordered_dense::set<Vid>::const_iterator;
-    EdgeRange(const PinEntry* pin, Pid pid) noexcept;
+    EdgeRange(const PinEntry* pin, Pid pid, const OverflowVec& overflow) noexcept;
     EdgeRange(EdgeRange&& o) noexcept;
     ~EdgeRange() noexcept;
 
@@ -57,7 +83,6 @@ public:
     iterator end() const noexcept { return set_->end(); }
 
   private:
-    // Pid                                pid_;
     const PinEntry*                    pin_;
     ankerl::unordered_dense::set<Vid>* set_;
     bool                               own_;
@@ -66,10 +91,10 @@ public:
     static void                               release_set(ankerl::unordered_dense::set<Vid>*) noexcept;
     static void                               populate_set(const PinEntry*, ankerl::unordered_dense::set<Vid>&, Pid) noexcept;
   };
-  [[nodiscard]] auto get_edges(Pid pid) const noexcept -> EdgeRange;  // should be in node
+  [[nodiscard]] auto get_edges(Pid pid, const OverflowVec& overflow) const noexcept -> EdgeRange;
 
 private:
-  auto overflow_handling(Pid self_id, Vid other_id) -> bool;
+  auto overflow_handling(Pid self_id, Vid other_id, OverflowPool& pool) -> bool;
 
   Nid     master_nid : Nid_bits;   // 42 bits
   Port_id port_id : Port_bits;     // 22 bits    => 64 bits (8 bytes)
@@ -80,9 +105,9 @@ private:
 
   // adds upto a total of 191 bits => 24 bytes
   union {
-    int64_t                            sedges;  // 48 bits
-    ankerl::unordered_dense::set<Vid>* set;     // 8 bytes
-  } sedges_;                                    // Total: 8 bytes
+    int64_t  sedges;        // 48 bits (when use_overflow == 0)
+    uint32_t overflow_idx;  // index into Graph::overflow_sets_ (when use_overflow == 1)
+  } sedges_;                // Total: 8 bytes
   // Total: 32 bytes
 };
 
@@ -100,14 +125,15 @@ public:
   void               set_type(Type t);
   [[nodiscard]] Pid  get_next_pin_id() const;
   void               set_next_pin_id(Pid id);
-  [[nodiscard]] bool has_edges() const;
-  auto               add_edge(Pid self_id, Pid other_id) -> bool;
-  auto               delete_edge(Pid self_id, Pid other_id) -> bool;
+  [[nodiscard]] bool has_edges(const OverflowVec& overflow) const;
+  auto               add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
+  auto               delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
   [[nodiscard]] bool check_overflow() const { return use_overflow; }
+  [[nodiscard]] uint32_t get_overflow_idx() const { return sedges_.overflow_idx; }
 
   // Subgraph link: stored in ledge0 *only when use_overflow == 1* as (gid + 1).
   // Caller must validate gid before calling set_subnode().
-  void               set_subnode(Gid gid);
+  void               set_subnode(Gid gid, OverflowPool& pool);
   [[nodiscard]] Gid  get_subnode() const noexcept;
   [[nodiscard]] bool has_subnode() const noexcept;
 
@@ -116,7 +142,7 @@ public:
   class EdgeRange {
   public:
     using iterator = typename ankerl::unordered_dense::set<Vid>::const_iterator;
-    EdgeRange(const NodeEntry* node, Nid nid) noexcept;
+    EdgeRange(const NodeEntry* node, Nid nid, const OverflowVec& overflow) noexcept;
     EdgeRange(EdgeRange&& o) noexcept;
     ~EdgeRange() noexcept;
     // disable copy
@@ -126,7 +152,6 @@ public:
     iterator   end() const noexcept { return set_->end(); }
 
   private:
-    // Nid                                       nid_;
     const NodeEntry*                          node_;
     ankerl::unordered_dense::set<Vid>*        set_;
     bool                                      own_;
@@ -135,11 +160,11 @@ public:
     static void                               populate_set(const NodeEntry*, ankerl::unordered_dense::set<Vid>&, Nid) noexcept;
   };
 
-  [[nodiscard]] auto get_edges(Nid nid) const noexcept -> EdgeRange;
+  [[nodiscard]] auto get_edges(Nid nid, const OverflowVec& overflow) const noexcept -> EdgeRange;
 
 private:
   void clear_node();
-  auto overflow_handling(Nid self_id, Vid other_id) -> bool;
+  auto overflow_handling(Nid self_id, Vid other_id, OverflowPool& pool) -> bool;
 
   Nid     nid : Nid_bits;
   Type    type : 16;
@@ -149,9 +174,9 @@ private:
   uint8_t use_overflow : 1;
   uint8_t padding : 7;
   union {
-    int64_t                            sedges;  // 48 bits
-    ankerl::unordered_dense::set<Vid>* set;     // 8 bytes
-  } sedges_;                                    // Total: 8 bytes
+    int64_t  sedges;        // 48 bits (when use_overflow == 0)
+    uint32_t overflow_idx;  // index into Graph::overflow_sets_ (when use_overflow == 1)
+  } sedges_;                // Total: 8 bytes
 };
 static_assert(sizeof(NodeEntry) == 32, "NodeEntry size mismatch");
 
@@ -568,7 +593,13 @@ public:
 
   [[nodiscard]] std::vector<FastIterator> fast_iter(bool hierarchy, Gid top_graph = 0, uint32_t tree_node_num = 0) const;
 
+  // Binary persistence — saves/loads body data (node_table, pin_table, overflow sets).
+  // dir_path is the graph-specific directory (e.g., "db/graph_1/").
+  void save_body(const std::string& dir_path) const;
+  void load_body(const std::string& dir_path);
+
 private:
+  [[nodiscard]] OverflowPool get_overflow_pool() { return {overflow_sets_, overflow_free_}; }
   void               assert_accessible() const noexcept;
   void               assert_node_exists(const Node_class& node) const noexcept;
   void               assert_pin_exists(const Pin_class& pin) const noexcept;
@@ -617,6 +648,8 @@ private:
 
   std::vector<NodeEntry>                         node_table;
   std::vector<PinEntry>                          pin_table;
+  OverflowVec                                    overflow_sets_;
+  std::vector<uint32_t>                          overflow_free_;
   mutable std::vector<Node>                      fast_class_cache_;
   mutable std::vector<Node>                      fast_flat_cache_;
   mutable std::vector<Node>                      fast_hier_cache_;
@@ -641,6 +674,7 @@ private:
   std::weak_ptr<GraphIO>                         graphio_owner_;
   Gid                                            self_gid_ = Gid_invalid;
   bool                                           deleted_  = false;
+  mutable bool                                   dirty_    = true;
   std::string                                    name_;
 
   friend class Node_class;
@@ -857,6 +891,11 @@ public:
 
   // Count of live graphs.
   [[nodiscard]] Gid live_count() const noexcept { return live_count_; }
+
+  // Persistence — saves all declarations (text) and bodies (binary).
+  // db_path is the root directory (e.g., "my_db/").
+  void save(const std::string& db_path) const;
+  void load(const std::string& db_path);
 
 private:
   [[nodiscard]] std::shared_ptr<GraphIO> create_io_impl(Gid id, std::string_view name) {

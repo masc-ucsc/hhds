@@ -7,6 +7,7 @@
 #include <functional>
 #include <iostream>
 #include <queue>
+#include <sstream>
 #include <vector>
 
 #include "tree.hpp"
@@ -200,22 +201,23 @@ auto to_class(const Edge_hier& e) -> Edge_class {
   return out;
 }
 
-PinEntry::PinEntry() : master_nid(0), port_id(0), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.set = nullptr} {}
+PinEntry::PinEntry() : master_nid(0), port_id(0), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.sedges = 0} {}
 
 PinEntry::PinEntry(Nid mn, Port_id pid)
-    : master_nid(mn), port_id(pid), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.set = nullptr} {}
+    : master_nid(mn), port_id(pid), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.sedges = 0} {}
 
 Nid     PinEntry::get_master_nid() const { return master_nid; }
 Port_id PinEntry::get_port_id() const { return port_id; }
 Pid     PinEntry::get_next_pin_id() const { return next_pin_id; }
 void    PinEntry::set_next_pin_id(Pid id) { next_pin_id = id; }
 
-auto PinEntry::overflow_handling(Pid self_id, Vid other_id) -> bool {
+auto PinEntry::overflow_handling(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
-    sedges_.set->insert(other_id);
+    pool.sets[sedges_.overflow_idx].insert(other_id);
     return true;
   }
-  auto*              hs        = new ankerl::unordered_dense::set<Vid>();
+  uint32_t idx = pool.alloc();
+  auto&              hs        = pool.sets[idx];
   constexpr int      SHIFT     = 14;
   constexpr uint64_t SLOT_MASK = (1ULL << SHIFT) - 1;
 
@@ -234,29 +236,25 @@ auto PinEntry::overflow_handling(Pid self_id, Vid other_id) -> bool {
     Nid actual_self = self_id >> 2;
     Vid nid         = static_cast<Vid>(actual_self - diff);
     Vid target      = (nid << 2) | (is_driver ? 2 : 0) | (is_pin ? 1 : 0);
-    hs->insert(target);
+    hs.insert(target);
   }
   if (ledge0) {
-    hs->insert(static_cast<Vid>(ledge0));
+    hs.insert(static_cast<Vid>(ledge0));
   }
   if (ledge1) {
-    hs->insert(static_cast<Vid>(ledge1));
+    hs.insert(static_cast<Vid>(ledge1));
   }
-  use_overflow   = true;
-  sedges_.sedges = 0;
-  sedges_.set    = hs;
+  use_overflow         = true;
+  sedges_.overflow_idx = idx;
   ledge0 = ledge1 = 0;
 
-  hs->insert(other_id);
-  if (sedges_.set == nullptr) {
-    return false;
-  }
+  hs.insert(other_id);
   return true;
 }
 
-auto PinEntry::add_edge(Pid self_id, Vid other_id) -> bool {
+auto PinEntry::add_edge(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
-    return overflow_handling(self_id, other_id);
+    return overflow_handling(self_id, other_id, pool);
   }
 
   Nid     actual_self  = self_id >> 2;
@@ -276,7 +274,7 @@ auto PinEntry::add_edge(Pid self_id, Vid other_id) -> bool {
       ledge1 = other_id;
       return true;
     }
-    return overflow_handling(self_id, other_id);
+    return overflow_handling(self_id, other_id, pool);
   }
 
   uint64_t e = 0;
@@ -308,17 +306,17 @@ auto PinEntry::add_edge(Pid self_id, Vid other_id) -> bool {
     ledge1 = other_id;
     return true;
   }
-  return overflow_handling(self_id, other_id);
+  return overflow_handling(self_id, other_id, pool);
 }
 
-auto PinEntry::delete_edge(Pid self_id, Vid other_id) -> bool {
+auto PinEntry::delete_edge(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
-    return sedges_.set != nullptr && sedges_.set->erase(other_id) != 0;
+    return pool.sets[sedges_.overflow_idx].erase(other_id) != 0;
   }
 
   std::vector<Vid> keep;
   bool             removed = false;
-  for (auto edge : get_edges(self_id)) {
+  for (auto edge : get_edges(self_id, pool.sets)) {
     if (edge == other_id) {
       removed = true;
       continue;
@@ -333,16 +331,17 @@ auto PinEntry::delete_edge(Pid self_id, Vid other_id) -> bool {
   ledge0         = 0;
   ledge1         = 0;
   for (auto edge : keep) {
-    (void)add_edge(self_id, edge);
+    (void)add_edge(self_id, edge, pool);
   }
   return true;
 }
 
-PinEntry::EdgeRange::EdgeRange(const PinEntry* pin, Pid pid) noexcept : pin_(pin), set_(nullptr), own_(false) {
+PinEntry::EdgeRange::EdgeRange(const PinEntry* pin, Pid pid, const OverflowVec& overflow) noexcept
+    : pin_(pin), set_(nullptr), own_(false) {
   if (pin->use_overflow) {
     set_ = acquire_set();
     set_->clear();
-    for (auto raw : *pin->sedges_.set) {
+    for (auto raw : overflow[pin->sedges_.overflow_idx]) {
       set_->insert(raw);
     }
   } else {
@@ -425,7 +424,9 @@ void PinEntry::EdgeRange::populate_set(const PinEntry* pin, ankerl::unordered_de
   }
 }
 
-auto PinEntry::get_edges(Pid pid) const noexcept -> EdgeRange { return EdgeRange(this, pid); }
+auto PinEntry::get_edges(Pid pid, const OverflowVec& overflow) const noexcept -> EdgeRange {
+  return EdgeRange(this, pid, overflow);
+}
 
 bool PinEntry::has_edges() const {
   if (use_overflow) {
@@ -457,15 +458,16 @@ Type NodeEntry::get_type() const { return type; }
 Pid  NodeEntry::get_next_pin_id() const { return next_pin_id; }
 void NodeEntry::set_next_pin_id(Pid id) { next_pin_id = id; }
 
-auto NodeEntry::overflow_handling(Nid self_id, Vid other_id) -> bool {
+auto NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
     if (other_id) {
-      sedges_.set->insert(other_id);
+      pool.sets[sedges_.overflow_idx].insert(other_id);
     }
     return true;
   }
 
-  auto*              hs        = new ankerl::unordered_dense::set<Vid>();
+  uint32_t idx = pool.alloc();
+  auto&              hs        = pool.sets[idx];
   constexpr int      SHIFT     = 14;
   constexpr uint64_t SLOT_MASK = (1ULL << SHIFT) - 1;
 
@@ -490,30 +492,29 @@ auto NodeEntry::overflow_handling(Nid self_id, Vid other_id) -> bool {
     if (is_pin) {
       target |= 1;
     }
-    hs->insert(target);
+    hs.insert(target);
   }
 
   if (ledge0) {
-    hs->insert(static_cast<Vid>(ledge0));
+    hs.insert(static_cast<Vid>(ledge0));
   }
   if (ledge1) {
-    hs->insert(static_cast<Vid>(ledge1));
+    hs.insert(static_cast<Vid>(ledge1));
   }
 
-  use_overflow   = 1;
-  sedges_.sedges = 0;
-  sedges_.set    = hs;
+  use_overflow         = 1;
+  sedges_.overflow_idx = idx;
   ledge0 = ledge1 = 0;
 
   if (other_id) {
-    hs->insert(other_id);
+    hs.insert(other_id);
   }
   return true;
 }
 
-auto NodeEntry::add_edge(Nid self_id, Vid other_id) -> bool {
+auto NodeEntry::add_edge(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
-    return overflow_handling(self_id, other_id);
+    return overflow_handling(self_id, other_id, pool);
   }
 
   Nid     actual_self  = self_id >> 2;
@@ -533,7 +534,7 @@ auto NodeEntry::add_edge(Nid self_id, Vid other_id) -> bool {
       ledge1 = other_id;
       return true;
     }
-    return overflow_handling(self_id, other_id);
+    return overflow_handling(self_id, other_id, pool);
   }
 
   uint64_t e = 0;
@@ -565,17 +566,17 @@ auto NodeEntry::add_edge(Nid self_id, Vid other_id) -> bool {
     ledge1 = other_id;
     return true;
   }
-  return overflow_handling(self_id, other_id);
+  return overflow_handling(self_id, other_id, pool);
 }
 
-auto NodeEntry::delete_edge(Nid self_id, Vid other_id) -> bool {
+auto NodeEntry::delete_edge(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
-    return sedges_.set != nullptr && sedges_.set->erase(other_id) != 0;
+    return pool.sets[sedges_.overflow_idx].erase(other_id) != 0;
   }
 
   std::vector<Vid> keep;
   bool             removed = false;
-  for (auto edge : get_edges(self_id)) {
+  for (auto edge : get_edges(self_id, pool.sets)) {
     if (edge == other_id) {
       removed = true;
       continue;
@@ -590,14 +591,14 @@ auto NodeEntry::delete_edge(Nid self_id, Vid other_id) -> bool {
   ledge0         = 0;
   ledge1         = 0;
   for (auto edge : keep) {
-    (void)add_edge(self_id, edge);
+    (void)add_edge(self_id, edge, pool);
   }
   return true;
 }
 
-bool NodeEntry::has_edges() const {
+bool NodeEntry::has_edges(const OverflowVec& overflow) const {
   if (use_overflow) {
-    return sedges_.set != nullptr && !sedges_.set->empty();
+    return !overflow[sedges_.overflow_idx].empty();
   }
   if (sedges_.sedges != 0) {
     return true;
@@ -611,7 +612,7 @@ bool NodeEntry::has_edges() const {
   return false;
 }
 
-void NodeEntry::set_subnode(Gid gid) {
+void NodeEntry::set_subnode(Gid gid, OverflowPool& pool) {
   // Existence inside GraphLibrary must be checked by the caller (NodeEntry has no library pointer).
   if (gid == Gid_invalid) {
     return;
@@ -619,9 +620,7 @@ void NodeEntry::set_subnode(Gid gid) {
   // Ensure overflow mode so ledge0 is no longer used as an edge spill slot.
   if (!use_overflow) {
     const Vid self_vid = (static_cast<Vid>(nid) << 2);  // nid stored as numeric id
-    (void)overflow_handling(self_vid, 0);               // 0 => promote only, no edge insert
-  } else {
-    assert(sedges_.set != nullptr);
+    (void)overflow_handling(self_vid, 0, pool);          // 0 => promote only, no edge insert
   }
 
   // Store gid in ledge0 as (gid + 1) so ledge0==0 means "no subnode".
@@ -639,12 +638,12 @@ Gid NodeEntry::get_subnode() const noexcept {
 
 bool NodeEntry::has_subnode() const noexcept { return use_overflow && ledge0 != 0; }
 
-NodeEntry::EdgeRange::EdgeRange(const NodeEntry* node, Nid nid) noexcept
-    : node_(node), /* nid_(nid), */ set_(nullptr), own_(false) {
+NodeEntry::EdgeRange::EdgeRange(const NodeEntry* node, Nid nid, const OverflowVec& overflow) noexcept
+    : node_(node), set_(nullptr), own_(false) {
   if (node->use_overflow) {
     set_ = acquire_set();
     set_->clear();
-    for (auto raw : *node->sedges_.set) {
+    for (auto raw : overflow[node->sedges_.overflow_idx]) {
       set_->insert(raw);
     }
   } else {
@@ -727,7 +726,9 @@ void NodeEntry::EdgeRange::populate_set(const NodeEntry* node, ankerl::unordered
   }
 }
 
-auto NodeEntry::get_edges(Nid nid) const noexcept -> EdgeRange { return EdgeRange(this, nid); }
+auto NodeEntry::get_edges(Nid nid, const OverflowVec& overflow) const noexcept -> EdgeRange {
+  return EdgeRange(this, nid, overflow);
+}
 
 Graph::Graph() { clear_graph(); }
 
@@ -779,18 +780,8 @@ void Graph::assert_pin_exists(const Pin_class& pin) const noexcept {
 }
 
 void Graph::release_storage() noexcept {
-  for (auto& node : node_table) {
-    if (node.use_overflow && node.sedges_.set != nullptr) {
-      delete node.sedges_.set;
-      node.sedges_.set = nullptr;
-    }
-  }
-  for (auto& pin : pin_table) {
-    if (pin.use_overflow && pin.sedges_.set != nullptr) {
-      delete pin.sedges_.set;
-      pin.sedges_.set = nullptr;
-    }
-  }
+  overflow_sets_.clear();
+  overflow_free_.clear();
 }
 
 void Graph::invalidate_from_library() noexcept {
@@ -837,10 +828,10 @@ void Graph::clear_graph() {
 void Graph::clear() {
   assert_accessible();
 
+  overflow_sets_.clear();
+  overflow_free_.clear();
+
   for (auto& pin : pin_table) {
-    if (pin.use_overflow && pin.sedges_.set != nullptr) {
-      delete pin.sedges_.set;
-    }
     pin = PinEntry();
   }
   if (pin_table.empty()) {
@@ -850,7 +841,6 @@ void Graph::clear() {
   }
 
   if (node_table.size() < 4) {
-    release_storage();
     node_table.clear();
     node_table.emplace_back(0);
     node_table.emplace_back(1);
@@ -859,9 +849,6 @@ void Graph::clear() {
   } else {
     for (size_t idx = 0; idx < node_table.size(); ++idx) {
       auto& node = node_table[idx];
-      if (node.use_overflow && node.sedges_.set != nullptr) {
-        delete node.sedges_.set;
-      }
       if (idx < 4) {
         node = NodeEntry(static_cast<Nid>(idx));
       } else {
@@ -890,6 +877,7 @@ void Graph::bind_library(const GraphLibrary* owner, Gid self_gid) noexcept {
 }
 
 void Graph::invalidate_traversal_caches() noexcept {
+  dirty_                     = true;
   fast_class_cache_valid_    = false;
   fast_hier_cache_valid_     = false;
   forward_class_cache_valid_ = false;
@@ -990,7 +978,7 @@ void Graph::rebuild_forward_class_cache() const {
     }
     const Nid driver_nid = static_cast<Nid>(driver_idx) << 2;
 
-    auto node_edges = node_table[driver_idx].get_edges(driver_nid);
+    auto node_edges = node_table[driver_idx].get_edges(driver_nid, overflow_sets_);
     for (auto vid : node_edges) {
       if (vid & static_cast<Vid>(2)) {
         continue;
@@ -1000,7 +988,7 @@ void Graph::rebuild_forward_class_cache() const {
 
     for (Pid pin_vid = node_table[driver_idx].get_next_pin_id(); pin_vid != 0;) {
       const Pid canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-      auto      pin_edges     = ref_pin(canonical_pin)->get_edges(canonical_pin);
+      auto      pin_edges     = ref_pin(canonical_pin)->get_edges(canonical_pin, overflow_sets_);
       for (auto vid : pin_edges) {
         if (vid & static_cast<Vid>(2)) {
           continue;
@@ -1431,7 +1419,7 @@ void Graph::delete_pin(Pid pin_pid) {
   assert(pin->get_master_nid() != 0 && "delete_pin: pin already deleted");
 
   std::vector<Vid> edges_to_remove;
-  for (auto edge : pin->get_edges(pin_lookup)) {
+  for (auto edge : pin->get_edges(pin_lookup, overflow_sets_)) {
     edges_to_remove.push_back(edge);
   }
 
@@ -1443,7 +1431,7 @@ void Graph::delete_pin(Pid pin_pid) {
         // other is a pin
         auto* other_pin = ref_pin(other_vid);
         if (other_pin->use_overflow) {
-          (void)other_pin->sedges_.set->erase(reverse_edge);
+          (void)overflow_sets_[other_pin->get_overflow_idx()].erase(reverse_edge);
         } else {
           constexpr int      SHIFT      = 14;
           constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
@@ -1481,7 +1469,7 @@ void Graph::delete_pin(Pid pin_pid) {
         // if other_vid is a node
         auto* other_node = ref_node(other_vid);
         if (other_node->use_overflow) {
-          (void)other_node->sedges_.set->erase(reverse_edge);
+          (void)overflow_sets_[other_node->get_overflow_idx()].erase(reverse_edge);
         } else {
           constexpr int      SHIFT      = 14;
           constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
@@ -1523,7 +1511,7 @@ void Graph::delete_pin(Pid pin_pid) {
         // other is a pin
         auto* other_pin = ref_pin(other_vid);
         if (other_pin->use_overflow) {
-          (void)other_pin->sedges_.set->erase(reverse_edge);
+          (void)overflow_sets_[other_pin->get_overflow_idx()].erase(reverse_edge);
         } else {
           constexpr int      SHIFT      = 14;
           constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
@@ -1561,7 +1549,7 @@ void Graph::delete_pin(Pid pin_pid) {
         // other is a node
         auto* other_node = ref_node(other_vid);
         if (other_node->use_overflow) {
-          (void)other_node->sedges_.set->erase(reverse_edge);
+          (void)overflow_sets_[other_node->get_overflow_idx()].erase(reverse_edge);
         } else {
           constexpr int      SHIFT      = 14;
           constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
@@ -1615,8 +1603,9 @@ void Graph::delete_pin(Pid pin_pid) {
     }
   }
 
-  if (pin->check_overflow() && pin->sedges_.set != nullptr) {
-    delete pin->sedges_.set;
+  if (pin->check_overflow()) {
+    overflow_free_.push_back(pin->get_overflow_idx());
+    overflow_sets_[pin->get_overflow_idx()].clear();
   }
   pin_table[actual_id] = PinEntry();
   invalidate_traversal_caches();
@@ -1842,7 +1831,8 @@ void Graph::set_subnode(Nid nid, Gid gid) {
   }
 
   nid &= ~static_cast<Nid>(3);
-  ref_node(nid)->set_subnode(gid);
+  auto pool = get_overflow_pool();
+  ref_node(nid)->set_subnode(gid, pool);
   invalidate_traversal_caches();
 }
 
@@ -1937,16 +1927,17 @@ auto Graph::forward_hier() const -> std::span<const Node> {
 }
 
 void Graph::del_edge_int(Vid driver_id, Vid sink_id) {
+  auto pool = get_overflow_pool();
   if (driver_id & 1) {
-    (void)ref_pin(driver_id)->delete_edge(driver_id, sink_id);
+    (void)ref_pin(driver_id)->delete_edge(driver_id, sink_id, pool);
   } else {
-    (void)ref_node(driver_id)->delete_edge(driver_id, sink_id);
+    (void)ref_node(driver_id)->delete_edge(driver_id, sink_id, pool);
   }
 
   if (sink_id & 1) {
-    (void)ref_pin(sink_id)->delete_edge(sink_id, driver_id);
+    (void)ref_pin(sink_id)->delete_edge(sink_id, driver_id, pool);
   } else {
-    (void)ref_node(sink_id)->delete_edge(sink_id, driver_id);
+    (void)ref_node(sink_id)->delete_edge(sink_id, driver_id, pool);
   }
 }
 
@@ -1956,7 +1947,7 @@ auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
   std::vector<Edge_class> out;
   const Nid               self_nid = node.get_raw_nid() & ~static_cast<Nid>(2);
   auto*                   self     = ref_node(self_nid);
-  auto                    edges    = self->get_edges(self_nid);
+  auto                    edges    = self->get_edges(self_nid, overflow_sets_);
   const Node_class        self_driver(this, self_nid | static_cast<Nid>(2));
 
   for (auto vid : edges) {
@@ -1992,7 +1983,7 @@ auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
   std::vector<Edge_class> out;
   const Nid               self_nid = node.get_raw_nid() & ~static_cast<Nid>(2);
   auto*                   self     = ref_node(self_nid);
-  auto                    edges    = self->get_edges(self_nid);
+  auto                    edges    = self->get_edges(self_nid, overflow_sets_);
   const Node_class        self_sink(this, self_nid & ~static_cast<Nid>(2));
 
   for (auto vid : edges) {
@@ -2030,7 +2021,7 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
   if (!(pin.get_pin_pid() & static_cast<Pid>(1))) {
     const Nid self_nid = pin.get_pin_pid() & ~static_cast<Nid>(2);
     auto*     self     = ref_node(self_nid);
-    auto      edges    = self->get_edges(self_nid);
+    auto      edges    = self->get_edges(self_nid, overflow_sets_);
     Pin_class self_driver_pin(this, self_nid, 0, self_nid | static_cast<Pid>(2));
     self_driver_pin.context_     = pin.context_;
     self_driver_pin.root_gid_    = pin.root_gid_;
@@ -2082,7 +2073,7 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
   const Pid               self_pid           = pin.get_pin_pid();
   const Pid               self_pid_lookup    = (self_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
   auto*                   self               = ref_pin(self_pid_lookup);
-  auto                    edges              = self->get_edges(self_pid_lookup);
+  auto                    edges              = self->get_edges(self_pid_lookup, overflow_sets_);
   const Pin_class         self_driver_pin    = make_pin_class(self_pid_lookup | static_cast<Pid>(2));
   Pin_class               context_driver_pin = self_driver_pin;
   context_driver_pin.context_                = pin.context_;
@@ -2133,7 +2124,7 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
   if (!(pin.get_pin_pid() & static_cast<Pid>(1))) {
     const Nid self_nid = pin.get_pin_pid() & ~static_cast<Nid>(2);
     auto*     self     = ref_node(self_nid);
-    auto      edges    = self->get_edges(self_nid);
+    auto      edges    = self->get_edges(self_nid, overflow_sets_);
     Pin_class self_sink_pin(this, self_nid, 0, self_nid);
     self_sink_pin.context_     = pin.context_;
     self_sink_pin.root_gid_    = pin.root_gid_;
@@ -2185,7 +2176,7 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
   const Pid               self_pid         = pin.get_pin_pid();
   const Pid               self_pid_sink    = (self_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
   auto*                   self             = ref_pin(self_pid_sink);
-  auto                    edges            = self->get_edges(self_pid_sink);
+  auto                    edges            = self->get_edges(self_pid_sink, overflow_sets_);
   const Pin_class         self_sink_pin    = make_pin_class(self_pid_sink);
   Pin_class               context_sink_pin = self_sink_pin;
   context_sink_pin.context_                = pin.context_;
@@ -2252,7 +2243,7 @@ auto Graph::get_driver_pins(Node_class node) -> std::vector<Pin_class> {
   for (const auto& pin : get_pins(node)) {
     const Pid pid_lookup = (pin.get_pin_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
     auto*     self       = ref_pin(pid_lookup);
-    auto      edges      = self->get_edges(pid_lookup);
+    auto      edges      = self->get_edges(pid_lookup, overflow_sets_);
 
     for (auto vid : edges) {
       // Driver pin: edge is outgoing (bit1=0) and target is a pin (bit0=1).
@@ -2272,7 +2263,7 @@ auto Graph::get_sink_pins(Node_class node) -> std::vector<Pin_class> {
   for (const auto& pin : get_pins(node)) {
     const Pid pid_lookup = (pin.get_pin_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
     auto*     self       = ref_pin(pid_lookup);
-    auto      edges      = self->get_edges(pid_lookup);
+    auto      edges      = self->get_edges(pid_lookup, overflow_sets_);
 
     for (auto vid : edges) {
       // Sink pin: edge is incoming (bit1=1) and source is a pin (bit0=1).
@@ -2302,7 +2293,7 @@ void Graph::delete_node(Nid nid) {
   }
 
   std::vector<std::pair<Vid, Vid>> edges_to_remove;
-  for (auto edge : node->get_edges(nid)) {
+  for (auto edge : node->get_edges(nid, overflow_sets_)) {
     if (edge & static_cast<Vid>(2)) {
       edges_to_remove.emplace_back(edge, nid);
     } else {
@@ -2310,7 +2301,7 @@ void Graph::delete_node(Nid nid) {
     }
   }
   for (auto pin_pid : pins_to_delete) {
-    for (auto edge : ref_pin(pin_pid)->get_edges(pin_pid)) {
+    for (auto edge : ref_pin(pin_pid)->get_edges(pin_pid, overflow_sets_)) {
       if (edge & static_cast<Vid>(2)) {
         edges_to_remove.emplace_back(edge, pin_pid);
       } else {
@@ -2326,14 +2317,16 @@ void Graph::delete_node(Nid nid) {
   for (auto pin_pid : pins_to_delete) {
     const Pid actual_pin_id = pin_pid >> 2;
     auto*     pin           = &pin_table[actual_pin_id];
-    if (pin->use_overflow && pin->sedges_.set != nullptr) {
-      delete pin->sedges_.set;
+    if (pin->use_overflow) {
+      overflow_free_.push_back(pin->get_overflow_idx());
+      overflow_sets_[pin->get_overflow_idx()].clear();
     }
     pin_table[actual_pin_id] = PinEntry();
   }
 
-  if (node->use_overflow && node->sedges_.set != nullptr) {
-    delete node->sedges_.set;
+  if (node->use_overflow) {
+    overflow_free_.push_back(node->get_overflow_idx());
+    overflow_sets_[node->get_overflow_idx()].clear();
   }
   node_table[actual_id] = NodeEntry();
   invalidate_traversal_caches();
@@ -2354,6 +2347,7 @@ auto Graph::ref_pin(Pid id) const -> PinEntry* {
 }
 
 void Graph::add_edge_int(Vid self_id, Vid other_id) {
+  auto pool = get_overflow_pool();
   // detect type of self_id and other_id
   bool self_type = false;
   if (self_id & 1) {
@@ -2362,13 +2356,13 @@ void Graph::add_edge_int(Vid self_id, Vid other_id) {
   }
   if (!self_type) {
     auto* node = ref_node(self_id);
-    if (!node->add_edge(self_id, other_id)) {
+    if (!node->add_edge(self_id, other_id, pool)) {
       std::cerr << "Error: NodeEntry " << node->get_nid() << " overflowed edges while adding edge from " << self_id << " to "
                 << other_id << "\n";
     }
   } else {
     auto* pin = ref_pin(self_id);
-    if (!pin->add_edge(self_id, other_id)) {
+    if (!pin->add_edge(self_id, other_id, pool)) {
       std::cerr << "Error: PinEntry " << pin->get_master_nid() << ":" << pin->get_port_id()
                 << " overflowed edges while adding edge from " << self_id << " to " << other_id << "\n";
     }
@@ -2398,7 +2392,7 @@ void Graph::display_graph() const {
     auto p = ref_pin(pid);
     std::cout << "PinEntry " << pid << "  node=" << p->get_master_nid() << " port=" << p->get_port_id() << "\n";
     if (p->has_edges()) {
-      auto sed = p->get_edges(pid);
+      auto sed = p->get_edges(pid, overflow_sets_);
       std::cout << "  edges:";
       for (auto e : sed) {
         if (e) {
@@ -2415,6 +2409,234 @@ void Graph::display_next_pin_of_node() const {
   assert_accessible();
   for (Nid nid = 1; nid < node_table.size(); ++nid) {
     std::cout << "NodeEntry " << nid << " first_pin=" << node_table[nid].get_next_pin_id() << "\n";
+  }
+}
+
+// --------------------------------------------------------------------------
+// Binary persistence
+// --------------------------------------------------------------------------
+
+static constexpr uint32_t GRAPH_BODY_MAGIC   = 0x48484742;  // "HHGB"
+static constexpr uint32_t GRAPH_BODY_VERSION = 1;
+static constexpr uint32_t ENDIAN_CHECK       = 0x01020304;
+
+void Graph::save_body(const std::string& dir_path) const {
+  namespace fs = std::filesystem;
+  fs::create_directories(dir_path);
+
+  // --- body.bin ---
+  {
+    const auto   path = fs::path(dir_path) / "body.bin";
+    std::ofstream ofs(path, std::ios::binary);
+    assert(ofs.good() && "save_body: cannot open body.bin for writing");
+
+    const uint64_t node_count     = node_table.size();
+    const uint64_t pin_count      = pin_table.size();
+    const uint64_t overflow_count = overflow_sets_.size();
+
+    ofs.write(reinterpret_cast<const char*>(&GRAPH_BODY_MAGIC), sizeof(GRAPH_BODY_MAGIC));
+    ofs.write(reinterpret_cast<const char*>(&GRAPH_BODY_VERSION), sizeof(GRAPH_BODY_VERSION));
+    ofs.write(reinterpret_cast<const char*>(&ENDIAN_CHECK), sizeof(ENDIAN_CHECK));
+    ofs.write(reinterpret_cast<const char*>(&node_count), sizeof(node_count));
+    ofs.write(reinterpret_cast<const char*>(&pin_count), sizeof(pin_count));
+    ofs.write(reinterpret_cast<const char*>(&overflow_count), sizeof(overflow_count));
+
+    // Bulk write node_table and pin_table — pointer-free POD arrays.
+    ofs.write(reinterpret_cast<const char*>(node_table.data()), static_cast<std::streamsize>(node_count * sizeof(NodeEntry)));
+    ofs.write(reinterpret_cast<const char*>(pin_table.data()), static_cast<std::streamsize>(pin_count * sizeof(PinEntry)));
+  }
+
+  // --- overflow_<idx>.bin (one per overflow set) ---
+  for (uint32_t i = 0; i < overflow_sets_.size(); ++i) {
+    const auto& oset = overflow_sets_[i];
+    const auto  path = fs::path(dir_path) / ("overflow_" + std::to_string(i) + ".bin");
+    std::ofstream ofs(path, std::ios::binary);
+    assert(ofs.good() && "save_body: cannot open overflow file for writing");
+
+    // Use the values() API — contiguous Vid vector, no bucket data needed.
+    const auto&    vals = oset.values();
+    const uint64_t count = vals.size();
+    ofs.write(reinterpret_cast<const char*>(&count), sizeof(count));
+    if (count > 0) {
+      ofs.write(reinterpret_cast<const char*>(vals.data()), static_cast<std::streamsize>(count * sizeof(Vid)));
+    }
+  }
+
+  dirty_ = false;
+}
+
+void Graph::load_body(const std::string& dir_path) {
+  namespace fs = std::filesystem;
+
+  // --- body.bin ---
+  {
+    const auto   path = fs::path(dir_path) / "body.bin";
+    std::ifstream ifs(path, std::ios::binary);
+    assert(ifs.good() && "load_body: cannot open body.bin for reading");
+
+    uint32_t magic = 0, version = 0, endian = 0;
+    ifs.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+    ifs.read(reinterpret_cast<char*>(&version), sizeof(version));
+    ifs.read(reinterpret_cast<char*>(&endian), sizeof(endian));
+    assert(magic == GRAPH_BODY_MAGIC && "load_body: bad magic");
+    assert(version == GRAPH_BODY_VERSION && "load_body: unsupported version");
+    assert(endian == ENDIAN_CHECK && "load_body: endian mismatch — file from different platform");
+
+    uint64_t node_count = 0, pin_count = 0, overflow_count = 0;
+    ifs.read(reinterpret_cast<char*>(&node_count), sizeof(node_count));
+    ifs.read(reinterpret_cast<char*>(&pin_count), sizeof(pin_count));
+    ifs.read(reinterpret_cast<char*>(&overflow_count), sizeof(overflow_count));
+
+    // Bulk read node_table and pin_table.
+    node_table.resize(node_count);
+    ifs.read(reinterpret_cast<char*>(node_table.data()), static_cast<std::streamsize>(node_count * sizeof(NodeEntry)));
+
+    pin_table.resize(pin_count);
+    ifs.read(reinterpret_cast<char*>(pin_table.data()), static_cast<std::streamsize>(pin_count * sizeof(PinEntry)));
+
+    // Prepare overflow_sets_ vector.
+    overflow_sets_.resize(overflow_count);
+  }
+
+  // --- overflow_<idx>.bin ---
+  for (uint32_t i = 0; i < overflow_sets_.size(); ++i) {
+    const auto path = std::filesystem::path(dir_path) / ("overflow_" + std::to_string(i) + ".bin");
+    std::ifstream ifs(path, std::ios::binary);
+    assert(ifs.good() && "load_body: cannot open overflow file for reading");
+
+    uint64_t count = 0;
+    ifs.read(reinterpret_cast<char*>(&count), sizeof(count));
+    if (count > 0) {
+      std::vector<Vid> vals(count);
+      ifs.read(reinterpret_cast<char*>(vals.data()), static_cast<std::streamsize>(count * sizeof(Vid)));
+      overflow_sets_[i].replace(std::move(vals));
+    }
+  }
+
+  invalidate_traversal_caches();
+  dirty_ = false;
+}
+
+// --------------------------------------------------------------------------
+// GraphLibrary persistence
+// --------------------------------------------------------------------------
+
+void GraphLibrary::save(const std::string& db_path) const {
+  namespace fs = std::filesystem;
+  fs::create_directories(db_path);
+
+  // --- library.txt (declarations, text format) ---
+  {
+    std::ofstream ofs(fs::path(db_path) / "library.txt");
+    assert(ofs.good() && "GraphLibrary::save: cannot open library.txt");
+    ofs << "hhds_graphlib 1\n";
+    for (size_t i = 1; i < graph_ios_.size(); ++i) {
+      const auto& gio = graph_ios_[i];
+      if (!gio) {
+        continue;
+      }
+      ofs << "graph_io " << i << " " << gio->get_name() << "\n";
+      for (const auto& pin : gio->input_pin_decls_) {
+        ofs << "  input " << pin.port_id << " " << pin.name;
+        if (pin.loop_last) {
+          ofs << " loop_last";
+        }
+        ofs << "\n";
+      }
+      for (const auto& pin : gio->output_pin_decls_) {
+        ofs << "  output " << pin.port_id << " " << pin.name;
+        if (pin.loop_last) {
+          ofs << " loop_last";
+        }
+        ofs << "\n";
+      }
+    }
+  }
+
+  // --- graph body directories ---
+  for (size_t i = 1; i < graphs_.size(); ++i) {
+    if (!graphs_[i] || graphs_[i]->deleted_) {
+      continue;
+    }
+    if (!graphs_[i]->dirty_) {
+      continue;
+    }
+    const auto dir = fs::path(db_path) / ("graph_" + std::to_string(i));
+    graphs_[i]->save_body(dir.string());
+  }
+}
+
+void GraphLibrary::load(const std::string& db_path) {
+  namespace fs = std::filesystem;
+
+  // Clear current state.
+  for (auto& g : graphs_) {
+    if (g) {
+      g->invalidate_from_library();
+    }
+  }
+  graph_ios_.clear();
+  graphs_.clear();
+  graph_name_to_id_.clear();
+  live_count_     = 0;
+  mutation_epoch_ = 1;
+
+  // Reserve slot 0.
+  graph_ios_.push_back(nullptr);
+  graphs_.push_back(nullptr);
+
+  // --- Parse library.txt ---
+  {
+    std::ifstream ifs(fs::path(db_path) / "library.txt");
+    assert(ifs.good() && "GraphLibrary::load: cannot open library.txt");
+
+    std::string line;
+    std::getline(ifs, line);  // header: "hhds_graphlib 1"
+
+    std::shared_ptr<GraphIO> current_gio;
+    while (std::getline(ifs, line)) {
+      if (line.empty()) {
+        continue;
+      }
+      if (line.substr(0, 9) == "graph_io ") {
+        // "graph_io <gid> <name>"
+        std::istringstream ss(line.substr(9));
+        Gid         gid;
+        std::string name;
+        ss >> gid >> name;
+        current_gio = create_io_impl(gid, name);
+      } else if (line.size() > 2 && line[0] == ' ' && line[1] == ' ') {
+        assert(current_gio && "GraphLibrary::load: pin decl without graph_io");
+        std::istringstream ss(line.substr(2));
+        std::string        direction;
+        Port_id            port_id;
+        std::string        name;
+        ss >> direction >> port_id >> name;
+        std::string rest;
+        bool        loop_last = false;
+        if (ss >> rest && rest == "loop_last") {
+          loop_last = true;
+        }
+        if (direction == "input") {
+          current_gio->add_input(name, port_id, loop_last);
+        } else {
+          current_gio->add_output(name, port_id, loop_last);
+        }
+      }
+    }
+  }
+
+  // --- Load graph bodies ---
+  for (size_t i = 1; i < graph_ios_.size(); ++i) {
+    const auto& gio = graph_ios_[i];
+    if (!gio) {
+      continue;
+    }
+    const auto dir = fs::path(db_path) / ("graph_" + std::to_string(i));
+    if (fs::exists(dir / "body.bin")) {
+      auto graph = gio->create_graph();
+      graph->load_body(dir.string());
+    }
   }
 }
 

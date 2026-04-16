@@ -155,6 +155,7 @@ are required; explicit-ID public creation is gone.
 - [ ] Store `GraphIO` ID in node's 16-bit type field when ID < 2^16.
 - [x] Hide `create_pin` and `add_edge` from the public `Graph` API.
 - [ ] Remove private/internal `create_pin` and `add_edge` helpers entirely.
+- [x] Replace overflow `set<Vid>*` pointer with index into `Graph::overflow_sets_` (pointer-free entries for serialization).
 
 ### Rich wrappers (graph)
 
@@ -233,21 +234,21 @@ queryable; lookups skip tombstones; edge/node/subtree deletion works correctly.
 
 ### Graph
 
-- [ ] Save `GraphIO` declarations and `Graph` bodies separately.
+- [x] Save `GraphIO` declarations and `Graph` bodies separately.
 - [ ] Lazy body load on `gio->get_graph()` and `glib->find_io(name)`.
 - [ ] Auto-unload when last `shared_ptr<Graph>` disappears.
-- [ ] `glib->save()` persists declarations, bodies, and attribute maps.
+- [x] `glib->save()` persists declarations, bodies, and attribute maps.
 
 ### Tree
 
-- [ ] Save `TreeIO` declarations and `Tree` bodies separately.
+- [x] Save `TreeIO` declarations and `Tree` bodies separately.
 - [ ] Lazy body load on `tio->get_tree()` and `forest->find_io(name)`.
 - [ ] Auto-unload when last `shared_ptr<Tree>` disappears.
-- [ ] `forest->save()` persists declarations, bodies, and attribute maps.
+- [x] `forest->save()` persists declarations, bodies, and attribute maps.
 
 ### Shared
 
-- [ ] Stable name-to-ID mapping across round-trips.
+- [x] Stable name-to-ID mapping across round-trips.
 - [ ] Debug text import/export.
 
 Exit criteria: declarations load without bodies; body load is demand-driven;

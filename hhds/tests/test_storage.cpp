@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+
 #include "hhds/graph.hpp"
 #include "hhds/tree.hpp"
 
@@ -293,4 +295,149 @@ TEST(TreeStorage, DeleteSubtreeAndClearTombstones) {
   tio->clear();
   EXPECT_EQ(forest->find_io("t"), nullptr);
   EXPECT_FALSE(tio->has_tree());
+}
+
+// ------------------------------------------------------------------
+// Binary save/load round-trip tests
+// ------------------------------------------------------------------
+
+TEST(GraphPersistence, SaveLoadRoundTrip) {
+  namespace fs = std::filesystem;
+  const std::string test_dir = "/tmp/hhds_test_graph_persist";
+  fs::remove_all(test_dir);
+
+  hhds::GraphLibrary lib;
+  auto               top_gio = lib.create_io("top");
+  top_gio->add_input("a", 1);
+  top_gio->add_output("y", 1);
+  auto graph = top_gio->create_graph();
+
+  // Build a graph with nodes, edges, pins, and a subnode.
+  auto sub_gio = lib.create_io("sub");
+  sub_gio->add_input("x", 1);
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+  n1.set_subnode(sub_gio);
+
+  auto drv = n1.create_driver_pin(0);
+  auto snk = n2.create_sink_pin(0);
+  drv.connect_sink(snk);
+
+  // Also connect n2 -> n3 to have multiple edges.
+  auto drv2 = n2.create_driver_pin(0);
+  auto snk2 = n3.create_sink_pin(0);
+  drv2.connect_sink(snk2);
+
+  // Collect original edges.
+  auto orig_out_n1 = graph->out_edges(n1);
+  auto orig_out_n2 = graph->out_edges(n2);
+
+  // Save.
+  graph->save_body(test_dir);
+
+  // Verify files exist.
+  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "body.bin"));
+
+  // Create a fresh graph, load into it.
+  auto top_gio2 = lib.create_io("top2");
+  auto graph2   = top_gio2->create_graph();
+  graph2->load_body(test_dir);
+
+  // Verify round-trip: same node count, same edges.
+  auto loaded_n1 = hhds::Node_class(graph2.get(), n1.get_raw_nid());
+  auto loaded_n2 = hhds::Node_class(graph2.get(), n2.get_raw_nid());
+
+  auto loaded_out_n1 = graph2->out_edges(loaded_n1);
+  auto loaded_out_n2 = graph2->out_edges(loaded_n2);
+  EXPECT_EQ(loaded_out_n1.size(), orig_out_n1.size());
+  EXPECT_EQ(loaded_out_n2.size(), orig_out_n2.size());
+
+  // Verify subnode survived.
+  auto* entry = graph2->ref_node(n1.get_raw_nid());
+  EXPECT_TRUE(entry->has_subnode());
+  EXPECT_EQ(entry->get_subnode(), sub_gio->get_gid());
+
+  fs::remove_all(test_dir);
+}
+
+TEST(GraphPersistence, OverflowSetRoundTrip) {
+  namespace fs = std::filesystem;
+  const std::string test_dir = "/tmp/hhds_test_graph_overflow";
+  fs::remove_all(test_dir);
+
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  // Create a hub node connected to many others (force overflow).
+  auto hub = graph->create_node();
+  std::vector<hhds::Node_class> targets;
+  for (int i = 0; i < 20; ++i) {
+    auto t = graph->create_node();
+    targets.push_back(t);
+    auto d = hub.create_driver_pin(0);
+    auto s = t.create_sink_pin(0);
+    d.connect_sink(s);
+  }
+
+  // Verify overflow happened.
+  auto* hub_entry = graph->ref_node(hub.get_raw_nid());
+  EXPECT_TRUE(hub_entry->check_overflow());
+
+  auto orig_edges = graph->out_edges(hub);
+
+  // Save and reload.
+  graph->save_body(test_dir);
+
+  auto gio2   = lib.create_io("top_reload");
+  auto graph2 = gio2->create_graph();
+  graph2->load_body(test_dir);
+
+  auto  loaded_hub = hhds::Node_class(graph2.get(), hub.get_raw_nid());
+  auto  loaded_edges = graph2->out_edges(loaded_hub);
+  EXPECT_EQ(loaded_edges.size(), orig_edges.size());
+
+  fs::remove_all(test_dir);
+}
+
+TEST(TreePersistence, SaveLoadRoundTrip) {
+  namespace fs = std::filesystem;
+  const std::string test_dir = "/tmp/hhds_test_tree_persist";
+  fs::remove_all(test_dir);
+
+  auto forest = hhds::Forest::create();
+  auto tio    = forest->create_io("t");
+  auto tree   = tio->create_tree();
+
+  auto root = tree->add_root_node();
+  auto c1   = tree->add_child(root);
+  auto c2   = tree->add_child(root);
+  auto gc1  = tree->add_child(c1);
+
+  root.set_type(10);
+  c1.set_type(20);
+  c2.set_type(30);
+  gc1.set_type(40);
+
+  tree->save_body(test_dir);
+  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "body.bin"));
+
+  // Create a fresh tree and load.
+  auto tio2  = forest->create_io("t2");
+  auto tree2 = tio2->create_tree();
+  tree2->load_body(test_dir);
+
+  // Verify types survived.
+  EXPECT_EQ(tree2->get_type(root.get_current_pos()), 10);
+  EXPECT_EQ(tree2->get_type(c1.get_current_pos()), 20);
+  EXPECT_EQ(tree2->get_type(c2.get_current_pos()), 30);
+  EXPECT_EQ(tree2->get_type(gc1.get_current_pos()), 40);
+
+  // Verify structure.
+  auto loaded_c1 = tree2->get_first_child(root);
+  EXPECT_EQ(loaded_c1.get_current_pos(), c1.get_current_pos());
+
+  fs::remove_all(test_dir);
 }
