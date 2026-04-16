@@ -1488,18 +1488,16 @@ public:
     return do_try_emplace(std::move(key), std::forward<Args>(args)...).first;
   }
 
-  template <
-      typename K, typename... Args, typename Q = T, typename H = Hash, typename KE = KeyEqual,
-      std::enable_if_t<is_map_v<Q> && is_transparent_v<H, KE> && is_neither_convertible_v<K&&, iterator, const_iterator>, bool>
-      = true>
+  template <typename K, typename... Args, typename Q = T, typename H = Hash, typename KE = KeyEqual,
+            std::enable_if_t<is_map_v<Q> && is_transparent_v<H, KE> && is_neither_convertible_v<K&&, iterator, const_iterator>,
+                             bool> = true>
   auto try_emplace(K&& key, Args&&... args) -> std::pair<iterator, bool> {
     return do_try_emplace(std::forward<K>(key), std::forward<Args>(args)...);
   }
 
-  template <
-      typename K, typename... Args, typename Q = T, typename H = Hash, typename KE = KeyEqual,
-      std::enable_if_t<is_map_v<Q> && is_transparent_v<H, KE> && is_neither_convertible_v<K&&, iterator, const_iterator>, bool>
-      = true>
+  template <typename K, typename... Args, typename Q = T, typename H = Hash, typename KE = KeyEqual,
+            std::enable_if_t<is_map_v<Q> && is_transparent_v<H, KE> && is_neither_convertible_v<K&&, iterator, const_iterator>,
+                             bool> = true>
   auto try_emplace(const_iterator /*hint*/, K&& key, Args&&... args) -> iterator {
     return do_try_emplace(std::forward<K>(key), std::forward<Args>(args)...).first;
   }

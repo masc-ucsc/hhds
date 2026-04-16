@@ -58,7 +58,7 @@ public:
 
   private:
     // Pid                                pid_;
-    const PinEntry*                         pin_;
+    const PinEntry*                    pin_;
     ankerl::unordered_dense::set<Vid>* set_;
     bool                               own_;
 
@@ -127,7 +127,7 @@ public:
 
   private:
     // Nid                                       nid_;
-    const NodeEntry*                               node_;
+    const NodeEntry*                          node_;
     ankerl::unordered_dense::set<Vid>*        set_;
     bool                                      own_;
     static ankerl::unordered_dense::set<Vid>* acquire_set() noexcept;
@@ -178,7 +178,7 @@ public:
   [[nodiscard]] constexpr Port_id get_port_id() const noexcept { return port_id; }
   [[nodiscard]] Graph*            get_graph() const noexcept { return graph_; }
   [[nodiscard]] std::string_view  get_pin_name() const;
-  [[nodiscard]] bool              is_valid() const noexcept { return graph_ != nullptr && pin_pid != 0; }
+  [[nodiscard]] bool              is_valid() const noexcept;
   [[nodiscard]] bool              is_invalid() const noexcept { return !is_valid(); }
   [[nodiscard]] bool              is_class() const noexcept { return context_ == Handle_context::Class; }
   [[nodiscard]] bool              is_flat() const noexcept { return context_ == Handle_context::Flat; }
@@ -189,10 +189,14 @@ public:
   [[nodiscard]] Tid               get_hier_tid() const noexcept { return hier_tid_; }
   [[nodiscard]] Tree_pos          get_hier_pos() const noexcept { return hier_pos_; }
 
-  void connect_driver(Pin_class driver_pin) const;
-  void connect_driver(Node_class driver_node) const;
-  void connect_sink(Pin_class sink_pin) const;
-  void connect_sink(Node_class sink_node) const;
+  void                                  connect_driver(Pin_class driver_pin) const;
+  void                                  connect_driver(Node_class driver_node) const;
+  void                                  connect_sink(Pin_class sink_pin) const;
+  void                                  connect_sink(Node_class sink_node) const;
+  void                                  del_sink(Pin_class driver_pin) const;
+  void                                  del_sink() const;
+  void                                  del_driver() const;
+  void                                  del_node() const;
   [[nodiscard]] std::vector<Edge_class> out_edges() const;
   [[nodiscard]] std::vector<Edge_class> inp_edges() const;
 
@@ -208,16 +212,16 @@ public:
   }
 
 private:
-  Graph*                           graph_       = nullptr;
-  Nid                              raw_nid      = 0;
-  Port_id                          port_id      = 0;
-  Pid                              pin_pid      = 0;
-  Handle_context                   context_     = Handle_context::Class;
-  Gid                              root_gid_    = Gid_invalid;
-  Gid                              current_gid_ = Gid_invalid;
+  Graph*                            graph_       = nullptr;
+  Nid                               raw_nid      = 0;
+  Port_id                           port_id      = 0;
+  Pid                               pin_pid      = 0;
+  Handle_context                    context_     = Handle_context::Class;
+  Gid                               root_gid_    = Gid_invalid;
+  Gid                               current_gid_ = Gid_invalid;
   std::shared_ptr<std::vector<Gid>> hier_gids_;
-  Tid                              hier_tid_    = INVALID;
-  Tree_pos                         hier_pos_    = INVALID;
+  Tid                               hier_tid_ = INVALID;
+  Tree_pos                          hier_pos_ = INVALID;
 
   friend class Graph;
   friend class Node_class;
@@ -231,7 +235,11 @@ public:
   Node_class() = default;
   Node_class(Graph* graph_value, Nid raw_nid_value) : graph_(graph_value), raw_nid(raw_nid_value) {}
   Node_class(Graph* graph_value, Gid root_gid_value, Gid current_gid_value, Nid raw_nid_value)
-      : graph_(graph_value), raw_nid(raw_nid_value), context_(Context::Flat), root_gid_(root_gid_value), current_gid_(current_gid_value) {}
+      : graph_(graph_value)
+      , raw_nid(raw_nid_value)
+      , context_(Context::Flat)
+      , root_gid_(root_gid_value)
+      , current_gid_(current_gid_value) {}
   Node_class(Graph* graph_value, Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value,
              Nid raw_nid_value)
       : graph_(graph_value)
@@ -245,7 +253,7 @@ public:
   [[nodiscard]] constexpr Port_id get_port_id() const noexcept { return 0; }
   [[nodiscard]] constexpr Nid     get_raw_nid() const noexcept { return raw_nid; }
   [[nodiscard]] Graph*            get_graph() const noexcept { return graph_; }
-  [[nodiscard]] bool              is_valid() const noexcept { return graph_ != nullptr && raw_nid != 0; }
+  [[nodiscard]] bool              is_valid() const noexcept;
   [[nodiscard]] bool              is_invalid() const noexcept { return !is_valid(); }
   [[nodiscard]] bool              is_class() const noexcept { return context_ == Context::Class; }
   [[nodiscard]] bool              is_flat() const noexcept { return context_ == Context::Flat; }
@@ -256,22 +264,23 @@ public:
   [[nodiscard]] Tid               get_hier_tid() const noexcept { return hier_tid_; }
   [[nodiscard]] Tree_pos          get_hier_pos() const noexcept { return hier_pos_; }
 
-  void set_subnode(const std::shared_ptr<GraphIO>& graphio) const;
-  void set_type(Type type) const;
-  [[nodiscard]] Pin_class create_driver_pin() const;
-  [[nodiscard]] Pin_class create_driver_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class create_driver_pin(std::string_view name) const;
-  [[nodiscard]] Pin_class create_sink_pin() const;
-  [[nodiscard]] Pin_class create_sink_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class create_sink_pin(std::string_view name) const;
-  [[nodiscard]] Pin_class get_driver_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class get_driver_pin(std::string_view name) const;
-  [[nodiscard]] Pin_class get_sink_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class get_sink_pin(std::string_view name) const;
-  void connect_driver(Pin_class driver_pin) const;
-  void connect_driver(Node_class driver_node) const;
-  void connect_sink(Pin_class sink_pin) const;
-  void connect_sink(Node_class sink_node) const;
+  void                                  set_subnode(const std::shared_ptr<GraphIO>& graphio) const;
+  void                                  set_type(Type type) const;
+  [[nodiscard]] Pin_class               create_driver_pin() const;
+  [[nodiscard]] Pin_class               create_driver_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class               create_driver_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class               create_sink_pin() const;
+  [[nodiscard]] Pin_class               create_sink_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class               create_sink_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class               get_driver_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class               get_driver_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class               get_sink_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class               get_sink_pin(std::string_view name) const;
+  void                                  connect_driver(Pin_class driver_pin) const;
+  void                                  connect_driver(Node_class driver_node) const;
+  void                                  connect_sink(Pin_class sink_pin) const;
+  void                                  connect_sink(Node_class sink_node) const;
+  void                                  del_node() const;
   [[nodiscard]] std::vector<Edge_class> out_edges() const;
   [[nodiscard]] std::vector<Edge_class> inp_edges() const;
   [[nodiscard]] std::vector<Pin_class>  out_pins() const;
@@ -289,14 +298,14 @@ public:
   }
 
 private:
-  Graph*                           graph_      = nullptr;
-  Nid                              raw_nid     = 0;
-  Context                          context_    = Context::Class;
-  Gid                              root_gid_   = Gid_invalid;
-  Gid                              current_gid_ = Gid_invalid;
+  Graph*                            graph_       = nullptr;
+  Nid                               raw_nid      = 0;
+  Context                           context_     = Context::Class;
+  Gid                               root_gid_    = Gid_invalid;
+  Gid                               current_gid_ = Gid_invalid;
   std::shared_ptr<std::vector<Gid>> hier_gids_;
-  Tid                              hier_tid_   = INVALID;
-  Tree_pos                         hier_pos_   = INVALID;
+  Tid                               hier_tid_ = INVALID;
+  Tree_pos                          hier_pos_ = INVALID;
 
   friend class Graph;
   friend void inherit_pin_context(Pin_class& pin, const Node_class& node);
@@ -497,14 +506,15 @@ public:
   Graph& operator=(Graph&&)      = delete;
   void   clear_graph();
 
-  [[nodiscard]] static bool           is_valid(Node_class node) noexcept { return node.get_raw_nid() != 0; }
-  [[nodiscard]] static bool           is_valid(Pin_class pin) noexcept { return pin.get_pin_pid() != 0; }
+  [[nodiscard]] static bool           is_valid(Node_class node) noexcept { return node.is_valid(); }
+  [[nodiscard]] static bool           is_valid(Pin_class pin) noexcept { return pin.is_valid(); }
   [[nodiscard]] static constexpr bool is_valid(Node_flat node) noexcept { return node.get_raw_nid() != 0; }
   [[nodiscard]] static constexpr bool is_valid(Pin_flat pin) noexcept { return pin.get_pin_pid() != 0; }
   [[nodiscard]] static constexpr bool is_valid(const Node_hier& node) noexcept { return node.get_raw_nid() != 0; }
   [[nodiscard]] static constexpr bool is_valid(const Pin_hier& pin) noexcept { return pin.get_pin_pid() != 0; }
 
   [[nodiscard]] Node                     create_node();
+  void                                   clear();
   [[nodiscard]] Gid                      get_gid() const noexcept { return self_gid_; }
   [[nodiscard]] std::string_view         get_name() const noexcept { return name_; }
   [[nodiscard]] std::shared_ptr<GraphIO> get_io() const { return graphio_owner_.lock(); }
@@ -559,31 +569,34 @@ public:
   [[nodiscard]] std::vector<FastIterator> fast_iter(bool hierarchy, Gid top_graph = 0, uint32_t tree_node_num = 0) const;
 
 private:
-  void              assert_accessible() const noexcept;
-  void              assert_node_exists(const Node_class& node) const noexcept;
-  void              assert_pin_exists(const Pin_class& pin) const noexcept;
-  void              invalidate_from_library() noexcept;
-  [[nodiscard]] Pid materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
-                                                ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
-  void              erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
-  void              delete_pin(Pid pin_pid);
-  [[nodiscard]] Pin_class create_pin(Node_class node, Port_id port_id);
-  [[nodiscard]] Pid       create_pin(Nid nid, Port_id port_id);
-  [[nodiscard]] Pin_class find_pin(Node_class node, Port_id port_id, bool driver) const;
-  [[nodiscard]] Pin_class find_or_create_pin(Node_class node, Port_id port_id);
-  [[nodiscard]] Port_id   resolve_driver_port(Node_class node, std::string_view name) const;
-  [[nodiscard]] Port_id   resolve_sink_port(Node_class node, std::string_view name) const;
+  void               assert_accessible() const noexcept;
+  void               assert_node_exists(const Node_class& node) const noexcept;
+  void               assert_pin_exists(const Pin_class& pin) const noexcept;
+  [[nodiscard]] bool is_node_valid(Nid nid) const noexcept;
+  [[nodiscard]] bool is_pin_valid(Pid pid) const noexcept;
+  void               invalidate_from_library() noexcept;
+  void               release_storage() noexcept;
+  [[nodiscard]] Pid  materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
+                                                 ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
+  void               erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
+  void               delete_pin(Pid pin_pid);
+  [[nodiscard]] Pin_class        create_pin(Node_class node, Port_id port_id);
+  [[nodiscard]] Pid              create_pin(Nid nid, Port_id port_id);
+  [[nodiscard]] Pin_class        find_pin(Node_class node, Port_id port_id, bool driver) const;
+  [[nodiscard]] Pin_class        find_or_create_pin(Node_class node, Port_id port_id);
+  [[nodiscard]] Port_id          resolve_driver_port(Node_class node, std::string_view name) const;
+  [[nodiscard]] Port_id          resolve_sink_port(Node_class node, std::string_view name) const;
   [[nodiscard]] std::string_view pin_name(Pin_class pin) const;
-  void              set_subnode(Node_class node, Gid gid);
-  void              set_subnode(Nid nid, Gid gid);
-  void              add_edge(Pid driver_id, Pid sink_id);
+  void                           set_subnode(Node_class node, Gid gid);
+  void                           set_subnode(Nid nid, Gid gid);
+  void                           add_edge(Pid driver_id, Pid sink_id);
   void add_edge(Node_class driver_node, Node_class sink_node) { add_edge(driver_node.get_raw_nid(), sink_node.get_raw_nid()); }
   void add_edge(Node_class driver_node, Pin_class sink_pin) { add_edge(driver_node.get_raw_nid(), sink_pin.get_pin_pid()); }
   void add_edge(Pin_class driver_pin, Node_class sink_node) { add_edge(driver_pin.get_pin_pid(), sink_node.get_raw_nid()); }
   void add_edge(Pin_class driver_pin, Pin_class sink_pin) { add_edge(driver_pin.get_pin_pid(), sink_pin.get_pin_pid()); }
-  void              del_edge_int(Vid driver_id, Vid sink_id);
-  void              add_edge_int(Pid self_id, Pid other_id);
-  void              set_next_pin(Nid nid, Pid next_pin);
+  void del_edge_int(Vid driver_id, Vid sink_id);
+  void add_edge_int(Pid self_id, Pid other_id);
+  void set_next_pin(Nid nid, Pid next_pin);
   [[nodiscard]] Pin_class make_pin_class(Pid pin_pid) const;
   void                    bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
   void                    set_name(std::string_view name) { name_ = name; }
@@ -602,8 +615,8 @@ private:
   void forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids,
                          Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const;
 
-  std::vector<NodeEntry>                              node_table;
-  std::vector<PinEntry>                               pin_table;
+  std::vector<NodeEntry>                         node_table;
+  std::vector<PinEntry>                          pin_table;
   mutable std::vector<Node>                      fast_class_cache_;
   mutable std::vector<Node>                      fast_flat_cache_;
   mutable std::vector<Node>                      fast_hier_cache_;
@@ -681,6 +694,7 @@ public:
   void                                       add_output(std::string_view name, Port_id port_id, bool loop_last = false);
   void                                       delete_input(std::string_view name);
   void                                       delete_output(std::string_view name);
+  void                                       clear();
   [[nodiscard]] bool                         has_input(std::string_view name) const;
   [[nodiscard]] bool                         has_output(std::string_view name) const;
   [[nodiscard]] bool                         is_loop_last(std::string_view name) const;
@@ -1057,6 +1071,11 @@ inline void GraphIO::delete_output(std::string_view name) {
   declared_io_pins_.erase(it);
   output_pin_decls_.erase(output_pin_decls_.begin() + static_cast<std::ptrdiff_t>(index));
   reindex_declared_io_pins(IoDirection::Output, index);
+}
+
+inline void GraphIO::clear() {
+  assert(owner_lib_ != nullptr && "clear: GraphIO is no longer attached to a library");
+  owner_lib_->delete_graphio(shared_from_this());
 }
 
 inline bool GraphIO::has_input(std::string_view name) const {

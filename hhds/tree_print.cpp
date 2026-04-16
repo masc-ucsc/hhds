@@ -1,8 +1,8 @@
 // This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 
-#include "tree.hpp"
-
 #include <sstream>
+
+#include "tree.hpp"
 
 namespace hhds {
 
@@ -22,11 +22,9 @@ size_t Tree::node_body_width(Tree_pos c, size_t name_width, const PrintOptions& 
   switch (te.sclass) {
     case Statement_class::Attr:
     case Statement_class::Use:
-    case Statement_class::End:
-      return 0;
+    case Statement_class::End: return 0;
 
-    case Statement_class::Assign:
-      return 7 + te.name.size();
+    case Statement_class::Assign: return 7 + te.name.size();
 
     case Statement_class::Open_def:
     case Statement_class::Closed_def: {
@@ -48,7 +46,7 @@ size_t Tree::node_body_width(Tree_pos c, size_t name_width, const PrintOptions& 
 
     default: {  // Node
       if (options.node_text) {
-        auto nt = options.node_text(as_class(c));
+        auto nt        = options.node_text(as_class(c));
         bool has_colon = options.show_types && std::string_view(nt) != te.name;
         if (has_colon) {
           return name_width + 3 + te.name.size();
@@ -71,7 +69,7 @@ void Tree::scan_align_group(PrintAlign& align, Tree_pos first_child, const Print
 
     const auto te       = resolve_print_type(get_type(c), options);
     const bool is_scope = te.sclass == Statement_class::Open_call || te.sclass == Statement_class::Closed_call
-                       || te.sclass == Statement_class::Open_def || te.sclass == Statement_class::Closed_def;
+                          || te.sclass == Statement_class::Open_def || te.sclass == Statement_class::Closed_def;
 
     if (options.node_text && te.sclass == Statement_class::Node) {
       auto nt = options.node_text(as_class(c));
@@ -115,7 +113,7 @@ void Tree::recompute_body_width_recurse(PrintAlign& align, Tree_pos first_child,
 
     const auto te       = resolve_print_type(get_type(c), options);
     const bool is_scope = te.sclass == Statement_class::Open_call || te.sclass == Statement_class::Closed_call
-                       || te.sclass == Statement_class::Open_def || te.sclass == Statement_class::Closed_def;
+                          || te.sclass == Statement_class::Open_def || te.sclass == Statement_class::Closed_def;
     if (!is_scope) {
       auto fc = get_first_child(c);
       if (fc != INVALID) {
@@ -154,19 +152,20 @@ void Tree::PrintContext::print_children_default(std::ostream& os) const {
 }
 
 void Tree::PrintContext::print_child_default(std::ostream& os, Tree_pos child_pos) const {
-  auto child_first = tree.get_first_child(child_pos);
+  auto       child_first = tree.get_first_child(child_pos);
   PrintAlign child_align;
   if (child_first != INVALID) {
     child_align = tree.compute_sibling_align(child_first, options);
   }
   // Compute a minimal align for the single child
   PrintAlign single_align;
-  single_align.pos_width = std::to_string(child_pos).size();
+  single_align.pos_width  = std::to_string(child_pos).size();
   single_align.body_width = tree.node_body_width(child_pos, 0, options);
   tree.print_node(os, child_pos, depth + 1, single_align, options);
 }
 
-void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const PrintAlign& align, const PrintOptions& options) const {
+void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const PrintAlign& align,
+                      const PrintOptions& options) const {
   if (options.format_node) {
     PrintContext ctx{*this, options, depth, node_pos};
     if (options.format_node(os, node_pos, ctx)) {
@@ -178,7 +177,7 @@ void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const P
   const auto type     = get_type(node_pos);
   const auto te       = resolve_print_type(type, options);
   const bool is_scope = te.sclass == Statement_class::Open_call || te.sclass == Statement_class::Closed_call
-                     || te.sclass == Statement_class::Open_def || te.sclass == Statement_class::Closed_def;
+                        || te.sclass == Statement_class::Open_def || te.sclass == Statement_class::Closed_def;
 
   auto emit_indent = [&](size_t d) {
     for (size_t i = 0; i < d; ++i) {
@@ -231,12 +230,8 @@ void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const P
 
   size_t body_w = 0;
   switch (te.sclass) {
-    case Statement_class::Attr:
-      os << "attr " << te.name;
-      break;
-    case Statement_class::Use:
-      os << "use";
-      break;
+    case Statement_class::Attr: os << "attr " << te.name; break;
+    case Statement_class::Use: os << "use"; break;
     case Statement_class::Assign:
       emit_pos(node_pos);
       os << " = assign " << te.name;
@@ -266,9 +261,7 @@ void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const P
       }
       break;
     }
-    case Statement_class::End:
-      os << "end";
-      break;
+    case Statement_class::End: os << "end"; break;
     default: {  // Node
       emit_pos(node_pos);
       os << " = ";
@@ -340,7 +333,8 @@ std::string Tree::print(Tree_pos start_pos, const PrintOptions& options) const {
   return oss.str();
 }
 
-void Tree::dump_node(std::ostream& os, Tree_pos node_pos, const std::string& prefix, bool is_last, const PrintOptions& options) const {
+void Tree::dump_node(std::ostream& os, Tree_pos node_pos, const std::string& prefix, bool is_last,
+                     const PrintOptions& options) const {
   os << prefix << (is_last ? "└── " : "├── ");
 
   // pos

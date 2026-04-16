@@ -193,8 +193,8 @@ public:
   // Operators
   constexpr bool operator==(const Tree_pointers& other) const {
     return parent == other.parent && next_sibling == other.next_sibling && prev_sibling == other.prev_sibling
-           && first_child_ptrs == other.first_child_ptrs && last_child_ptrs == other.last_child_ptrs
-           && types == other.types && num_short_del_occ == other.num_short_del_occ && is_leaf == other.is_leaf;
+           && first_child_ptrs == other.first_child_ptrs && last_child_ptrs == other.last_child_ptrs && types == other.types
+           && num_short_del_occ == other.num_short_del_occ && is_leaf == other.is_leaf;
   }
 
   constexpr bool operator!=(const Tree_pointers& other) const { return !(*this == other); }
@@ -227,15 +227,16 @@ private:
   Forest*                      forest_ptr;
   std::weak_ptr<Forest>        forest_owner_;
   std::weak_ptr<TreeIO>        treeio_owner_;
-  Tid                          self_tid_ = INVALID;
-  std::string                  name_ = "tree";
+  Tid                          self_tid_   = INVALID;
+  std::string                  name_       = "tree";
+  uint64_t                     generation_ = 1;
 
   void _ensure_subnode_ref_capacity(Tree_pos required_pos) {
     if (required_pos < static_cast<Tree_pos>(subnode_refs.size())) {
       return;
     }
 
-    size_t new_size = subnode_refs.empty() ? static_cast<size_t>(CHUNK_SIZE * 2) : subnode_refs.size();
+    size_t       new_size = subnode_refs.empty() ? static_cast<size_t>(CHUNK_SIZE * 2) : subnode_refs.size();
     const size_t min_size = static_cast<size_t>(required_pos + 1);
     while (new_size < min_size) {
       new_size *= 2;
@@ -325,7 +326,8 @@ private:
     name_         = std::string(name);
   }
   Tree_pos _append_after_last_sibling(Tree_pos last_sibling_pos, Tree_pos parent_pos) {
-    Tree_pos new_sibling_pos = last_sibling_pos;
+    const auto last_chunk_id   = last_sibling_pos >> CHUNK_SHIFT;
+    Tree_pos   new_sibling_pos = (last_chunk_id << CHUNK_SHIFT) + pointers_stack[last_chunk_id].get_num_short_del_occ();
 
     if ((new_sibling_pos & CHUNK_MASK) == CHUNK_MASK) {
       new_sibling_pos = _insert_chunk_after(new_sibling_pos >> CHUNK_SHIFT) << CHUNK_SHIFT;
@@ -349,13 +351,13 @@ public:
   struct PrintContext;
 
   struct PrintOptions {
-    std::span<const Type_entry>                   type_table = {};
-    std::function<std::string(const Node_class&)> node_text;
+    std::span<const Type_entry>                                                                       type_table = {};
+    std::function<std::string(const Node_class&)>                                                     node_text;
     std::vector<std::pair<std::string, std::function<std::optional<std::string>(const Node_class&)>>> attributes;
-    std::string_view                              indent = "  ";
-    bool                                          show_types = true;
-    bool                                          show_subnodes = true;
-    std::function<bool(std::ostream&, Tree_pos, const PrintContext&)> format_node;
+    std::string_view                                                                                  indent        = "  ";
+    bool                                                                                              show_types    = true;
+    bool                                                                                              show_subnodes = true;
+    std::function<bool(std::ostream&, Tree_pos, const PrintContext&)>                                 format_node;
   };
 
   struct PrintContext {
@@ -373,26 +375,29 @@ public:
     void print_child_default(std::ostream& os, Tree_pos child_pos) const;
   };
 
-  [[nodiscard]] static std::shared_ptr<Tree> create(Forest* forest = nullptr) {
-    return std::shared_ptr<Tree>(new Tree(forest));
-  }
+  [[nodiscard]] static std::shared_ptr<Tree> create(Forest* forest = nullptr) { return std::shared_ptr<Tree>(new Tree(forest)); }
 
   class Node_class {
   public:
     Node_class() = default;
-    Node_class(Tree* tree_value, Tree_pos current_pos_value) : tree_ptr(tree_value), current_pos(current_pos_value) {}
+    Node_class(Tree* tree_value, Tree_pos current_pos_value)
+        : tree_ptr(tree_value), current_pos(current_pos_value), generation(tree_value != nullptr ? tree_value->generation_ : 0) {}
     explicit Node_class(Tree_pos current_pos_value) : current_pos(current_pos_value) {}
 
     [[nodiscard]] Tree*    get_tree() const noexcept { return tree_ptr; }
     [[nodiscard]] Tree_pos get_current_pos() const noexcept { return current_pos; }
-    [[nodiscard]] bool     is_valid() const noexcept { return tree_ptr != nullptr && current_pos != INVALID; }
-    [[nodiscard]] bool     is_invalid() const noexcept { return !is_valid(); }
-    [[nodiscard]] auto     add_child() const -> Node_class;
-    void                   set_subnode(const std::shared_ptr<TreeIO>& treeio) const;
-    void                   set_type(Type type) const;
-    [[nodiscard]] auto     pre_order_class() const;
-    [[nodiscard]] auto     post_order_class() const;
-    [[nodiscard]] auto     sibling_order() const;
+    [[nodiscard]] bool     is_valid() const noexcept {
+      return tree_ptr != nullptr && generation == tree_ptr->generation_ && tree_ptr->_check_idx_exists(current_pos)
+             && tree_ptr->_contains_data(current_pos);
+    }
+    [[nodiscard]] bool is_invalid() const noexcept { return !is_valid(); }
+    [[nodiscard]] auto add_child() const -> Node_class;
+    void               set_subnode(const std::shared_ptr<TreeIO>& treeio) const;
+    void               set_type(Type type) const;
+    void               del_node() const;
+    [[nodiscard]] auto pre_order_class() const;
+    [[nodiscard]] auto post_order_class() const;
+    [[nodiscard]] auto sibling_order() const;
     [[nodiscard]] bool operator==(const Node_class& other) const noexcept { return current_pos == other.current_pos; }
     [[nodiscard]] bool operator!=(const Node_class& other) const noexcept { return !(*this == other); }
 
@@ -404,6 +409,7 @@ public:
   private:
     Tree*    tree_ptr    = nullptr;
     Tree_pos current_pos = INVALID;
+    uint64_t generation  = 0;
 
     friend class Tree;
   };
@@ -414,10 +420,10 @@ public:
     Node_flat(Tid root_tid_value, Tid current_tid_value, Tree_pos current_pos_value)
         : root_tid(root_tid_value), current_tid(current_tid_value), current_pos(current_pos_value) {}
 
-    [[nodiscard]] Tid get_root_tid() const noexcept { return root_tid; }
-    [[nodiscard]] Tid get_current_tid() const noexcept { return current_tid; }
+    [[nodiscard]] Tid      get_root_tid() const noexcept { return root_tid; }
+    [[nodiscard]] Tid      get_current_tid() const noexcept { return current_tid; }
     [[nodiscard]] Tree_pos get_current_pos() const noexcept { return current_pos; }
-    [[nodiscard]] bool operator==(const Node_flat& other) const noexcept {
+    [[nodiscard]] bool     operator==(const Node_flat& other) const noexcept {
       return root_tid == other.root_tid && current_tid == other.current_tid && current_pos == other.current_pos;
     }
     [[nodiscard]] bool operator!=(const Node_flat& other) const noexcept { return !(*this == other); }
@@ -428,8 +434,8 @@ public:
     }
 
   private:
-    Tid root_tid    = INVALID;
-    Tid current_tid = INVALID;
+    Tid      root_tid    = INVALID;
+    Tid      current_tid = INVALID;
     Tree_pos current_pos = INVALID;
 
     friend class Tree;
@@ -451,8 +457,8 @@ public:
     [[nodiscard]] Tree_pos get_hier_pos() const noexcept { return hier_pos; }
     [[nodiscard]] Tree_pos get_current_pos() const noexcept { return current_pos; }
     [[nodiscard]] bool     operator==(const Node_hier& other) const noexcept {
-      return root_tid == other.root_tid && current_tid == other.current_tid && hier_tid == other.hier_tid && hier_pos == other.hier_pos
-             && current_pos == other.current_pos;
+      return root_tid == other.root_tid && current_tid == other.current_tid && hier_tid == other.hier_tid
+             && hier_pos == other.hier_pos && current_pos == other.current_pos;
     }
     [[nodiscard]] bool operator!=(const Node_hier& other) const noexcept { return !(*this == other); }
 
@@ -476,7 +482,7 @@ public:
   Tree(Tree&&)                 = delete;
   Tree& operator=(Tree&&)      = delete;
 
-  [[nodiscard]] static bool is_valid(Node_class node) noexcept { return node.get_current_pos() != INVALID; }
+  [[nodiscard]] static bool is_valid(Node_class node) noexcept { return node.is_valid(); }
   [[nodiscard]] static bool is_valid(Node_flat node) noexcept { return node.get_current_pos() != INVALID; }
   [[nodiscard]] static bool is_valid(Node_hier node) noexcept { return node.get_current_pos() != INVALID; }
 
@@ -508,17 +514,21 @@ public:
     return pointers_stack[node_pos >> CHUNK_SHIFT].get_parent();
   }
   [[nodiscard]] Node_class get_parent(Node_class node) const { return as_class(get_parent(node.get_current_pos())); }
-  [[nodiscard]] Tree_pos    get_last_child(const Tree_pos& parent_pos) const;
-  [[nodiscard]] Node_class  get_last_child(Node_class parent_node) const { return as_class(get_last_child(parent_node.get_current_pos())); }
-  [[nodiscard]] Tree_pos    get_first_child(const Tree_pos& parent_pos) const;
-  [[nodiscard]] Node_class  get_first_child(Node_class parent_node) const { return as_class(get_first_child(parent_node.get_current_pos())); }
-  [[nodiscard]] Type        get_type(const Tree_pos& node_pos) const {
+  [[nodiscard]] Tree_pos   get_last_child(const Tree_pos& parent_pos) const;
+  [[nodiscard]] Node_class get_last_child(Node_class parent_node) const {
+    return as_class(get_last_child(parent_node.get_current_pos()));
+  }
+  [[nodiscard]] Tree_pos   get_first_child(const Tree_pos& parent_pos) const;
+  [[nodiscard]] Node_class get_first_child(Node_class parent_node) const {
+    return as_class(get_first_child(parent_node.get_current_pos()));
+  }
+  [[nodiscard]] Type get_type(const Tree_pos& node_pos) const {
     I(_check_idx_exists(node_pos), "get_type: Node index out of range");
     const auto chunk_id     = (node_pos >> CHUNK_SHIFT);
     const auto chunk_offset = static_cast<int16_t>(node_pos & CHUNK_MASK);
     return pointers_stack[chunk_id].get_type_at(chunk_offset);
   }
-  [[nodiscard]] Type get_type(Node_class node) const { return get_type(node.get_current_pos()); }
+  [[nodiscard]] Type        get_type(Node_class node) const { return get_type(node.get_current_pos()); }
   [[nodiscard]] bool        is_last_child(const Tree_pos& node_pos) const;
   [[nodiscard]] bool        is_last_child(Node_class node) const { return is_last_child(node.get_current_pos()); }
   [[nodiscard]] bool        is_first_child(const Tree_pos& node_pos) const;
@@ -533,11 +543,12 @@ public:
   [[nodiscard]] bool     is_leaf(Node_class node) const { return is_leaf(node.get_current_pos()); }
   [[nodiscard]] Tree_pos get_root() const { return ROOT; }
 
-  Tree_pos append_sibling(const Tree_pos& sibling_pos);
+  void       clear();
+  Tree_pos   append_sibling(const Tree_pos& sibling_pos);
   Node_class append_sibling(Node_class sibling_node) { return as_class(append_sibling(sibling_node.get_current_pos())); }
-  Tree_pos add_child(const Tree_pos& parent_pos);
+  Tree_pos   add_child(const Tree_pos& parent_pos);
   Node_class add_child(Node_class parent_node) { return as_class(add_child(parent_node.get_current_pos())); }
-  Tree_pos add_root();
+  Tree_pos   add_root();
   Node_class add_root_node() { return as_class(add_root()); }
   void       set_type(const Tree_pos& node_pos, Type type) {
     I(_check_idx_exists(node_pos), "set_type: Node index out of range");
@@ -546,32 +557,34 @@ public:
     pointers_stack[chunk_id].set_type_at(chunk_offset, type);
   }
   void       set_type(Node_class node, Type type) { set_type(node.get_current_pos(), type); }
-  void     delete_leaf(const Tree_pos& leaf_pos);
-  void     delete_leaf(Node_class leaf_node) { delete_leaf(leaf_node.get_current_pos()); }
-  void     delete_subtree(const Tree_pos& subtree_root_pos);
-  void     delete_subtree(Node_class subtree_root_node) { delete_subtree(subtree_root_node.get_current_pos()); }
-  void     set_subnode(const Tree_pos& node_pos, Tid subnode_tid);
-  void     set_subnode(Node_class node, Tid subnode_tid) { set_subnode(node.get_current_pos(), subnode_tid); }
-  Tree_pos insert_next_sibling(const Tree_pos& sibling_pos);
+  void       delete_leaf(const Tree_pos& leaf_pos);
+  void       delete_leaf(Node_class leaf_node) { delete_leaf(leaf_node.get_current_pos()); }
+  void       delete_subtree(const Tree_pos& subtree_root_pos);
+  void       delete_subtree(Node_class subtree_root_node) { delete_subtree(subtree_root_node.get_current_pos()); }
+  void       set_subnode(const Tree_pos& node_pos, Tid subnode_tid);
+  void       set_subnode(Node_class node, Tid subnode_tid) { set_subnode(node.get_current_pos(), subnode_tid); }
+  Tree_pos   insert_next_sibling(const Tree_pos& sibling_pos);
   Node_class insert_next_sibling(Node_class sibling_node) { return as_class(insert_next_sibling(sibling_node.get_current_pos())); }
-  void set_name(std::string_view n);
-  [[nodiscard]] std::string_view get_name() const { return name_; }
-  [[nodiscard]] Tid              get_tid() const noexcept { return self_tid_; }
+  void       set_name(std::string_view n);
+  [[nodiscard]] std::string_view        get_name() const { return name_; }
+  [[nodiscard]] Tid                     get_tid() const noexcept { return self_tid_; }
   [[nodiscard]] std::shared_ptr<TreeIO> get_io() const { return treeio_owner_.lock(); }
 
   void print(std::ostream& os) const { print(os, get_root(), PrintOptions{}); }
   void print(std::ostream& os, const PrintOptions& options) const { print(os, get_root(), options); }
   void print(std::ostream& os, Tree_pos start_pos, const PrintOptions& options) const;
   void print(std::ostream& os, Node_class start_node) const { print(os, start_node.get_current_pos(), PrintOptions{}); }
-  void print(std::ostream& os, Node_class start_node, const PrintOptions& options) const { print(os, start_node.get_current_pos(), options); }
+  void print(std::ostream& os, Node_class start_node, const PrintOptions& options) const {
+    print(os, start_node.get_current_pos(), options);
+  }
 
   [[nodiscard]] std::string print() const { return print(PrintOptions{}); }
   [[nodiscard]] std::string print(const PrintOptions& options) const;
   [[nodiscard]] std::string print(Tree_pos start_pos, const PrintOptions& options) const;
 
-  void dump(std::ostream& os) const { dump(os, get_root(), PrintOptions{}); }
-  void dump(std::ostream& os, const PrintOptions& options) const { dump(os, get_root(), options); }
-  void dump(std::ostream& os, Tree_pos start_pos, const PrintOptions& options) const;
+  void                      dump(std::ostream& os) const { dump(os, get_root(), PrintOptions{}); }
+  void                      dump(std::ostream& os, const PrintOptions& options) const { dump(os, get_root(), options); }
+  void                      dump(std::ostream& os, Tree_pos start_pos, const PrintOptions& options) const;
   [[nodiscard]] std::string dump() const { return dump(PrintOptions{}); }
   [[nodiscard]] std::string dump(const PrintOptions& options) const;
   [[nodiscard]] std::string dump(Tree_pos start_pos, const PrintOptions& options) const;
@@ -584,8 +597,8 @@ public:
   };
 
   struct ReadDumpResult {
-    std::shared_ptr<Tree>  tree;
-    std::vector<NodeData>  nodes;  // one per node, in pre-order
+    std::shared_ptr<Tree> tree;
+    std::vector<NodeData> nodes;  // one per node, in pre-order
   };
 
   void write_dump(std::ostream& os, const PrintOptions& options) const;
@@ -641,12 +654,12 @@ public:
     traversal_iterator_base(Tree_pos start, const Tree* tree, bool follow_refs)
         : current(start), tree_ptr(tree), m_follow_subtrees(follow_refs) {}
 
-    bool     operator==(const traversal_iterator_base& other) const { return current == other.current; }
-    bool     operator!=(const traversal_iterator_base& other) const { return current != other.current; }
+    bool       operator==(const traversal_iterator_base& other) const { return current == other.current; }
+    bool       operator!=(const traversal_iterator_base& other) const { return current != other.current; }
     Node_class operator*() const { return tree_ptr->as_class(current); }
 
   protected:
-  Tree_pos handle_subnode_ref(Tree_pos node_pos) {
+    Tree_pos handle_subnode_ref(Tree_pos node_pos) {
       if (m_follow_subtrees && tree_ptr->forest_ptr) {
         Tree_pos subnode_tid = tree_ptr->get_subnode(node_pos);
         if (subnode_tid != INVALID) {
@@ -755,7 +768,9 @@ public:
   };
 
   const_sibling_order_range sibling_order(Tree_pos start) const { return const_sibling_order_range(start, this); }
-  const_sibling_order_range sibling_order(Node_class start) const { return const_sibling_order_range(start.get_current_pos(), this); }
+  const_sibling_order_range sibling_order(Node_class start) const {
+    return const_sibling_order_range(start.get_current_pos(), this);
+  }
 
   class pre_order_iterator {
   private:
@@ -824,8 +839,8 @@ public:
       return *this;
     }
 
-    bool     operator==(const pre_order_iterator& other) const { return current == other.current; }
-    bool     operator!=(const pre_order_iterator& other) const { return current != other.current; }
+    bool       operator==(const pre_order_iterator& other) const { return current == other.current; }
+    bool       operator!=(const pre_order_iterator& other) const { return current != other.current; }
     Node_class operator*() const { return tree_ptr->as_class(current); }
   };
 
@@ -940,8 +955,10 @@ public:
       return *this;
     }
 
-    bool     operator==(const pre_order_iterator_with_subtrees& other) const { return current == other.current && current_tree == other.current_tree; }
-    bool     operator!=(const pre_order_iterator_with_subtrees& other) const { return !(*this == other); }
+    bool operator==(const pre_order_iterator_with_subtrees& other) const {
+      return current == other.current && current_tree == other.current_tree;
+    }
+    bool       operator!=(const pre_order_iterator_with_subtrees& other) const { return !(*this == other); }
     Node_class operator*() const { return current_tree->as_class(current); }
   };
 
@@ -1031,15 +1048,15 @@ public:
     return post_order_range(start.get_current_pos(), this, follow_subtrees);
   }
 
-  [[nodiscard]] bool   has_subnode(Tree_pos node_pos) const { return get_subnode(node_pos) < 0; }
-  [[nodiscard]] bool   has_subnode(Node_class node) const { return has_subnode(node.get_current_pos()); }
-  [[nodiscard]] size_t get_subnode_index(Tree_pos node_pos) const { return static_cast<size_t>(-get_subnode(node_pos) - 1); }
+  [[nodiscard]] bool     has_subnode(Tree_pos node_pos) const { return get_subnode(node_pos) < 0; }
+  [[nodiscard]] bool     has_subnode(Node_class node) const { return has_subnode(node.get_current_pos()); }
+  [[nodiscard]] size_t   get_subnode_index(Tree_pos node_pos) const { return static_cast<size_t>(-get_subnode(node_pos) - 1); }
   [[nodiscard]] Tree_pos make_subnode_ref(size_t subnode_index) const { return static_cast<Tree_pos>(-(subnode_index + 1)); }
   [[nodiscard]] Tree_pos get_subnode(Tree_pos node_pos) const {
     I(_check_idx_exists(node_pos), "get_subnode: Node index out of range");
     return node_pos < static_cast<Tree_pos>(subnode_refs.size()) ? subnode_refs[node_pos] : INVALID;
   }
-  [[nodiscard]] Tid get_subnode(Node_class node) const { return get_subnode(node.get_current_pos()); }
+  [[nodiscard]] Tid  get_subnode(Node_class node) const { return get_subnode(node.get_current_pos()); }
   [[nodiscard]] auto get_subs() const -> std::span<const Node_class> {
     if (!subs_cache_valid_) {
       subs_cache_.clear();
@@ -1056,6 +1073,7 @@ public:
   [[nodiscard]] TreeCursor create_cursor(Node_class start);
 
   friend class Forest;
+
 private:
   struct PrintAlign {
     size_t pos_width  = 0;  // max digits in %pos (to align '=')
@@ -1063,15 +1081,16 @@ private:
     size_t body_width = 0;  // max width between '= ' and ' @(' (to align '@')
   };
 
-  [[nodiscard]] Type_entry  resolve_print_type(Type type, const PrintOptions& options) const;
-  [[nodiscard]] size_t      node_body_width(Tree_pos c, size_t name_width, const PrintOptions& options) const;
-  void                      print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const PrintAlign& align, const PrintOptions& options) const;
-  void                      dump_node(std::ostream& os, Tree_pos node_pos, const std::string& prefix, bool is_last, const PrintOptions& options) const;
-  void                      write_dump_node(std::ostream& os, Tree_pos node_pos, const std::string& prefix, bool is_last, const PrintOptions& options) const;
-  void                      scan_align_group(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;
-  [[nodiscard]] PrintAlign  compute_sibling_align(Tree_pos first_child, const PrintOptions& options) const;
-  void                      recompute_body_width(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;
-  void                      recompute_body_width_recurse(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;
+  [[nodiscard]] Type_entry resolve_print_type(Type type, const PrintOptions& options) const;
+  [[nodiscard]] size_t     node_body_width(Tree_pos c, size_t name_width, const PrintOptions& options) const;
+  void print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const PrintAlign& align, const PrintOptions& options) const;
+  void dump_node(std::ostream& os, Tree_pos node_pos, const std::string& prefix, bool is_last, const PrintOptions& options) const;
+  void write_dump_node(std::ostream& os, Tree_pos node_pos, const std::string& prefix, bool is_last,
+                       const PrintOptions& options) const;
+  void scan_align_group(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;
+  [[nodiscard]] PrintAlign compute_sibling_align(Tree_pos first_child, const PrintOptions& options) const;
+  void                     recompute_body_width(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;
+  void                     recompute_body_width_recurse(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;
   mutable std::vector<Node_class> subs_cache_;
   mutable bool                    subs_cache_valid_ = false;
   explicit Tree(Forest* forest = nullptr) : forest_ptr(forest) {}
@@ -1092,13 +1111,20 @@ public:
   TreeIO(TreeIO&&)                 = delete;
   TreeIO& operator=(TreeIO&&)      = delete;
 
-  [[nodiscard]] Tid              get_tid() const noexcept { return tid_; }
-  [[nodiscard]] std::string_view get_name() const noexcept { return name_; }
-  [[nodiscard]] std::shared_ptr<Forest> get_forest() const { return forest_owner_.lock(); }
+  [[nodiscard]] Tid                         get_tid() const noexcept { return tid_; }
+  [[nodiscard]] std::string_view            get_name() const noexcept { return name_; }
+  [[nodiscard]] std::shared_ptr<Forest>     get_forest() const { return forest_owner_.lock(); }
   [[nodiscard]] std::shared_ptr<Tree>       get_tree();
   [[nodiscard]] std::shared_ptr<const Tree> get_tree() const;
   [[nodiscard]] std::shared_ptr<Tree>       create_tree();
   [[nodiscard]] bool                        has_tree() const;
+  void                                      clear();
+
+private:
+  void invalidate_from_forest() noexcept {
+    forest_owner_.reset();
+    name_.clear();
+  }
 
   friend class Forest;
 };
@@ -1117,6 +1143,11 @@ inline void Tree::Node_class::set_subnode(const std::shared_ptr<TreeIO>& treeio)
 inline void Tree::Node_class::set_type(Type type) const {
   I(tree_ptr != nullptr, "set_type: node is not attached to a tree");
   tree_ptr->set_type(*this, type);
+}
+
+inline void Tree::Node_class::del_node() const {
+  I(tree_ptr != nullptr, "del_node: node is not attached to a tree");
+  tree_ptr->delete_subtree(*this);
 }
 
 inline auto Tree::Node_class::pre_order_class() const {
@@ -1251,6 +1282,7 @@ public:
       if (it != tree_name_to_tid_.end() && it->second == tree_tid) {
         tree_name_to_tid_.erase(it);
       }
+      tree_ios_[tree_idx]->invalidate_from_forest();
       tree_ios_[tree_idx].reset();
     }
 
@@ -1263,7 +1295,27 @@ public:
 
   void delete_treeio(const std::shared_ptr<TreeIO>& tio) {
     I(tio != nullptr, "delete_treeio: null TreeIO");
-    (void)delete_tree(tio->get_tid());
+    const auto tree_tid = tio->get_tid();
+    const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
+    I(tree_idx < tree_ios_.size(), "delete_treeio: TreeIO index out of range");
+
+    if (tree_idx < tree_ios_.size() && tree_ios_[tree_idx]) {
+      auto it = tree_name_to_tid_.find(std::string(tree_ios_[tree_idx]->get_name()));
+      if (it != tree_name_to_tid_.end() && it->second == tree_tid) {
+        tree_name_to_tid_.erase(it);
+      }
+      tree_ios_[tree_idx]->invalidate_from_forest();
+      tree_ios_[tree_idx].reset();
+    }
+    if (tree_idx < trees.size()) {
+      if (trees[tree_idx]) {
+        trees[tree_idx]->clear();
+      }
+      trees[tree_idx].reset();
+    }
+    if (tree_idx < reference_counts.size()) {
+      reference_counts[tree_idx] = 0;
+    }
   }
 
   void delete_treeio(std::string_view name) {
@@ -1293,8 +1345,8 @@ private:
       reference_counts.resize(tree_idx + 1, 0);
     }
 
-    auto tio = std::shared_ptr<TreeIO>(new TreeIO(this->weak_from_this(), tree_tid, std::string(name)));
-    tree_ios_[tree_idx]         = tio;
+    auto tio            = std::shared_ptr<TreeIO>(new TreeIO(this->weak_from_this(), tree_tid, std::string(name)));
+    tree_ios_[tree_idx] = tio;
     tree_name_to_tid_.emplace(std::string(name), tree_tid);
     reference_counts[tree_idx] = 0;
     return tio;
@@ -1374,6 +1426,12 @@ inline bool TreeIO::has_tree() const {
   }
   const auto tree_idx = static_cast<size_t>(-tid_ - 1);
   return tree_idx < forest->trees.size() && forest->trees[tree_idx] != nullptr;
+}
+
+inline void TreeIO::clear() {
+  auto forest = forest_owner_.lock();
+  I(forest != nullptr, "clear: TreeIO is no longer attached to a forest");
+  forest->delete_treeio(shared_from_this());
 }
 
 inline void Tree::set_name(std::string_view n) {
@@ -1469,19 +1527,19 @@ public:
 class ForestCursor {
 private:
   struct ReturnFrame {
-    Tid                   parent_tid   = INVALID;
+    Tid                   parent_tid = INVALID;
     std::shared_ptr<Tree> parent_tree;
     Tree_pos              caller_pos   = INVALID;
     size_t                caller_depth = 0;
   };
 
-  std::shared_ptr<Forest> forest_;
-  std::shared_ptr<Tree>   current_tree_;
-  Tid                     root_tid_    = INVALID;
-  Tree_pos                root_pos_    = INVALID;
-  Tid                     current_tid_ = INVALID;
-  Tree_pos                current_pos_ = INVALID;
-  size_t                  depth_       = 0;
+  std::shared_ptr<Forest>  forest_;
+  std::shared_ptr<Tree>    current_tree_;
+  Tid                      root_tid_    = INVALID;
+  Tree_pos                 root_pos_    = INVALID;
+  Tid                      current_tid_ = INVALID;
+  Tree_pos                 current_pos_ = INVALID;
+  size_t                   depth_       = 0;
   std::vector<ReturnFrame> return_stack_;
 
 public:
@@ -1595,8 +1653,10 @@ public:
   [[nodiscard]] Tree_pos get_current_pos() const noexcept { return current_pos_; }
   [[nodiscard]] Tid      get_root_tid() const noexcept { return root_tid_; }
   [[nodiscard]] Tree_pos get_root_pos() const noexcept { return root_pos_; }
-  [[nodiscard]] bool     is_root() const noexcept { return current_tid_ == root_tid_ && current_pos_ == root_pos_ && return_stack_.empty(); }
-  [[nodiscard]] bool     is_leaf() const {
+  [[nodiscard]] bool     is_root() const noexcept {
+    return current_tid_ == root_tid_ && current_pos_ == root_pos_ && return_stack_.empty();
+  }
+  [[nodiscard]] bool is_leaf() const {
     if (!current_tree_) {
       return false;
     }
@@ -2634,9 +2694,7 @@ inline TreeCursor Tree::create_cursor(Tree_pos start) {
   return TreeCursor(std::move(self), start);
 }
 
-inline TreeCursor Tree::create_cursor(Node_class start) {
-  return create_cursor(start.get_current_pos());
-}
+inline TreeCursor Tree::create_cursor(Node_class start) { return create_cursor(start.get_current_pos()); }
 
 inline ForestCursor Forest::create_cursor(Tid tree_tid, Tree_pos start) {
   auto tree = get_tree_ptr(tree_tid);
@@ -2705,8 +2763,11 @@ inline Tree_pos Tree::get_sibling_next(const Tree_pos& sibling_id) const {
   const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
   const auto last_occupied     = pointers_stack[curr_chunk_id].get_num_short_del_occ();
 
-  if (curr_chunk_offset < last_occupied) {
-    return static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset + 1);
+  for (auto offset = curr_chunk_offset + 1; offset <= last_occupied; ++offset) {
+    const auto candidate = static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + offset);
+    if (_contains_data(candidate)) {
+      return candidate;
+    }
   }
 
   const auto next_chunk = pointers_stack[curr_chunk_id].get_next_sibling();
@@ -2719,8 +2780,11 @@ inline Tree_pos Tree::get_sibling_prev(const Tree_pos& sibling_id) const {
   const auto curr_chunk_id     = (sibling_id >> CHUNK_SHIFT);
   const auto curr_chunk_offset = (sibling_id & CHUNK_MASK);
 
-  if (curr_chunk_offset > 0) {
-    return static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + curr_chunk_offset - 1);
+  for (auto offset = curr_chunk_offset; offset > 0; --offset) {
+    const auto candidate = static_cast<Tree_pos>((curr_chunk_id << CHUNK_SHIFT) + offset - 1);
+    if (_contains_data(candidate)) {
+      return candidate;
+    }
   }
 
   const auto prev_chunk = pointers_stack[curr_chunk_id].get_prev_sibling();
@@ -2789,6 +2853,7 @@ inline Tree_pos Tree::add_child(const Tree_pos& parent_index) {
 
 inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
   I(_check_idx_exists(leaf_index), "delete_leaf: Leaf index out of range");
+  I(_contains_data(leaf_index), "delete_leaf: Leaf does not exist");
   I(get_first_child(leaf_index) == INVALID, "delete_leaf: Index is not a leaf");
 
   const auto subnode_ref = get_subnode(leaf_index);
@@ -2800,6 +2865,7 @@ inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
   const auto leaf_chunk_offset = leaf_index & CHUNK_MASK;
   const auto prev_sibling_id   = get_sibling_prev(leaf_index);
   const auto next_sibling_id   = get_sibling_next(leaf_index);
+  const auto parent_index      = pointers_stack[leaf_chunk_id].get_parent();
 
   _set_data_invalid(leaf_index);
   subs_cache_valid_ = false;
@@ -2807,83 +2873,48 @@ inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
     subnode_refs[leaf_index] = INVALID;
   }
   pointers_stack[leaf_chunk_id].set_first_child_at(static_cast<int16_t>(leaf_chunk_offset), INVALID);
+  pointers_stack[leaf_chunk_id].set_last_child_at(static_cast<int16_t>(leaf_chunk_offset), INVALID);
   pointers_stack[leaf_chunk_id].set_type_at(static_cast<int16_t>(leaf_chunk_offset), 0);
-  int16_t remaining_data = 0;
 
-  for (int16_t offset = leaf_chunk_offset; offset < CHUNK_SIZE - 1; offset++) {
-    if (_contains_data((leaf_chunk_id << CHUNK_SHIFT) + offset + 1)) {
-      remaining_data++;
-
-      _set_data_valid((leaf_chunk_id << CHUNK_SHIFT) + offset);
-      _set_data_invalid((leaf_chunk_id << CHUNK_SHIFT) + offset + 1);
-
-      auto& chunk_meta = pointers_stack[leaf_chunk_id];
-      chunk_meta.set_first_child_at(offset, chunk_meta.get_first_child_at(offset + 1));
-      chunk_meta.set_first_child_at(offset + 1, INVALID);
-      chunk_meta.set_type_at(offset, chunk_meta.get_type_at(offset + 1));
-      chunk_meta.set_type_at(offset + 1, 0);
-      if (((leaf_chunk_id << CHUNK_SHIFT) + offset + 1) < static_cast<Tree_pos>(subnode_refs.size())) {
-        subnode_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset]     = subnode_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1];
-        subnode_refs[(leaf_chunk_id << CHUNK_SHIFT) + offset + 1] = INVALID;
-      }
-
-      const auto moved_node = (leaf_chunk_id << CHUNK_SHIFT) + offset;
-      const auto fc         = get_first_child((leaf_chunk_id << CHUNK_SHIFT) + offset + 1);
-      if (fc != INVALID) {
-        _update_parent_pointer(fc, moved_node);
-      }
-    } else {
-      break;
-    }
-  }
-
-  int16_t new_last = -1;
-  for (int16_t idx = CHUNK_SIZE - 1; idx >= 0; --idx) {
-    if (_contains_data((leaf_chunk_id << CHUNK_SHIFT) + idx)) {
-      new_last = idx;
-      break;
-    }
-  }
-  pointers_stack[leaf_chunk_id].set_num_short_del_occ(new_last >= 0 ? static_cast<uint16_t>(new_last) : 0);
-
-  if (remaining_data == 0) {
-    const auto prev_sib_chunk = pointers_stack[leaf_chunk_id].get_prev_sibling();
-    const auto next_sib_chunk = pointers_stack[leaf_chunk_id].get_next_sibling();
-
-    if (prev_sib_chunk != INVALID) {
-      pointers_stack[prev_sib_chunk].set_next_sibling(next_sib_chunk);
-    }
-
-    if (next_sib_chunk != INVALID) {
-      pointers_stack[next_sib_chunk].set_prev_sibling(prev_sib_chunk);
-    }
-
-    const auto parent_index  = pointers_stack[leaf_chunk_id].get_parent();
+  if (parent_index != INVALID) {
     const auto parent_chunk  = parent_index >> CHUNK_SHIFT;
     const auto parent_offset = static_cast<int16_t>(parent_index & CHUNK_MASK);
     auto&      parent_meta   = pointers_stack[parent_chunk];
-
     if (parent_meta.get_first_child_at(parent_offset) == leaf_index) {
-      Tree_pos replacement = INVALID;
-      if (next_sibling_id != INVALID) {
-        replacement = next_sibling_id;
-      } else if (prev_sibling_id != INVALID) {
-        replacement = prev_sibling_id;
-      }
-      parent_meta.set_first_child_at(parent_offset, replacement);
+      parent_meta.set_first_child_at(parent_offset, next_sibling_id != INVALID ? next_sibling_id : prev_sibling_id);
     }
-
+    if (parent_meta.get_last_child_at(parent_offset) == leaf_index) {
+      parent_meta.set_last_child_at(parent_offset, prev_sibling_id != INVALID ? prev_sibling_id : next_sibling_id);
+    }
     if (parent_meta.get_first_child_at(parent_offset) == INVALID) {
       parent_meta.set_is_leaf(true);
-      parent_meta.set_last_child_at(parent_offset, INVALID);
-    } else if (next_sibling_id == INVALID && prev_sibling_id != INVALID) {
-      parent_meta.set_last_child_at(parent_offset, prev_sibling_id);
+    }
+  }
+
+  bool       chunk_has_data = false;
+  const auto last_occupied  = pointers_stack[leaf_chunk_id].get_num_short_del_occ();
+  for (Tree_pos offset = 0; offset <= last_occupied; ++offset) {
+    if (_contains_data((leaf_chunk_id << CHUNK_SHIFT) + offset)) {
+      chunk_has_data = true;
+      break;
+    }
+  }
+
+  if (!chunk_has_data) {
+    const auto prev_sib_chunk = pointers_stack[leaf_chunk_id].get_prev_sibling();
+    const auto next_sib_chunk = pointers_stack[leaf_chunk_id].get_next_sibling();
+    if (prev_sib_chunk != INVALID) {
+      pointers_stack[prev_sib_chunk].set_next_sibling(next_sib_chunk);
+    }
+    if (next_sib_chunk != INVALID) {
+      pointers_stack[next_sib_chunk].set_prev_sibling(prev_sib_chunk);
     }
   }
 }
 
 inline void Tree::delete_subtree(const Tree_pos& subtree_root) {
   I(_check_idx_exists(subtree_root), "delete_subtree: Subtree root index out of range");
+  I(_contains_data(subtree_root), "delete_subtree: Subtree root does not exist");
   subs_cache_valid_ = false;
 
   std::vector<Tree_pos> nodes_to_delete;
@@ -2908,10 +2939,29 @@ inline void Tree::delete_subtree(const Tree_pos& subtree_root) {
   }
 
   for (auto it = nodes_to_delete.rbegin(); it != nodes_to_delete.rend(); ++it) {
-    if (is_leaf(*it)) {
+    if (_contains_data(*it) && get_first_child(*it) == INVALID) {
       delete_leaf(*it);
     }
   }
+}
+
+inline void Tree::clear() {
+  ++generation_;
+  if (forest_ptr != nullptr) {
+    for (Tree_pos node_pos = ROOT; node_pos < static_cast<Tree_pos>(pointers_stack.size() << CHUNK_SHIFT); ++node_pos) {
+      if (_contains_data(node_pos)) {
+        const auto subnode_ref = get_subnode(node_pos);
+        if (subnode_ref != INVALID) {
+          forest_ptr->remove_reference(subnode_ref);
+        }
+      }
+    }
+  }
+  pointers_stack.clear();
+  validity_stack.clear();
+  subnode_refs.clear();
+  subs_cache_.clear();
+  subs_cache_valid_ = false;
 }
 
 inline void Tree::set_subnode(const Tree_pos& node_pos, Tree_pos subnode_ref) {
@@ -2919,7 +2969,7 @@ inline void Tree::set_subnode(const Tree_pos& node_pos, Tree_pos subnode_ref) {
   I(_check_idx_exists(node_pos), "set_subnode: Node index out of range");
   _ensure_subnode_ref_capacity(node_pos);
   subnode_refs[node_pos] = subnode_ref;
-  subs_cache_valid_ = false;
+  subs_cache_valid_      = false;
   if (forest_ptr) {
     forest_ptr->add_reference(subnode_ref);
   }

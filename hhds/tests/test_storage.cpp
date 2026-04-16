@@ -94,8 +94,7 @@ TEST(GraphStorage, NonZeroPortSharesSinglePinEntry) {
   EXPECT_EQ(driver_pin.get_pin_pid() & 1u, 1u);
 
   // Both should resolve to the same underlying PinEntry (same id ignoring bit 1).
-  EXPECT_EQ(driver_pin.get_pin_pid() & ~static_cast<hhds::Pid>(2),
-            sink_pin.get_pin_pid() & ~static_cast<hhds::Pid>(2));
+  EXPECT_EQ(driver_pin.get_pin_pid() & ~static_cast<hhds::Pid>(2), sink_pin.get_pin_pid() & ~static_cast<hhds::Pid>(2));
 }
 
 TEST(GraphStorage, EdgeBidirectionalBits) {
@@ -120,6 +119,59 @@ TEST(GraphStorage, EdgeBidirectionalBits) {
   // Cross-check: n1 should have no inp_edges, n2 no out_edges
   EXPECT_EQ(n1.inp_edges().size(), 0u);
   EXPECT_EQ(n2.out_edges().size(), 0u);
+}
+
+TEST(GraphStorage, EdgeAndNodeDeletionTombstones) {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto driver = graph->create_node();
+  auto sink   = graph->create_node();
+  auto d      = driver.create_driver_pin(1);
+  auto s      = sink.create_sink_pin(2);
+
+  s.connect_driver(d);
+  EXPECT_EQ(s.inp_edges().size(), 1u);
+  s.del_sink(d);
+  EXPECT_EQ(s.inp_edges().size(), 0u);
+  EXPECT_EQ(d.out_edges().size(), 0u);
+
+  s.connect_driver(d);
+  driver.del_node();
+  EXPECT_TRUE(driver.is_invalid());
+  EXPECT_TRUE(d.is_invalid());
+  EXPECT_TRUE(s.is_valid());
+  EXPECT_EQ(s.inp_edges().size(), 0u);
+
+  std::vector<hhds::Nid> visited;
+  for (auto node : graph->forward_class()) {
+    visited.push_back(node.get_raw_nid());
+  }
+  EXPECT_EQ(visited.size(), 1u);
+  EXPECT_EQ(visited[0], sink.get_raw_nid());
+}
+
+TEST(GraphStorage, ClearSemantics) {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_io("top");
+  gio->add_input("a", 1);
+  auto graph = gio->create_graph();
+  auto node  = graph->create_node();
+
+  graph->clear();
+  EXPECT_TRUE(node.is_invalid());
+  EXPECT_TRUE(gio->has_graph());
+  EXPECT_TRUE(graph->get_input_pin("a").is_valid());
+  EXPECT_EQ(graph->forward_class().size(), 0u);
+  auto node_after_clear = graph->create_node();
+  EXPECT_TRUE(node.is_invalid());
+  EXPECT_TRUE(node_after_clear.is_valid());
+  EXPECT_NE(node_after_clear.get_raw_nid(), node.get_raw_nid());
+
+  gio->clear();
+  EXPECT_EQ(lib.find_io("top"), nullptr);
+  EXPECT_FALSE(gio->has_graph());
 }
 
 TEST(GraphStorage, SubnodeForcesOverflow) {
@@ -204,8 +256,41 @@ TEST(TreeStorage, DeleteLeafTombstones) {
 
   // c1 should still be valid, c2 should be gone
   EXPECT_TRUE(hhds::Tree::is_valid(tree->as_class(c1.get_current_pos())));
+  EXPECT_TRUE(c2.is_invalid());
 
   // After deletion, last child should be c1
   auto last = tree->get_last_child(root);
   EXPECT_EQ(last.get_current_pos(), c1.get_current_pos());
+
+  auto c3 = tree->add_child(root);
+  EXPECT_NE(c3.get_current_pos(), c2.get_current_pos());
+}
+
+TEST(TreeStorage, DeleteSubtreeAndClearTombstones) {
+  auto forest = hhds::Forest::create();
+  auto tio    = forest->create_io("t");
+  auto tree   = tio->create_tree();
+
+  auto root       = tree->add_root_node();
+  auto child      = root.add_child();
+  auto grandchild = child.add_child();
+  auto sibling    = root.add_child();
+
+  child.del_node();
+  EXPECT_TRUE(child.is_invalid());
+  EXPECT_TRUE(grandchild.is_invalid());
+  EXPECT_TRUE(sibling.is_valid());
+  EXPECT_EQ(tree->get_first_child(root).get_current_pos(), sibling.get_current_pos());
+
+  tree->clear();
+  EXPECT_TRUE(root.is_invalid());
+  EXPECT_TRUE(tio->has_tree());
+  EXPECT_EQ(forest->find_io("t"), tio);
+  auto new_root = tree->add_root_node();
+  EXPECT_TRUE(root.is_invalid());
+  EXPECT_TRUE(new_root.is_valid());
+
+  tio->clear();
+  EXPECT_EQ(forest->find_io("t"), nullptr);
+  EXPECT_FALSE(tio->has_tree());
 }

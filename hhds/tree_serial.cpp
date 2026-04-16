@@ -1,8 +1,8 @@
 // This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 
-#include "tree.hpp"
-
 #include <fstream>
+
+#include "tree.hpp"
 
 namespace hhds {
 
@@ -96,9 +96,9 @@ namespace {
 
 // Returns the depth (0-based) and the position in the string where the node content starts.
 std::pair<size_t, size_t> parse_prefix(const std::string& line) {
-  size_t depth   = 0;
-  size_t pos     = 0;
-  const size_t len = line.size();
+  size_t       depth = 0;
+  size_t       pos   = 0;
+  const size_t len   = line.size();
 
   while (pos < len) {
     // Check for connector (├── or └──) — marks the node itself
@@ -273,8 +273,8 @@ Tree::ReadDumpResult Tree::read_dump(std::istream& is, std::span<const Type_entr
   auto tree = Tree::create();
   tree->set_name(line);
 
-  std::vector<NodeData>  nodes;
-  std::vector<Tree_pos>  stack;  // stack[depth] = Tree_pos of the last node at that depth
+  std::vector<NodeData> nodes;
+  std::vector<Tree_pos> stack;  // stack[depth] = Tree_pos of the last node at that depth
 
   while (std::getline(is, line)) {
     if (line.empty()) {

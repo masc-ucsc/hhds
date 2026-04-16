@@ -190,41 +190,41 @@ surface for graph, with remaining tree traversal/root cleanup tracked above.
 
 Edge deletion (pins and nodes survive):
 
-- [ ] `sink_pin.del_sink(driver_pin)` — remove one specific edge into a sink.
-- [ ] `sink_pin.del_sink()` — remove all edges into a sink.
-- [ ] `driver_pin.del_driver()` — remove all edges from a driver.
+- [x] `sink_pin.del_sink(driver_pin)` — remove one specific edge into a sink.
+- [x] `sink_pin.del_sink()` — remove all edges into a sink.
+- [x] `driver_pin.del_driver()` — remove all edges from a driver.
 
 Node deletion (tombstoned, pins removed, all connected edges removed):
 
-- [ ] `node.del_node()` — delete node + all its pins + all connected edges.
-- [ ] `pin.del_node()` — same, via the pin's owning node.
+- [x] `node.del_node()` — delete node + all its pins + all connected edges.
+- [x] `pin.del_node()` — same, via the pin's owning node.
 
 Pins cannot be deleted individually — they live and die with their node.
 
 ### Fine-grained deletion (tree)
 
-- [ ] `node.del_node()` — delete node + entire subtree (all children recursively).
-- [ ] Deleted children's attributes are also gone.
+- [x] `node.del_node()` — delete node + entire subtree (all children recursively).
+- [x] Deleted children's attributes are also gone.
 
 ### Clear (graph)
 
-- [ ] `g->clear()` — clears graph body + all attribute maps, `GraphIO` survives.
-- [ ] `gio->clear()` — clears declaration + body + attributes, tombstone internal.
-- [ ] `glib->find_io()` returns `nullptr` for cleared declarations.
+- [x] `g->clear()` — clears graph body + all attribute maps, `GraphIO` survives.
+- [x] `gio->clear()` — clears declaration + body + attributes, tombstone internal.
+- [x] `glib->find_io()` returns `nullptr` for cleared declarations.
 
 ### Clear (tree)
 
-- [ ] `t->clear()` — clears tree body + all attribute maps, `TreeIO` survives.
-- [ ] `tio->clear()` — clears declaration + body + attributes, tombstone internal.
-- [ ] `forest->find_io()` returns `nullptr` for cleared declarations.
+- [x] `t->clear()` — clears tree body + all attribute maps, `TreeIO` survives.
+- [x] `tio->clear()` — clears declaration + body + attributes, tombstone internal.
+- [x] `forest->find_io()` returns `nullptr` for cleared declarations.
 
 ### Validity and tombstones
 
-- [ ] Add `is_valid()` / `is_invalid()` on graph `Node` and `Pin`.
-- [ ] Add `is_valid()` / `is_invalid()` on tree `Node`.
-- [ ] Iterators skip tombstoned entries automatically.
-- [ ] Tombstone IDs are never reused.
-- [ ] Audit operations to assert in debug mode on invalid references.
+- [x] Add `is_valid()` / `is_invalid()` on graph `Node` and `Pin`.
+- [x] Add `is_valid()` / `is_invalid()` on tree `Node`.
+- [x] Iterators skip tombstoned entries automatically.
+- [x] Tombstone IDs are never reused.
+- [x] Audit operations to assert in debug mode on invalid references.
 
 Exit criteria: deletion semantics unambiguous and test-covered; stale handles
 queryable; lookups skip tombstones; edge/node/subtree deletion works correctly.
