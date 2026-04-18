@@ -203,9 +203,9 @@ stores per-node payload alongside the structural `pointers_stack`. Once the
 attribute system is in place, per-node data should be stored as attributes
 instead.
 
-- [ ] Remove the `tree<X>` template class and `PayloadForest<X>`.
-- [ ] Remove `data_stack` and all `get_data`/`set_data`/`operator[]` methods.
-- [ ] Migrate any existing users of `tree<X>` to use the `Tree` class +
+- [x] Remove the `tree<X>` template class and `PayloadForest<X>`.
+- [x] Remove `data_stack` and all `get_data`/`set_data`/`operator[]` methods.
+- [x] Migrate any existing users of `tree<X>` to use the `Tree` class +
       attributes for per-node data.
 
 ## Implementation steps

@@ -254,10 +254,8 @@ GraphLibrary
 | `validity_stack`  | `std::bitset<64>` |       8      | `node_pos >> 6`      |
 | `subnode_refs`    | `Tree_pos`        |       8      | `node_pos`           |
 
-> **Note:** The legacy templated `tree<X>` class also carries a
-> `data_stack` (`std::vector<X>`) for per-node payload. This will be
-> removed once the attribute system (see `todo_attr.md`) is in place.
-> New code should use `Tree` + attributes, not `tree<X>`.
+Per-node payload is stored via the attribute system (see `todo_attr.md`),
+not inline in `Tree`.
 
 ### 3.2 Tree_pointers Layout (192 bytes, 64-byte aligned)
 

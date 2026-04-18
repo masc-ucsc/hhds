@@ -200,8 +200,8 @@ cc_test(
 )
 
 cc_test(
-    name = "test_storage",
-    srcs = ["tests/test_storage.cpp"],
+    name = "storage_contract",
+    srcs = ["contracts/storage.cpp"],
     deps = [
         ":core",
         ":graph",
@@ -294,6 +294,24 @@ cc_test(
     deps = [
         ":core",
         "@abseil-cpp//absl/container:flat_hash_map",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "tree_api_contract",
+    srcs = ["contracts/tree_api.cpp"],
+    deps = [
+        ":core",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "graph_api_contract",
+    srcs = ["contracts/graph_api.cpp"],
+    deps = [
+        ":graph",
         "@googletest//:gtest_main",
     ],
 )
