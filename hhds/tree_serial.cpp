@@ -429,6 +429,14 @@ void Forest::save(const std::string& db_path) const {
       // tid = -(i+1)
       ofs << "tree_io " << i << " " << tio->get_name() << "\n";
     }
+    // Preserve (name, tid) pairs for deleted trees so that recreating by name
+    // reuses the original tid. Parent trees hold subnode tids in their binary
+    // bodies; preserving the mapping lets those references survive delete +
+    // recreate across save/load.
+    for (const auto& [name, tid] : deleted_name_to_tid_) {
+      const auto idx = static_cast<size_t>(-tid - 1);
+      ofs << "tree_io_deleted " << idx << " " << name << "\n";
+    }
   }
 
   // --- tree body directories (skip clean trees) ---
@@ -449,6 +457,7 @@ void Forest::load(const std::string& db_path) {
   trees.clear();
   reference_counts.clear();
   tree_name_to_tid_.clear();
+  deleted_name_to_tid_.clear();
 
   // --- Parse forest.txt ---
   {
@@ -462,7 +471,20 @@ void Forest::load(const std::string& db_path) {
       if (line.empty()) {
         continue;
       }
-      if (line.substr(0, 8) == "tree_io ") {
+      if (line.substr(0, 16) == "tree_io_deleted ") {
+        std::istringstream ss(line.substr(16));
+        size_t             idx;
+        std::string        name;
+        ss >> idx >> name;
+        Tid tid = -static_cast<Tree_pos>(idx + 1);
+        // Reserve the slot so fresh allocations don't reuse this tid.
+        if (idx >= tree_ios_.size()) {
+          tree_ios_.resize(idx + 1);
+          trees.resize(idx + 1);
+          reference_counts.resize(idx + 1, 0);
+        }
+        deleted_name_to_tid_[name] = tid;
+      } else if (line.substr(0, 8) == "tree_io ") {
         std::istringstream ss(line.substr(8));
         size_t             idx;
         std::string        name;

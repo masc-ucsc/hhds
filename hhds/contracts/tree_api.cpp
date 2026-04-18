@@ -65,14 +65,13 @@ TEST(TreeApiContract, BasicsAttributesAndTraversal) {
   }
   EXPECT_EQ(pre_names, (std::vector<std::string>{"program", "assign", "literal", "expr"}));
 
-  // Starting pre-order from a non-root node walks the subtree rooted at that
-  // node and then continues with later siblings of its ancestors, stopping at
-  // the tree root. Starting from lhs visits lhs, its child, then rhs.
+  // Starting pre-order from a non-root node walks only the subtree rooted at
+  // that node.
   std::vector<std::string> sub_names;
   for (auto node : lhs.pre_order_class()) {
     sub_names.push_back(std::string(node.attr(name).get()));
   }
-  EXPECT_EQ(sub_names, (std::vector<std::string>{"assign", "literal", "expr"}));
+  EXPECT_EQ(sub_names, (std::vector<std::string>{"assign", "literal"}));
 
   // Post-order: literal, assign, expr, program.
   std::vector<std::string> post_names;

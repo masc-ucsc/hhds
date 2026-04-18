@@ -1046,21 +1046,25 @@ void Graph::rebuild_forward_class_cache() const {
 }
 
 void Graph::forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const {
+  std::vector<Gid> subgraphs;
+
   for (const auto& node : forward_class()) {
     const Nid   node_nid = node.get_raw_nid();
     const auto& node_ref = node_table[static_cast<size_t>(node_nid >> 2)];
 
+    out.emplace_back(const_cast<Graph*>(this), top_graph, self_gid_, node_nid);
+
     if (node_ref.has_subnode() && owner_lib_ != nullptr) {
       const Gid other_graph_id = node_ref.get_subnode();
       if (owner_lib_->has_graph(other_graph_id) && active_graphs.find(other_graph_id) == active_graphs.end()) {
+        subgraphs.push_back(other_graph_id);
         active_graphs.insert(other_graph_id);
-        owner_lib_->get_graph(other_graph_id)->forward_flat_impl(top_graph, active_graphs, out);
-        active_graphs.erase(other_graph_id);
-        continue;
       }
     }
+  }
 
-    out.emplace_back(const_cast<Graph*>(this), top_graph, self_gid_, node_nid);
+  for (const auto subgraph_id : subgraphs) {
+    owner_lib_->get_graph(subgraph_id)->forward_flat_impl(top_graph, active_graphs, out);
   }
 }
 
@@ -1098,6 +1102,8 @@ void Graph::forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std
     const Nid   node_nid = node.get_raw_nid();
     const auto& node_ref = node_table[static_cast<size_t>(node_nid >> 2)];
 
+    out.emplace_back(const_cast<Graph*>(this), hier_tid, hier_gids, hier_pos, node_nid);
+
     if (node_ref.has_subnode() && owner_lib_ != nullptr) {
       const Gid other_graph_id = node_ref.get_subnode();
       if (owner_lib_->has_graph(other_graph_id) && active_graphs.find(other_graph_id) == active_graphs.end()) {
@@ -1110,11 +1116,8 @@ void Graph::forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std
         owner_lib_->get_graph(other_graph_id)
             ->forward_hier_impl(hier_tree, hier_tid, hier_gids, child_hier_pos, active_graphs, out);
         active_graphs.erase(other_graph_id);
-        continue;
       }
     }
-
-    out.emplace_back(const_cast<Graph*>(this), hier_tid, hier_gids, hier_pos, node_nid);
   }
 }
 
@@ -1410,6 +1413,9 @@ void Graph::erase_declared_io_pin(std::string_view name, ankerl::unordered_dense
     return;
   }
 
+  const Pid pin_lookup = (it->second & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+  assert(!ref_pin(pin_lookup)->has_edges() && "erase_declared_io_pin: declared pin still has connected edges");
+
   delete_pin(it->second);
   pins_by_name.erase(it);
 }
@@ -1682,6 +1688,12 @@ void Pin_class::del_driver() const {
       graph_->del_edge(edge.driver_pin(), edge.sink_node());
     }
   }
+}
+
+void Pin_class::del_pin() const {
+  assert(graph_ != nullptr && "del_pin: pin is not attached to a graph");
+  del_sink();
+  del_driver();
 }
 
 void Pin_class::del_node() const {
@@ -1981,6 +1993,12 @@ auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
       out.push_back(e);
     }
   }
+
+  for (auto pin : get_pins(node)) {
+    inherit_pin_context(pin, node);
+    auto pin_edges = out_edges(pin);
+    out.insert(out.end(), pin_edges.begin(), pin_edges.end());
+  }
   return out;
 }
 
@@ -2016,6 +2034,12 @@ auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
       e.sink_   = self_sink;
       out.push_back(e);
     }
+  }
+
+  for (auto pin : get_pins(node)) {
+    inherit_pin_context(pin, node);
+    auto pin_edges = inp_edges(pin);
+    out.insert(out.end(), pin_edges.begin(), pin_edges.end());
   }
   return out;
 }
@@ -2615,6 +2639,13 @@ void GraphLibrary::save(const std::string& db_path) const {
         ofs << "\n";
       }
     }
+    // Preserve (name, gid) pairs for deleted graphs so that recreating by name
+    // reuses the original gid. Parent graphs store subnode gids in their
+    // binary bodies; this lets those references survive delete + recreate
+    // across save/load.
+    for (const auto& [name, gid] : deleted_name_to_id_) {
+      ofs << "graph_io_deleted " << gid << " " << name << "\n";
+    }
   }
 
   // --- graph body directories ---
@@ -2642,6 +2673,7 @@ void GraphLibrary::load(const std::string& db_path) {
   graph_ios_.clear();
   graphs_.clear();
   graph_name_to_id_.clear();
+  deleted_name_to_id_.clear();
   live_count_     = 0;
   mutation_epoch_ = 1;
 
@@ -2662,7 +2694,20 @@ void GraphLibrary::load(const std::string& db_path) {
       if (line.empty()) {
         continue;
       }
-      if (line.substr(0, 9) == "graph_io ") {
+      if (line.substr(0, 17) == "graph_io_deleted ") {
+        std::istringstream ss(line.substr(17));
+        Gid                gid;
+        std::string        name;
+        ss >> gid >> name;
+        // Reserve the slot so fresh allocations don't reuse this gid.
+        const size_t idx = static_cast<size_t>(gid);
+        if (idx >= graph_ios_.size()) {
+          graph_ios_.resize(idx + 1);
+          graphs_.resize(idx + 1);
+        }
+        deleted_name_to_id_[name] = gid;
+        current_gio.reset();
+      } else if (line.substr(0, 9) == "graph_io ") {
         // "graph_io <gid> <name>"
         std::istringstream ss(line.substr(9));
         Gid                gid;

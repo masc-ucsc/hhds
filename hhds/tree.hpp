@@ -720,7 +720,10 @@ public:
     sibling_order_range(Tree_pos start, Tree* tree, bool follow_subtrees = false)
         : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
 
-    sibling_order_iterator begin() { return sibling_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
+    sibling_order_iterator begin() {
+      const Tree_pos start = (m_tree_ptr != nullptr && m_tree_ptr->_contains_data(m_start)) ? m_start : INVALID;
+      return sibling_order_iterator(start, m_tree_ptr, m_follow_subtrees);
+    }
     sibling_order_iterator end() { return sibling_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
@@ -771,7 +774,10 @@ public:
     const_sibling_order_range(Tree_pos start, const Tree* tree, bool follow_subtrees = false)
         : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
 
-    const_sibling_order_iterator begin() const { return const_sibling_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
+    const_sibling_order_iterator begin() const {
+      const Tree_pos start = (m_tree_ptr != nullptr && m_tree_ptr->_contains_data(m_start)) ? m_start : INVALID;
+      return const_sibling_order_iterator(start, m_tree_ptr, m_follow_subtrees);
+    }
     const_sibling_order_iterator end() const { return const_sibling_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
@@ -783,6 +789,7 @@ public:
   class pre_order_iterator {
   private:
     Tree_pos    current;
+    Tree_pos    start;
     const Tree* tree_ptr;
 
     inline Tree_pos fast_get_first_child(Tree_pos parent_index) const {
@@ -816,7 +823,8 @@ public:
     using pointer           = void;
     using reference         = Node_class;
 
-    pre_order_iterator(Tree_pos start, const Tree* tree, bool /* follow_subtrees */ = false) : current(start), tree_ptr(tree) {}
+    pre_order_iterator(Tree_pos start_pos, const Tree* tree, bool /* follow_subtrees */ = false)
+        : current(start_pos), start(start_pos), tree_ptr(tree) {}
 
     pre_order_iterator& operator++() {
       if (!fast_is_leaf(current)) {
@@ -834,7 +842,7 @@ public:
       }
 
       auto parent = fast_get_parent(current);
-      while (parent != ROOT && parent != INVALID) {
+      while (parent != start && parent != INVALID) {
         auto parent_sibling = fast_get_sibling_next(parent);
         if (parent_sibling != INVALID) {
           current = parent_sibling;
@@ -862,7 +870,10 @@ public:
     pre_order_range(Tree_pos start, const Tree* tree, bool follow_subtrees = false)
         : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
 
-    pre_order_iterator begin() const { return pre_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
+    pre_order_iterator begin() const {
+      const Tree_pos start = (m_tree_ptr != nullptr && m_tree_ptr->_contains_data(m_start)) ? m_start : INVALID;
+      return pre_order_iterator(start, m_tree_ptr, m_follow_subtrees);
+    }
     pre_order_iterator end() const { return pre_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
@@ -980,7 +991,10 @@ public:
     pre_order_range_with_subtrees(Tree_pos start, Tree* tree, bool follow_subtrees = false)
         : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
 
-    pre_order_iterator_with_subtrees begin() { return pre_order_iterator_with_subtrees(m_start, m_tree_ptr, m_follow_subtrees); }
+    pre_order_iterator_with_subtrees begin() {
+      const Tree_pos start = (m_tree_ptr != nullptr && m_tree_ptr->_contains_data(m_start)) ? m_start : INVALID;
+      return pre_order_iterator_with_subtrees(start, m_tree_ptr, m_follow_subtrees);
+    }
     pre_order_iterator_with_subtrees end() { return pre_order_iterator_with_subtrees(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
@@ -996,6 +1010,7 @@ public:
     using base = traversal_iterator_base<post_order_iterator>;
     using base::current;
     using base::tree_ptr;
+    Tree_pos start;
 
     void descend_to_first_post_order() {
       while (current != INVALID && tree_ptr->get_first_child(current) != INVALID) {
@@ -1010,7 +1025,7 @@ public:
     using pointer           = void;
     using reference         = Node_class;
 
-    post_order_iterator(Tree_pos start, Tree* tree, bool follow_refs) : base(start, tree, follow_refs) {
+    post_order_iterator(Tree_pos start_pos, Tree* tree, bool follow_refs) : base(start_pos, tree, follow_refs), start(start_pos) {
       descend_to_first_post_order();
     }
 
@@ -1021,7 +1036,9 @@ public:
         return *this;
       }
 
-      if (tree_ptr->get_sibling_next(current) != INVALID) {
+      if (current == start) {
+        current = INVALID;
+      } else if (tree_ptr->get_sibling_next(current) != INVALID) {
         auto next = tree_ptr->get_sibling_next(current);
         while (tree_ptr->get_first_child(next) != INVALID) {
           next = tree_ptr->get_first_child(next);
@@ -1045,7 +1062,10 @@ public:
     post_order_range(Tree_pos start, Tree* tree, bool follow_subtrees = false)
         : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
 
-    post_order_iterator begin() { return post_order_iterator(m_start, m_tree_ptr, m_follow_subtrees); }
+    post_order_iterator begin() {
+      const Tree_pos start = (m_tree_ptr != nullptr && m_tree_ptr->_contains_data(m_start)) ? m_start : INVALID;
+      return post_order_iterator(start, m_tree_ptr, m_follow_subtrees);
+    }
     post_order_iterator end() { return post_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
@@ -1181,6 +1201,7 @@ private:
   std::vector<std::shared_ptr<Tree>>   trees;
   std::vector<size_t>                  reference_counts;
   std::unordered_map<std::string, Tid> tree_name_to_tid_;
+  std::unordered_map<std::string, Tid> deleted_name_to_tid_;
 
 public:
   [[nodiscard]] static std::shared_ptr<Forest> create() { return std::shared_ptr<Forest>(new Forest()); }
@@ -1192,6 +1213,12 @@ public:
 
   [[nodiscard]] std::shared_ptr<TreeIO> create_io(std::string_view name) {
     I(!name.empty(), "create_io: name is required");
+    const auto it = deleted_name_to_tid_.find(std::string(name));
+    if (it != deleted_name_to_tid_.end()) {
+      const auto reused_tid = it->second;
+      deleted_name_to_tid_.erase(it);
+      return create_io_impl(reused_tid, name);
+    }
     return create_io_impl(-static_cast<Tree_pos>(tree_ios_.size() + 1), name);
   }
 
@@ -1288,9 +1315,13 @@ public:
     }
 
     if (tree_idx < tree_ios_.size() && tree_ios_[tree_idx]) {
-      auto it = tree_name_to_tid_.find(std::string(tree_ios_[tree_idx]->get_name()));
+      const auto name = std::string(tree_ios_[tree_idx]->get_name());
+      auto       it   = tree_name_to_tid_.find(name);
       if (it != tree_name_to_tid_.end() && it->second == tree_tid) {
         tree_name_to_tid_.erase(it);
+      }
+      if (!name.empty()) {
+        deleted_name_to_tid_[name] = tree_tid;
       }
       tree_ios_[tree_idx]->invalidate_from_forest();
       tree_ios_[tree_idx].reset();
@@ -1310,9 +1341,13 @@ public:
     I(tree_idx < tree_ios_.size(), "delete_treeio: TreeIO index out of range");
 
     if (tree_idx < tree_ios_.size() && tree_ios_[tree_idx]) {
-      auto it = tree_name_to_tid_.find(std::string(tree_ios_[tree_idx]->get_name()));
+      const auto name = std::string(tree_ios_[tree_idx]->get_name());
+      auto       it   = tree_name_to_tid_.find(name);
       if (it != tree_name_to_tid_.end() && it->second == tree_tid) {
         tree_name_to_tid_.erase(it);
+      }
+      if (!name.empty()) {
+        deleted_name_to_tid_[name] = tree_tid;
       }
       tree_ios_[tree_idx]->invalidate_from_forest();
       tree_ios_[tree_idx].reset();
@@ -1681,7 +1716,6 @@ public:
   }
   [[nodiscard]] int depth() const noexcept { return static_cast<int>(depth_); }
 };
-
 
 [[nodiscard]] inline Tree::Node_class to_class(const Tree::Node_hier& v) { return Tree::Node_class(v.get_current_pos()); }
 [[nodiscard]] inline Tree::Node_flat  to_flat(const Tree::Node_hier& v) {

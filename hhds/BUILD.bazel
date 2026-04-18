@@ -308,6 +308,16 @@ cc_test(
 )
 
 cc_test(
+    name = "name_persistence_contract",
+    srcs = ["contracts/name_persistence.cpp"],
+    deps = [
+        ":core",
+        ":graph",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "graph_api_contract",
     srcs = ["contracts/graph_api.cpp"],
     deps = [

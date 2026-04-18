@@ -223,6 +223,7 @@ public:
   void                                  del_sink(Pin_class driver_pin) const;
   void                                  del_sink() const;
   void                                  del_driver() const;
+  void                                  del_pin() const;
   void                                  del_node() const;
   [[nodiscard]] std::vector<Edge_class> out_edges() const;
   [[nodiscard]] std::vector<Edge_class> inp_edges() const;
@@ -792,6 +793,12 @@ public:
 
   [[nodiscard]] std::shared_ptr<GraphIO> create_io(std::string_view name) {
     assert(!name.empty() && "create_io: name is required");
+    const auto it = deleted_name_to_id_.find(std::string(name));
+    if (it != deleted_name_to_id_.end()) {
+      const auto reused_gid = it->second;
+      deleted_name_to_id_.erase(it);
+      return create_io_impl(reused_gid, name);
+    }
     return create_io_impl(static_cast<Gid>(graph_ios_.size()), name);
   }
 
@@ -895,9 +902,12 @@ public:
       return;
     }
 
-    delete_graph(graphio->get_gid());
-    if (!graphio->get_name().empty()) {
-      graph_name_to_id_.erase(std::string(graphio->get_name()));
+    const auto gid  = graphio->get_gid();
+    const auto name = std::string(graphio->get_name());
+    delete_graph(gid);
+    if (!name.empty()) {
+      graph_name_to_id_.erase(name);
+      deleted_name_to_id_[name] = gid;
     }
     graphio->invalidate_from_library();
     graph_ios_[idx].reset();
@@ -1002,6 +1012,7 @@ private:
   std::vector<std::shared_ptr<GraphIO>>          graph_ios_;
   std::vector<std::shared_ptr<Graph>>            graphs_;
   ankerl::unordered_dense::map<std::string, Gid> graph_name_to_id_;
+  ankerl::unordered_dense::map<std::string, Gid> deleted_name_to_id_;
   // count of live graphs
   Gid              live_count_     = 0;
   mutable uint64_t mutation_epoch_ = 1;
