@@ -16,6 +16,8 @@
 #include <utility>
 #include <vector>
 
+#include "attr.hpp"
+#include "attrs/name.hpp"
 #include "graph_sizing.hpp"
 #include "tree.hpp"
 #include "unordered_dense.hpp"
@@ -225,6 +227,16 @@ public:
   [[nodiscard]] std::vector<Edge_class> out_edges() const;
   [[nodiscard]] std::vector<Edge_class> inp_edges() const;
 
+  template <Attribute Tag>
+  [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
+    assert(graph_ != nullptr && "attr: pin is not attached to a graph");
+    const auto flat_key = make_pin_attr_key(static_cast<uint64_t>(pin_pid & ~static_cast<Pid>(2)));
+    if (context_ == Handle_context::Hier) {
+      return AttrRef<Tag>(graph_, flat_key, hier_pos_);
+    }
+    return AttrRef<Tag>(graph_, flat_key);
+  }
+
   // Interop with existing APIs that still accept raw Pid.
   [[nodiscard]] constexpr operator Pid() const noexcept { return pin_pid; }
 
@@ -310,6 +322,16 @@ public:
   [[nodiscard]] std::vector<Edge_class> inp_edges() const;
   [[nodiscard]] std::vector<Pin_class>  out_pins() const;
   [[nodiscard]] std::vector<Pin_class>  inp_pins() const;
+
+  template <Attribute Tag>
+  [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
+    assert(graph_ != nullptr && "attr: node is not attached to a graph");
+    const auto flat_key = make_node_attr_key(static_cast<uint64_t>(raw_nid & ~static_cast<Nid>(3)));
+    if (context_ == Context::Hier) {
+      return AttrRef<Tag>(graph_, flat_key, hier_pos_);
+    }
+    return AttrRef<Tag>(graph_, flat_key);
+  }
 
   // Interop with existing APIs that still accept raw Nid.
   [[nodiscard]] constexpr operator Nid() const noexcept { return raw_nid; }
@@ -521,7 +543,7 @@ using Pin  = Pin_class;
 
 class GraphLibrary;
 
-class Graph {
+class Graph : public Attr_host {
 public:
   Graph();
   // Graphs are owned via handles; copying or moving would break library identity and traversal caches.
@@ -598,7 +620,11 @@ public:
   void save_body(const std::string& dir_path) const;
   void load_body(const std::string& dir_path);
 
+  void                      print(std::ostream& os) const;
+  [[nodiscard]] std::string print() const;
+
 private:
+  void               attr_note_modified() noexcept override { dirty_ = true; }
   [[nodiscard]] OverflowPool get_overflow_pool() { return {overflow_sets_, overflow_free_}; }
   void               assert_accessible() const noexcept;
   void               assert_node_exists(const Node_class& node) const noexcept;

@@ -330,3 +330,30 @@ TEST(TreeWrappers, PrintScopeTypes) {
                     "  }\n"
                     "}\n");
 }
+
+TEST(TreeWrappers, PrintUsesBuiltinNameAttribute) {
+  auto tree = hhds::Tree::create();
+  tree->set_name("named");
+
+  const auto root  = tree->add_root_node();
+  const auto child = tree->add_child(root);
+
+  tree->set_type(root, 1);
+  tree->set_type(child, 2);
+  root.attr(hhds::attrs::name).set("program");
+  child.attr(hhds::attrs::name).set("literal");
+
+  const hhds::Type_entry type_table[] = {
+    {"invalid", hhds::Statement_class::Node},
+    {"module",  hhds::Statement_class::Node},
+    {"literal", hhds::Statement_class::Node},
+  };
+
+  hhds::Tree::PrintOptions options;
+  options.type_table = type_table;
+
+  EXPECT_EQ(tree->print(options), "named {\n"
+                                  "  %8  = program : module\n"
+                                  "  %16 = literal\n"
+                                  "}\n");
+}

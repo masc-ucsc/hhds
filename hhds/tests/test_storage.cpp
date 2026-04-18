@@ -5,6 +5,28 @@
 #include "hhds/graph.hpp"
 #include "hhds/tree.hpp"
 
+namespace test_attrs {
+
+struct bits_t {
+  using value_type = int;
+  using storage    = hhds::flat_storage;
+};
+inline constexpr bits_t bits{};
+
+struct hbits_t {
+  using value_type = int;
+  using storage    = hhds::hier_storage;
+};
+inline constexpr hbits_t hbits{};
+
+struct loc_t {
+  using value_type = int;
+  using storage    = hhds::flat_storage;
+};
+inline constexpr loc_t loc{};
+
+}  // namespace test_attrs
+
 // ------------------------------------------------------------------
 // Compile-time size checks — these enforce the storage layout
 // documented in docs/storage_internals.md.
@@ -191,6 +213,115 @@ TEST(GraphStorage, SubnodeForcesOverflow) {
   EXPECT_TRUE(entry->has_subnode());
 }
 
+TEST(GraphAttrs, FlatGetSetHasDeleteOnNodeAndPin) {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto node = graph->create_node();
+  auto pin  = node.create_driver_pin(1);
+
+  node.attr(hhds::attrs::name).set("adder");
+  pin.attr(hhds::attrs::name).set("sum");
+  node.attr(test_attrs::bits).set(32);
+
+  EXPECT_TRUE(graph->has_attr(hhds::attrs::name));
+  EXPECT_TRUE(graph->has_attr(test_attrs::bits));
+  EXPECT_TRUE(node.attr(hhds::attrs::name).has());
+  EXPECT_TRUE(pin.attr(hhds::attrs::name).has());
+  EXPECT_EQ(node.attr(hhds::attrs::name).get(), "adder");
+  EXPECT_EQ(pin.attr(hhds::attrs::name).get(), "sum");
+  EXPECT_EQ(node.attr(test_attrs::bits).get(), 32);
+
+  pin.attr(hhds::attrs::name).del();
+  EXPECT_FALSE(pin.attr(hhds::attrs::name).has());
+  EXPECT_TRUE(node.attr(hhds::attrs::name).has());
+}
+
+TEST(GraphAttrs, PortZeroPinAttrsDoNotCollideWithNodeAttrs) {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto node = graph->create_node();
+  auto pin0 = node.create_driver_pin(0);
+
+  node.attr(hhds::attrs::name).set("node_name");
+  pin0.attr(hhds::attrs::name).set("pin0_name");
+
+  EXPECT_EQ(node.attr(hhds::attrs::name).get(), "node_name");
+  EXPECT_EQ(pin0.attr(hhds::attrs::name).get(), "pin0_name");
+  EXPECT_EQ(node.create_sink_pin(0).attr(hhds::attrs::name).get(), "pin0_name");
+}
+
+TEST(GraphAttrs, DeleteNodeRemovesNodeAndPinAttrs) {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto node = graph->create_node();
+  auto pin0 = node.create_driver_pin(0);
+  auto pin1 = node.create_driver_pin(1);
+
+  node.attr(hhds::attrs::name).set("node");
+  pin0.attr(hhds::attrs::name).set("pin0");
+  pin1.attr(hhds::attrs::name).set("pin1");
+
+  EXPECT_EQ(graph->attr_store(hhds::attrs::name).size(), 3u);
+
+  node.del_node();
+
+  EXPECT_EQ(graph->attr_store(hhds::attrs::name).size(), 0u);
+}
+
+TEST(GraphAttrs, AttrClearKeepsRegistrationAndClearDropsIt) {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto node = graph->create_node();
+  node.attr(test_attrs::bits).set(64);
+
+  graph->attr_clear(test_attrs::bits);
+  EXPECT_TRUE(graph->has_attr(test_attrs::bits));
+  EXPECT_FALSE(node.attr(test_attrs::bits).has());
+
+  graph->clear();
+  EXPECT_FALSE(graph->has_attr(test_attrs::bits));
+}
+
+TEST(GraphAttrs, HierAttrUsesHierarchyContext) {
+  hhds::GraphLibrary lib;
+
+  auto leaf_io = lib.create_io("leaf");
+  auto leaf    = leaf_io->create_graph();
+  auto leaf_n  = leaf->create_node();
+
+  auto top_io = lib.create_io("top");
+  auto top    = top_io->create_graph();
+  auto inst1  = top->create_node();
+  auto inst2  = top->create_node();
+  inst1.set_subnode(leaf_io);
+  inst2.set_subnode(leaf_io);
+
+  std::vector<hhds::Node_class> leaf_instances;
+  for (auto node : top->forward_hier()) {
+    if (node.get_current_gid() == leaf->get_gid() && node.get_raw_nid() == leaf_n.get_raw_nid()) {
+      leaf_instances.push_back(node);
+    }
+  }
+
+  ASSERT_EQ(leaf_instances.size(), 2u);
+
+  leaf_instances[0].attr(hhds::attrs::name).set("leaf_internal");
+  leaf_instances[0].attr(test_attrs::hbits).set(11);
+  leaf_instances[1].attr(test_attrs::hbits).set(22);
+
+  EXPECT_EQ(leaf_instances[1].attr(hhds::attrs::name).get(), "leaf_internal");
+  EXPECT_EQ(leaf_instances[0].attr(test_attrs::hbits).get(), 11);
+  EXPECT_EQ(leaf_instances[1].attr(test_attrs::hbits).get(), 22);
+}
+
 // ------------------------------------------------------------------
 // Tree storage tests
 // ------------------------------------------------------------------
@@ -297,6 +428,30 @@ TEST(TreeStorage, DeleteSubtreeAndClearTombstones) {
   EXPECT_FALSE(tio->has_tree());
 }
 
+TEST(TreeAttrs, FlatGetSetDeleteAndClear) {
+  auto forest = hhds::Forest::create();
+  auto tio    = forest->create_io("t");
+  auto tree   = tio->create_tree();
+
+  auto root  = tree->add_root_node();
+  auto child = root.add_child();
+
+  root.attr(hhds::attrs::name).set("program");
+  child.attr(test_attrs::loc).set(10);
+
+  EXPECT_TRUE(tree->has_attr(hhds::attrs::name));
+  EXPECT_TRUE(tree->has_attr(test_attrs::loc));
+  EXPECT_EQ(root.attr(hhds::attrs::name).get(), "program");
+  EXPECT_EQ(child.attr(test_attrs::loc).get(), 10);
+
+  child.del_node();
+  EXPECT_EQ(tree->attr_store(test_attrs::loc).size(), 0u);
+
+  tree->clear();
+  EXPECT_FALSE(tree->has_attr(hhds::attrs::name));
+  EXPECT_FALSE(tree->has_attr(test_attrs::loc));
+}
+
 // ------------------------------------------------------------------
 // Binary save/load round-trip tests
 // ------------------------------------------------------------------
@@ -305,6 +460,8 @@ TEST(GraphPersistence, SaveLoadRoundTrip) {
   namespace fs = std::filesystem;
   const std::string test_dir = "/tmp/hhds_test_graph_persist";
   fs::remove_all(test_dir);
+
+  hhds::register_attr_tag<test_attrs::bits_t>("test_attrs::bits");
 
   hhds::GraphLibrary lib;
   auto               top_gio = lib.create_io("top");
@@ -320,10 +477,14 @@ TEST(GraphPersistence, SaveLoadRoundTrip) {
   auto n2 = graph->create_node();
   auto n3 = graph->create_node();
   n1.set_subnode(sub_gio);
+  n1.attr(hhds::attrs::name).set("adder");
+  n2.attr(test_attrs::bits).set(32);
 
   auto drv = n1.create_driver_pin(0);
   auto snk = n2.create_sink_pin(0);
   drv.connect_sink(snk);
+  auto wide_pin = n3.create_driver_pin(1);
+  wide_pin.attr(test_attrs::bits).set(7);
 
   // Also connect n2 -> n3 to have multiple edges.
   auto drv2 = n2.create_driver_pin(0);
@@ -348,6 +509,7 @@ TEST(GraphPersistence, SaveLoadRoundTrip) {
   // Verify round-trip: same node count, same edges.
   auto loaded_n1 = hhds::Node_class(graph2.get(), n1.get_raw_nid());
   auto loaded_n2 = hhds::Node_class(graph2.get(), n2.get_raw_nid());
+  auto loaded_n3 = hhds::Node_class(graph2.get(), n3.get_raw_nid());
 
   auto loaded_out_n1 = graph2->out_edges(loaded_n1);
   auto loaded_out_n2 = graph2->out_edges(loaded_n2);
@@ -358,6 +520,9 @@ TEST(GraphPersistence, SaveLoadRoundTrip) {
   auto* entry = graph2->ref_node(n1.get_raw_nid());
   EXPECT_TRUE(entry->has_subnode());
   EXPECT_EQ(entry->get_subnode(), sub_gio->get_gid());
+  EXPECT_EQ(loaded_n1.attr(hhds::attrs::name).get(), "adder");
+  EXPECT_EQ(loaded_n2.attr(test_attrs::bits).get(), 32);
+  EXPECT_EQ(loaded_n3.get_driver_pin(1).attr(test_attrs::bits).get(), 7);
 
   fs::remove_all(test_dir);
 }
@@ -407,6 +572,8 @@ TEST(TreePersistence, SaveLoadRoundTrip) {
   const std::string test_dir = "/tmp/hhds_test_tree_persist";
   fs::remove_all(test_dir);
 
+  hhds::register_attr_tag<test_attrs::loc_t>("test_attrs::loc");
+
   auto forest = hhds::Forest::create();
   auto tio    = forest->create_io("t");
   auto tree   = tio->create_tree();
@@ -420,6 +587,8 @@ TEST(TreePersistence, SaveLoadRoundTrip) {
   c1.set_type(20);
   c2.set_type(30);
   gc1.set_type(40);
+  root.attr(hhds::attrs::name).set("program");
+  gc1.attr(test_attrs::loc).set(99);
 
   tree->save_body(test_dir);
   EXPECT_TRUE(fs::exists(fs::path(test_dir) / "body.bin"));
@@ -434,6 +603,8 @@ TEST(TreePersistence, SaveLoadRoundTrip) {
   EXPECT_EQ(tree2->get_type(c1.get_current_pos()), 20);
   EXPECT_EQ(tree2->get_type(c2.get_current_pos()), 30);
   EXPECT_EQ(tree2->get_type(gc1.get_current_pos()), 40);
+  EXPECT_EQ(tree2->as_class(root.get_current_pos()).attr(hhds::attrs::name).get(), "program");
+  EXPECT_EQ(tree2->as_class(gc1.get_current_pos()).attr(test_attrs::loc).get(), 99);
 
   // Verify structure.
   auto loaded_c1 = tree2->get_first_child(root);

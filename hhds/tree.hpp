@@ -29,6 +29,8 @@
 #include <utility>
 #include <vector>
 
+#include "hhds/attr.hpp"
+#include "hhds/attrs/name.hpp"
 #include "hhds/graph_sizing.hpp"
 #include "hhds/tree_print.hpp"
 #include "iassert.hpp"
@@ -219,7 +221,7 @@ public:
 template <typename X>
 class PayloadForest;
 
-class Tree : public std::enable_shared_from_this<Tree> {
+class Tree : public std::enable_shared_from_this<Tree>, public Attr_host {
 private:
   std::vector<Tree_pointers>   pointers_stack;
   std::vector<std::bitset<64>> validity_stack;
@@ -399,6 +401,13 @@ public:
     [[nodiscard]] auto pre_order_class() const;
     [[nodiscard]] auto post_order_class() const;
     [[nodiscard]] auto sibling_order() const;
+
+    template <Attribute Tag>
+    [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
+      I(tree_ptr != nullptr, "attr: node is not attached to a tree");
+      return AttrRef<Tag>(tree_ptr, make_node_attr_key(static_cast<uint64_t>(current_pos)));
+    }
+
     [[nodiscard]] bool operator==(const Node_class& other) const noexcept { return current_pos == other.current_pos; }
     [[nodiscard]] bool operator!=(const Node_class& other) const noexcept { return !(*this == other); }
 
@@ -1091,6 +1100,7 @@ private:
 
   [[nodiscard]] Type_entry resolve_print_type(Type type, const PrintOptions& options) const;
   [[nodiscard]] size_t     node_body_width(Tree_pos c, size_t name_width, const PrintOptions& options) const;
+  [[nodiscard]] std::optional<std::string> node_text_override(Tree_pos node_pos, const PrintOptions& options) const;
   void print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const PrintAlign& align, const PrintOptions& options) const;
   void dump_node(std::ostream& os, Tree_pos node_pos, const std::string& prefix, bool is_last, const PrintOptions& options) const;
   void write_dump_node(std::ostream& os, Tree_pos node_pos, const std::string& prefix, bool is_last,
@@ -1099,9 +1109,10 @@ private:
   [[nodiscard]] PrintAlign compute_sibling_align(Tree_pos first_child, const PrintOptions& options) const;
   void                     recompute_body_width(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;
   void                     recompute_body_width_recurse(PrintAlign& align, Tree_pos first_child, const PrintOptions& options) const;
+  void                     attr_note_modified() noexcept override { dirty_ = true; }
   mutable std::vector<Node_class> subs_cache_;
   mutable bool                    subs_cache_valid_ = false;
-  explicit Tree(Forest* forest = nullptr) : forest_ptr(forest) {}
+  explicit Tree(Forest* forest = nullptr) : forest_ptr(forest) { register_attr_tag<attrs::name_t>("hhds::attrs::name"); }
 };
 
 class TreeIO : public std::enable_shared_from_this<TreeIO> {
@@ -2881,6 +2892,7 @@ inline void Tree::delete_leaf(const Tree_pos& leaf_index) {
   const auto next_sibling_id   = get_sibling_next(leaf_index);
   const auto parent_index      = pointers_stack[leaf_chunk_id].get_parent();
 
+  erase_attr_object(make_node_attr_key(static_cast<uint64_t>(leaf_index)));
   _set_data_invalid(leaf_index);
   subs_cache_valid_ = false;
   if (leaf_index < static_cast<Tree_pos>(subnode_refs.size())) {
@@ -2976,6 +2988,7 @@ inline void Tree::clear() {
   pointers_stack.clear();
   validity_stack.clear();
   subnode_refs.clear();
+  discard_attr_stores();
   subs_cache_.clear();
   subs_cache_valid_ = false;
 }

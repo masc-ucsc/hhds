@@ -730,7 +730,10 @@ auto NodeEntry::get_edges(Nid nid, const OverflowVec& overflow) const noexcept -
   return EdgeRange(this, nid, overflow);
 }
 
-Graph::Graph() { clear_graph(); }
+Graph::Graph() {
+  register_attr_tag<attrs::name_t>("hhds::attrs::name");
+  clear_graph();
+}
 
 void Graph::assert_accessible() const noexcept { assert(!deleted_ && "graph is no longer valid"); }
 
@@ -789,6 +792,7 @@ void Graph::invalidate_from_library() noexcept {
     return;
   }
   release_storage();
+  discard_attr_stores();
   deleted_   = true;
   owner_lib_ = nullptr;
   node_table.clear();
@@ -813,6 +817,7 @@ void Graph::invalidate_from_library() noexcept {
 void Graph::clear_graph() {
   assert_accessible();
   release_storage();
+  discard_attr_stores();
   node_table.clear();
   pin_table.clear();
   input_pins_.clear();
@@ -830,6 +835,7 @@ void Graph::clear() {
 
   overflow_sets_.clear();
   overflow_free_.clear();
+  discard_attr_stores();
 
   for (auto& pin : pin_table) {
     pin = PinEntry();
@@ -1607,6 +1613,7 @@ void Graph::delete_pin(Pid pin_pid) {
     overflow_free_.push_back(pin->get_overflow_idx());
     overflow_sets_[pin->get_overflow_idx()].clear();
   }
+  erase_attr_object(make_pin_attr_key(static_cast<uint64_t>(pin_lookup)));
   pin_table[actual_id] = PinEntry();
   invalidate_traversal_caches();
 }
@@ -2314,6 +2321,8 @@ void Graph::delete_node(Nid nid) {
     del_edge_int(driver, sink);
   }
 
+  erase_attr_object(make_node_attr_key(static_cast<uint64_t>(nid)));
+  erase_attr_object(make_pin_attr_key(static_cast<uint64_t>(nid)));
   for (auto pin_pid : pins_to_delete) {
     const Pid actual_pin_id = pin_pid >> 2;
     auto*     pin           = &pin_table[actual_pin_id];
@@ -2321,6 +2330,7 @@ void Graph::delete_node(Nid nid) {
       overflow_free_.push_back(pin->get_overflow_idx());
       overflow_sets_[pin->get_overflow_idx()].clear();
     }
+    erase_attr_object(make_pin_attr_key(static_cast<uint64_t>(pin_pid)));
     pin_table[actual_pin_id] = PinEntry();
   }
 
@@ -2412,12 +2422,58 @@ void Graph::display_next_pin_of_node() const {
   }
 }
 
+void Graph::print(std::ostream& os) const {
+  assert_accessible();
+  os << name_ << " {\n";
+  for (auto node : forward_class()) {
+    const Nid raw_nid = node.get_raw_nid() & ~static_cast<Nid>(3);
+    const Nid actual  = raw_nid >> 2;
+    if (actual < 4) {
+      continue;
+    }
+
+    os << "  %" << raw_nid << " = ";
+    if (node.attr(attrs::name).has()) {
+      os << node.attr(attrs::name).get();
+    } else {
+      os << "node_" << actual;
+    }
+
+    const auto* entry = ref_node(raw_nid);
+    if (entry->has_subnode() && owner_lib_ != nullptr) {
+      const auto gio = owner_lib_->graph_ios_[static_cast<size_t>(entry->get_subnode())];
+      if (gio != nullptr) {
+        os << " : " << gio->get_name();
+      }
+    }
+    os << '\n';
+
+    for (Pid cur_pin = entry->get_next_pin_id(); cur_pin != 0;) {
+      const Pid canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+      const auto pin          = make_pin_class(canonical_pin);
+      os << "    ." << pin.get_pin_name();
+      if (pin.attr(attrs::name).has()) {
+        os << " @" << pin.attr(attrs::name).get();
+      }
+      os << '\n';
+      cur_pin = ref_pin(canonical_pin)->get_next_pin_id();
+    }
+  }
+  os << "}\n";
+}
+
+std::string Graph::print() const {
+  std::ostringstream oss;
+  print(oss);
+  return oss.str();
+}
+
 // --------------------------------------------------------------------------
 // Binary persistence
 // --------------------------------------------------------------------------
 
 static constexpr uint32_t GRAPH_BODY_MAGIC   = 0x48484742;  // "HHGB"
-static constexpr uint32_t GRAPH_BODY_VERSION = 1;
+static constexpr uint32_t GRAPH_BODY_VERSION = 2;
 static constexpr uint32_t ENDIAN_CHECK       = 0x01020304;
 
 void Graph::save_body(const std::string& dir_path) const {
@@ -2444,6 +2500,7 @@ void Graph::save_body(const std::string& dir_path) const {
     // Bulk write node_table and pin_table — pointer-free POD arrays.
     ofs.write(reinterpret_cast<const char*>(node_table.data()), static_cast<std::streamsize>(node_count * sizeof(NodeEntry)));
     ofs.write(reinterpret_cast<const char*>(pin_table.data()), static_cast<std::streamsize>(pin_count * sizeof(PinEntry)));
+    save_attr_stores(ofs);
   }
 
   // --- overflow_<idx>.bin (one per overflow set) ---
@@ -2479,7 +2536,7 @@ void Graph::load_body(const std::string& dir_path) {
     ifs.read(reinterpret_cast<char*>(&version), sizeof(version));
     ifs.read(reinterpret_cast<char*>(&endian), sizeof(endian));
     assert(magic == GRAPH_BODY_MAGIC && "load_body: bad magic");
-    assert(version == GRAPH_BODY_VERSION && "load_body: unsupported version");
+    assert((version == 1 || version == GRAPH_BODY_VERSION) && "load_body: unsupported version");
     assert(endian == ENDIAN_CHECK && "load_body: endian mismatch — file from different platform");
 
     uint64_t node_count = 0, pin_count = 0, overflow_count = 0;
@@ -2496,6 +2553,13 @@ void Graph::load_body(const std::string& dir_path) {
 
     // Prepare overflow_sets_ vector.
     overflow_sets_.resize(overflow_count);
+    overflow_free_.clear();
+
+    if (version >= 2) {
+      load_attr_stores(ifs);
+    } else {
+      discard_attr_stores();
+    }
   }
 
   // --- overflow_<idx>.bin ---

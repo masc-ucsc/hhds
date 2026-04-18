@@ -39,9 +39,11 @@ cc_library(
         exclude = ["*test*.cpp"],
     ),
     hdrs = glob([
+        "attr.hpp",
         "tree.hpp",
         "tree_print.hpp",
         "graph_sizing.hpp",
+        "attrs/name.hpp",
     ]),
     copts = COPTS,
     defines = select({
@@ -67,6 +69,8 @@ cc_library(
     name = "graph",
     srcs = ["graph.cpp"],
     hdrs = [
+        "attr.hpp",
+        "attrs/name.hpp",
         "graph.hpp",
         "graph_sizing.hpp",
         "hash_set3.hpp",
