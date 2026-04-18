@@ -6,6 +6,18 @@
 
 namespace hhds {
 
+std::optional<std::string> Tree::node_text_override(Tree_pos node_pos, const PrintOptions& options) const {
+  const auto node = as_class(node_pos);
+  if (options.node_text) {
+    return options.node_text(node);
+  }
+  auto name_attr = node.attr(attrs::name);
+  if (name_attr.has()) {
+    return std::string(name_attr.get());
+  }
+  return std::nullopt;
+}
+
 Type_entry Tree::resolve_print_type(Type type, const PrintOptions& options) const {
   if (type >= 0 && static_cast<size_t>(type) < options.type_table.size()) {
     return options.type_table[static_cast<size_t>(type)];
@@ -29,8 +41,8 @@ size_t Tree::node_body_width(Tree_pos c, size_t name_width, const PrintOptions& 
     case Statement_class::Open_def:
     case Statement_class::Closed_def: {
       size_t w = 4 + te.name.size();
-      if (options.node_text) {
-        w += 1 + options.node_text(as_class(c)).size();
+      if (auto nt = node_text_override(c, options); nt.has_value()) {
+        w += 1 + nt->size();
       }
       return w;
     }
@@ -38,20 +50,19 @@ size_t Tree::node_body_width(Tree_pos c, size_t name_width, const PrintOptions& 
     case Statement_class::Open_call:
     case Statement_class::Closed_call: {
       size_t w = te.name.size();
-      if (options.node_text) {
-        w += 1 + options.node_text(as_class(c)).size();
+      if (auto nt = node_text_override(c, options); nt.has_value()) {
+        w += 1 + nt->size();
       }
       return w;
     }
 
     default: {  // Node
-      if (options.node_text) {
-        auto nt        = options.node_text(as_class(c));
-        bool has_colon = options.show_types && std::string_view(nt) != te.name;
+      if (auto nt = node_text_override(c, options); nt.has_value()) {
+        const bool has_colon = options.show_types && std::string_view(*nt) != te.name;
         if (has_colon) {
           return name_width + 3 + te.name.size();
         }
-        return nt.size();
+        return nt->size();
       }
       return te.name.size();
     }
@@ -71,11 +82,10 @@ void Tree::scan_align_group(PrintAlign& align, Tree_pos first_child, const Print
     const bool is_scope = te.sclass == Statement_class::Open_call || te.sclass == Statement_class::Closed_call
                           || te.sclass == Statement_class::Open_def || te.sclass == Statement_class::Closed_def;
 
-    if (options.node_text && te.sclass == Statement_class::Node) {
-      auto nt = options.node_text(as_class(c));
-      if (options.show_types && std::string_view(nt) != te.name) {
-        if (nt.size() > align.name_width) {
-          align.name_width = nt.size();
+    if (te.sclass == Statement_class::Node) {
+      if (auto nt = node_text_override(c, options); nt.has_value() && options.show_types && std::string_view(*nt) != te.name) {
+        if (nt->size() > align.name_width) {
+          align.name_width = nt->size();
         }
       }
     }
@@ -242,10 +252,9 @@ void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const P
       emit_pos(node_pos);
       os << " = def " << te.name;
       body_w = 4 + te.name.size();
-      if (options.node_text) {
-        auto nt = options.node_text(node);
-        os << ' ' << nt;
-        body_w += 1 + nt.size();
+      if (auto nt = node_text_override(node_pos, options); nt.has_value()) {
+        os << ' ' << *nt;
+        body_w += 1 + nt->size();
       }
       break;
     }
@@ -254,10 +263,9 @@ void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const P
       emit_pos(node_pos);
       os << " = " << te.name;
       body_w = te.name.size();
-      if (options.node_text) {
-        auto nt = options.node_text(node);
-        os << ' ' << nt;
-        body_w += 1 + nt.size();
+      if (auto nt = node_text_override(node_pos, options); nt.has_value()) {
+        os << ' ' << *nt;
+        body_w += 1 + nt->size();
       }
       break;
     }
@@ -265,18 +273,17 @@ void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const P
     default: {  // Node
       emit_pos(node_pos);
       os << " = ";
-      if (options.node_text) {
-        auto nt = options.node_text(node);
-        os << nt;
-        bool has_colon = options.show_types && std::string_view(nt) != te.name;
+      if (auto nt = node_text_override(node_pos, options); nt.has_value()) {
+        os << *nt;
+        const bool has_colon = options.show_types && std::string_view(*nt) != te.name;
         if (has_colon) {
-          if (align.name_width > nt.size()) {
-            os << std::string(align.name_width - nt.size(), ' ');
+          if (align.name_width > nt->size()) {
+            os << std::string(align.name_width - nt->size(), ' ');
           }
           os << " : " << te.name;
           body_w = align.name_width + 3 + te.name.size();
         } else {
-          body_w = nt.size();
+          body_w = nt->size();
         }
       } else {
         os << te.name;

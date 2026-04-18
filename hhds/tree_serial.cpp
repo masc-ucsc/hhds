@@ -337,7 +337,7 @@ Tree::ReadDumpResult Tree::read_dump(const std::string& filename, std::span<cons
 // --------------------------------------------------------------------------
 
 static constexpr uint32_t TREE_BODY_MAGIC   = 0x48485442;  // "HHTB"
-static constexpr uint32_t TREE_BODY_VERSION = 1;
+static constexpr uint32_t TREE_BODY_VERSION = 2;
 static constexpr uint32_t ENDIAN_CHECK      = 0x01020304;
 
 void Tree::save_body(const std::string& dir_path) const {
@@ -366,6 +366,7 @@ void Tree::save_body(const std::string& dir_path) const {
             static_cast<std::streamsize>(validity_count * sizeof(std::bitset<64>)));
   ofs.write(reinterpret_cast<const char*>(subnode_refs.data()),
             static_cast<std::streamsize>(subnode_count * sizeof(Tree_pos)));
+  save_attr_stores(ofs);
   dirty_ = false;
 }
 
@@ -381,7 +382,7 @@ void Tree::load_body(const std::string& dir_path) {
   ifs.read(reinterpret_cast<char*>(&version), sizeof(version));
   ifs.read(reinterpret_cast<char*>(&endian), sizeof(endian));
   assert(magic == TREE_BODY_MAGIC && "load_body: bad magic");
-  assert(version == TREE_BODY_VERSION && "load_body: unsupported version");
+  assert((version == 1 || version == TREE_BODY_VERSION) && "load_body: unsupported version");
   assert(endian == ENDIAN_CHECK && "load_body: endian mismatch");
 
   uint64_t pointers_count = 0, validity_count = 0, subnode_count = 0;
@@ -400,6 +401,14 @@ void Tree::load_body(const std::string& dir_path) {
   subnode_refs.resize(subnode_count);
   ifs.read(reinterpret_cast<char*>(subnode_refs.data()),
            static_cast<std::streamsize>(subnode_count * sizeof(Tree_pos)));
+
+  if (version >= 2) {
+    load_attr_stores(ifs);
+  } else {
+    discard_attr_stores();
+  }
+  subs_cache_valid_ = false;
+  subs_cache_.clear();
   dirty_ = false;
 }
 
