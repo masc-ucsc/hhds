@@ -91,9 +91,5 @@ int main() {
   std::cout << "Forest cursor example: current_tid=" << hier_cursor.get_current_tid()
             << " current_pos=" << hier_cursor.get_current_pos() << " depth=" << hier_cursor.depth() << "\n";
 
-  const auto flat = tree->as_flat(lhs.get_current_pos(), /*current_tid=*/17, /*root_tid=*/11);
-  std::cout << "\nFlat wrapper example: root_tid=" << flat.get_root_tid() << " current_tid=" << flat.get_current_tid()
-            << " current_pos=" << flat.get_current_pos() << "\n";
-
   return 0;
 }

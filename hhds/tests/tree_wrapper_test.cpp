@@ -43,65 +43,24 @@ TEST(TreeWrappers, NodeClassHashable) {
   EXPECT_EQ(attrs[child], 2);
 }
 
-TEST(TreeWrappers, CompactConversions) {
-  auto            tree        = hhds::Tree::create();
-  const hhds::Tid current_tid = -7;
-  const hhds::Tid root_tid    = -3;
-
-  const auto root = tree->add_root_node();
-  const auto flat = hhds::to_flat(root, current_tid, root_tid);
-
-  EXPECT_EQ(flat.get_root_tid(), root_tid);
-  EXPECT_EQ(flat.get_current_tid(), current_tid);
-  EXPECT_EQ(flat.get_current_pos(), root.get_current_pos());
-
-  const auto class_from_flat = hhds::to_class(flat);
-  EXPECT_EQ(class_from_flat, root);
-
-  const hhds::Tid hier_tid = -11;
-  const auto      hier     = tree->as_hier(root.get_current_pos(), current_tid, hier_tid, 42, root_tid);
-  EXPECT_EQ(hier.get_root_tid(), root_tid);
-  EXPECT_EQ(hier.get_current_tid(), current_tid);
-  EXPECT_EQ(hier.get_hier_tid(), hier_tid);
-  EXPECT_EQ(hier.get_hier_pos(), 42);
-  EXPECT_EQ(hier.get_current_pos(), root.get_current_pos());
-
-  const auto flat_from_hier  = hhds::to_flat(hier);
-  const auto class_from_hier = hhds::to_class(hier);
-  EXPECT_EQ(flat_from_hier, flat);
-  EXPECT_EQ(class_from_hier, root);
-}
-
 TEST(TreeWrappers, ForestContextAndSubtreeRefs) {
   auto forest = hhds::Forest::create();
 
   const auto parent_decl = create_declared_tree(forest, "parent");
   const auto child_decl  = create_declared_tree(forest, "child");
-  const auto parent_tid  = parent_decl.tio->get_tid();
   const auto child_tid   = child_decl.tio->get_tid();
 
   auto& parent = *parent_decl.tree;
   auto& child  = *child_decl.tree;
 
   const auto parent_root = parent.add_root_node();
-  const auto child_root  = child.add_root_node();
-  const auto ref_node    = parent.add_child(parent_root);
+  child.add_root_node();
+  const auto ref_node = parent.add_child(parent_root);
 
   parent.set_subnode(ref_node, child_tid);
 
   EXPECT_TRUE(parent.has_subnode(ref_node));
   EXPECT_EQ(parent.get_subnode(ref_node), child_tid);
-
-  const auto flat = parent.as_flat(ref_node.get_current_pos(), parent_tid);
-  EXPECT_EQ(flat.get_root_tid(), parent_tid);
-  EXPECT_EQ(flat.get_current_tid(), parent_tid);
-  EXPECT_EQ(flat.get_current_pos(), ref_node.get_current_pos());
-
-  const auto hier = parent.as_hier(ref_node.get_current_pos(), parent_tid, child_tid, child_root.get_current_pos());
-  EXPECT_EQ(hier.get_root_tid(), parent_tid);
-  EXPECT_EQ(hier.get_current_tid(), parent_tid);
-  EXPECT_EQ(hier.get_hier_tid(), child_tid);
-  EXPECT_EQ(hier.get_hier_pos(), child_root.get_current_pos());
 }
 
 TEST(TreeWrappers, TraversalsYieldNodeClass) {

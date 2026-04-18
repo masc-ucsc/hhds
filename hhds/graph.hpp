@@ -359,135 +359,6 @@ private:
   friend void inherit_pin_context(Pin_class& pin, const Node_class& node);
 };
 
-class Node_flat {
-public:
-  Node_flat() = default;
-  Node_flat(Gid root_gid_value, Gid current_gid_value, Nid raw_nid_value)
-      : root_gid(root_gid_value), current_gid(current_gid_value), raw_nid(raw_nid_value) {}
-
-  [[nodiscard]] constexpr Gid     get_root_gid() const noexcept { return root_gid; }
-  [[nodiscard]] constexpr Gid     get_current_gid() const noexcept { return current_gid; }
-  [[nodiscard]] constexpr Port_id get_port_id() const noexcept { return 0; }
-  [[nodiscard]] constexpr Nid     get_raw_nid() const noexcept { return raw_nid; }
-
-  [[nodiscard]] bool operator==(const Node_flat& other) const noexcept {
-    return root_gid == other.root_gid && current_gid == other.current_gid && raw_nid == other.raw_nid;
-  }
-  [[nodiscard]] bool operator!=(const Node_flat& other) const noexcept { return !(*this == other); }
-
-  template <typename H>
-  friend H AbslHashValue(H h, const Node_flat& node) {
-    return H::combine(std::move(h), node.root_gid, node.current_gid, node.raw_nid);
-  }
-
-private:
-  Gid root_gid    = Gid_invalid;
-  Gid current_gid = Gid_invalid;
-  Nid raw_nid     = 0;
-};
-
-class Pin_flat {
-public:
-  Pin_flat() = default;
-  Pin_flat(Gid root_gid_value, Gid current_gid_value, Nid raw_nid_value, Port_id port_id_value, Pid pin_pid_value)
-      : root_gid(root_gid_value)
-      , current_gid(current_gid_value)
-      , raw_nid(raw_nid_value & ~static_cast<Nid>(2))
-      , port_id(port_id_value)
-      , pin_pid(pin_pid_value) {}
-
-  [[nodiscard]] constexpr Gid     get_root_gid() const noexcept { return root_gid; }
-  [[nodiscard]] constexpr Gid     get_current_gid() const noexcept { return current_gid; }
-  [[nodiscard]] constexpr Nid     get_raw_nid() const noexcept { return raw_nid; }
-  [[nodiscard]] constexpr Port_id get_port_id() const noexcept { return port_id; }
-  [[nodiscard]] constexpr Pid     get_pin_pid() const noexcept { return pin_pid; }
-
-  [[nodiscard]] bool operator==(const Pin_flat& other) const noexcept {
-    return root_gid == other.root_gid && current_gid == other.current_gid && pin_pid == other.pin_pid;
-  }
-  [[nodiscard]] bool operator!=(const Pin_flat& other) const noexcept { return !(*this == other); }
-
-  template <typename H>
-  friend H AbslHashValue(H h, const Pin_flat& pin) {
-    return H::combine(std::move(h), pin.root_gid, pin.current_gid, pin.pin_pid);
-  }
-
-private:
-  Gid     root_gid    = Gid_invalid;
-  Gid     current_gid = Gid_invalid;
-  Nid     raw_nid     = 0;
-  Port_id port_id     = 0;
-  Pid     pin_pid     = 0;
-};
-
-class Node_hier {
-public:
-  Node_hier() = default;
-  Node_hier(Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value, Nid raw_nid_value);
-
-  [[nodiscard]] Gid                get_root_gid() const noexcept;
-  [[nodiscard]] Gid                get_current_gid() const noexcept;
-  [[nodiscard]] constexpr Tid      get_hier_tid() const noexcept { return hier_tid; }
-  [[nodiscard]] constexpr Tree_pos get_hier_pos() const noexcept { return hier_pos; }
-  [[nodiscard]] constexpr Port_id  get_port_id() const noexcept { return 0; }
-  [[nodiscard]] constexpr Nid      get_raw_nid() const noexcept { return raw_nid; }
-
-  [[nodiscard]] bool operator==(const Node_hier& other) const noexcept {
-    return hier_tid == other.hier_tid && hier_pos == other.hier_pos && raw_nid == other.raw_nid;
-  }
-  [[nodiscard]] bool operator!=(const Node_hier& other) const noexcept { return !(*this == other); }
-
-  template <typename H>
-  friend H AbslHashValue(H h, const Node_hier& node) {
-    return H::combine(std::move(h), node.hier_tid, node.hier_pos, node.raw_nid);
-  }
-
-private:
-  std::shared_ptr<std::vector<Gid>> hier_gids;
-  Tid                               hier_tid = INVALID;
-  Tree_pos                          hier_pos = INVALID;
-  Nid                               raw_nid  = 0;
-};
-
-class Pin_hier {
-public:
-  Pin_hier() = default;
-  Pin_hier(Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value, Nid raw_nid_value,
-           Port_id port_id_value, Pid pin_pid_value)
-      : hier_gids(std::move(hier_gids_value))
-      , hier_tid(hier_tid_value)
-      , hier_pos(hier_pos_value)
-      , raw_nid(raw_nid_value & ~static_cast<Nid>(2))
-      , port_id(port_id_value)
-      , pin_pid(pin_pid_value) {}
-
-  [[nodiscard]] Gid                get_root_gid() const noexcept;
-  [[nodiscard]] Gid                get_current_gid() const noexcept;
-  [[nodiscard]] constexpr Tid      get_hier_tid() const noexcept { return hier_tid; }
-  [[nodiscard]] constexpr Tree_pos get_hier_pos() const noexcept { return hier_pos; }
-  [[nodiscard]] constexpr Nid      get_raw_nid() const noexcept { return raw_nid; }
-  [[nodiscard]] constexpr Port_id  get_port_id() const noexcept { return port_id; }
-  [[nodiscard]] constexpr Pid      get_pin_pid() const noexcept { return pin_pid; }
-
-  [[nodiscard]] bool operator==(const Pin_hier& other) const noexcept {
-    return hier_tid == other.hier_tid && hier_pos == other.hier_pos && pin_pid == other.pin_pid;
-  }
-  [[nodiscard]] bool operator!=(const Pin_hier& other) const noexcept { return !(*this == other); }
-
-  template <typename H>
-  friend H AbslHashValue(H h, const Pin_hier& pin) {
-    return H::combine(std::move(h), pin.hier_tid, pin.hier_pos, pin.pin_pid);
-  }
-
-private:
-  std::shared_ptr<std::vector<Gid>> hier_gids;
-  Tid                               hier_tid = INVALID;
-  Tree_pos                          hier_pos = INVALID;
-  Nid                               raw_nid  = 0;
-  Port_id                           port_id  = 0;
-  Pid                               pin_pid  = 0;
-};
-
 class Edge_class {
 public:
   [[nodiscard]] Node_class driver_node() const noexcept { return driver_; }
@@ -511,34 +382,6 @@ private:
   friend class Graph;
 };
 
-class Edge_flat {
-public:
-  Pin_flat driver;
-  Pin_flat sink;
-
-  [[nodiscard]] bool operator==(const Edge_flat& other) const noexcept { return driver == other.driver && sink == other.sink; }
-  [[nodiscard]] bool operator!=(const Edge_flat& other) const noexcept { return !(*this == other); }
-
-  template <typename H>
-  friend H AbslHashValue(H h, const Edge_flat& edge) {
-    return H::combine(std::move(h), edge.driver, edge.sink);
-  }
-};
-
-class Edge_hier {
-public:
-  Pin_hier driver;
-  Pin_hier sink;
-
-  [[nodiscard]] bool operator==(const Edge_hier& other) const noexcept { return driver == other.driver && sink == other.sink; }
-  [[nodiscard]] bool operator!=(const Edge_hier& other) const noexcept { return !(*this == other); }
-
-  template <typename H>
-  friend H AbslHashValue(H h, const Edge_hier& edge) {
-    return H::combine(std::move(h), edge.driver, edge.sink);
-  }
-};
-
 using Node = Node_class;
 using Pin  = Pin_class;
 
@@ -554,12 +397,8 @@ public:
   Graph& operator=(Graph&&)      = delete;
   void   clear_graph();
 
-  [[nodiscard]] static bool           is_valid(Node_class node) noexcept { return node.is_valid(); }
-  [[nodiscard]] static bool           is_valid(Pin_class pin) noexcept { return pin.is_valid(); }
-  [[nodiscard]] static constexpr bool is_valid(Node_flat node) noexcept { return node.get_raw_nid() != 0; }
-  [[nodiscard]] static constexpr bool is_valid(Pin_flat pin) noexcept { return pin.get_pin_pid() != 0; }
-  [[nodiscard]] static constexpr bool is_valid(const Node_hier& node) noexcept { return node.get_raw_nid() != 0; }
-  [[nodiscard]] static constexpr bool is_valid(const Pin_hier& pin) noexcept { return pin.get_pin_pid() != 0; }
+  [[nodiscard]] static bool is_valid(Node_class node) noexcept { return node.is_valid(); }
+  [[nodiscard]] static bool is_valid(Pin_class pin) noexcept { return pin.is_valid(); }
 
   [[nodiscard]] Node                     create_node();
   void                                   clear();
@@ -1196,27 +1035,5 @@ inline Port_id GraphIO::get_output_port_id(std::string_view name) const {
   }
   return output_pin_decls_[it->second.index].port_id;
 }
-
-// Compact-tier conversions: information can be discarded (_hier/_flat -> _class),
-// but hierarchy context cannot be reconstructed from _class/_flat alone.
-[[nodiscard]] Node_class to_class(const Node_hier& v);
-[[nodiscard]] Node_flat  to_flat(const Node_hier& v);
-[[nodiscard]] Node_class to_class(const Node_flat& v);
-[[nodiscard]] Node_flat  to_flat(const Node_class& v, Gid current_gid, Gid root_gid = Gid_invalid);
-Node_hier                to_hier(Node_class) = delete;
-Node_hier                to_hier(Node_flat)  = delete;
-
-[[nodiscard]] Pin_class to_class(const Pin_hier& v);
-[[nodiscard]] Pin_flat  to_flat(const Pin_hier& v);
-[[nodiscard]] Pin_class to_class(const Pin_flat& v);
-[[nodiscard]] Pin_flat  to_flat(const Pin_class& v, Gid current_gid, Gid root_gid = Gid_invalid);
-Pin_hier                to_hier(Pin_class) = delete;
-Pin_hier                to_hier(Pin_flat)  = delete;
-
-[[nodiscard]] Edge_flat  to_flat(const Edge_class& e, Gid current_gid, Gid root_gid = Gid_invalid);
-[[nodiscard]] Edge_flat  to_flat(const Edge_hier& e);
-[[nodiscard]] Edge_hier  to_hier(const Edge_class& e, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos);
-[[nodiscard]] Edge_class to_class(const Edge_flat& e);
-[[nodiscard]] Edge_class to_class(const Edge_hier& e);
 
 }  // namespace hhds

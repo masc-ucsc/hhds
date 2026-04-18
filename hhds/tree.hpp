@@ -339,8 +339,6 @@ private:
 
 public:
   class Node_class;
-  class Node_flat;
-  class Node_hier;
 
   struct PrintContext;
 
@@ -415,99 +413,15 @@ public:
     friend class Tree;
   };
 
-  class Node_flat {
-  public:
-    Node_flat() = default;
-    Node_flat(Tid root_tid_value, Tid current_tid_value, Tree_pos current_pos_value)
-        : root_tid(root_tid_value), current_tid(current_tid_value), current_pos(current_pos_value) {}
-
-    [[nodiscard]] Tid      get_root_tid() const noexcept { return root_tid; }
-    [[nodiscard]] Tid      get_current_tid() const noexcept { return current_tid; }
-    [[nodiscard]] Tree_pos get_current_pos() const noexcept { return current_pos; }
-    [[nodiscard]] bool     operator==(const Node_flat& other) const noexcept {
-      return root_tid == other.root_tid && current_tid == other.current_tid && current_pos == other.current_pos;
-    }
-    [[nodiscard]] bool operator!=(const Node_flat& other) const noexcept { return !(*this == other); }
-
-    template <typename H>
-    friend H AbslHashValue(H h, const Node_flat& node) {
-      return H::combine(std::move(h), node.root_tid, node.current_tid, node.current_pos);
-    }
-
-  private:
-    Tid      root_tid    = INVALID;
-    Tid      current_tid = INVALID;
-    Tree_pos current_pos = INVALID;
-
-    friend class Tree;
-  };
-
-  class Node_hier {
-  public:
-    Node_hier() = default;
-    Node_hier(Tid root_tid_value, Tid current_tid_value, Tid hier_tid_value, Tree_pos hier_pos_value, Tree_pos current_pos_value)
-        : root_tid(root_tid_value)
-        , current_tid(current_tid_value)
-        , hier_tid(hier_tid_value)
-        , hier_pos(hier_pos_value)
-        , current_pos(current_pos_value) {}
-
-    [[nodiscard]] Tid      get_root_tid() const noexcept { return root_tid; }
-    [[nodiscard]] Tid      get_current_tid() const noexcept { return current_tid; }
-    [[nodiscard]] Tid      get_hier_tid() const noexcept { return hier_tid; }
-    [[nodiscard]] Tree_pos get_hier_pos() const noexcept { return hier_pos; }
-    [[nodiscard]] Tree_pos get_current_pos() const noexcept { return current_pos; }
-    [[nodiscard]] bool     operator==(const Node_hier& other) const noexcept {
-      return root_tid == other.root_tid && current_tid == other.current_tid && hier_tid == other.hier_tid
-             && hier_pos == other.hier_pos && current_pos == other.current_pos;
-    }
-    [[nodiscard]] bool operator!=(const Node_hier& other) const noexcept { return !(*this == other); }
-
-    template <typename H>
-    friend H AbslHashValue(H h, const Node_hier& node) {
-      return H::combine(std::move(h), node.root_tid, node.current_tid, node.hier_tid, node.hier_pos, node.current_pos);
-    }
-
-  private:
-    Tid      root_tid    = INVALID;
-    Tid      current_tid = INVALID;
-    Tid      hier_tid    = INVALID;
-    Tree_pos hier_pos    = INVALID;
-    Tree_pos current_pos = INVALID;
-
-    friend class Tree;
-  };
-
   Tree(const Tree&)            = delete;
   Tree& operator=(const Tree&) = delete;
   Tree(Tree&&)                 = delete;
   Tree& operator=(Tree&&)      = delete;
 
   [[nodiscard]] static bool is_valid(Node_class node) noexcept { return node.is_valid(); }
-  [[nodiscard]] static bool is_valid(Node_flat node) noexcept { return node.get_current_pos() != INVALID; }
-  [[nodiscard]] static bool is_valid(Node_hier node) noexcept { return node.get_current_pos() != INVALID; }
 
   [[nodiscard]] Node_class as_class(Tree_pos node_pos) const {
     return (_check_idx_exists(node_pos) && _contains_data(node_pos)) ? Node_class(const_cast<Tree*>(this), node_pos) : Node_class();
-  }
-  [[nodiscard]] Node_flat as_flat(Tree_pos current_pos, Tid current_tid, Tid root_tid = INVALID) const {
-    if (!_check_idx_exists(current_pos) || !_contains_data(current_pos)) {
-      return Node_flat();
-    }
-    if (root_tid == INVALID) {
-      root_tid = current_tid;
-    }
-    return Node_flat(root_tid, current_tid, current_pos);
-  }
-  [[nodiscard]] Node_hier as_hier(Tree_pos current_pos, Tid current_tid, Tid hier_tid, Tree_pos hier_pos,
-                                  Tid root_tid = INVALID) const {
-    if (!_check_idx_exists(current_pos) || !_contains_data(current_pos)) {
-      return Node_hier();
-    }
-    if (root_tid == INVALID) {
-      root_tid = current_tid;
-    }
-    return Node_hier(root_tid, current_tid, hier_tid, hier_pos, current_pos);
   }
   [[nodiscard]] Node_class get_root_node() const { return as_class(get_root()); }
 
@@ -1372,8 +1286,6 @@ public:
   }
 
   [[nodiscard]] ForestCursor create_cursor(Tid tree_tid, Tree_pos start = ROOT);
-  [[nodiscard]] ForestCursor create_cursor(Tree::Node_flat node);
-  [[nodiscard]] ForestCursor create_cursor(Tree::Node_hier node);
 
   // Persistence — saves all declarations (text) and bodies (binary).
   void save(const std::string& db_path) const;
@@ -1717,20 +1629,6 @@ public:
   [[nodiscard]] int depth() const noexcept { return static_cast<int>(depth_); }
 };
 
-[[nodiscard]] inline Tree::Node_class to_class(const Tree::Node_hier& v) { return Tree::Node_class(v.get_current_pos()); }
-[[nodiscard]] inline Tree::Node_flat  to_flat(const Tree::Node_hier& v) {
-  return Tree::Node_flat(v.get_root_tid(), v.get_current_tid(), v.get_current_pos());
-}
-[[nodiscard]] inline Tree::Node_class to_class(const Tree::Node_flat& v) { return Tree::Node_class(v.get_current_pos()); }
-[[nodiscard]] inline Tree::Node_flat  to_flat(const Tree::Node_class& v, Tid current_tid, Tid root_tid = INVALID) {
-  if (root_tid == INVALID) {
-    root_tid = current_tid;
-  }
-  return Tree::Node_flat(root_tid, current_tid, v.get_current_pos());
-}
-Tree::Node_hier to_hier(Tree::Node_class) = delete;
-Tree::Node_hier to_hier(Tree::Node_flat)  = delete;
-
 inline Tree* Tree::_get_forest_tree(Tree_pos subtree_tid) {
   I(forest_ptr != nullptr, "Tree is not attached to a forest");
   return &forest_ptr->get_tree(subtree_tid);
@@ -1753,14 +1651,6 @@ inline ForestCursor Forest::create_cursor(Tid tree_tid, Tree_pos start) {
   auto self = this->weak_from_this().lock();
   I(static_cast<bool>(self), "create_cursor: Forest must be managed by std::shared_ptr");
   return ForestCursor(std::move(self), std::move(tree), tree_tid, start);
-}
-
-inline ForestCursor Forest::create_cursor(Tree::Node_flat node) {
-  return create_cursor(node.get_current_tid(), node.get_current_pos());
-}
-
-inline ForestCursor Forest::create_cursor(Tree::Node_hier node) {
-  return create_cursor(node.get_current_tid(), node.get_current_pos());
 }
 
 // ---------------------------------- STRUCTURAL TREE IMPLEMENTATION ---------------------------------- //

@@ -29,53 +29,6 @@
 
 namespace hhds {
 
-Node_hier::Node_hier(Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value,
-                     Nid raw_nid_value)
-    : hier_gids(std::move(hier_gids_value)), hier_tid(hier_tid_value), hier_pos(hier_pos_value), raw_nid(raw_nid_value) {}
-
-auto Node_hier::get_root_gid() const noexcept -> Gid {
-  if (!hier_gids || ROOT >= static_cast<Tree_pos>(hier_gids->size())) {
-    return Gid_invalid;
-  }
-  return (*hier_gids)[ROOT];
-}
-
-auto Node_hier::get_current_gid() const noexcept -> Gid {
-  if (!hier_gids || hier_pos >= static_cast<Tree_pos>(hier_gids->size())) {
-    return Gid_invalid;
-  }
-  return (*hier_gids)[static_cast<size_t>(hier_pos)];
-}
-
-auto Pin_hier::get_root_gid() const noexcept -> Gid {
-  if (!hier_gids || ROOT >= static_cast<Tree_pos>(hier_gids->size())) {
-    return Gid_invalid;
-  }
-  return (*hier_gids)[ROOT];
-}
-
-auto Pin_hier::get_current_gid() const noexcept -> Gid {
-  if (!hier_gids || hier_pos >= static_cast<Tree_pos>(hier_gids->size())) {
-    return Gid_invalid;
-  }
-  return (*hier_gids)[static_cast<size_t>(hier_pos)];
-}
-
-auto to_class(const Node_hier& v) -> Node_class { return Node_class(v.get_raw_nid() & ~static_cast<Nid>(2)); }
-
-auto to_flat(const Node_hier& v) -> Node_flat {
-  return Node_flat(v.get_root_gid(), v.get_current_gid(), v.get_raw_nid() & ~static_cast<Nid>(2));
-}
-
-auto to_class(const Node_flat& v) -> Node_class { return Node_class(v.get_raw_nid() & ~static_cast<Nid>(2)); }
-
-auto to_flat(const Node_class& v, Gid current_gid, Gid root_gid) -> Node_flat {
-  if (root_gid == Gid_invalid) {
-    root_gid = current_gid;
-  }
-  return Node_flat(root_gid, current_gid, v.get_raw_nid() & ~static_cast<Nid>(2));
-}
-
 auto Node_class::get_root_gid() const noexcept -> Gid {
   if (context_ == Context::Flat) {
     return root_gid_;
@@ -126,79 +79,6 @@ auto Pin_class::get_current_gid() const noexcept -> Gid {
     return (*hier_gids_)[static_cast<size_t>(hier_pos_)];
   }
   return graph_ != nullptr ? graph_->get_gid() : Gid_invalid;
-}
-
-auto to_class(const Pin_hier& v) -> Pin_class {
-  return Pin_class(v.get_raw_nid() & ~static_cast<Nid>(2), v.get_port_id(), v.get_pin_pid());
-}
-
-auto to_flat(const Pin_hier& v) -> Pin_flat {
-  return Pin_flat(v.get_root_gid(), v.get_current_gid(), v.get_raw_nid() & ~static_cast<Nid>(2), v.get_port_id(), v.get_pin_pid());
-}
-
-auto to_class(const Pin_flat& v) -> Pin_class {
-  return Pin_class(v.get_raw_nid() & ~static_cast<Nid>(2), v.get_port_id(), v.get_pin_pid());
-}
-
-auto to_flat(const Pin_class& v, Gid current_gid, Gid root_gid) -> Pin_flat {
-  if (root_gid == Gid_invalid) {
-    root_gid = current_gid;
-  }
-  return Pin_flat(root_gid, current_gid, v.get_raw_nid() & ~static_cast<Nid>(2), v.get_port_id(), v.get_pin_pid());
-}
-
-auto to_flat(const Edge_class& e, Gid current_gid, Gid root_gid) -> Edge_flat {
-  if (root_gid == Gid_invalid) {
-    root_gid = current_gid;
-  }
-  Edge_flat out;
-  out.driver = to_flat(e.driver_pin(), current_gid, root_gid);
-  out.sink   = to_flat(e.sink_pin(), current_gid, root_gid);
-  return out;
-}
-
-auto to_flat(const Edge_hier& e) -> Edge_flat {
-  Edge_flat out;
-  out.driver = to_flat(e.driver);
-  out.sink   = to_flat(e.sink);
-  return out;
-}
-
-auto to_hier(const Edge_class& e, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos) -> Edge_hier {
-  Edge_hier out;
-  out.driver = Pin_hier(hier_tid,
-                        hier_gids,
-                        hier_pos,
-                        e.driver_pin().get_raw_nid(),
-                        e.driver_pin().get_port_id(),
-                        e.driver_pin().get_pin_pid());
-  out.sink   = Pin_hier(hier_tid,
-                        std::move(hier_gids),
-                        hier_pos,
-                        e.sink_pin().get_raw_nid(),
-                        e.sink_pin().get_port_id(),
-                        e.sink_pin().get_pin_pid());
-  return out;
-}
-
-auto to_class(const Edge_flat& e) -> Edge_class {
-  Edge_class out{};
-  out.driver_pin_ = to_class(e.driver);
-  out.sink_pin_   = to_class(e.sink);
-  out.driver_     = Node_class(out.driver_pin_.get_raw_nid() | static_cast<Nid>(2));
-  out.sink_       = Node_class(out.sink_pin_.get_raw_nid() & ~static_cast<Nid>(2));
-  out.type        = 2;  // p -> p
-  return out;
-}
-
-auto to_class(const Edge_hier& e) -> Edge_class {
-  Edge_class out{};
-  out.driver_pin_ = to_class(e.driver);
-  out.sink_pin_   = to_class(e.sink);
-  out.driver_     = Node_class(out.driver_pin_.get_raw_nid() | static_cast<Nid>(2));
-  out.sink_       = Node_class(out.sink_pin_.get_raw_nid() & ~static_cast<Nid>(2));
-  out.type        = 2;  // p -> p
-  return out;
 }
 
 PinEntry::PinEntry() : master_nid(0), port_id(0), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.sedges = 0} {}
