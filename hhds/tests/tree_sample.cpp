@@ -8,7 +8,7 @@
 #include "tree.hpp"
 
 int main() {
-  auto tree = hhds::Tree::create();
+  auto                                                     tree = hhds::Tree::create();
   absl::flat_hash_map<hhds::Tree::Node_class, std::string> names;
 
   const auto root   = tree->add_root_node();
@@ -36,9 +36,9 @@ int main() {
 
   hhds::Tree::PrintOptions print_options;
   const hhds::Type_entry   type_table[] = {
-    {"unknown", hhds::Statement_class::Node},
-    {"add",     hhds::Statement_class::Node},
-    {"literal", hhds::Statement_class::Node},
+      {"unknown", hhds::Statement_class::Node},
+      {"add", hhds::Statement_class::Node},
+      {"literal", hhds::Statement_class::Node},
   };
   print_options.type_table = type_table;
   print_options.node_text  = [&names](const hhds::Tree::Node_class& node) {
@@ -46,19 +46,18 @@ int main() {
     return it == names.end() ? std::string("node") : it->second;
   };
   print_options.attributes = {
-    {"type_id", [&tree](const hhds::Tree::Node_class& node) -> std::optional<std::string> {
-      return std::to_string(tree->get_type(node));
-    }},
+      {"type_id",
+       [&tree](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(tree->get_type(node)); }},
   };
 
   std::cout << "\nLLVM-like tree print\n";
   tree->print(std::cout, print_options);
 
-  auto forest = hhds::Forest::create();
-  auto top_tio = forest->create_io("top");
-  auto sub_tio = forest->create_io("sub");
-  auto top     = top_tio->create_tree();
-  auto sub     = sub_tio->create_tree();
+  auto       forest  = hhds::Forest::create();
+  auto       top_tio = forest->create_io("top");
+  auto       sub_tio = forest->create_io("sub");
+  auto       top     = top_tio->create_tree();
+  auto       sub     = sub_tio->create_tree();
   const auto top_tid = top_tio->get_tid();
   const auto sub_tid = sub_tio->get_tid();
 
@@ -72,8 +71,8 @@ int main() {
   std::cout << "\nForest subnode references\n";
   std::cout << "  top tree id=" << top_tid << " root pos=" << top_root.get_current_pos() << "\n";
   std::cout << "  callsite pos=" << callsite.get_current_pos() << " subnode=" << top->get_subnode(callsite) << "\n";
-  std::cout << "  sub tree id=" << sub_tid << " root pos=" << sub_root.get_current_pos() << " leaf pos=" << sub_leaf.get_current_pos()
-            << "\n";
+  std::cout << "  sub tree id=" << sub_tid << " root pos=" << sub_root.get_current_pos()
+            << " leaf pos=" << sub_leaf.get_current_pos() << "\n";
 
   auto single_cursor = tree->create_cursor(root);
   std::cout << "\nTree cursor example\n";
@@ -89,8 +88,8 @@ int main() {
   auto hier_cursor = forest->create_cursor(top_tid);
   hier_cursor.goto_first_child();
   hier_cursor.goto_first_child();
-  std::cout << "Forest cursor example: current_tid=" << hier_cursor.get_current_tid() << " current_pos=" << hier_cursor.get_current_pos()
-            << " depth=" << hier_cursor.depth() << "\n";
+  std::cout << "Forest cursor example: current_tid=" << hier_cursor.get_current_tid()
+            << " current_pos=" << hier_cursor.get_current_pos() << " depth=" << hier_cursor.depth() << "\n";
 
   const auto flat = tree->as_flat(lhs.get_current_pos(), /*current_tid=*/17, /*root_tid=*/11);
   std::cout << "\nFlat wrapper example: root_tid=" << flat.get_root_tid() << " current_tid=" << flat.get_current_tid()

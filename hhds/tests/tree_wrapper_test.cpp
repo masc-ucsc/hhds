@@ -44,7 +44,7 @@ TEST(TreeWrappers, NodeClassHashable) {
 }
 
 TEST(TreeWrappers, CompactConversions) {
-  auto            tree = hhds::Tree::create();
+  auto            tree        = hhds::Tree::create();
   const hhds::Tid current_tid = -7;
   const hhds::Tid root_tid    = -3;
 
@@ -269,24 +269,24 @@ TEST(TreeWrappers, PrintUsesTypeTableAndAttributes) {
 
   hhds::Tree::PrintOptions options;
   const hhds::Type_entry   type_table[] = {
-    {"invalid", hhds::Statement_class::Node},
-    {"add",     hhds::Statement_class::Node},
-    {"literal", hhds::Statement_class::Node},
+      {"invalid", hhds::Statement_class::Node},
+      {"add", hhds::Statement_class::Node},
+      {"literal", hhds::Statement_class::Node},
   };
   options.type_table = type_table;
   options.attributes = {
-    {"type_id", [&tree](const hhds::Tree::Node_class& node) -> std::optional<std::string> {
-      return std::to_string(tree->get_type(node));
-    }},
+      {"type_id",
+       [&tree](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(tree->get_type(node)); }},
   };
 
   std::ostringstream os;
   tree->print(os, options);
 
-  EXPECT_EQ(os.str(), "tree {\n"
-                      "  %8  = add     @(type_id=1)\n"
-                      "  %16 = literal @(type_id=2)\n"
-                      "}\n");
+  EXPECT_EQ(os.str(),
+            "tree {\n"
+            "  %8  = add     @(type_id=1)\n"
+            "  %16 = literal @(type_id=2)\n"
+            "}\n");
 }
 
 TEST(TreeWrappers, PrintReturnsString) {
@@ -297,9 +297,10 @@ TEST(TreeWrappers, PrintReturnsString) {
   tree->set_type(root, 0);
 
   const auto result = tree->print();
-  EXPECT_EQ(result, "mytest {\n"
-                    "  %8 = type(0)\n"
-                    "}\n");
+  EXPECT_EQ(result,
+            "mytest {\n"
+            "  %8 = type(0)\n"
+            "}\n");
 }
 
 TEST(TreeWrappers, PrintScopeTypes) {
@@ -315,20 +316,21 @@ TEST(TreeWrappers, PrintScopeTypes) {
   tree->set_type(leaf, 0);
 
   const hhds::Type_entry type_table[] = {
-    {"node",    hhds::Statement_class::Node},
-    {"if_taken", hhds::Statement_class::Open_call},
+      {"node", hhds::Statement_class::Node},
+      {"if_taken", hhds::Statement_class::Open_call},
   };
 
   hhds::Tree::PrintOptions options;
   options.type_table = type_table;
 
   const auto result = tree->print(options);
-  EXPECT_EQ(result, "scoped {\n"
-                    "  %8  = node\n"
-                    "  %16 = if_taken {\n"
-                    "    %24 = node\n"
-                    "  }\n"
-                    "}\n");
+  EXPECT_EQ(result,
+            "scoped {\n"
+            "  %8  = node\n"
+            "  %16 = if_taken {\n"
+            "    %24 = node\n"
+            "  }\n"
+            "}\n");
 }
 
 TEST(TreeWrappers, PrintUsesBuiltinNameAttribute) {
@@ -344,16 +346,17 @@ TEST(TreeWrappers, PrintUsesBuiltinNameAttribute) {
   child.attr(hhds::attrs::name).set("literal");
 
   const hhds::Type_entry type_table[] = {
-    {"invalid", hhds::Statement_class::Node},
-    {"module",  hhds::Statement_class::Node},
-    {"literal", hhds::Statement_class::Node},
+      {"invalid", hhds::Statement_class::Node},
+      {"module", hhds::Statement_class::Node},
+      {"literal", hhds::Statement_class::Node},
   };
 
   hhds::Tree::PrintOptions options;
   options.type_table = type_table;
 
-  EXPECT_EQ(tree->print(options), "named {\n"
-                                  "  %8  = program : module\n"
-                                  "  %16 = literal\n"
-                                  "}\n");
+  EXPECT_EQ(tree->print(options),
+            "named {\n"
+            "  %8  = program : module\n"
+            "  %16 = literal\n"
+            "}\n");
 }

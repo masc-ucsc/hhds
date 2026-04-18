@@ -1,9 +1,9 @@
-#include "hhds/graph.hpp"
-#include "hhds/tree.hpp"
-
 #include <gtest/gtest.h>
 
 #include <vector>
+
+#include "hhds/graph.hpp"
+#include "hhds/tree.hpp"
 
 TEST(GraphDeclarationApi, CreateFindAndNavigate) {
   hhds::GraphLibrary lib;
@@ -52,7 +52,7 @@ TEST(GraphWrapperApi, PinsConnectAndIterateEdges) {
 
 TEST(GraphTraversalApi, ForwardClassUsesNodeWrappers) {
   hhds::GraphLibrary lib;
-  auto               gio = lib.create_io("top");
+  auto               gio   = lib.create_io("top");
   auto               graph = gio->create_graph();
 
   auto n1 = graph->create_node();

@@ -37,9 +37,7 @@ inline IntNode add_child(hhds::Tree& tree, std::vector<int>& values, IntNode par
   return node;
 }
 
-inline int get_value(const std::vector<int>& values, IntNode node) {
-  return values[static_cast<size_t>(node.get_current_pos())];
-}
+inline int get_value(const std::vector<int>& values, IntNode node) { return values[static_cast<size_t>(node.get_current_pos())]; }
 
 inline void postorder_values(hhds::Tree& tree, const std::vector<int>& values, std::vector<int>& out) {
   for (auto node : tree.post_order()) {
@@ -94,7 +92,8 @@ void append_reference_preorder(const std::vector<std::vector<int>>& children_by_
   }
 }
 
-void append_reference_siblings(const std::vector<std::vector<int>>& children_by_id, int node_id, std::vector<std::vector<int>>& result) {
+void append_reference_siblings(const std::vector<std::vector<int>>& children_by_id, int node_id,
+                               std::vector<std::vector<int>>& result) {
   const auto& siblings = children_by_id[static_cast<size_t>(node_id)];
   for (size_t i = 0; i < siblings.size(); ++i) {
     result.emplace_back(siblings.begin() + static_cast<std::ptrdiff_t>(i), siblings.end());
@@ -106,7 +105,7 @@ void append_reference_siblings(const std::vector<std::vector<int>>& children_by_
 TEST(TreeCorrectness, ChipTypicalLongTraversals) {
   std::default_random_engine generator(42);
 
-  auto            hhds_tree = hhds::Tree::create();
+  auto             hhds_tree = hhds::Tree::create();
   std::vector<int> hhds_values;
 
   auto hhds_root = hhds_test::add_root(*hhds_tree, hhds_values, 0);
@@ -121,9 +120,9 @@ TEST(TreeCorrectness, ChipTypicalLongTraversals) {
     std::vector<int>                    next_level_ids;
 
     for (size_t level_index = 0; level_index < hhds_current_level.size(); ++level_index) {
-      const auto hhds_node  = hhds_current_level[level_index];
-      const int  parent_id  = current_level_ids[level_index];
-      const int  num_children = generate_random_int(generator, 2, 20);
+      const auto       hhds_node    = hhds_current_level[level_index];
+      const int        parent_id    = current_level_ids[level_index];
+      const int        num_children = generate_random_int(generator, 2, 20);
       std::vector<int> children_data;
 
       for (int i = 0; i < num_children; ++i) {
@@ -142,7 +141,7 @@ TEST(TreeCorrectness, ChipTypicalLongTraversals) {
     current_level_ids  = next_level_ids;
   }
 
-  std::vector<int> hhds_preorder, hhds_postorder, expected_preorder, expected_postorder;
+  std::vector<int>              hhds_preorder, hhds_postorder, expected_preorder, expected_postorder;
   std::vector<std::vector<int>> expected_sibling_data;
   preorder_traversal_hhds(*hhds_tree, hhds_values, hhds_preorder);
   postorder_traversal_hhds(*hhds_tree, hhds_values, hhds_postorder);

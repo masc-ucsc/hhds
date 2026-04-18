@@ -1,10 +1,10 @@
 // This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 
+#include <gtest/gtest.h>
+
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-#include <gtest/gtest.h>
 
 #include "hhds/tree.hpp"
 
@@ -245,4 +245,3 @@ TEST(ForestCorrectness, DuplicateNamesRejected) {
 
   EXPECT_THROW(static_cast<void>(forest->create_io("parser")), std::runtime_error);
 }
-

@@ -457,7 +457,7 @@ TEST(TreeAttrs, FlatGetSetDeleteAndClear) {
 // ------------------------------------------------------------------
 
 TEST(GraphPersistence, SaveLoadRoundTrip) {
-  namespace fs = std::filesystem;
+  namespace fs               = std::filesystem;
   const std::string test_dir = "/tmp/hhds_test_graph_persist";
   fs::remove_all(test_dir);
 
@@ -528,7 +528,7 @@ TEST(GraphPersistence, SaveLoadRoundTrip) {
 }
 
 TEST(GraphPersistence, OverflowSetRoundTrip) {
-  namespace fs = std::filesystem;
+  namespace fs               = std::filesystem;
   const std::string test_dir = "/tmp/hhds_test_graph_overflow";
   fs::remove_all(test_dir);
 
@@ -537,7 +537,7 @@ TEST(GraphPersistence, OverflowSetRoundTrip) {
   auto               graph = gio->create_graph();
 
   // Create a hub node connected to many others (force overflow).
-  auto hub = graph->create_node();
+  auto                          hub = graph->create_node();
   std::vector<hhds::Node_class> targets;
   for (int i = 0; i < 20; ++i) {
     auto t = graph->create_node();
@@ -560,15 +560,15 @@ TEST(GraphPersistence, OverflowSetRoundTrip) {
   auto graph2 = gio2->create_graph();
   graph2->load_body(test_dir);
 
-  auto  loaded_hub = hhds::Node_class(graph2.get(), hub.get_raw_nid());
-  auto  loaded_edges = graph2->out_edges(loaded_hub);
+  auto loaded_hub   = hhds::Node_class(graph2.get(), hub.get_raw_nid());
+  auto loaded_edges = graph2->out_edges(loaded_hub);
   EXPECT_EQ(loaded_edges.size(), orig_edges.size());
 
   fs::remove_all(test_dir);
 }
 
 TEST(TreePersistence, SaveLoadRoundTrip) {
-  namespace fs = std::filesystem;
+  namespace fs               = std::filesystem;
   const std::string test_dir = "/tmp/hhds_test_tree_persist";
   fs::remove_all(test_dir);
 

@@ -216,7 +216,7 @@ auto PinEntry::overflow_handling(Pid self_id, Vid other_id, OverflowPool& pool) 
     pool.sets[sedges_.overflow_idx].insert(other_id);
     return true;
   }
-  uint32_t idx = pool.alloc();
+  uint32_t           idx       = pool.alloc();
   auto&              hs        = pool.sets[idx];
   constexpr int      SHIFT     = 14;
   constexpr uint64_t SLOT_MASK = (1ULL << SHIFT) - 1;
@@ -466,7 +466,7 @@ auto NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool& pool)
     return true;
   }
 
-  uint32_t idx = pool.alloc();
+  uint32_t           idx       = pool.alloc();
   auto&              hs        = pool.sets[idx];
   constexpr int      SHIFT     = 14;
   constexpr uint64_t SLOT_MASK = (1ULL << SHIFT) - 1;
@@ -620,7 +620,7 @@ void NodeEntry::set_subnode(Gid gid, OverflowPool& pool) {
   // Ensure overflow mode so ledge0 is no longer used as an edge spill slot.
   if (!use_overflow) {
     const Vid self_vid = (static_cast<Vid>(nid) << 2);  // nid stored as numeric id
-    (void)overflow_handling(self_vid, 0, pool);          // 0 => promote only, no edge insert
+    (void)overflow_handling(self_vid, 0, pool);         // 0 => promote only, no edge insert
   }
 
   // Store gid in ledge0 as (gid + 1) so ledge0==0 means "no subnode".
@@ -2449,8 +2449,8 @@ void Graph::print(std::ostream& os) const {
     os << '\n';
 
     for (Pid cur_pin = entry->get_next_pin_id(); cur_pin != 0;) {
-      const Pid canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-      const auto pin          = make_pin_class(canonical_pin);
+      const Pid  canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+      const auto pin           = make_pin_class(canonical_pin);
       os << "    ." << pin.get_pin_name();
       if (pin.attr(attrs::name).has()) {
         os << " @" << pin.attr(attrs::name).get();
@@ -2482,7 +2482,7 @@ void Graph::save_body(const std::string& dir_path) const {
 
   // --- body.bin ---
   {
-    const auto   path = fs::path(dir_path) / "body.bin";
+    const auto    path = fs::path(dir_path) / "body.bin";
     std::ofstream ofs(path, std::ios::binary);
     assert(ofs.good() && "save_body: cannot open body.bin for writing");
 
@@ -2505,13 +2505,13 @@ void Graph::save_body(const std::string& dir_path) const {
 
   // --- overflow_<idx>.bin (one per overflow set) ---
   for (uint32_t i = 0; i < overflow_sets_.size(); ++i) {
-    const auto& oset = overflow_sets_[i];
-    const auto  path = fs::path(dir_path) / ("overflow_" + std::to_string(i) + ".bin");
+    const auto&   oset = overflow_sets_[i];
+    const auto    path = fs::path(dir_path) / ("overflow_" + std::to_string(i) + ".bin");
     std::ofstream ofs(path, std::ios::binary);
     assert(ofs.good() && "save_body: cannot open overflow file for writing");
 
     // Use the values() API — contiguous Vid vector, no bucket data needed.
-    const auto&    vals = oset.values();
+    const auto&    vals  = oset.values();
     const uint64_t count = vals.size();
     ofs.write(reinterpret_cast<const char*>(&count), sizeof(count));
     if (count > 0) {
@@ -2527,7 +2527,7 @@ void Graph::load_body(const std::string& dir_path) {
 
   // --- body.bin ---
   {
-    const auto   path = fs::path(dir_path) / "body.bin";
+    const auto    path = fs::path(dir_path) / "body.bin";
     std::ifstream ifs(path, std::ios::binary);
     assert(ifs.good() && "load_body: cannot open body.bin for reading");
 
@@ -2564,7 +2564,7 @@ void Graph::load_body(const std::string& dir_path) {
 
   // --- overflow_<idx>.bin ---
   for (uint32_t i = 0; i < overflow_sets_.size(); ++i) {
-    const auto path = std::filesystem::path(dir_path) / ("overflow_" + std::to_string(i) + ".bin");
+    const auto    path = std::filesystem::path(dir_path) / ("overflow_" + std::to_string(i) + ".bin");
     std::ifstream ifs(path, std::ios::binary);
     assert(ifs.good() && "load_body: cannot open overflow file for reading");
 
@@ -2665,8 +2665,8 @@ void GraphLibrary::load(const std::string& db_path) {
       if (line.substr(0, 9) == "graph_io ") {
         // "graph_io <gid> <name>"
         std::istringstream ss(line.substr(9));
-        Gid         gid;
-        std::string name;
+        Gid                gid;
+        std::string        name;
         ss >> gid >> name;
         current_gio = create_io_impl(gid, name);
       } else if (line.size() > 2 && line[0] == ' ' && line[1] == ' ') {

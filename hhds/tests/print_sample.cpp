@@ -224,7 +224,9 @@ int main() {
          auto it = loaded_attrs.find(node.get_current_pos());
          if (it != loaded_attrs.end()) {
            for (const auto& [k, v] : it->second) {
-             if (k == "pos") return v;
+             if (k == "pos") {
+               return v;
+             }
            }
          }
          return std::nullopt;
@@ -234,7 +236,9 @@ int main() {
          auto it = loaded_attrs.find(node.get_current_pos());
          if (it != loaded_attrs.end()) {
            for (const auto& [k, v] : it->second) {
-             if (k == "type_id") return v;
+             if (k == "type_id") {
+               return v;
+             }
            }
          }
          return std::nullopt;

@@ -67,7 +67,7 @@ void test_wrapper_pin_connect_api() {
 
 void test_forward_class_returns_wrappers() {
   hhds::GraphLibrary lib;
-  auto               gio = lib.create_io("top");
+  auto               gio   = lib.create_io("top");
   auto               graph = gio->create_graph();
 
   auto n1 = graph->create_node();

@@ -37,9 +37,7 @@ inline IntNode add_child(hhds::Tree& tree, std::vector<int>& values, IntNode par
   return node;
 }
 
-inline int get_value(const std::vector<int>& values, IntNode node) {
-  return values[static_cast<size_t>(node.get_current_pos())];
-}
+inline int get_value(const std::vector<int>& values, IntNode node) { return values[static_cast<size_t>(node.get_current_pos())]; }
 
 inline void preorder_values(const hhds::Tree& tree, const std::vector<int>& values, std::vector<int>& out) {
   for (auto node : tree.pre_order()) {
@@ -69,7 +67,7 @@ TEST(TreeCorrectness, DeepTreePreorder) {
   std::default_random_engine generator(42);
   const int                  num_nodes = 10'000'000;
 
-  auto            hhds_tree = hhds::Tree::create();
+  auto             hhds_tree = hhds::Tree::create();
   std::vector<int> hhds_values;
   std::vector<int> expected_preorder;
   expected_preorder.reserve(static_cast<size_t>(num_nodes) + 1);
@@ -77,7 +75,7 @@ TEST(TreeCorrectness, DeepTreePreorder) {
   auto data_to_add = generate_random_int(generator, 1, 100);
   auto hhds_root   = hhds_test::add_root(*hhds_tree, hhds_values, data_to_add);
   expected_preorder.push_back(data_to_add);
-  auto           hhds_current = hhds_root;
+  auto hhds_current = hhds_root;
 
   for (int i = 0; i < num_nodes; ++i) {
     data_to_add  = generate_random_int(generator, 1, 100);

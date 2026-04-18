@@ -562,7 +562,7 @@ public:
   Node_class add_root_node() { return as_class(add_root()); }
   void       set_type(const Tree_pos& node_pos, Type type) {
     I(_check_idx_exists(node_pos), "set_type: Node index out of range");
-    dirty_ = true;
+    dirty_                  = true;
     const auto chunk_id     = (node_pos >> CHUNK_SHIFT);
     const auto chunk_offset = static_cast<int16_t>(node_pos & CHUNK_MASK);
     pointers_stack[chunk_id].set_type_at(chunk_offset, type);
@@ -620,8 +620,8 @@ public:
 
   // Binary persistence — saves/loads body data (pointers_stack, validity_stack, subnode_refs).
   // dir_path is the tree-specific directory (e.g., "db/tree_1/").
-  void save_body(const std::string& dir_path) const;
-  void load_body(const std::string& dir_path);
+  void               save_body(const std::string& dir_path) const;
+  void               load_body(const std::string& dir_path);
   [[nodiscard]] bool is_dirty() const noexcept { return dirty_; }
 
   void print_tree(int deep = 0) {
@@ -1098,8 +1098,8 @@ private:
     size_t body_width = 0;  // max width between '= ' and ' @(' (to align '@')
   };
 
-  [[nodiscard]] Type_entry resolve_print_type(Type type, const PrintOptions& options) const;
-  [[nodiscard]] size_t     node_body_width(Tree_pos c, size_t name_width, const PrintOptions& options) const;
+  [[nodiscard]] Type_entry                 resolve_print_type(Type type, const PrintOptions& options) const;
+  [[nodiscard]] size_t                     node_body_width(Tree_pos c, size_t name_width, const PrintOptions& options) const;
   [[nodiscard]] std::optional<std::string> node_text_override(Tree_pos node_pos, const PrintOptions& options) const;
   void print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const PrintAlign& align, const PrintOptions& options) const;
   void dump_node(std::ostream& os, Tree_pos node_pos, const std::string& prefix, bool is_last, const PrintOptions& options) const;

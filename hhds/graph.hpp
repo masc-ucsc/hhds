@@ -58,14 +58,14 @@ public:
   PinEntry();
   PinEntry(Nid master_nid_value, Port_id port_id_value);
 
-  [[nodiscard]] Nid     get_master_nid() const;
-  [[nodiscard]] Port_id get_port_id() const;
-  auto                  add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
-  auto                  delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
-  [[nodiscard]] bool    has_edges() const;
-  [[nodiscard]] Pid     get_next_pin_id() const;
-  void                  set_next_pin_id(Pid id);
-  [[nodiscard]] bool    check_overflow() const { return use_overflow; }
+  [[nodiscard]] Nid      get_master_nid() const;
+  [[nodiscard]] Port_id  get_port_id() const;
+  auto                   add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
+  auto                   delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
+  [[nodiscard]] bool     has_edges() const;
+  [[nodiscard]] Pid      get_next_pin_id() const;
+  void                   set_next_pin_id(Pid id);
+  [[nodiscard]] bool     check_overflow() const { return use_overflow; }
   [[nodiscard]] uint32_t get_overflow_idx() const { return sedges_.overflow_idx; }
 
   static constexpr size_t MAX_EDGES = 8;
@@ -122,15 +122,15 @@ public:
   NodeEntry();
   explicit NodeEntry(Nid nid_value);
 
-  [[nodiscard]] Nid  get_nid() const;
-  [[nodiscard]] Type get_type() const;
-  void               set_type(Type t);
-  [[nodiscard]] Pid  get_next_pin_id() const;
-  void               set_next_pin_id(Pid id);
-  [[nodiscard]] bool has_edges(const OverflowVec& overflow) const;
-  auto               add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
-  auto               delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
-  [[nodiscard]] bool check_overflow() const { return use_overflow; }
+  [[nodiscard]] Nid      get_nid() const;
+  [[nodiscard]] Type     get_type() const;
+  void                   set_type(Type t);
+  [[nodiscard]] Pid      get_next_pin_id() const;
+  void                   set_next_pin_id(Pid id);
+  [[nodiscard]] bool     has_edges(const OverflowVec& overflow) const;
+  auto                   add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
+  auto                   delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
+  [[nodiscard]] bool     check_overflow() const { return use_overflow; }
   [[nodiscard]] uint32_t get_overflow_idx() const { return sedges_.overflow_idx; }
 
   // Subgraph link: stored in ledge0 *only when use_overflow == 1* as (gid + 1).
@@ -624,19 +624,19 @@ public:
   [[nodiscard]] std::string print() const;
 
 private:
-  void               attr_note_modified() noexcept override { dirty_ = true; }
+  void                       attr_note_modified() noexcept override { dirty_ = true; }
   [[nodiscard]] OverflowPool get_overflow_pool() { return {overflow_sets_, overflow_free_}; }
-  void               assert_accessible() const noexcept;
-  void               assert_node_exists(const Node_class& node) const noexcept;
-  void               assert_pin_exists(const Pin_class& pin) const noexcept;
-  [[nodiscard]] bool is_node_valid(Nid nid) const noexcept;
-  [[nodiscard]] bool is_pin_valid(Pid pid) const noexcept;
-  void               invalidate_from_library() noexcept;
-  void               release_storage() noexcept;
-  [[nodiscard]] Pid  materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
-                                                 ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
-  void               erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
-  void               delete_pin(Pid pin_pid);
+  void                       assert_accessible() const noexcept;
+  void                       assert_node_exists(const Node_class& node) const noexcept;
+  void                       assert_pin_exists(const Pin_class& pin) const noexcept;
+  [[nodiscard]] bool         is_node_valid(Nid nid) const noexcept;
+  [[nodiscard]] bool         is_pin_valid(Pid pid) const noexcept;
+  void                       invalidate_from_library() noexcept;
+  void                       release_storage() noexcept;
+  [[nodiscard]] Pid          materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
+                                                         ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
+  void erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
+  void delete_pin(Pid pin_pid);
   [[nodiscard]] Pin_class        create_pin(Node_class node, Port_id port_id);
   [[nodiscard]] Pid              create_pin(Nid nid, Port_id port_id);
   [[nodiscard]] Pin_class        find_pin(Node_class node, Port_id port_id, bool driver) const;

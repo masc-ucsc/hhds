@@ -20,9 +20,7 @@ inline void set_value(std::vector<int>& values, IntNode node, int value) {
   values[static_cast<size_t>(node.get_current_pos())] = value;
 }
 
-inline int get_value(const std::vector<int>& values, IntNode node) {
-  return values[static_cast<size_t>(node.get_current_pos())];
-}
+inline int get_value(const std::vector<int>& values, IntNode node) { return values[static_cast<size_t>(node.get_current_pos())]; }
 
 inline IntNode add_root(hhds::Tree& tree, std::vector<int>& values, int value) {
   const auto node = tree.add_root_node();

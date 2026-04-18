@@ -364,8 +364,7 @@ void Tree::save_body(const std::string& dir_path) const {
             static_cast<std::streamsize>(pointers_count * sizeof(Tree_pointers)));
   ofs.write(reinterpret_cast<const char*>(validity_stack.data()),
             static_cast<std::streamsize>(validity_count * sizeof(std::bitset<64>)));
-  ofs.write(reinterpret_cast<const char*>(subnode_refs.data()),
-            static_cast<std::streamsize>(subnode_count * sizeof(Tree_pos)));
+  ofs.write(reinterpret_cast<const char*>(subnode_refs.data()), static_cast<std::streamsize>(subnode_count * sizeof(Tree_pos)));
   save_attr_stores(ofs);
   dirty_ = false;
 }
@@ -391,16 +390,13 @@ void Tree::load_body(const std::string& dir_path) {
   ifs.read(reinterpret_cast<char*>(&subnode_count), sizeof(subnode_count));
 
   pointers_stack.resize(pointers_count);
-  ifs.read(reinterpret_cast<char*>(pointers_stack.data()),
-           static_cast<std::streamsize>(pointers_count * sizeof(Tree_pointers)));
+  ifs.read(reinterpret_cast<char*>(pointers_stack.data()), static_cast<std::streamsize>(pointers_count * sizeof(Tree_pointers)));
 
   validity_stack.resize(validity_count);
-  ifs.read(reinterpret_cast<char*>(validity_stack.data()),
-           static_cast<std::streamsize>(validity_count * sizeof(std::bitset<64>)));
+  ifs.read(reinterpret_cast<char*>(validity_stack.data()), static_cast<std::streamsize>(validity_count * sizeof(std::bitset<64>)));
 
   subnode_refs.resize(subnode_count);
-  ifs.read(reinterpret_cast<char*>(subnode_refs.data()),
-           static_cast<std::streamsize>(subnode_count * sizeof(Tree_pos)));
+  ifs.read(reinterpret_cast<char*>(subnode_refs.data()), static_cast<std::streamsize>(subnode_count * sizeof(Tree_pos)));
 
   if (version >= 2) {
     load_attr_stores(ifs);
@@ -468,8 +464,8 @@ void Forest::load(const std::string& db_path) {
       }
       if (line.substr(0, 8) == "tree_io ") {
         std::istringstream ss(line.substr(8));
-        size_t      idx;
-        std::string name;
+        size_t             idx;
+        std::string        name;
         ss >> idx >> name;
         Tid tid = -static_cast<Tree_pos>(idx + 1);
         (void)create_io_impl(tid, name);

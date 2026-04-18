@@ -28,10 +28,9 @@ concept Attribute = requires {
 };
 
 template <Attribute Tag>
-using attr_result_t = std::conditional_t<
-    std::is_trivially_copyable_v<typename Tag::value_type> && sizeof(typename Tag::value_type) <= 16,
-    typename Tag::value_type,
-    const typename Tag::value_type&>;
+using attr_result_t
+    = std::conditional_t<std::is_trivially_copyable_v<typename Tag::value_type> && sizeof(typename Tag::value_type) <= 16,
+                         typename Tag::value_type, const typename Tag::value_type&>;
 
 using Attr_key = uint64_t;
 
@@ -79,10 +78,10 @@ namespace detail {
 class Attr_store_base;
 
 struct Attr_tag_registry_entry {
-  std::type_index                                           type_key{typeid(void)};
-  Attr_storage_kind                                         storage_kind = Attr_storage_kind::Flat;
-  std::string                                               persistent_id;
-  std::function<std::unique_ptr<Attr_store_base>()>         factory;
+  std::type_index                                   type_key{typeid(void)};
+  Attr_storage_kind                                 storage_kind = Attr_storage_kind::Flat;
+  std::string                                       persistent_id;
+  std::function<std::unique_ptr<Attr_store_base>()> factory;
 };
 
 class Attr_tag_registry {
@@ -157,22 +156,21 @@ class Attr_store_base {
 public:
   virtual ~Attr_store_base() = default;
 
-  [[nodiscard]] virtual Attr_storage_kind storage_kind() const noexcept = 0;
-  [[nodiscard]] virtual std::type_index   type_key() const noexcept     = 0;
-  [[nodiscard]] virtual std::string_view  persistent_id() const noexcept = 0;
-  [[nodiscard]] virtual bool              empty() const noexcept         = 0;
-  [[nodiscard]] virtual uint64_t          size() const noexcept          = 0;
-  virtual void                            clear_entries() noexcept       = 0;
-  virtual void                            erase_object(Attr_key key) noexcept = 0;
-  virtual void                            save_entries(std::ostream& os) const = 0;
+  [[nodiscard]] virtual Attr_storage_kind storage_kind() const noexcept                  = 0;
+  [[nodiscard]] virtual std::type_index   type_key() const noexcept                      = 0;
+  [[nodiscard]] virtual std::string_view  persistent_id() const noexcept                 = 0;
+  [[nodiscard]] virtual bool              empty() const noexcept                         = 0;
+  [[nodiscard]] virtual uint64_t          size() const noexcept                          = 0;
+  virtual void                            clear_entries() noexcept                       = 0;
+  virtual void                            erase_object(Attr_key key) noexcept            = 0;
+  virtual void                            save_entries(std::ostream& os) const           = 0;
   virtual void                            load_entries(std::istream& is, uint64_t count) = 0;
 };
 
 template <Attribute Tag>
-using attr_map_t = std::conditional_t<
-    std::is_same_v<typename Tag::storage, flat_storage>,
-    std::unordered_map<Attr_key, typename Tag::value_type>,
-    std::unordered_map<Hier_attr_key, typename Tag::value_type, Hier_attr_key_hash>>;
+using attr_map_t = std::conditional_t<std::is_same_v<typename Tag::storage, flat_storage>,
+                                      std::unordered_map<Attr_key, typename Tag::value_type>,
+                                      std::unordered_map<Hier_attr_key, typename Tag::value_type, Hier_attr_key_hash>>;
 
 template <Attribute Tag>
 class Attr_store_impl final : public Attr_store_base {
@@ -250,8 +248,7 @@ const Attr_tag_registry_entry& Attr_tag_registry::register_tag(std::string_view 
     if (!persistent_id.empty()) {
       if (type_it->second.persistent_id != persistent_id) {
         const std::string default_id = attr_tag_name<Tag>();
-        assert(type_it->second.persistent_id == default_id
-               && "register_tag: conflicting persistent ids for attribute tag");
+        assert(type_it->second.persistent_id == default_id && "register_tag: conflicting persistent ids for attribute tag");
 
         const auto current_id_it = by_id_.find(type_it->second.persistent_id);
         if (current_id_it != by_id_.end() && current_id_it->second == type_key) {
@@ -263,14 +260,14 @@ const Attr_tag_registry_entry& Attr_tag_registry::register_tag(std::string_view 
                && "register_tag: persistent id already registered for another attribute tag");
 
         type_it->second.persistent_id = std::string(persistent_id);
-        type_it->second.factory       = [id = type_it->second.persistent_id]() { return std::make_unique<Attr_store_impl<Tag>>(id); };
+        type_it->second.factory = [id = type_it->second.persistent_id]() { return std::make_unique<Attr_store_impl<Tag>>(id); };
         by_id_.emplace(type_it->second.persistent_id, type_key);
       }
     }
     return type_it->second;
   }
 
-  const std::string id = persistent_id.empty() ? attr_tag_name<Tag>() : std::string(persistent_id);
+  const std::string id    = persistent_id.empty() ? attr_tag_name<Tag>() : std::string(persistent_id);
   const auto        id_it = by_id_.find(id);
   assert(id_it == by_id_.end() && "register_tag: persistent id already registered for another attribute tag");
 
@@ -302,21 +299,22 @@ public:
 
   AttrRef() = default;
   AttrRef(Attr_host* host, Attr_key flat_key) : host_(host), flat_key_(flat_key) {}
-  AttrRef(Attr_host* host, Attr_key flat_key, int64_t hier_pos) : host_(host), flat_key_(flat_key), hier_pos_(hier_pos), has_hier_(true) {}
+  AttrRef(Attr_host* host, Attr_key flat_key, int64_t hier_pos)
+      : host_(host), flat_key_(flat_key), hier_pos_(hier_pos), has_hier_(true) {}
 
-  [[nodiscard]] bool has() const;
+  [[nodiscard]] bool               has() const;
   [[nodiscard]] attr_result_t<Tag> get() const;
-  void                            set(const value_type& value);
-  void                            set(value_type&& value);
-  void                            del();
+  void                             set(const value_type& value);
+  void                             set(value_type&& value);
+  void                             del();
 
 private:
   [[nodiscard]] auto key() const;
 
-  Attr_host* host_      = nullptr;
-  Attr_key   flat_key_  = 0;
-  int64_t    hier_pos_  = 0;
-  bool       has_hier_  = false;
+  Attr_host* host_     = nullptr;
+  Attr_key   flat_key_ = 0;
+  int64_t    hier_pos_ = 0;
+  bool       has_hier_ = false;
 };
 
 class Attr_host {
@@ -472,14 +470,14 @@ inline attr_result_t<Tag> AttrRef<Tag>::get() const {
 
 template <Attribute Tag>
 inline void AttrRef<Tag>::set(const value_type& value) {
-  auto& map = host_->attr_store(Tag{});
+  auto& map  = host_->attr_store(Tag{});
   map[key()] = value;
   host_->attr_note_modified();
 }
 
 template <Attribute Tag>
 inline void AttrRef<Tag>::set(value_type&& value) {
-  auto& map = host_->attr_store(Tag{});
+  auto& map  = host_->attr_store(Tag{});
   map[key()] = std::move(value);
   host_->attr_note_modified();
 }
