@@ -2475,6 +2475,25 @@ void Graph::load_body(const std::string& dir_path) {
     }
   }
 
+  // Rebuild structure tree: save/load only persists node_table (which holds
+  // each subnode's target Gid in ledge0). Walk the live entries and
+  // reconstruct tree_ + subnode_tree_pos_ so hier traversal works.
+  if (!tree_) {
+    tree_ = Tree::create();
+  } else {
+    tree_->clear();
+  }
+  (void)tree_->add_root();
+  subnode_tree_pos_.clear();
+  for (size_t i = 1; i < node_table.size(); ++i) {
+    if (node_table[i].get_nid() == 0 || !node_table[i].has_subnode()) {
+      continue;
+    }
+    const Nid      subnode_nid = static_cast<Nid>(i) << 2;
+    const Tree_pos child_pos   = tree_->add_child(static_cast<Tree_pos>(ROOT));
+    subnode_tree_pos_.emplace(subnode_nid, child_pos);
+  }
+
   invalidate_traversal_caches();
   dirty_ = false;
 }
