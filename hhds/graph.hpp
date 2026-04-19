@@ -71,15 +71,13 @@ enum class Handle_context : uint8_t { Class, Flat, Hier };
 class Pin_class {
 public:
   Pin_class() = default;
-  Pin_class(Graph* graph_value, Nid raw_nid_value, Port_id port_id_value, Pid pin_pid_value)
-      : graph_(graph_value), raw_nid(raw_nid_value & ~static_cast<Nid>(2)), port_id(port_id_value), pin_pid(pin_pid_value) {}
-  Pin_class(Nid raw_nid_value, Port_id port_id_value, Pid pin_pid_value)
-      : raw_nid(raw_nid_value & ~static_cast<Nid>(2)), port_id(port_id_value), pin_pid(pin_pid_value) {}
+  Pin_class(Graph* graph_value, Pid pin_pid_value) : graph_(graph_value), pin_pid(pin_pid_value) {}
+  explicit Pin_class(Pid pin_pid_value) : pin_pid(pin_pid_value) {}
 
-  [[nodiscard]] Node_class        get_master_node() const;
-  [[nodiscard]] constexpr Nid     get_debug_nid() const noexcept { return raw_nid; }
-  [[nodiscard]] constexpr Pid     get_debug_pid() const noexcept { return pin_pid; }
-  [[nodiscard]] constexpr Port_id get_port_id() const noexcept { return port_id; }
+  [[nodiscard]] Node_class      get_master_node() const;
+  [[nodiscard]] Nid             get_debug_nid() const noexcept;
+  [[nodiscard]] constexpr Pid   get_debug_pid() const noexcept { return pin_pid; }
+  [[nodiscard]] Port_id         get_port_id() const noexcept;
   [[nodiscard]] Graph*            get_graph() const noexcept { return graph_; }
   [[nodiscard]] std::string_view  get_pin_name() const;
   [[nodiscard]] bool              is_valid() const noexcept;
@@ -133,8 +131,6 @@ public:
 
 private:
   Graph*         graph_    = nullptr;
-  Nid            raw_nid   = 0;
-  Port_id        port_id   = 0;
   Pid            pin_pid   = 0;
   Handle_context context_  = Handle_context::Class;
   Gid            root_gid_ = Gid_invalid;  // Flat & Hier: root graph of the traversal
