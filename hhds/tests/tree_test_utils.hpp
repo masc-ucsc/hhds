@@ -16,11 +16,11 @@ inline void ensure_size(std::vector<int>& values, hhds::Tid tid) {
 }
 
 inline void set_value(std::vector<int>& values, IntNode node, int value) {
-  ensure_size(values, node.get_current_pos());
-  values[static_cast<size_t>(node.get_current_pos())] = value;
+  ensure_size(values, node.get_debug_nid());
+  values[static_cast<size_t>(node.get_debug_nid())] = value;
 }
 
-inline int get_value(const std::vector<int>& values, IntNode node) { return values[static_cast<size_t>(node.get_current_pos())]; }
+inline int get_value(const std::vector<int>& values, IntNode node) { return values[static_cast<size_t>(node.get_debug_nid())]; }
 
 inline IntNode add_root(hhds::Tree& tree, std::vector<int>& values, int value) {
   const auto node = tree.add_root_node();

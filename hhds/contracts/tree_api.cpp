@@ -254,7 +254,10 @@ TEST(TreeApiContract, PersistenceRoundTrip) {
   root.attr(name).set("program");
   gc1.attr(loc).set(99);
 
-  const auto gc1_pos = gc1.get_current_pos();
+  // Opaque durable key for the save/load round-trip. Tree_pos is internal —
+  // the public contract is: serialize a Tree_class_index, restore it with
+  // Tree::get_node(index) after load.
+  const auto gc1_key = gc1.get_class_index();
 
   forest->save(test_dir);
   EXPECT_TRUE(fs::exists(fs::path(test_dir) / "forest.txt"));
@@ -270,8 +273,8 @@ TEST(TreeApiContract, PersistenceRoundTrip) {
 
   // Types and attributes survived.
   auto loaded_root = t2->get_root_node();
-  auto loaded_gc1  = t2->as_class(gc1_pos);
-  EXPECT_EQ(t2->get_type(loaded_root), 1);
+  auto loaded_gc1  = t2->get_node(gc1_key);
+  EXPECT_EQ(loaded_root.get_type(), 1);
   EXPECT_EQ(loaded_root.attr(name).get(), "program");
   EXPECT_EQ(loaded_gc1.attr(loc).get(), 99u);
 

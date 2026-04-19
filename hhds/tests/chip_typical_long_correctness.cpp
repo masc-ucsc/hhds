@@ -21,8 +21,8 @@ inline void ensure_size(std::vector<int>& values, hhds::Tid tid) {
 }
 
 inline void set_value(std::vector<int>& values, IntNode node, int value) {
-  ensure_size(values, node.get_current_pos());
-  values[static_cast<size_t>(node.get_current_pos())] = value;
+  ensure_size(values, node.get_debug_nid());
+  values[static_cast<size_t>(node.get_debug_nid())] = value;
 }
 
 inline IntNode add_root(hhds::Tree& tree, std::vector<int>& values, int value) {
@@ -37,7 +37,7 @@ inline IntNode add_child(hhds::Tree& tree, std::vector<int>& values, IntNode par
   return node;
 }
 
-inline int get_value(const std::vector<int>& values, IntNode node) { return values[static_cast<size_t>(node.get_current_pos())]; }
+inline int get_value(const std::vector<int>& values, IntNode node) { return values[static_cast<size_t>(node.get_debug_nid())]; }
 
 inline void postorder_values(hhds::Tree& tree, const std::vector<int>& values, std::vector<int>& out) {
   for (auto node : tree.post_order()) {
@@ -63,7 +63,7 @@ void preorder_traversal_hhds(hhds::Tree& tree, const std::vector<int>& values, s
   hhds_sibling_data.clear();
   for (auto node : tree.pre_order()) {
     result.push_back(hhds_test::get_value(values, node));
-    if (node.get_current_pos() == tree.get_root()) {
+    if (node == tree.get_root_node()) {
       continue;
     }
     std::vector<int> sibling_data;

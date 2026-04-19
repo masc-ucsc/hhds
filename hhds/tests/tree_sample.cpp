@@ -11,27 +11,27 @@ int main() {
   auto                                                     tree = hhds::Tree::create();
   absl::flat_hash_map<hhds::Tree::Node_class, std::string> names;
 
-  const auto root   = tree->add_root_node();
-  const auto lhs    = tree->add_child(root);
-  const auto rhs    = tree->add_child(root);
-  const auto nested = tree->add_child(lhs);
+  auto root   = tree->add_root_node();
+  auto lhs    = root.add_child();
+  auto rhs    = root.add_child();
+  auto nested = lhs.add_child();
 
   names[root]   = "add";
   names[lhs]    = "lhs";
   names[rhs]    = "rhs";
   names[nested] = "literal";
 
-  tree->set_type(root, 1);
-  tree->set_type(nested, 2);
+  root.set_type(1);
+  nested.set_type(2);
 
   std::cout << "Pre-order traversal\n";
   for (auto node : tree->pre_order()) {
-    std::cout << "  pos=" << node.get_current_pos() << " name=" << names[node] << " type=" << tree->get_type(node) << "\n";
+    std::cout << "  pos=" << node.get_debug_nid() << " name=" << names[node] << " type=" << node.get_type() << "\n";
   }
 
   std::cout << "\nSibling order under root\n";
-  for (auto node : tree->sibling_order(lhs)) {
-    std::cout << "  pos=" << node.get_current_pos() << " name=" << names[node] << "\n";
+  for (auto node : lhs.sibling_order()) {
+    std::cout << "  pos=" << node.get_debug_nid() << " name=" << names[node] << "\n";
   }
 
   hhds::Tree::PrintOptions print_options;
@@ -47,7 +47,7 @@ int main() {
   };
   print_options.attributes = {
       {"type_id",
-       [&tree](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(tree->get_type(node)); }},
+       [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_type()); }},
   };
 
   std::cout << "\nLLVM-like tree print\n";
@@ -61,18 +61,18 @@ int main() {
   const auto top_tid = top_tio->get_tid();
   const auto sub_tid = sub_tio->get_tid();
 
-  const auto top_root = top->add_root_node();
-  const auto callsite = top->add_child(top_root);
-  const auto sub_root = sub->add_root_node();
-  const auto sub_leaf = sub->add_child(sub_root);
+  auto top_root = top->add_root_node();
+  auto callsite = top_root.add_child();
+  auto sub_root = sub->add_root_node();
+  auto sub_leaf = sub_root.add_child();
 
-  top->set_subnode(callsite, sub_tid);
+  callsite.set_subnode(sub_tio);
 
   std::cout << "\nForest subnode references\n";
-  std::cout << "  top tree id=" << top_tid << " root pos=" << top_root.get_current_pos() << "\n";
-  std::cout << "  callsite pos=" << callsite.get_current_pos() << " subnode=" << top->get_subnode(callsite) << "\n";
-  std::cout << "  sub tree id=" << sub_tid << " root pos=" << sub_root.get_current_pos()
-            << " leaf pos=" << sub_leaf.get_current_pos() << "\n";
+  std::cout << "  top tree id=" << top_tid << " root pos=" << top_root.get_debug_nid() << "\n";
+  std::cout << "  callsite pos=" << callsite.get_debug_nid() << " subnode=" << top->get_subnode(callsite) << "\n";
+  std::cout << "  sub tree id=" << sub_tid << " root pos=" << sub_root.get_debug_nid()
+            << " leaf pos=" << sub_leaf.get_debug_nid() << "\n";
 
   auto single_cursor = tree->create_cursor(root);
   std::cout << "\nTree cursor example\n";

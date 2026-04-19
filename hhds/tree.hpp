@@ -409,23 +409,10 @@ public:
     std::string_view                                                                                  indent        = "  ";
     bool                                                                                              show_types    = true;
     bool                                                                                              show_subnodes = true;
-    std::function<bool(std::ostream&, Tree_pos, const PrintContext&)>                                 format_node;
+    std::function<bool(std::ostream&, const Node_class&, const PrintContext&)>                        format_node;
   };
-
-  struct PrintContext {
-    const Tree&         tree;
-    const PrintOptions& options;
-    size_t              depth;
-    Tree_pos            node_pos;
-
-    void emit_indent(std::ostream& os) const;
-    void emit_indent(std::ostream& os, size_t d) const;
-
-    [[nodiscard]] std::vector<Tree_pos> get_children() const;
-
-    void print_children_default(std::ostream& os) const;
-    void print_child_default(std::ostream& os, Tree_pos child_pos) const;
-  };
+  // PrintContext holds a Node_class by value, so its definition is below,
+  // after Node_class is complete.
 
   [[nodiscard]] static std::shared_ptr<Tree> create(Forest* forest = nullptr) { return std::shared_ptr<Tree>(new Tree(forest)); }
 
@@ -461,7 +448,7 @@ public:
         , hier_pos_(hier_pos_value) {}
 
     [[nodiscard]] Tree*    get_tree() const noexcept { return tree_ptr; }
-    [[nodiscard]] Tree_pos get_current_pos() const noexcept { return current_pos; }
+    [[nodiscard]] Tree_pos get_debug_nid() const noexcept { return current_pos; }
     [[nodiscard]] bool     is_valid() const noexcept {
       return tree_ptr != nullptr && generation == tree_ptr->generation_ && tree_ptr->_check_idx_exists(current_pos)
              && tree_ptr->_contains_data(current_pos);
@@ -491,7 +478,19 @@ public:
     [[nodiscard]] auto add_child() const -> Node_class;
     void               set_subnode(const std::shared_ptr<TreeIO>& treeio) const;
     void               set_type(Type type) const;
+    [[nodiscard]] Type get_type() const;
     void               del_node() const;
+
+    [[nodiscard]] Node_class parent() const;
+    [[nodiscard]] Node_class first_child() const;
+    [[nodiscard]] Node_class last_child() const;
+    [[nodiscard]] Node_class next_sibling() const;
+    [[nodiscard]] Node_class prev_sibling() const;
+    [[nodiscard]] bool       is_leaf() const;
+    [[nodiscard]] bool       is_first_child() const;
+    [[nodiscard]] bool       is_last_child() const;
+    [[nodiscard]] bool       has_subnode() const;
+
     [[nodiscard]] auto pre_order_class() const;
     [[nodiscard]] auto post_order_class() const;
     [[nodiscard]] auto sibling_order() const;
@@ -527,72 +526,71 @@ public:
     friend class Tree;
   };
 
+  struct PrintContext {
+    const Tree&         tree;
+    const PrintOptions& options;
+    size_t              depth;
+    Node_class          node;
+
+    void emit_indent(std::ostream& os) const;
+    void emit_indent(std::ostream& os, size_t d) const;
+
+    [[nodiscard]] std::vector<Node_class> get_children() const;
+
+    void print_children_default(std::ostream& os) const;
+    void print_child_default(std::ostream& os, const Node_class& child) const;
+  };
+
   Tree(const Tree&)            = delete;
   Tree& operator=(const Tree&) = delete;
   Tree(Tree&&)                 = delete;
   Tree& operator=(Tree&&)      = delete;
 
-  [[nodiscard]] Node_class as_class(Tree_pos node_pos) const {
-    return (_check_idx_exists(node_pos) && _contains_data(node_pos)) ? Node_class(const_cast<Tree*>(this), node_pos) : Node_class();
-  }
   [[nodiscard]] Node_class get_root_node() const { return as_class(get_root()); }
 
-  [[nodiscard]] inline Tree_pos get_parent(const Tree_pos& node_pos) const {
-    return pointers_stack[node_pos >> CHUNK_SHIFT].get_parent();
+  // Reverse-lookup from an opaque index key back to a Node_class. These are
+  // the only supported way to round-trip a handle across a save/load or any
+  // other scope where the live Node_class instance doesn't survive —
+  // Tree_pos is an internal addressing type and is not part of the public
+  // API surface.
+  [[nodiscard]] Node_class get_node(Tree_class_index idx) const { return as_class(idx.value); }
+  [[nodiscard]] Node_class get_node(Tree_hier_index idx) const {
+    // Reconstructs a Hier-context handle without the traversal's expansion
+    // tree. Valid for attr/type access at `idx.hier_pos`; it cannot continue
+    // to descend into subnodes (those need the original traversal result).
+    if (!(_check_idx_exists(idx.value) && _contains_data(idx.value))) {
+      return Node_class();
+    }
+    return Node_class(const_cast<Tree*>(this), idx.value, get_tid(), nullptr, nullptr, idx.hier_pos);
   }
-  [[nodiscard]] Node_class get_parent(Node_class node) const { return as_class(get_parent(node.get_current_pos())); }
-  [[nodiscard]] Tree_pos   get_last_child(const Tree_pos& parent_pos) const;
+
+  // Node_class-level navigation/mutation forwarders. Most callers should
+  // prefer the handle-level methods on Node_class (e.g. `node.first_child()`,
+  // `node.add_child()`); these tree-level helpers exist for ergonomic
+  // algorithms that already have a `Tree&` in scope.
+  [[nodiscard]] Node_class get_parent(Node_class node) const { return as_class(get_parent(node.get_debug_nid())); }
   [[nodiscard]] Node_class get_last_child(Node_class parent_node) const {
-    return as_class(get_last_child(parent_node.get_current_pos()));
+    return as_class(get_last_child(parent_node.get_debug_nid()));
   }
-  [[nodiscard]] Tree_pos   get_first_child(const Tree_pos& parent_pos) const;
   [[nodiscard]] Node_class get_first_child(Node_class parent_node) const {
-    return as_class(get_first_child(parent_node.get_current_pos()));
+    return as_class(get_first_child(parent_node.get_debug_nid()));
   }
-  [[nodiscard]] Type get_type(const Tree_pos& node_pos) const {
-    I(_check_idx_exists(node_pos), "get_type: Node index out of range");
-    const auto chunk_id     = (node_pos >> CHUNK_SHIFT);
-    const auto chunk_offset = static_cast<int16_t>(node_pos & CHUNK_MASK);
-    return pointers_stack[chunk_id].get_type_at(chunk_offset);
-  }
-  [[nodiscard]] Type        get_type(Node_class node) const { return get_type(node.get_current_pos()); }
-  [[nodiscard]] bool        is_last_child(const Tree_pos& node_pos) const;
-  [[nodiscard]] bool        is_last_child(Node_class node) const { return is_last_child(node.get_current_pos()); }
-  [[nodiscard]] bool        is_first_child(const Tree_pos& node_pos) const;
-  [[nodiscard]] bool        is_first_child(Node_class node) const { return is_first_child(node.get_current_pos()); }
-  [[nodiscard]] Tree_pos    get_sibling_next(const Tree_pos& node_pos) const;
-  [[nodiscard]] Node_class  get_sibling_next(Node_class node) const { return as_class(get_sibling_next(node.get_current_pos())); }
-  [[nodiscard]] Tree_pos    get_sibling_prev(const Tree_pos& node_pos) const;
-  [[nodiscard]] Node_class  get_sibling_prev(Node_class node) const { return as_class(get_sibling_prev(node.get_current_pos())); }
-  [[nodiscard]] inline bool is_leaf(const Tree_pos& node_pos) const {
-    return pointers_stack[node_pos >> CHUNK_SHIFT].get_is_leaf();
-  }
-  [[nodiscard]] bool     is_leaf(Node_class node) const { return is_leaf(node.get_current_pos()); }
-  [[nodiscard]] Tree_pos get_root() const { return ROOT; }
+  [[nodiscard]] Type       get_type(Node_class node) const { return get_type(node.get_debug_nid()); }
+  [[nodiscard]] bool       is_last_child(Node_class node) const { return is_last_child(node.get_debug_nid()); }
+  [[nodiscard]] bool       is_first_child(Node_class node) const { return is_first_child(node.get_debug_nid()); }
+  [[nodiscard]] Node_class get_sibling_next(Node_class node) const { return as_class(get_sibling_next(node.get_debug_nid())); }
+  [[nodiscard]] Node_class get_sibling_prev(Node_class node) const { return as_class(get_sibling_prev(node.get_debug_nid())); }
+  [[nodiscard]] bool       is_leaf(Node_class node) const { return is_leaf(node.get_debug_nid()); }
 
   void       clear();
-  Tree_pos   append_sibling(const Tree_pos& sibling_pos);
-  Node_class append_sibling(Node_class sibling_node) { return as_class(append_sibling(sibling_node.get_current_pos())); }
-  Tree_pos   add_child(const Tree_pos& parent_pos);
-  Node_class add_child(Node_class parent_node) { return as_class(add_child(parent_node.get_current_pos())); }
-  Tree_pos   add_root();
+  Node_class append_sibling(Node_class sibling_node) { return as_class(append_sibling(sibling_node.get_debug_nid())); }
+  Node_class add_child(Node_class parent_node) { return as_class(add_child(parent_node.get_debug_nid())); }
   Node_class add_root_node() { return as_class(add_root()); }
-  void       set_type(const Tree_pos& node_pos, Type type) {
-    I(_check_idx_exists(node_pos), "set_type: Node index out of range");
-    dirty_                  = true;
-    const auto chunk_id     = (node_pos >> CHUNK_SHIFT);
-    const auto chunk_offset = static_cast<int16_t>(node_pos & CHUNK_MASK);
-    pointers_stack[chunk_id].set_type_at(chunk_offset, type);
-  }
-  void       set_type(Node_class node, Type type) { set_type(node.get_current_pos(), type); }
-  void       delete_leaf(const Tree_pos& leaf_pos);
-  void       delete_leaf(Node_class leaf_node) { delete_leaf(leaf_node.get_current_pos()); }
-  void       delete_subtree(const Tree_pos& subtree_root_pos);
-  void       delete_subtree(Node_class subtree_root_node) { delete_subtree(subtree_root_node.get_current_pos()); }
-  void       set_subnode(const Tree_pos& node_pos, Tid subnode_tid);
-  void       set_subnode(Node_class node, Tid subnode_tid) { set_subnode(node.get_current_pos(), subnode_tid); }
-  Tree_pos   insert_next_sibling(const Tree_pos& sibling_pos);
-  Node_class insert_next_sibling(Node_class sibling_node) { return as_class(insert_next_sibling(sibling_node.get_current_pos())); }
+  void       set_type(Node_class node, Type type) { set_type(node.get_debug_nid(), type); }
+  void       delete_leaf(Node_class leaf_node) { delete_leaf(leaf_node.get_debug_nid()); }
+  void       delete_subtree(Node_class subtree_root_node) { delete_subtree(subtree_root_node.get_debug_nid()); }
+  void       set_subnode(Node_class node, Tid subnode_tid) { set_subnode(node.get_debug_nid(), subnode_tid); }
+  Node_class insert_next_sibling(Node_class sibling_node) { return as_class(insert_next_sibling(sibling_node.get_debug_nid())); }
   void       set_name(std::string_view n);
   [[nodiscard]] std::string_view        get_name() const { return name_; }
   [[nodiscard]] Tid                     get_tid() const noexcept { return self_tid_; }
@@ -600,22 +598,18 @@ public:
 
   void print(std::ostream& os) const { print(os, get_root(), PrintOptions{}); }
   void print(std::ostream& os, const PrintOptions& options) const { print(os, get_root(), options); }
-  void print(std::ostream& os, Tree_pos start_pos, const PrintOptions& options) const;
-  void print(std::ostream& os, Node_class start_node) const { print(os, start_node.get_current_pos(), PrintOptions{}); }
+  void print(std::ostream& os, Node_class start_node) const { print(os, start_node.get_debug_nid(), PrintOptions{}); }
   void print(std::ostream& os, Node_class start_node, const PrintOptions& options) const {
-    print(os, start_node.get_current_pos(), options);
+    print(os, start_node.get_debug_nid(), options);
   }
 
   [[nodiscard]] std::string print() const { return print(PrintOptions{}); }
   [[nodiscard]] std::string print(const PrintOptions& options) const;
-  [[nodiscard]] std::string print(Tree_pos start_pos, const PrintOptions& options) const;
 
   void                      dump(std::ostream& os) const { dump(os, get_root(), PrintOptions{}); }
   void                      dump(std::ostream& os, const PrintOptions& options) const { dump(os, get_root(), options); }
-  void                      dump(std::ostream& os, Tree_pos start_pos, const PrintOptions& options) const;
   [[nodiscard]] std::string dump() const { return dump(PrintOptions{}); }
   [[nodiscard]] std::string dump(const PrintOptions& options) const;
-  [[nodiscard]] std::string dump(Tree_pos start_pos, const PrintOptions& options) const;
 
   // Per-node data recovered during read_dump (node_text and attributes are not stored in tree)
   struct NodeData {
@@ -637,7 +631,57 @@ public:
 
   [[nodiscard]] bool is_dirty() const noexcept { return dirty_; }
 
-  void print_tree(int deep = 0) {
+private:
+  // Raw-Tree_pos navigation / mutation primitives. These are the
+  // implementation backbone; every public entry point converts between
+  // Node_class handles and these internal calls. Not for public use —
+  // Tree_pos is an internal addressing type.
+  [[nodiscard]] Node_class as_class(Tree_pos node_pos) const {
+    return (_check_idx_exists(node_pos) && _contains_data(node_pos)) ? Node_class(const_cast<Tree*>(this), node_pos) : Node_class();
+  }
+  [[nodiscard]] Tree_pos get_root() const { return ROOT; }
+
+  [[nodiscard]] inline Tree_pos get_parent(const Tree_pos& node_pos) const {
+    return pointers_stack[node_pos >> CHUNK_SHIFT].get_parent();
+  }
+  [[nodiscard]] Tree_pos   get_last_child(const Tree_pos& parent_pos) const;
+  [[nodiscard]] Tree_pos   get_first_child(const Tree_pos& parent_pos) const;
+  [[nodiscard]] Type       get_type(const Tree_pos& node_pos) const {
+    I(_check_idx_exists(node_pos), "get_type: Node index out of range");
+    const auto chunk_id     = (node_pos >> CHUNK_SHIFT);
+    const auto chunk_offset = static_cast<int16_t>(node_pos & CHUNK_MASK);
+    return pointers_stack[chunk_id].get_type_at(chunk_offset);
+  }
+  [[nodiscard]] bool        is_last_child(const Tree_pos& node_pos) const;
+  [[nodiscard]] bool        is_first_child(const Tree_pos& node_pos) const;
+  [[nodiscard]] Tree_pos    get_sibling_next(const Tree_pos& node_pos) const;
+  [[nodiscard]] Tree_pos    get_sibling_prev(const Tree_pos& node_pos) const;
+  [[nodiscard]] inline bool is_leaf(const Tree_pos& node_pos) const {
+    return pointers_stack[node_pos >> CHUNK_SHIFT].get_is_leaf();
+  }
+  Tree_pos   append_sibling(const Tree_pos& sibling_pos);
+  Tree_pos   add_child(const Tree_pos& parent_pos);
+  Tree_pos   add_root();
+  void       set_type(const Tree_pos& node_pos, Type type) {
+    I(_check_idx_exists(node_pos), "set_type: Node index out of range");
+    dirty_                  = true;
+    const auto chunk_id     = (node_pos >> CHUNK_SHIFT);
+    const auto chunk_offset = static_cast<int16_t>(node_pos & CHUNK_MASK);
+    pointers_stack[chunk_id].set_type_at(chunk_offset, type);
+  }
+  void       delete_leaf(const Tree_pos& leaf_pos);
+  void       delete_subtree(const Tree_pos& subtree_root_pos);
+  void       set_subnode(const Tree_pos& node_pos, Tid subnode_tid);
+  Tree_pos   insert_next_sibling(const Tree_pos& sibling_pos);
+
+  void print(std::ostream& os, Tree_pos start_pos, const PrintOptions& options) const;
+  [[nodiscard]] std::string print(Tree_pos start_pos, const PrintOptions& options) const;
+  void                      dump(std::ostream& os, Tree_pos start_pos, const PrintOptions& options) const;
+  [[nodiscard]] std::string dump(Tree_pos start_pos, const PrintOptions& options) const;
+
+  // Debug helper that dumps raw chunk/pointer state for every slot. Not part
+  // of the public contract — shape and output format can change at any time.
+  void _debug_print_chunks(int deep = 0) {
     for (size_t i = 0; i < pointers_stack.size(); i++) {
       std::cout << "Index: " << (i << CHUNK_SHIFT) << " Parent: " << pointers_stack[i].get_parent()
                 << " Data: " << (_contains_data(i << CHUNK_SHIFT) ? "VALID" : "INVALID") << std::endl;
@@ -667,6 +711,7 @@ public:
     }
   }
 
+public:
   template <typename Derived>
   class traversal_iterator_base {
   protected:
@@ -749,11 +794,14 @@ public:
     sibling_order_iterator end() { return sibling_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
+private:
   sibling_order_range sibling_order(Tree_pos start, bool follow_subtrees = false) {
     return sibling_order_range(start, this, follow_subtrees);
   }
+
+public:
   sibling_order_range sibling_order(Node_class start, bool follow_subtrees = false) {
-    return sibling_order_range(start.get_current_pos(), this, follow_subtrees);
+    return sibling_order_range(start.get_debug_nid(), this, follow_subtrees);
   }
 
   class const_sibling_order_iterator : public traversal_iterator_base<const_sibling_order_iterator> {
@@ -803,9 +851,12 @@ public:
     const_sibling_order_iterator end() const { return const_sibling_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
+private:
   const_sibling_order_range sibling_order(Tree_pos start) const { return const_sibling_order_range(start, this); }
+
+public:
   const_sibling_order_range sibling_order(Node_class start) const {
-    return const_sibling_order_range(start.get_current_pos(), this);
+    return const_sibling_order_range(start.get_debug_nid(), this);
   }
 
   class pre_order_iterator {
@@ -899,8 +950,12 @@ public:
     pre_order_iterator end() const { return pre_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
-  pre_order_range pre_order(Tree_pos start = ROOT) const { return pre_order_range(start, this, false); }
-  pre_order_range pre_order(Node_class start) const { return pre_order_range(start.get_current_pos(), this, false); }
+private:
+  pre_order_range pre_order(Tree_pos start) const { return pre_order_range(start, this, false); }
+
+public:
+  pre_order_range pre_order() const { return pre_order_range(ROOT, this, false); }
+  pre_order_range pre_order(Node_class start) const { return pre_order_range(start.get_debug_nid(), this, false); }
 
   class pre_order_iterator_with_subtrees : public traversal_iterator_base<pre_order_iterator_with_subtrees> {
   public:
@@ -1020,11 +1075,17 @@ public:
     pre_order_iterator_with_subtrees end() { return pre_order_iterator_with_subtrees(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
-  pre_order_range_with_subtrees pre_order_with_subtrees(Tree_pos start = ROOT, bool follow_subtrees = false) {
+private:
+  pre_order_range_with_subtrees pre_order_with_subtrees(Tree_pos start, bool follow_subtrees = false) {
     return pre_order_range_with_subtrees(start, this, follow_subtrees);
   }
+
+public:
+  pre_order_range_with_subtrees pre_order_with_subtrees(bool follow_subtrees = false) {
+    return pre_order_range_with_subtrees(ROOT, this, follow_subtrees);
+  }
   pre_order_range_with_subtrees pre_order_with_subtrees(Node_class start, bool follow_subtrees = false) {
-    return pre_order_range_with_subtrees(start.get_current_pos(), this, follow_subtrees);
+    return pre_order_range_with_subtrees(start.get_debug_nid(), this, follow_subtrees);
   }
 
   class post_order_iterator : public traversal_iterator_base<post_order_iterator> {
@@ -1091,11 +1152,17 @@ public:
     post_order_iterator end() { return post_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
-  post_order_range post_order(Tree_pos start = ROOT, bool follow_subtrees = false) {
+private:
+  post_order_range post_order(Tree_pos start, bool follow_subtrees = false) {
     return post_order_range(start, this, follow_subtrees);
   }
+
+public:
+  post_order_range post_order(bool follow_subtrees = false) {
+    return post_order_range(ROOT, this, follow_subtrees);
+  }
   post_order_range post_order(Node_class start, bool follow_subtrees = false) {
-    return post_order_range(start.get_current_pos(), this, follow_subtrees);
+    return post_order_range(start.get_debug_nid(), this, follow_subtrees);
   }
 
   // Flat/hier traversals — cross subnode references across the forest.
@@ -1113,7 +1180,8 @@ public:
   // Both walks guard against cycles: flat dedups by Tid globally, hier keeps
   // an "active on stack" Tid set. Returned vectors own their own state —
   // hier additionally pins the expansion tree via shared_ptr on each Node.
-  [[nodiscard]] std::vector<Node_class> pre_order_flat(Tree_pos start = ROOT) const {
+private:
+  [[nodiscard]] std::vector<Node_class> pre_order_flat(Tree_pos start) const {
     std::vector<Node_class> out;
     if (!_contains_data(start)) {
       return out;
@@ -1125,9 +1193,13 @@ public:
     const_cast<Tree*>(this)->pre_order_flat_impl(start, self_tid_, visited_tids, out);
     return out;
   }
-  [[nodiscard]] std::vector<Node_class> pre_order_flat(Node_class start) const { return pre_order_flat(start.get_current_pos()); }
 
-  [[nodiscard]] std::vector<Node_class> post_order_flat(Tree_pos start = ROOT) const {
+public:
+  [[nodiscard]] std::vector<Node_class> pre_order_flat() const { return pre_order_flat(static_cast<Tree_pos>(ROOT)); }
+  [[nodiscard]] std::vector<Node_class> pre_order_flat(Node_class start) const { return pre_order_flat(start.get_debug_nid()); }
+
+private:
+  [[nodiscard]] std::vector<Node_class> post_order_flat(Tree_pos start) const {
     std::vector<Node_class> out;
     if (!_contains_data(start)) {
       return out;
@@ -1139,9 +1211,13 @@ public:
     const_cast<Tree*>(this)->post_order_flat_impl(start, self_tid_, visited_tids, out);
     return out;
   }
-  [[nodiscard]] std::vector<Node_class> post_order_flat(Node_class start) const { return post_order_flat(start.get_current_pos()); }
 
-  [[nodiscard]] std::vector<Node_class> pre_order_hier(Tree_pos start = ROOT) const {
+public:
+  [[nodiscard]] std::vector<Node_class> post_order_flat() const { return post_order_flat(static_cast<Tree_pos>(ROOT)); }
+  [[nodiscard]] std::vector<Node_class> post_order_flat(Node_class start) const { return post_order_flat(start.get_debug_nid()); }
+
+private:
+  [[nodiscard]] std::vector<Node_class> pre_order_hier(Tree_pos start) const {
     std::vector<Node_class> out;
     if (!_contains_data(start)) {
       return out;
@@ -1160,9 +1236,13 @@ public:
     const_cast<Tree*>(this)->pre_order_hier_impl(start, self_tid_, hier_tree, hier_tids, root_hier_pos, active_tids, out);
     return out;
   }
-  [[nodiscard]] std::vector<Node_class> pre_order_hier(Node_class start) const { return pre_order_hier(start.get_current_pos()); }
 
-  [[nodiscard]] std::vector<Node_class> post_order_hier(Tree_pos start = ROOT) const {
+public:
+  [[nodiscard]] std::vector<Node_class> pre_order_hier() const { return pre_order_hier(static_cast<Tree_pos>(ROOT)); }
+  [[nodiscard]] std::vector<Node_class> pre_order_hier(Node_class start) const { return pre_order_hier(start.get_debug_nid()); }
+
+private:
+  [[nodiscard]] std::vector<Node_class> post_order_hier(Tree_pos start) const {
     std::vector<Node_class> out;
     if (!_contains_data(start)) {
       return out;
@@ -1181,17 +1261,23 @@ public:
     const_cast<Tree*>(this)->post_order_hier_impl(start, self_tid_, hier_tree, hier_tids, root_hier_pos, active_tids, out);
     return out;
   }
-  [[nodiscard]] std::vector<Node_class> post_order_hier(Node_class start) const { return post_order_hier(start.get_current_pos()); }
 
+public:
+  [[nodiscard]] std::vector<Node_class> post_order_hier() const { return post_order_hier(static_cast<Tree_pos>(ROOT)); }
+  [[nodiscard]] std::vector<Node_class> post_order_hier(Node_class start) const { return post_order_hier(start.get_debug_nid()); }
+
+private:
   [[nodiscard]] bool     has_subnode(Tree_pos node_pos) const { return get_subnode(node_pos) < 0; }
-  [[nodiscard]] bool     has_subnode(Node_class node) const { return has_subnode(node.get_current_pos()); }
   [[nodiscard]] size_t   get_subnode_index(Tree_pos node_pos) const { return static_cast<size_t>(-get_subnode(node_pos) - 1); }
   [[nodiscard]] Tree_pos make_subnode_ref(size_t subnode_index) const { return static_cast<Tree_pos>(-(subnode_index + 1)); }
   [[nodiscard]] Tree_pos get_subnode(Tree_pos node_pos) const {
     I(_check_idx_exists(node_pos), "get_subnode: Node index out of range");
     return node_pos < static_cast<Tree_pos>(subnode_refs.size()) ? subnode_refs[node_pos] : INVALID;
   }
-  [[nodiscard]] Tid  get_subnode(Node_class node) const { return get_subnode(node.get_current_pos()); }
+
+public:
+  [[nodiscard]] bool has_subnode(Node_class node) const { return has_subnode(node.get_debug_nid()); }
+  [[nodiscard]] Tid  get_subnode(Node_class node) const { return get_subnode(node.get_debug_nid()); }
   [[nodiscard]] auto get_subs() const -> std::span<const Node_class> {
     if (!subs_cache_valid_) {
       subs_cache_.clear();
@@ -1204,10 +1290,17 @@ public:
     }
     return subs_cache_;
   }
-  [[nodiscard]] TreeCursor create_cursor(Tree_pos start = ROOT);
+private:
+  [[nodiscard]] TreeCursor create_cursor(Tree_pos start);
+
+public:
+  [[nodiscard]] TreeCursor create_cursor();
   [[nodiscard]] TreeCursor create_cursor(Node_class start);
 
   friend class Forest;
+  friend class TreeCursor;
+  friend class ForestCursor;
+  friend class Graph;  // graph uses raw Tree_pos for its internal hier-expansion tree cache
 
 private:
   // Binary persistence — saves/loads body data (pointers_stack, validity_stack, subnode_refs).
@@ -1375,9 +1468,59 @@ inline void Tree::Node_class::set_type(Type type) const {
   tree_ptr->set_type(*this, type);
 }
 
+inline Type Tree::Node_class::get_type() const {
+  I(tree_ptr != nullptr, "get_type: node is not attached to a tree");
+  return tree_ptr->get_type(*this);
+}
+
 inline void Tree::Node_class::del_node() const {
   I(tree_ptr != nullptr, "del_node: node is not attached to a tree");
   tree_ptr->delete_subtree(*this);
+}
+
+inline Tree::Node_class Tree::Node_class::parent() const {
+  I(tree_ptr != nullptr, "parent: node is not attached to a tree");
+  return tree_ptr->get_parent(*this);
+}
+
+inline Tree::Node_class Tree::Node_class::first_child() const {
+  I(tree_ptr != nullptr, "first_child: node is not attached to a tree");
+  return tree_ptr->get_first_child(*this);
+}
+
+inline Tree::Node_class Tree::Node_class::last_child() const {
+  I(tree_ptr != nullptr, "last_child: node is not attached to a tree");
+  return tree_ptr->get_last_child(*this);
+}
+
+inline Tree::Node_class Tree::Node_class::next_sibling() const {
+  I(tree_ptr != nullptr, "next_sibling: node is not attached to a tree");
+  return tree_ptr->get_sibling_next(*this);
+}
+
+inline Tree::Node_class Tree::Node_class::prev_sibling() const {
+  I(tree_ptr != nullptr, "prev_sibling: node is not attached to a tree");
+  return tree_ptr->get_sibling_prev(*this);
+}
+
+inline bool Tree::Node_class::is_leaf() const {
+  I(tree_ptr != nullptr, "is_leaf: node is not attached to a tree");
+  return tree_ptr->is_leaf(*this);
+}
+
+inline bool Tree::Node_class::is_first_child() const {
+  I(tree_ptr != nullptr, "is_first_child: node is not attached to a tree");
+  return tree_ptr->is_first_child(*this);
+}
+
+inline bool Tree::Node_class::is_last_child() const {
+  I(tree_ptr != nullptr, "is_last_child: node is not attached to a tree");
+  return tree_ptr->is_last_child(*this);
+}
+
+inline bool Tree::Node_class::has_subnode() const {
+  I(tree_ptr != nullptr, "has_subnode: node is not attached to a tree");
+  return tree_ptr->has_subnode(*this);
 }
 
 inline auto Tree::Node_class::pre_order_class() const {
@@ -1513,6 +1656,23 @@ public:
       return nullptr;
     }
     return tio->get_tree();
+  }
+
+  // Forest-wide reverse lookup for an opaque Tree_flat_index key. Returns a
+  // Flat-context Node_class attached to the tree body named by the index's
+  // tid. Returns an empty Node_class if the tid is deleted or the pos is out
+  // of range. See Tree::get_node(Tree_class_index) for the per-body variant.
+  [[nodiscard]] Tree::Node_class get_node(Tree_flat_index idx) {
+    const auto tid      = idx.tid;
+    const auto tree_idx = static_cast<size_t>(-tid - 1);
+    if (tid >= 0 || tree_idx >= trees.size() || !trees[tree_idx]) {
+      return Tree::Node_class();
+    }
+    auto& tree = *trees[tree_idx];
+    if (!tree._check_idx_exists(idx.value) || !tree._contains_data(idx.value)) {
+      return Tree::Node_class();
+    }
+    return Tree::Node_class(&tree, idx.value, tid);
   }
 
   void add_reference(Tree_pos tree_tid) {
@@ -1948,7 +2108,8 @@ inline TreeCursor Tree::create_cursor(Tree_pos start) {
   return TreeCursor(std::move(self), start);
 }
 
-inline TreeCursor Tree::create_cursor(Node_class start) { return create_cursor(start.get_current_pos()); }
+inline TreeCursor Tree::create_cursor(Node_class start) { return create_cursor(start.get_debug_nid()); }
+inline TreeCursor Tree::create_cursor() { return create_cursor(static_cast<Tree_pos>(ROOT)); }
 
 inline ForestCursor Forest::create_cursor(Tid tree_tid, Tree_pos start) {
   auto tree = get_tree_ptr(tree_tid);
@@ -2181,13 +2342,7 @@ inline void Tree::delete_subtree(const Tree_pos& subtree_root) {
     }
   }
 
-  for (auto node : nodes_to_delete) {
-    const auto subnode_ref = get_subnode(node);
-    if (subnode_ref != INVALID && forest_ptr) {
-      forest_ptr->remove_reference(subnode_ref);
-    }
-  }
-
+  // delete_leaf handles subnode-reference decrement per node; no separate pass here.
   for (auto it = nodes_to_delete.rbegin(); it != nodes_to_delete.rend(); ++it) {
     if (_contains_data(*it) && get_first_child(*it) == INVALID) {
       delete_leaf(*it);

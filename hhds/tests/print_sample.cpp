@@ -11,15 +11,15 @@ int main() {
   auto tree = hhds::Tree::create();
   tree->set_name("expr");
 
-  const auto root   = tree->add_root_node();
-  const auto lhs    = tree->add_child(root);
-  const auto rhs    = tree->add_child(root);
-  const auto nested = tree->add_child(lhs);
+  auto root   = tree->add_root_node();
+  auto lhs    = root.add_child();
+  auto rhs    = root.add_child();
+  auto nested = lhs.add_child();
 
-  tree->set_type(root, 1);
-  tree->set_type(lhs, 3);
-  tree->set_type(rhs, 3);
-  tree->set_type(nested, 2);
+  root.set_type(1);
+  lhs.set_type(3);
+  rhs.set_type(3);
+  nested.set_type(2);
 
   const hhds::Type_entry type_table[] = {
       {"unknown", hhds::Statement_class::Node},
@@ -48,9 +48,9 @@ int main() {
   };
   with_attrs.attributes = {
       {"pos",
-       [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_current_pos()); }},
+       [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_debug_nid()); }},
       {"type_id",
-       [&tree](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(tree->get_type(node)); }},
+       [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_type()); }},
   };
   tree->print(std::cout, with_attrs);
 
@@ -61,15 +61,15 @@ int main() {
   auto tree2 = hhds::Tree::create();
   tree2->set_name("scoped");
 
-  const auto r2  = tree2->add_root_node();
-  const auto c2a = tree2->add_child(r2);
-  const auto c2b = tree2->add_child(r2);
-  const auto g2  = tree2->add_child(c2a);
+  auto r2  = tree2->add_root_node();
+  auto c2a = r2.add_child();
+  auto c2b = r2.add_child();
+  auto g2  = c2a.add_child();
 
-  tree2->set_type(r2, 1);
-  tree2->set_type(c2a, 2);
-  tree2->set_type(c2b, 1);
-  tree2->set_type(g2, 3);
+  r2.set_type(1);
+  c2a.set_type(2);
+  c2b.set_type(1);
+  g2.set_type(3);
 
   const hhds::Type_entry scope_types[] = {
       {"unknown", hhds::Statement_class::Node},
@@ -98,24 +98,24 @@ int main() {
   tree3->set_name("lnast_demo");
 
   // Build: plus(dest, a, b) and if(cond, body_stmt)
-  const auto r3      = tree3->add_root_node();  // top-level stmts
-  const auto plus_n  = tree3->add_child(r3);
-  const auto dest    = tree3->add_child(plus_n);
-  const auto arg_a   = tree3->add_child(plus_n);
-  const auto arg_b   = tree3->add_child(plus_n);
-  const auto if_n    = tree3->add_child(r3);
-  const auto cond    = tree3->add_child(if_n);
-  const auto body_st = tree3->add_child(if_n);
+  auto r3      = tree3->add_root_node();
+  auto plus_n  = r3.add_child();
+  auto dest    = plus_n.add_child();
+  auto arg_a   = plus_n.add_child();
+  auto arg_b   = plus_n.add_child();
+  auto if_n    = r3.add_child();
+  auto cond    = if_n.add_child();
+  auto body_st = if_n.add_child();
 
   // Type IDs: 0=stmts, 1=plus, 2=if, 3=ref
-  tree3->set_type(r3, 0);
-  tree3->set_type(plus_n, 1);
-  tree3->set_type(dest, 3);
-  tree3->set_type(arg_a, 3);
-  tree3->set_type(arg_b, 3);
-  tree3->set_type(if_n, 2);
-  tree3->set_type(cond, 3);
-  tree3->set_type(body_st, 3);
+  r3.set_type(0);
+  plus_n.set_type(1);
+  dest.set_type(3);
+  arg_a.set_type(3);
+  arg_b.set_type(3);
+  if_n.set_type(2);
+  cond.set_type(3);
+  body_st.set_type(3);
 
   const hhds::Type_entry lnast_types[] = {
       {"stmts", hhds::Statement_class::Node},
@@ -124,19 +124,19 @@ int main() {
       {"ref", hhds::Statement_class::Node},
   };
 
-  absl::flat_hash_map<hhds::Tree_pos, std::string> ref_names;
-  ref_names[r3.get_current_pos()]      = "top";
-  ref_names[dest.get_current_pos()]    = "result";
-  ref_names[arg_a.get_current_pos()]   = "a";
-  ref_names[arg_b.get_current_pos()]   = "b";
-  ref_names[cond.get_current_pos()]    = "flag";
-  ref_names[body_st.get_current_pos()] = "do_something";
+  absl::flat_hash_map<hhds::Tree::Node_class, std::string> ref_names;
+  ref_names[r3]      = "top";
+  ref_names[dest]    = "result";
+  ref_names[arg_a]   = "a";
+  ref_names[arg_b]   = "b";
+  ref_names[cond]    = "flag";
+  ref_names[body_st] = "do_something";
 
   std::cout << "\nDefault print of LNAST tree\n";
   hhds::Tree::PrintOptions lnast_default;
   lnast_default.type_table = lnast_types;
   lnast_default.node_text  = [&ref_names](const hhds::Tree::Node_class& node) {
-    auto it = ref_names.find(node.get_current_pos());
+    auto it = ref_names.find(node);
     return it == ref_names.end() ? std::string("?") : it->second;
   };
   tree3->print(std::cout, lnast_default);
@@ -146,13 +146,13 @@ int main() {
   lnast_custom.type_table = lnast_types;
   lnast_custom.node_text  = lnast_default.node_text;
 
-  auto get_ref = [&ref_names](hhds::Tree_pos pos) -> std::string {
-    auto it = ref_names.find(pos);
+  auto get_ref = [&ref_names](const hhds::Tree::Node_class& node) -> std::string {
+    auto it = ref_names.find(node);
     return it == ref_names.end() ? "?" : it->second;
   };
 
-  lnast_custom.format_node = [&](std::ostream& os, hhds::Tree_pos pos, const hhds::Tree::PrintContext& ctx) -> bool {
-    auto type     = ctx.tree.get_type(pos);
+  lnast_custom.format_node = [&](std::ostream& os, const hhds::Tree::Node_class& node, const hhds::Tree::PrintContext& ctx) -> bool {
+    auto type     = node.get_type();
     auto children = ctx.get_children();
 
     if (type == 1) {  // plus
@@ -207,7 +207,7 @@ int main() {
     loaded_names[nd.pos] = nd.node_text;
   }
   loaded_opts.node_text = [&loaded_names](const hhds::Tree::Node_class& node) {
-    auto it = loaded_names.find(node.get_current_pos());
+    auto it = loaded_names.find(node.get_debug_nid());
     return it == loaded_names.end() ? std::string("?") : it->second;
   };
 
@@ -221,7 +221,7 @@ int main() {
   loaded_opts.attributes = {
       {"pos",
        [&loaded_attrs](const hhds::Tree::Node_class& node) -> std::optional<std::string> {
-         auto it = loaded_attrs.find(node.get_current_pos());
+         auto it = loaded_attrs.find(node.get_debug_nid());
          if (it != loaded_attrs.end()) {
            for (const auto& [k, v] : it->second) {
              if (k == "pos") {
@@ -233,7 +233,7 @@ int main() {
        }},
       {"type_id",
        [&loaded_attrs](const hhds::Tree::Node_class& node) -> std::optional<std::string> {
-         auto it = loaded_attrs.find(node.get_current_pos());
+         auto it = loaded_attrs.find(node.get_debug_nid());
          if (it != loaded_attrs.end()) {
            for (const auto& [k, v] : it->second) {
              if (k == "type_id") {

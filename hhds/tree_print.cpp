@@ -142,16 +142,18 @@ void Tree::PrintContext::emit_indent(std::ostream& os, size_t d) const {
   }
 }
 
-std::vector<Tree_pos> Tree::PrintContext::get_children() const {
-  std::vector<Tree_pos> result;
+std::vector<Tree::Node_class> Tree::PrintContext::get_children() const {
+  std::vector<Node_class> result;
+  const auto              node_pos = node.get_debug_nid();
   for (auto c = tree.get_first_child(node_pos); c != INVALID; c = tree.get_sibling_next(c)) {
-    result.push_back(c);
+    result.push_back(tree.as_class(c));
   }
   return result;
 }
 
 void Tree::PrintContext::print_children_default(std::ostream& os) const {
-  auto first_child = tree.get_first_child(node_pos);
+  const auto node_pos    = node.get_debug_nid();
+  auto       first_child = tree.get_first_child(node_pos);
   if (first_child == INVALID) {
     return;
   }
@@ -161,7 +163,8 @@ void Tree::PrintContext::print_children_default(std::ostream& os) const {
   }
 }
 
-void Tree::PrintContext::print_child_default(std::ostream& os, Tree_pos child_pos) const {
+void Tree::PrintContext::print_child_default(std::ostream& os, const Node_class& child) const {
+  const auto child_pos   = child.get_debug_nid();
   auto       child_first = tree.get_first_child(child_pos);
   PrintAlign child_align;
   if (child_first != INVALID) {
@@ -177,8 +180,8 @@ void Tree::PrintContext::print_child_default(std::ostream& os, Tree_pos child_po
 void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const PrintAlign& align,
                       const PrintOptions& options) const {
   if (options.format_node) {
-    PrintContext ctx{*this, options, depth, node_pos};
-    if (options.format_node(os, node_pos, ctx)) {
+    PrintContext ctx{*this, options, depth, as_class(node_pos)};
+    if (options.format_node(os, ctx.node, ctx)) {
       return;
     }
   }

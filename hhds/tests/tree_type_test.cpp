@@ -7,36 +7,36 @@
 TEST(TreeType, DefaultAndExplicitTypes) {
   auto tree = hhds::Tree::create();
 
-  const auto root   = tree->add_root_node();
-  const auto child1 = tree->add_child(root);
-  const auto child2 = tree->add_child(root);
+  auto root   = tree->add_root_node();
+  auto child1 = root.add_child();
+  auto child2 = root.add_child();
 
-  EXPECT_EQ(tree->get_type(root), 0);
-  EXPECT_EQ(tree->get_type(child1), 0);
-  EXPECT_EQ(tree->get_type(child2), 0);
+  EXPECT_EQ(root.get_type(), 0);
+  EXPECT_EQ(child1.get_type(), 0);
+  EXPECT_EQ(child2.get_type(), 0);
 
-  tree->set_type(root, 7);
-  tree->set_type(child1, 11);
-  tree->set_type(child2, 13);
+  root.set_type(7);
+  child1.set_type(11);
+  child2.set_type(13);
 
-  EXPECT_EQ(tree->get_type(root), 7);
-  EXPECT_EQ(tree->get_type(child1), 11);
-  EXPECT_EQ(tree->get_type(child2), 13);
+  EXPECT_EQ(root.get_type(), 7);
+  EXPECT_EQ(child1.get_type(), 11);
+  EXPECT_EQ(child2.get_type(), 13);
 }
 
 TEST(TreeType, TypeSurvivesLeafCompaction) {
   auto tree = hhds::Tree::create();
 
-  const auto root   = tree->add_root_node();
-  const auto child1 = tree->add_child(root);
-  const auto child2 = tree->add_child(root);
+  auto root   = tree->add_root_node();
+  auto child1 = root.add_child();
+  auto child2 = root.add_child();
 
-  tree->set_type(child1, 21);
-  tree->set_type(child2, 22);
+  child1.set_type(21);
+  child2.set_type(22);
 
-  tree->delete_leaf(child1);
+  child1.del_node();
 
-  const auto surviving = tree->get_first_child(root);
+  auto surviving = root.first_child();
   EXPECT_TRUE(surviving.is_valid());
-  EXPECT_EQ(tree->get_type(surviving), 22);
+  EXPECT_EQ(surviving.get_type(), 22);
 }

@@ -22,8 +22,8 @@ inline void ensure_size(std::vector<int>& values, hhds::Tid tid) {
 }
 
 inline void set_value(std::vector<int>& values, IntNode node, int value) {
-  ensure_size(values, node.get_current_pos());
-  values[static_cast<size_t>(node.get_current_pos())] = value;
+  ensure_size(values, node.get_debug_nid());
+  values[static_cast<size_t>(node.get_debug_nid())] = value;
 }
 
 inline IntNode add_root(hhds::Tree& tree, std::vector<int>& values, int value) {

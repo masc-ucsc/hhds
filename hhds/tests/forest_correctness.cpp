@@ -18,7 +18,7 @@ struct DeclaredTree {
 DeclaredTree create_rooted_tree(const std::shared_ptr<hhds::Forest>& forest, std::string_view name) {
   auto tio  = forest->create_io(name);
   auto tree = tio->create_tree();
-  tree->add_root();
+  (void)tree->add_root_node();
   return {std::move(tio), std::move(tree)};
 }
 
@@ -33,8 +33,9 @@ TEST(ForestCorrectness, BasicForestOperations) {
   EXPECT_LT(tree1.tio->get_tid(), 0);
   EXPECT_LT(tree2.tio->get_tid(), 0);
   EXPECT_NE(tree1.tio->get_tid(), tree2.tio->get_tid());
-  EXPECT_EQ(tree1.tree->get_root(), hhds::ROOT);
-  EXPECT_EQ(tree2.tree->get_root(), hhds::ROOT);
+  EXPECT_TRUE(tree1.tree->get_root_node().is_valid());
+  EXPECT_TRUE(tree2.tree->get_root_node().is_valid());
+  EXPECT_EQ(tree1.tree->get_root_node().get_debug_nid(), hhds::ROOT);
 }
 
 TEST(ForestCorrectness, TreeIOCanExistWithoutBody) {
@@ -64,19 +65,22 @@ TEST(ForestCorrectness, SubtreeReferences) {
   auto main_tree = create_rooted_tree(forest, "main");
   auto sub_tree  = create_rooted_tree(forest, "sub");
 
-  auto child1 = main_tree.tree->add_child(main_tree.tree->get_root());
-  main_tree.tree->add_child(main_tree.tree->get_root());
-  sub_tree.tree->add_child(sub_tree.tree->get_root());
+  auto main_root = main_tree.tree->get_root_node();
+  auto sub_root  = sub_tree.tree->get_root_node();
 
-  main_tree.tree->set_subnode(child1, sub_tree.tio->get_tid());
+  auto child1 = main_root.add_child();
+  main_root.add_child();
+  sub_root.add_child();
+
+  child1.set_subnode(sub_tree.tio);
 
   bool deleted = forest->delete_tree(sub_tree.tio->get_tid());
   EXPECT_FALSE(deleted);
   auto still_there = forest->find_tree("sub");
   ASSERT_NE(still_there, nullptr);
-  EXPECT_EQ(still_there->get_root(), hhds::ROOT);
+  EXPECT_TRUE(still_there->get_root_node().is_valid());
 
-  main_tree.tree->delete_leaf(child1);
+  child1.del_node();
 
   deleted = forest->delete_tree(sub_tree.tio->get_tid());
   EXPECT_TRUE(deleted);
@@ -90,24 +94,27 @@ TEST(ForestCorrectness, TreeTraversalWithSubtrees) {
   auto main_tree = create_rooted_tree(forest, "main");
   auto sub_tree  = create_rooted_tree(forest, "sub");
 
-  auto child1 = main_tree.tree->add_child(main_tree.tree->get_root());
-  main_tree.tree->add_child(main_tree.tree->get_root());
-  sub_tree.tree->add_child(sub_tree.tree->get_root());
-  sub_tree.tree->add_child(sub_tree.tree->get_root());
+  auto main_root = main_tree.tree->get_root_node();
+  auto sub_root  = sub_tree.tree->get_root_node();
 
-  main_tree.tree->set_subnode(child1, sub_tree.tio->get_tid());
+  auto child1 = main_root.add_child();
+  main_root.add_child();
+  sub_root.add_child();
+  sub_root.add_child();
+
+  child1.set_subnode(sub_tree.tio);
 
   int count = 0;
-  for (auto it = main_tree.tree->pre_order_with_subtrees(main_tree.tree->get_root(), true).begin();
-       it != main_tree.tree->pre_order_with_subtrees(main_tree.tree->get_root(), true).end();
+  for (auto it = main_tree.tree->pre_order_with_subtrees(main_root, true).begin();
+       it != main_tree.tree->pre_order_with_subtrees(main_root, true).end();
        ++it) {
     ++count;
   }
   EXPECT_EQ(count, 6);
 
   int count_no_subtree = 0;
-  for (auto it = main_tree.tree->pre_order_with_subtrees(main_tree.tree->get_root(), false).begin();
-       it != main_tree.tree->pre_order_with_subtrees(main_tree.tree->get_root(), false).end();
+  for (auto it = main_tree.tree->pre_order_with_subtrees(main_root, false).begin();
+       it != main_tree.tree->pre_order_with_subtrees(main_root, false).end();
        ++it) {
     ++count_no_subtree;
   }
@@ -120,15 +127,18 @@ TEST(ForestCorrectness, CycleTraversal) {
   auto a = create_rooted_tree(forest, "a");
   auto b = create_rooted_tree(forest, "b");
 
-  auto a_child_ref = a.tree->add_child(a.tree->get_root());
-  auto b_child_ref = b.tree->add_child(b.tree->get_root());
+  auto a_root = a.tree->get_root_node();
+  auto b_root = b.tree->get_root_node();
 
-  a.tree->set_subnode(a_child_ref, b.tio->get_tid());
-  b.tree->set_subnode(b_child_ref, a.tio->get_tid());
+  auto a_child_ref = a_root.add_child();
+  auto b_child_ref = b_root.add_child();
+
+  a_child_ref.set_subnode(b.tio);
+  b_child_ref.set_subnode(a.tio);
 
   int count = 0;
-  for (auto it = a.tree->pre_order_with_subtrees(a.tree->get_root(), true).begin();
-       it != a.tree->pre_order_with_subtrees(a.tree->get_root(), true).end();
+  for (auto it = a.tree->pre_order_with_subtrees(a_root, true).begin();
+       it != a.tree->pre_order_with_subtrees(a_root, true).end();
        ++it) {
     ++count;
   }
@@ -144,44 +154,45 @@ TEST(ForestCorrectness, ComplexForestOperations) {
   auto sub_tree2 = create_rooted_tree(forest, "sub2");
   auto sub_tree3 = create_rooted_tree(forest, "sub3");
 
-  std::vector<hhds::Tree_pos> main_nodes{main_tree.tree->get_root()};
-  std::vector<hhds::Tree_pos> sub1_nodes{sub_tree1.tree->get_root()};
-  std::vector<hhds::Tree_pos> sub2_nodes{sub_tree2.tree->get_root()};
-  std::vector<hhds::Tree_pos> sub3_nodes{sub_tree3.tree->get_root()};
+  std::vector<hhds::Tree::Node_class> main_nodes{main_tree.tree->get_root_node()};
+  std::vector<hhds::Tree::Node_class> sub1_nodes{sub_tree1.tree->get_root_node()};
+  std::vector<hhds::Tree::Node_class> sub2_nodes{sub_tree2.tree->get_root_node()};
+  std::vector<hhds::Tree::Node_class> sub3_nodes{sub_tree3.tree->get_root_node()};
 
   for (int i = 0; i < 100; ++i) {
     auto parent = main_nodes[i / 3];
-    main_nodes.push_back(main_tree.tree->add_child(parent));
+    main_nodes.push_back(parent.add_child());
   }
 
-  auto sub1_parent = sub_tree1.tree->get_root();
+  auto sub1_parent = sub_tree1.tree->get_root_node();
   for (int i = 0; i < 50; ++i) {
-    sub1_nodes.push_back(sub_tree1.tree->add_child(sub1_parent));
+    sub1_nodes.push_back(sub1_parent.add_child());
   }
 
   for (int i = 0; i < 32; ++i) {
     auto parent = sub2_nodes[i];
-    sub2_nodes.push_back(sub_tree2.tree->add_child(parent));
-    sub2_nodes.push_back(sub_tree2.tree->add_child(parent));
+    sub2_nodes.push_back(parent.add_child());
+    sub2_nodes.push_back(parent.add_child());
   }
 
-  auto current_pos = sub_tree3.tree->get_root();
+  auto current_node = sub_tree3.tree->get_root_node();
   for (int i = 0; i < 100; ++i) {
-    auto new_node = sub_tree3.tree->add_child(current_pos);
+    auto new_node = current_node.add_child();
     sub3_nodes.push_back(new_node);
-    current_pos = new_node;
+    current_node = new_node;
   }
 
-  main_tree.tree->set_subnode(main_nodes[0], sub_tree1.tio->get_tid());
-  sub_tree1.tree->set_subnode(sub1_nodes[0], sub_tree2.tio->get_tid());
-  sub_tree2.tree->set_subnode(sub2_nodes[0], sub_tree3.tio->get_tid());
+  main_nodes[0].set_subnode(sub_tree1.tio);
+  sub1_nodes[0].set_subnode(sub_tree2.tio);
+  sub2_nodes[0].set_subnode(sub_tree3.tio);
 
   bool deleted = forest->delete_tree(sub_tree3.tio->get_tid());
   EXPECT_FALSE(deleted);
 
-  int node_count = 0;
-  for (auto it = main_tree.tree->pre_order_with_subtrees(main_tree.tree->get_root(), true).begin();
-       it != main_tree.tree->pre_order_with_subtrees(main_tree.tree->get_root(), true).end();
+  auto main_root = main_tree.tree->get_root_node();
+  int  node_count = 0;
+  for (auto it = main_tree.tree->pre_order_with_subtrees(main_root, true).begin();
+       it != main_tree.tree->pre_order_with_subtrees(main_root, true).end();
        ++it) {
     ++node_count;
     ASSERT_LE(node_count, 10000);
@@ -201,7 +212,7 @@ TEST(ForestCorrectness, TombstoneDeletion) {
   EXPECT_EQ(t2.tio->get_tid(), -2);
   EXPECT_EQ(t3.tio->get_tid(), -3);
 
-  EXPECT_EQ(forest->get_tree(t2.tio->get_tid()).get_root(), hhds::ROOT);
+  EXPECT_TRUE(forest->get_tree(t2.tio->get_tid()).get_root_node().is_valid());
   EXPECT_TRUE(forest->delete_tree(t2.tio->get_tid()));
 
   EXPECT_THROW(static_cast<void>(forest->get_tree(t2.tio->get_tid())), std::runtime_error);

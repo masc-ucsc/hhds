@@ -138,6 +138,7 @@ private:
   Tree_pos                          hier_pos_ = INVALID;
 
   friend class Graph;
+  friend class GraphLibrary;
   friend class Node_class;
   friend void inherit_pin_context(Pin_class& pin, const Node_class& node);
 };
@@ -400,6 +401,39 @@ public:
   [[nodiscard]] std::shared_ptr<GraphIO> get_io() const { return graphio_owner_.lock(); }
   [[nodiscard]] Pin_class                get_input_pin(std::string_view name) const;
   [[nodiscard]] Pin_class                get_output_pin(std::string_view name) const;
+
+  // Reverse lookup from an opaque index key to a Node_class / Pin_class,
+  // mirroring Tree::get_node(index). Class_index is scoped to this graph
+  // body; Hier_index carries hier_pos for per-instance attribute access but
+  // omits the traversal's expansion tree. For cross-graph Flat_index
+  // lookups, see GraphLibrary::get_node / GraphLibrary::get_pin.
+  [[nodiscard]] Node_class get_node(Class_index idx) const {
+    if (!is_node_valid(idx.value)) {
+      return Node_class();
+    }
+    return Node_class(const_cast<Graph*>(this), idx.value);
+  }
+  [[nodiscard]] Node_class get_node(Hier_index idx) const {
+    if (!is_node_valid(idx.value)) {
+      return Node_class();
+    }
+    return Node_class(const_cast<Graph*>(this), INVALID, nullptr, idx.hier_pos, idx.value);
+  }
+  [[nodiscard]] Pin_class get_pin(Class_index idx) const {
+    if (!is_pin_valid(idx.value)) {
+      return Pin_class();
+    }
+    return make_pin_class(idx.value);
+  }
+  [[nodiscard]] Pin_class get_pin(Hier_index idx) const {
+    if (!is_pin_valid(idx.value)) {
+      return Pin_class();
+    }
+    Pin_class pin = make_pin_class(idx.value);
+    pin.context_  = Handle_context::Hier;
+    pin.hier_pos_ = idx.hier_pos;
+    return pin;
+  }
 
   // Built-in nodes reserved by graph storage initialization.
   static constexpr Nid INPUT_NODE  = (static_cast<Nid>(1) << 2);
@@ -692,6 +726,35 @@ public:
       return {};
     }
     return gio->get_graph();
+  }
+
+  // Library-wide reverse lookup for an opaque Flat_index key. The gid selects
+  // the graph body; the index's raw value is the Nid / Pid. Returns an empty
+  // handle if the graph is tombstone-deleted or the raw id is invalid for
+  // that body.
+  [[nodiscard]] Node_class get_node(Flat_index idx) {
+    if (!has_graph(idx.gid)) {
+      return Node_class();
+    }
+    auto graph = get_graph(idx.gid);
+    if (!graph->is_node_valid(idx.value)) {
+      return Node_class();
+    }
+    return Node_class(graph.get(), idx.gid, idx.gid, idx.value);
+  }
+  [[nodiscard]] Pin_class get_pin(Flat_index idx) {
+    if (!has_graph(idx.gid)) {
+      return Pin_class();
+    }
+    auto graph = get_graph(idx.gid);
+    if (!graph->is_pin_valid(idx.value)) {
+      return Pin_class();
+    }
+    Pin_class pin       = graph->make_pin_class(idx.value);
+    pin.context_        = Handle_context::Flat;
+    pin.root_gid_       = idx.gid;
+    pin.current_gid_    = idx.gid;
+    return pin;
   }
 
   [[nodiscard]] uint64_t mutation_epoch() const noexcept { return mutation_epoch_; }

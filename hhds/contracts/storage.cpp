@@ -333,7 +333,7 @@ TEST(TreeStorage, RootAllocatesTwoChunks) {
   // add_root allocates 2 chunks: dummy (index 0) + root (index 1)
   auto root = tree->add_root_node();
   EXPECT_TRUE(root.is_valid());
-  EXPECT_EQ(root.get_current_pos(), hhds::ROOT);
+  EXPECT_EQ(root.get_debug_nid(), hhds::ROOT);
 }
 
 TEST(TreeStorage, SiblingsPackWithinChunk) {
@@ -348,7 +348,7 @@ TEST(TreeStorage, SiblingsPackWithinChunk) {
   for (int i = 0; i < 8; ++i) {
     auto child = root.add_child();
     if (i == 0) {
-      first_child = child.get_current_pos();
+      first_child = child.get_debug_nid();
     }
   }
 
@@ -357,7 +357,7 @@ TEST(TreeStorage, SiblingsPackWithinChunk) {
 
   // All 8 siblings: first 8 fit in one chunk. The 8th slot (offset 7)
   // uses the full chunk. Verify last child is reachable.
-  auto last = tree->get_last_child(root);
+  auto last = root.last_child();
   EXPECT_TRUE(last.is_valid());
 }
 
@@ -370,8 +370,8 @@ TEST(TreeStorage, ChildCreatesNewChunk) {
   auto child = root.add_child();
 
   // The child lives in a new chunk (not the root's chunk).
-  auto root_chunk  = root.get_current_pos() >> hhds::CHUNK_SHIFT;
-  auto child_chunk = child.get_current_pos() >> hhds::CHUNK_SHIFT;
+  auto root_chunk  = root.get_debug_nid() >> hhds::CHUNK_SHIFT;
+  auto child_chunk = child.get_debug_nid() >> hhds::CHUNK_SHIFT;
   EXPECT_NE(root_chunk, child_chunk);
 }
 
@@ -387,15 +387,15 @@ TEST(TreeStorage, DeleteLeafTombstones) {
   c2.del_node();
 
   // c1 should still be valid, c2 should be gone
-  EXPECT_TRUE(tree->as_class(c1.get_current_pos()).is_valid());
+  EXPECT_TRUE(c1.is_valid());
   EXPECT_TRUE(c2.is_invalid());
 
   // After deletion, last child should be c1
-  auto last = tree->get_last_child(root);
-  EXPECT_EQ(last.get_current_pos(), c1.get_current_pos());
+  auto last = root.last_child();
+  EXPECT_EQ(last, c1);
 
   auto c3 = root.add_child();
-  EXPECT_NE(c3.get_current_pos(), c2.get_current_pos());
+  EXPECT_NE(c3, c2);
 }
 
 TEST(TreeStorage, DeleteSubtreeAndClearTombstones) {
@@ -412,7 +412,7 @@ TEST(TreeStorage, DeleteSubtreeAndClearTombstones) {
   EXPECT_TRUE(child.is_invalid());
   EXPECT_TRUE(grandchild.is_invalid());
   EXPECT_TRUE(sibling.is_valid());
-  EXPECT_EQ(tree->get_first_child(root).get_current_pos(), sibling.get_current_pos());
+  EXPECT_EQ(root.first_child(), sibling);
 
   tree->clear();
   EXPECT_TRUE(root.is_invalid());
@@ -598,10 +598,11 @@ TEST(TreePersistence, SaveLoadRoundTrip) {
   root.attr(hhds::attrs::name).set("program");
   gc1.attr(test_attrs::loc).set(99);
 
-  const auto root_pos = root.get_current_pos();
-  const auto c1_pos   = c1.get_current_pos();
-  const auto c2_pos   = c2.get_current_pos();
-  const auto gc1_pos  = gc1.get_current_pos();
+  // Durable opaque keys for the round-trip. Tree_pos values are internal.
+  const auto root_key = root.get_class_index();
+  const auto c1_key   = c1.get_class_index();
+  const auto c2_key   = c2.get_class_index();
+  const auto gc1_key  = gc1.get_class_index();
 
   forest->save(test_dir);
   EXPECT_TRUE(fs::exists(fs::path(test_dir) / "forest.txt"));
@@ -616,16 +617,16 @@ TEST(TreePersistence, SaveLoadRoundTrip) {
   ASSERT_NE(tree2, nullptr);
 
   // Verify types survived.
-  EXPECT_EQ(tree2->get_type(root_pos), 10);
-  EXPECT_EQ(tree2->get_type(c1_pos), 20);
-  EXPECT_EQ(tree2->get_type(c2_pos), 30);
-  EXPECT_EQ(tree2->get_type(gc1_pos), 40);
-  EXPECT_EQ(tree2->as_class(root_pos).attr(hhds::attrs::name).get(), "program");
-  EXPECT_EQ(tree2->as_class(gc1_pos).attr(test_attrs::loc).get(), 99);
+  EXPECT_EQ(tree2->get_node(root_key).get_type(), 10);
+  EXPECT_EQ(tree2->get_node(c1_key).get_type(), 20);
+  EXPECT_EQ(tree2->get_node(c2_key).get_type(), 30);
+  EXPECT_EQ(tree2->get_node(gc1_key).get_type(), 40);
+  EXPECT_EQ(tree2->get_node(root_key).attr(hhds::attrs::name).get(), "program");
+  EXPECT_EQ(tree2->get_node(gc1_key).attr(test_attrs::loc).get(), 99);
 
   // Verify structure.
-  auto loaded_c1 = tree2->get_first_child(tree2->as_class(root_pos));
-  EXPECT_EQ(loaded_c1.get_current_pos(), c1_pos);
+  auto loaded_c1 = tree2->get_node(root_key).first_child();
+  EXPECT_EQ(loaded_c1.get_class_index(), c1_key);
 
   fs::remove_all(test_dir);
 }
