@@ -56,18 +56,25 @@ struct Flat_index {
   }
 };
 
+// Hier_index identifies a node within a hierarchical traversal.
+//
+// Uniqueness: guaranteed within one level of subnode instantiation. The
+// (owner_gid, hier_pos) pair pins the instance to the parent graph's
+// structure tree. Deep hierarchies with a commonly-instantiated
+// grand-subgraph can collide — see graph.hpp CLAUDE notes.
 struct Hier_index {
-  Tree_pos hier_pos = 0;
-  Nid      value    = 0;
+  Gid      owner_gid = Gid_invalid;  // graph whose structure tree holds `hier_pos`
+  Tree_pos hier_pos  = 0;            // position in that tree
+  Nid      value     = 0;            // raw_nid of the node
 
   [[nodiscard]] constexpr bool operator==(const Hier_index& other) const noexcept {
-    return hier_pos == other.hier_pos && value == other.value;
+    return owner_gid == other.owner_gid && hier_pos == other.hier_pos && value == other.value;
   }
   [[nodiscard]] constexpr bool operator!=(const Hier_index& other) const noexcept { return !(*this == other); }
 
   template <typename H>
   friend H AbslHashValue(H h, const Hier_index& x) {
-    return H::combine(std::move(h), x.hier_pos, x.value);
+    return H::combine(std::move(h), x.owner_gid, x.hier_pos, x.value);
   }
 };
 
