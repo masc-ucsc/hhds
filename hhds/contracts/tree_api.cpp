@@ -14,6 +14,8 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "hhds/attr.hpp"
@@ -269,3 +271,159 @@ TEST(TreeApiContract, PersistenceRoundTrip) {
 
   fs::remove_all(test_dir);
 }
+
+// Fixture for index-scope tests: the canonical "top tree that instantiates a
+// shared bottom subtree twice" shape. Mirrors the IndexContract fixture for
+// graphs in contracts/attr.cpp, but with trees.
+//
+//   top
+//   ├── inst1 -> subnode(bottom)
+//   └── inst2 -> subnode(bottom)
+//
+//   bottom
+//   └── leaf                  (single node inside shared body)
+namespace {
+
+struct TreeIndexFixture {
+  std::shared_ptr<hhds::Forest>                  forest = hhds::Forest::create();
+  std::shared_ptr<hhds::TreeIO>                  bottom_io;
+  std::shared_ptr<hhds::Tree>                    bottom;
+  hhds::Tree::Node_class                         bottom_root;
+  hhds::Tree::Node_class                         bottom_leaf;
+
+  std::shared_ptr<hhds::TreeIO>                  top_io;
+  std::shared_ptr<hhds::Tree>                    top;
+  hhds::Tree::Node_class                         top_root;
+  hhds::Tree::Node_class                         inst1;
+  hhds::Tree::Node_class                         inst2;
+
+  TreeIndexFixture() {
+    bottom_io   = forest->create_io("bottom");
+    bottom      = bottom_io->create_tree();
+    bottom_root = bottom->add_root_node();
+    bottom_root.attr(hhds::attrs::name).set("bottom_root");
+    bottom_leaf = bottom_root.add_child();
+    bottom_leaf.attr(hhds::attrs::name).set("bottom_leaf");
+
+    top_io   = forest->create_io("top");
+    top      = top_io->create_tree();
+    top_root = top->add_root_node();
+    top_root.attr(hhds::attrs::name).set("top_root");
+    inst1 = top_root.add_child();
+    inst1.attr(hhds::attrs::name).set("inst1");
+    inst1.set_subnode(bottom_io);
+    inst2 = top_root.add_child();
+    inst2.attr(hhds::attrs::name).set("inst2");
+    inst2.set_subnode(bottom_io);
+  }
+};
+
+}  // namespace
+
+// pre_order_class stays inside the top tree body. The handles it yields have
+// Class context, and the only index that is valid at that level is
+// Tree_class_index (scoped to this single body).
+TEST(TreeIndexContract, ClassOrderStaysInTopBody) {
+  TreeIndexFixture f;
+
+  std::vector<std::string> visited;
+  std::unordered_map<hhds::Tree_class_index, std::string> by_class;
+  for (auto node : f.top_root.pre_order_class()) {
+    EXPECT_TRUE(node.is_class());
+    visited.push_back(std::string(node.attr(hhds::attrs::name).get()));
+    by_class[node.get_class_index()] = std::string(node.attr(hhds::attrs::name).get());
+  }
+  EXPECT_EQ(visited, (std::vector<std::string>{"top_root", "inst1", "inst2"}));
+  EXPECT_EQ(by_class.size(), 3u);
+}
+
+// pre_order_flat crosses subnode references, but enters each unique subtree
+// body exactly once. Both inst1 and inst2 reference "bottom" via set_subnode,
+// so bottom is visited once total. Handles carry Flat context so
+// get_flat_index() is the canonical map key; every handle for the same
+// (body, pos) collapses to the same Tree_flat_index.
+TEST(TreeIndexContract, FlatOrderEntersSharedSubtreeOnce) {
+  TreeIndexFixture f;
+
+  std::vector<std::string>                              visited;
+  std::unordered_set<hhds::Tree_flat_index>              bottom_keys;
+  std::unordered_map<hhds::Tree_flat_index, std::string> by_flat;
+  for (auto node : f.top->pre_order_flat()) {
+    EXPECT_TRUE(node.is_flat());
+    visited.push_back(std::string(node.attr(hhds::attrs::name).get()));
+    if (node.get_current_tid() == f.bottom->get_tid()) {
+      bottom_keys.insert(node.get_flat_index());
+    }
+    by_flat[node.get_flat_index()] = std::string(node.attr(hhds::attrs::name).get());
+  }
+  // Expected order: top_root, inst1, enter bottom once (bottom_root, bottom_leaf), inst2
+  EXPECT_EQ(visited, (std::vector<std::string>{"top_root", "inst1", "bottom_root", "bottom_leaf", "inst2"}));
+  // Both bottom nodes land under bottom's tid exactly once.
+  EXPECT_EQ(bottom_keys.size(), 2u);
+  // 3 top nodes + 2 bottom nodes = 5 distinct flat keys.
+  EXPECT_EQ(by_flat.size(), 5u);
+}
+
+// pre_order_hier enters the shared body once per instantiation. Two
+// traversals of bottom happen (via inst1 and via inst2), and the per-visit
+// Tree_hier_index distinguishes them — while Tree_flat_index collapses them.
+TEST(TreeIndexContract, HierOrderDistinguishesInstantiations) {
+  TreeIndexFixture f;
+
+  std::vector<hhds::Tree::Node_class>                     bottom_leaf_visits;
+  std::unordered_map<hhds::Tree_hier_index, std::string>  by_hier;
+  std::vector<std::string>                                visited;
+  for (auto node : f.top->pre_order_hier()) {
+    EXPECT_TRUE(node.is_hier());
+    visited.push_back(std::string(node.attr(hhds::attrs::name).get()));
+    by_hier[node.get_hier_index()] = std::string(node.attr(hhds::attrs::name).get());
+    if (node.get_current_tid() == f.bottom->get_tid()
+        && node.attr(hhds::attrs::name).get() == "bottom_leaf") {
+      bottom_leaf_visits.push_back(node);
+    }
+  }
+  // bottom subtree is entered twice, once per inst.
+  EXPECT_EQ(visited,
+            (std::vector<std::string>{"top_root", "inst1", "bottom_root", "bottom_leaf", "inst2", "bottom_root", "bottom_leaf"}));
+  ASSERT_EQ(bottom_leaf_visits.size(), 2u);
+
+  // Per-instance hier keys differ, even though class/flat keys collapse.
+  EXPECT_EQ(bottom_leaf_visits[0].get_class_index(), bottom_leaf_visits[1].get_class_index());
+  EXPECT_EQ(bottom_leaf_visits[0].get_flat_index(), bottom_leaf_visits[1].get_flat_index());
+  EXPECT_NE(bottom_leaf_visits[0].get_hier_index(), bottom_leaf_visits[1].get_hier_index());
+
+  // 3 top nodes + 2 bottom nodes * 2 instantiations = 7 distinct hier keys.
+  EXPECT_EQ(by_hier.size(), 7u);
+}
+
+// post_order_flat / post_order_hier — children first, then parent. Used when
+// a bottom-up rewrite must finish the subtree before touching the container
+// node. Same dedup rules as the pre-order variants.
+TEST(TreeIndexContract, PostOrderFlatAndHierMirrorPreOrder) {
+  TreeIndexFixture f;
+
+  std::vector<std::string> flat_visited;
+  for (auto node : f.top->post_order_flat()) {
+    EXPECT_TRUE(node.is_flat());
+    flat_visited.push_back(std::string(node.attr(hhds::attrs::name).get()));
+  }
+  // bottom entered under inst1, inst2 not re-entered.
+  EXPECT_EQ(flat_visited,
+            (std::vector<std::string>{"bottom_leaf", "bottom_root", "inst1", "inst2", "top_root"}));
+
+  std::vector<std::string> hier_visited;
+  for (auto node : f.top->post_order_hier()) {
+    EXPECT_TRUE(node.is_hier());
+    hier_visited.push_back(std::string(node.attr(hhds::attrs::name).get()));
+  }
+  // bottom entered per-instance, hier_pos differs across the two visits.
+  EXPECT_EQ(hier_visited,
+            (std::vector<std::string>{"bottom_leaf", "bottom_root", "inst1", "bottom_leaf", "bottom_root", "inst2", "top_root"}));
+}
+
+// get_hier_index from a Class-context handle (Tree::Node_class produced by
+// in-body iteration) is a contract violation — release builds skip the
+// assert but the handle has no expansion tree. Documented here as a
+// negative example; not exercised at runtime.
+//
+//   for (auto n : f.top->pre_order_class()) n.get_hier_index();  // aborts

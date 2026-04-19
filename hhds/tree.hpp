@@ -149,6 +149,26 @@ struct Tree_flat_index {
   }
 };
 
+// Hier_index for trees. Like Graph's Hier_index, the hier_pos is a Tree_pos
+// into the *expansion tree* (an auxiliary hhds::Tree that records one node
+// per hierarchical visit). Two instantiations of the same subtree body get
+// different hier_pos values, so Tree_hier_index distinguishes per-instance
+// state that Tree_flat_index collapses.
+struct Tree_hier_index {
+  Tree_pos hier_pos = 0;
+  Tree_pos value    = 0;
+
+  [[nodiscard]] constexpr bool operator==(const Tree_hier_index& other) const noexcept {
+    return hier_pos == other.hier_pos && value == other.value;
+  }
+  [[nodiscard]] constexpr bool operator!=(const Tree_hier_index& other) const noexcept { return !(*this == other); }
+
+  template <typename H>
+  friend H AbslHashValue(H h, const Tree_hier_index& x) {
+    return H::combine(std::move(h), x.hier_pos, x.value);
+  }
+};
+
 static constexpr int16_t  CHUNK_SHIFT = 3;                 // The number of bits in a chunk offset
 static constexpr int16_t  CHUNK_SIZE  = 1 << CHUNK_SHIFT;  // Size of a chunk in bits
 static constexpr int16_t  CHUNK_MASK  = CHUNK_SIZE - 1;    // Mask for chunk offset
@@ -411,10 +431,34 @@ public:
 
   class Node_class {
   public:
+    enum class Context : uint8_t { Class, Flat, Hier };
+
     Node_class() = default;
     Node_class(Tree* tree_value, Tree_pos current_pos_value)
         : tree_ptr(tree_value), current_pos(current_pos_value), generation(tree_value != nullptr ? tree_value->generation_ : 0) {}
     explicit Node_class(Tree_pos current_pos_value) : current_pos(current_pos_value) {}
+    // Flat context: node produced by a cross-forest traversal that visits
+    // every unique subtree body once. root_tid identifies the top tree body
+    // where traversal started.
+    Node_class(Tree* tree_value, Tree_pos current_pos_value, Tid root_tid_value)
+        : tree_ptr(tree_value)
+        , current_pos(current_pos_value)
+        , generation(tree_value != nullptr ? tree_value->generation_ : 0)
+        , context_(Context::Flat)
+        , root_tid_(root_tid_value) {}
+    // Hier context: node produced by a per-instance traversal. hier_pos is a
+    // position into the auxiliary expansion tree (hier_tree); hier_tids maps
+    // each hier_pos to the Tid of the body visited at that instance.
+    Node_class(Tree* tree_value, Tree_pos current_pos_value, Tid root_tid_value, std::shared_ptr<Tree> hier_tree_value,
+               std::shared_ptr<std::vector<Tid>> hier_tids_value, Tree_pos hier_pos_value)
+        : tree_ptr(tree_value)
+        , current_pos(current_pos_value)
+        , generation(tree_value != nullptr ? tree_value->generation_ : 0)
+        , context_(Context::Hier)
+        , root_tid_(root_tid_value)
+        , hier_tree_(std::move(hier_tree_value))
+        , hier_tids_(std::move(hier_tids_value))
+        , hier_pos_(hier_pos_value) {}
 
     [[nodiscard]] Tree*    get_tree() const noexcept { return tree_ptr; }
     [[nodiscard]] Tree_pos get_current_pos() const noexcept { return current_pos; }
@@ -422,7 +466,18 @@ public:
       return tree_ptr != nullptr && generation == tree_ptr->generation_ && tree_ptr->_check_idx_exists(current_pos)
              && tree_ptr->_contains_data(current_pos);
     }
-    [[nodiscard]] bool is_invalid() const noexcept { return !is_valid(); }
+    [[nodiscard]] bool    is_invalid() const noexcept { return !is_valid(); }
+    [[nodiscard]] Context get_context() const noexcept { return context_; }
+    [[nodiscard]] bool    is_class() const noexcept { return context_ == Context::Class; }
+    [[nodiscard]] bool    is_flat() const noexcept { return context_ == Context::Flat; }
+    [[nodiscard]] bool    is_hier() const noexcept { return context_ == Context::Hier; }
+    [[nodiscard]] Tid     get_current_tid() const noexcept { return tree_ptr != nullptr ? tree_ptr->get_tid() : INVALID; }
+    [[nodiscard]] Tid     get_root_tid() const noexcept {
+      return context_ == Context::Class ? get_current_tid() : root_tid_;
+    }
+    [[nodiscard]] Tree_pos                                 get_hier_pos() const noexcept { return hier_pos_; }
+    [[nodiscard]] const std::shared_ptr<Tree>&             get_hier_tree() const noexcept { return hier_tree_; }
+    [[nodiscard]] const std::shared_ptr<std::vector<Tid>>& get_hier_tids() const noexcept { return hier_tids_; }
 
     // Opaque, hashable keys for use in user-owned maps. Prefer these over using
     // Node_class directly as a map key.
@@ -431,6 +486,10 @@ public:
       I(tree_ptr != nullptr, "get_flat_index: node is not attached to a tree");
       return Tree_flat_index{tree_ptr->get_tid(), current_pos};
     }
+    [[nodiscard]] Tree_hier_index get_hier_index() const noexcept {
+      I(context_ == Context::Hier, "get_hier_index: requires hier traversal context");
+      return Tree_hier_index{hier_pos_, current_pos};
+    }
     [[nodiscard]] auto add_child() const -> Node_class;
     void               set_subnode(const std::shared_ptr<TreeIO>& treeio) const;
     void               set_type(Type type) const;
@@ -438,6 +497,10 @@ public:
     [[nodiscard]] auto pre_order_class() const;
     [[nodiscard]] auto post_order_class() const;
     [[nodiscard]] auto sibling_order() const;
+    [[nodiscard]] auto pre_order_flat() const;
+    [[nodiscard]] auto pre_order_hier() const;
+    [[nodiscard]] auto post_order_flat() const;
+    [[nodiscard]] auto post_order_hier() const;
 
     template <Attribute Tag>
     [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
@@ -454,9 +517,14 @@ public:
     }
 
   private:
-    Tree*    tree_ptr    = nullptr;
-    Tree_pos current_pos = INVALID;
-    uint64_t generation  = 0;
+    Tree*                             tree_ptr    = nullptr;
+    Tree_pos                          current_pos = INVALID;
+    uint64_t                          generation  = 0;
+    Context                           context_    = Context::Class;
+    Tid                               root_tid_   = INVALID;
+    std::shared_ptr<Tree>             hier_tree_;
+    std::shared_ptr<std::vector<Tid>> hier_tids_;
+    Tree_pos                          hier_pos_ = INVALID;
 
     friend class Tree;
   };
@@ -1038,6 +1106,91 @@ public:
     return post_order_range(start.get_current_pos(), this, follow_subtrees);
   }
 
+  // Flat/hier traversals — cross subnode references across the forest.
+  //
+  // pre_order_flat / post_order_flat visit each unique subtree body exactly
+  // once (deduplicated by Tid). Nodes are emitted with Flat context, so
+  // get_flat_index() is the natural map key.
+  //
+  // pre_order_hier / post_order_hier visit each *instance* of a subtree body
+  // in its caller context — same body can appear multiple times. Nodes are
+  // emitted with Hier context backed by an auxiliary expansion tree; two
+  // instances get different Tree_hier_index values because their hier_pos
+  // differ in that expansion tree.
+  //
+  // Both walks guard against cycles: flat dedups by Tid globally, hier keeps
+  // an "active on stack" Tid set. Returned vectors own their own state —
+  // hier additionally pins the expansion tree via shared_ptr on each Node.
+  [[nodiscard]] std::vector<Node_class> pre_order_flat(Tree_pos start = ROOT) const {
+    std::vector<Node_class> out;
+    if (!_contains_data(start)) {
+      return out;
+    }
+    std::set<Tid> visited_tids;
+    if (self_tid_ != INVALID) {
+      visited_tids.insert(self_tid_);
+    }
+    const_cast<Tree*>(this)->pre_order_flat_impl(start, self_tid_, visited_tids, out);
+    return out;
+  }
+  [[nodiscard]] std::vector<Node_class> pre_order_flat(Node_class start) const { return pre_order_flat(start.get_current_pos()); }
+
+  [[nodiscard]] std::vector<Node_class> post_order_flat(Tree_pos start = ROOT) const {
+    std::vector<Node_class> out;
+    if (!_contains_data(start)) {
+      return out;
+    }
+    std::set<Tid> visited_tids;
+    if (self_tid_ != INVALID) {
+      visited_tids.insert(self_tid_);
+    }
+    const_cast<Tree*>(this)->post_order_flat_impl(start, self_tid_, visited_tids, out);
+    return out;
+  }
+  [[nodiscard]] std::vector<Node_class> post_order_flat(Node_class start) const { return post_order_flat(start.get_current_pos()); }
+
+  [[nodiscard]] std::vector<Node_class> pre_order_hier(Tree_pos start = ROOT) const {
+    std::vector<Node_class> out;
+    if (!_contains_data(start)) {
+      return out;
+    }
+    auto           hier_tree     = Tree::create();
+    const Tree_pos root_hier_pos = hier_tree->add_root();
+    auto           hier_tids     = std::make_shared<std::vector<Tid>>();
+    if (static_cast<size_t>(root_hier_pos + 1) > hier_tids->size()) {
+      hier_tids->resize(static_cast<size_t>(root_hier_pos + 1), INVALID);
+    }
+    (*hier_tids)[static_cast<size_t>(root_hier_pos)] = self_tid_;
+    std::set<Tid> active_tids;
+    if (self_tid_ != INVALID) {
+      active_tids.insert(self_tid_);
+    }
+    const_cast<Tree*>(this)->pre_order_hier_impl(start, self_tid_, hier_tree, hier_tids, root_hier_pos, active_tids, out);
+    return out;
+  }
+  [[nodiscard]] std::vector<Node_class> pre_order_hier(Node_class start) const { return pre_order_hier(start.get_current_pos()); }
+
+  [[nodiscard]] std::vector<Node_class> post_order_hier(Tree_pos start = ROOT) const {
+    std::vector<Node_class> out;
+    if (!_contains_data(start)) {
+      return out;
+    }
+    auto           hier_tree     = Tree::create();
+    const Tree_pos root_hier_pos = hier_tree->add_root();
+    auto           hier_tids     = std::make_shared<std::vector<Tid>>();
+    if (static_cast<size_t>(root_hier_pos + 1) > hier_tids->size()) {
+      hier_tids->resize(static_cast<size_t>(root_hier_pos + 1), INVALID);
+    }
+    (*hier_tids)[static_cast<size_t>(root_hier_pos)] = self_tid_;
+    std::set<Tid> active_tids;
+    if (self_tid_ != INVALID) {
+      active_tids.insert(self_tid_);
+    }
+    const_cast<Tree*>(this)->post_order_hier_impl(start, self_tid_, hier_tree, hier_tids, root_hier_pos, active_tids, out);
+    return out;
+  }
+  [[nodiscard]] std::vector<Node_class> post_order_hier(Node_class start) const { return post_order_hier(start.get_current_pos()); }
+
   [[nodiscard]] bool     has_subnode(Tree_pos node_pos) const { return get_subnode(node_pos) < 0; }
   [[nodiscard]] bool     has_subnode(Node_class node) const { return has_subnode(node.get_current_pos()); }
   [[nodiscard]] size_t   get_subnode_index(Tree_pos node_pos) const { return static_cast<size_t>(-get_subnode(node_pos) - 1); }
@@ -1085,6 +1238,92 @@ private:
   void                     attr_note_modified() noexcept override { dirty_ = true; }
   mutable std::vector<Node_class> subs_cache_;
   mutable bool                    subs_cache_valid_ = false;
+
+  // Eager flat/hier walkers shared by pre_order_flat/hier and post_order_flat/hier.
+  // Either descend into the subnode reference (when unvisited / not on the
+  // active stack) or into the node's regular children — mirrors the subnode
+  // semantics used by the existing pre_order_iterator_with_subtrees: a
+  // subnode ref replaces the children subtree during traversal.
+  void pre_order_flat_impl(Tree_pos node_pos, Tid root_tid, std::set<Tid>& visited_tids, std::vector<Node_class>& out) {
+    out.emplace_back(this, node_pos, root_tid);
+    const Tid subnode_ref = get_subnode(node_pos);
+    if (subnode_ref != INVALID && subnode_ref < 0 && forest_ptr != nullptr && visited_tids.find(subnode_ref) == visited_tids.end()) {
+      Tree* subtree = _get_forest_tree(subnode_ref);
+      if (subtree != nullptr && subtree->_contains_data(subtree->get_root())) {
+        visited_tids.insert(subnode_ref);
+        subtree->pre_order_flat_impl(subtree->get_root(), root_tid, visited_tids, out);
+      }
+    } else {
+      for (Tree_pos child = get_first_child(node_pos); child != INVALID; child = get_sibling_next(child)) {
+        pre_order_flat_impl(child, root_tid, visited_tids, out);
+      }
+    }
+  }
+
+  void post_order_flat_impl(Tree_pos node_pos, Tid root_tid, std::set<Tid>& visited_tids, std::vector<Node_class>& out) {
+    const Tid subnode_ref = get_subnode(node_pos);
+    if (subnode_ref != INVALID && subnode_ref < 0 && forest_ptr != nullptr && visited_tids.find(subnode_ref) == visited_tids.end()) {
+      Tree* subtree = _get_forest_tree(subnode_ref);
+      if (subtree != nullptr && subtree->_contains_data(subtree->get_root())) {
+        visited_tids.insert(subnode_ref);
+        subtree->post_order_flat_impl(subtree->get_root(), root_tid, visited_tids, out);
+      }
+    } else {
+      for (Tree_pos child = get_first_child(node_pos); child != INVALID; child = get_sibling_next(child)) {
+        post_order_flat_impl(child, root_tid, visited_tids, out);
+      }
+    }
+    out.emplace_back(this, node_pos, root_tid);
+  }
+
+  void pre_order_hier_impl(Tree_pos node_pos, Tid root_tid, std::shared_ptr<Tree> hier_tree,
+                           std::shared_ptr<std::vector<Tid>> hier_tids, Tree_pos hier_pos, std::set<Tid>& active_tids,
+                           std::vector<Node_class>& out) {
+    out.emplace_back(this, node_pos, root_tid, hier_tree, hier_tids, hier_pos);
+    const Tid subnode_ref = get_subnode(node_pos);
+    if (subnode_ref != INVALID && subnode_ref < 0 && forest_ptr != nullptr && active_tids.find(subnode_ref) == active_tids.end()) {
+      Tree* subtree = _get_forest_tree(subnode_ref);
+      if (subtree != nullptr && subtree->_contains_data(subtree->get_root())) {
+        const Tree_pos child_hier_pos = hier_tree->add_child(hier_pos);
+        if (static_cast<size_t>(child_hier_pos + 1) > hier_tids->size()) {
+          hier_tids->resize(static_cast<size_t>(child_hier_pos + 1), INVALID);
+        }
+        (*hier_tids)[static_cast<size_t>(child_hier_pos)] = subnode_ref;
+        active_tids.insert(subnode_ref);
+        subtree->pre_order_hier_impl(subtree->get_root(), root_tid, hier_tree, hier_tids, child_hier_pos, active_tids, out);
+        active_tids.erase(subnode_ref);
+      }
+    } else {
+      for (Tree_pos child = get_first_child(node_pos); child != INVALID; child = get_sibling_next(child)) {
+        pre_order_hier_impl(child, root_tid, hier_tree, hier_tids, hier_pos, active_tids, out);
+      }
+    }
+  }
+
+  void post_order_hier_impl(Tree_pos node_pos, Tid root_tid, std::shared_ptr<Tree> hier_tree,
+                            std::shared_ptr<std::vector<Tid>> hier_tids, Tree_pos hier_pos, std::set<Tid>& active_tids,
+                            std::vector<Node_class>& out) {
+    const Tid subnode_ref = get_subnode(node_pos);
+    if (subnode_ref != INVALID && subnode_ref < 0 && forest_ptr != nullptr && active_tids.find(subnode_ref) == active_tids.end()) {
+      Tree* subtree = _get_forest_tree(subnode_ref);
+      if (subtree != nullptr && subtree->_contains_data(subtree->get_root())) {
+        const Tree_pos child_hier_pos = hier_tree->add_child(hier_pos);
+        if (static_cast<size_t>(child_hier_pos + 1) > hier_tids->size()) {
+          hier_tids->resize(static_cast<size_t>(child_hier_pos + 1), INVALID);
+        }
+        (*hier_tids)[static_cast<size_t>(child_hier_pos)] = subnode_ref;
+        active_tids.insert(subnode_ref);
+        subtree->post_order_hier_impl(subtree->get_root(), root_tid, hier_tree, hier_tids, child_hier_pos, active_tids, out);
+        active_tids.erase(subnode_ref);
+      }
+    } else {
+      for (Tree_pos child = get_first_child(node_pos); child != INVALID; child = get_sibling_next(child)) {
+        post_order_hier_impl(child, root_tid, hier_tree, hier_tids, hier_pos, active_tids, out);
+      }
+    }
+    out.emplace_back(this, node_pos, root_tid, hier_tree, hier_tids, hier_pos);
+  }
+
   explicit Tree(Forest* forest = nullptr) : forest_ptr(forest) { register_attr_tag<attrs::name_t>("hhds::attrs::name"); }
 };
 
@@ -1155,6 +1394,26 @@ inline auto Tree::Node_class::post_order_class() const {
 inline auto Tree::Node_class::sibling_order() const {
   I(tree_ptr != nullptr, "sibling_order: node is not attached to a tree");
   return tree_ptr->sibling_order(*this);
+}
+
+inline auto Tree::Node_class::pre_order_flat() const {
+  I(tree_ptr != nullptr, "pre_order_flat: node is not attached to a tree");
+  return tree_ptr->pre_order_flat(*this);
+}
+
+inline auto Tree::Node_class::pre_order_hier() const {
+  I(tree_ptr != nullptr, "pre_order_hier: node is not attached to a tree");
+  return tree_ptr->pre_order_hier(*this);
+}
+
+inline auto Tree::Node_class::post_order_flat() const {
+  I(tree_ptr != nullptr, "post_order_flat: node is not attached to a tree");
+  return tree_ptr->post_order_flat(*this);
+}
+
+inline auto Tree::Node_class::post_order_hier() const {
+  I(tree_ptr != nullptr, "post_order_hier: node is not attached to a tree");
+  return tree_ptr->post_order_hier(*this);
 }
 
 class Forest : public std::enable_shared_from_this<Forest> {
@@ -1985,6 +2244,15 @@ template <>
 struct hash<hhds::Tree_flat_index> {
   [[nodiscard]] size_t operator()(const hhds::Tree_flat_index& x) const noexcept {
     const size_t h1 = std::hash<hhds::Tid>{}(x.tid);
+    const size_t h2 = std::hash<hhds::Tree_pos>{}(x.value);
+    return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6U) + (h1 >> 2U));
+  }
+};
+
+template <>
+struct hash<hhds::Tree_hier_index> {
+  [[nodiscard]] size_t operator()(const hhds::Tree_hier_index& x) const noexcept {
+    const size_t h1 = std::hash<hhds::Tree_pos>{}(x.hier_pos);
     const size_t h2 = std::hash<hhds::Tree_pos>{}(x.value);
     return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6U) + (h1 >> 2U));
   }
