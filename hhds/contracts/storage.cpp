@@ -32,8 +32,10 @@ inline constexpr loc_t loc{};
 // documented in docs/storage_internals.md.
 // ------------------------------------------------------------------
 
-static_assert(sizeof(hhds::NodeEntry) == 32, "NodeEntry must be 32 bytes");
-static_assert(sizeof(hhds::PinEntry) == 32, "PinEntry must be 32 bytes");
+static_assert(hhds::Graph::NODE_ENTRY_SIZE == 32, "NodeEntry must be 32 bytes");
+static_assert(hhds::Graph::PIN_ENTRY_SIZE == 32, "PinEntry must be 32 bytes");
+static_assert(hhds::Graph::NODE_ENTRY_MAX_EDGES == 8, "NodeEntry inline edge capacity changed");
+static_assert(hhds::Graph::PIN_ENTRY_MAX_EDGES == 8, "PinEntry inline edge capacity changed");
 static_assert(sizeof(hhds::Tree_pointers) == 192, "Tree_pointers must be 192 bytes (3 cache lines)");
 
 // ------------------------------------------------------------------
@@ -207,10 +209,11 @@ TEST(GraphStorage, SubnodeForcesOverflow) {
   auto node = graph->create_node();
   node.set_subnode(leaf_gio);
 
-  // After set_subnode, the node should be in overflow mode.
-  auto* entry = graph->ref_node(node.get_raw_nid());
-  EXPECT_TRUE(entry->check_overflow());
-  EXPECT_TRUE(entry->has_subnode());
+  // The subnode link is observable through named pin resolution.
+  leaf_gio->add_input("x", 1);
+  auto pin = node.create_sink_pin("x");
+  EXPECT_TRUE(pin.is_valid());
+  EXPECT_EQ(pin.get_port_id(), 1u);
 }
 
 TEST(GraphAttrs, FlatGetSetHasDeleteOnNodeAndPin) {
@@ -492,8 +495,8 @@ TEST(GraphPersistence, SaveLoadRoundTrip) {
   drv2.connect_sink(snk2);
 
   // Collect original edges.
-  auto orig_out_n1 = graph->out_edges(n1);
-  auto orig_out_n2 = graph->out_edges(n2);
+  auto orig_out_n1 = n1.out_edges();
+  auto orig_out_n2 = n2.out_edges();
 
   // Save.
   graph->save_body(test_dir);
@@ -511,15 +514,15 @@ TEST(GraphPersistence, SaveLoadRoundTrip) {
   auto loaded_n2 = hhds::Node_class(graph2.get(), n2.get_raw_nid());
   auto loaded_n3 = hhds::Node_class(graph2.get(), n3.get_raw_nid());
 
-  auto loaded_out_n1 = graph2->out_edges(loaded_n1);
-  auto loaded_out_n2 = graph2->out_edges(loaded_n2);
+  auto loaded_out_n1 = loaded_n1.out_edges();
+  auto loaded_out_n2 = loaded_n2.out_edges();
   EXPECT_EQ(loaded_out_n1.size(), orig_out_n1.size());
   EXPECT_EQ(loaded_out_n2.size(), orig_out_n2.size());
 
-  // Verify subnode survived.
-  auto* entry = graph2->ref_node(n1.get_raw_nid());
-  EXPECT_TRUE(entry->has_subnode());
-  EXPECT_EQ(entry->get_subnode(), sub_gio->get_gid());
+  // Verify subnode survived through named pin resolution.
+  auto loaded_sub_pin = loaded_n1.create_sink_pin("x");
+  EXPECT_TRUE(loaded_sub_pin.is_valid());
+  EXPECT_EQ(loaded_sub_pin.get_port_id(), 1u);
   EXPECT_EQ(loaded_n1.attr(hhds::attrs::name).get(), "adder");
   EXPECT_EQ(loaded_n2.attr(test_attrs::bits).get(), 32);
   EXPECT_EQ(loaded_n3.get_driver_pin(1).attr(test_attrs::bits).get(), 7);
@@ -536,10 +539,10 @@ TEST(GraphPersistence, OverflowSetRoundTrip) {
   auto               gio   = lib.create_io("top");
   auto               graph = gio->create_graph();
 
-  // Create a hub node connected to many others (force overflow).
+  // Create a hub node connected to enough others to exceed inline storage.
   auto                          hub = graph->create_node();
   std::vector<hhds::Node_class> targets;
-  for (int i = 0; i < 20; ++i) {
+  for (size_t i = 0; i < hhds::Graph::NODE_ENTRY_MAX_EDGES + 12; ++i) {
     auto t = graph->create_node();
     targets.push_back(t);
     auto d = hub.create_driver_pin(0);
@@ -547,11 +550,8 @@ TEST(GraphPersistence, OverflowSetRoundTrip) {
     d.connect_sink(s);
   }
 
-  // Verify overflow happened.
-  auto* hub_entry = graph->ref_node(hub.get_raw_nid());
-  EXPECT_TRUE(hub_entry->check_overflow());
-
-  auto orig_edges = graph->out_edges(hub);
+  auto orig_edges = hub.out_edges();
+  EXPECT_GT(orig_edges.size(), hhds::Graph::NODE_ENTRY_MAX_EDGES);
 
   // Save and reload.
   graph->save_body(test_dir);
@@ -561,7 +561,7 @@ TEST(GraphPersistence, OverflowSetRoundTrip) {
   graph2->load_body(test_dir);
 
   auto loaded_hub   = hhds::Node_class(graph2.get(), hub.get_raw_nid());
-  auto loaded_edges = graph2->out_edges(loaded_hub);
+  auto loaded_edges = loaded_hub.out_edges();
   EXPECT_EQ(loaded_edges.size(), orig_edges.size());
 
   fs::remove_all(test_dir);

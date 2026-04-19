@@ -52,137 +52,6 @@ struct OverflowPool {
   }
 };
 
-class __attribute__((packed)) PinEntry {
-  friend class Graph;
-
-public:
-  PinEntry();
-  PinEntry(Nid master_nid_value, Port_id port_id_value);
-
-  [[nodiscard]] Nid      get_master_nid() const;
-  [[nodiscard]] Port_id  get_port_id() const;
-  auto                   add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
-  auto                   delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
-  [[nodiscard]] bool     has_edges() const;
-  [[nodiscard]] Pid      get_next_pin_id() const;
-  void                   set_next_pin_id(Pid id);
-  [[nodiscard]] bool     check_overflow() const { return use_overflow; }
-  [[nodiscard]] uint32_t get_overflow_idx() const { return sedges_.overflow_idx; }
-
-  static constexpr size_t MAX_EDGES = 8;
-
-  class EdgeRange {
-  public:
-    using iterator = typename ankerl::unordered_dense::set<Vid>::const_iterator;
-    EdgeRange(const PinEntry* pin, Pid pid, const OverflowVec& overflow) noexcept;
-    EdgeRange(EdgeRange&& o) noexcept;
-    ~EdgeRange() noexcept;
-
-    // disable copy
-    EdgeRange(const EdgeRange&)            = delete;
-    EdgeRange& operator=(const EdgeRange&) = delete;
-
-    iterator begin() const noexcept { return set_->begin(); }
-    iterator end() const noexcept { return set_->end(); }
-
-  private:
-    const PinEntry*                    pin_;
-    ankerl::unordered_dense::set<Vid>* set_;
-    bool                               own_;
-
-    static ankerl::unordered_dense::set<Vid>* acquire_set() noexcept;
-    static void                               release_set(ankerl::unordered_dense::set<Vid>*) noexcept;
-    static void                               populate_set(const PinEntry*, ankerl::unordered_dense::set<Vid>&, Pid) noexcept;
-  };
-  [[nodiscard]] auto get_edges(Pid pid, const OverflowVec& overflow) const noexcept -> EdgeRange;
-
-private:
-  auto overflow_handling(Pid self_id, Vid other_id, OverflowPool& pool) -> bool;
-
-  Nid     master_nid : Nid_bits;   // 42 bits
-  Port_id port_id : Port_bits;     // 22 bits    => 64 bits (8 bytes)
-  Pid     next_pin_id : Nid_bits;  // 42 bits
-  Nid     ledge0 : Nid_bits;       // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
-  Nid     ledge1 : Nid_bits;       // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
-  uint8_t use_overflow : 1;        // 1 bit      => 64 bits (8 bytes)
-
-  // adds upto a total of 191 bits => 24 bytes
-  union {
-    int64_t  sedges;        // 48 bits (when use_overflow == 0)
-    uint32_t overflow_idx;  // index into Graph::overflow_sets_ (when use_overflow == 1)
-  } sedges_;                // Total: 8 bytes
-  // Total: 32 bytes
-};
-
-static_assert(sizeof(PinEntry) == 32, "PinEntry size mismatch");
-
-class __attribute__((packed)) NodeEntry {
-  friend class Graph;
-
-public:
-  NodeEntry();
-  explicit NodeEntry(Nid nid_value);
-
-  [[nodiscard]] Nid      get_nid() const;
-  [[nodiscard]] Type     get_type() const;
-  void                   set_type(Type t);
-  [[nodiscard]] Pid      get_next_pin_id() const;
-  void                   set_next_pin_id(Pid id);
-  [[nodiscard]] bool     has_edges(const OverflowVec& overflow) const;
-  auto                   add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
-  auto                   delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
-  [[nodiscard]] bool     check_overflow() const { return use_overflow; }
-  [[nodiscard]] uint32_t get_overflow_idx() const { return sedges_.overflow_idx; }
-
-  // Subgraph link: stored in ledge0 *only when use_overflow == 1* as (gid + 1).
-  // Caller must validate gid before calling set_subnode().
-  void               set_subnode(Gid gid, OverflowPool& pool);
-  [[nodiscard]] Gid  get_subnode() const noexcept;
-  [[nodiscard]] bool has_subnode() const noexcept;
-
-  static constexpr size_t MAX_EDGES = 8;
-
-  class EdgeRange {
-  public:
-    using iterator = typename ankerl::unordered_dense::set<Vid>::const_iterator;
-    EdgeRange(const NodeEntry* node, Nid nid, const OverflowVec& overflow) noexcept;
-    EdgeRange(EdgeRange&& o) noexcept;
-    ~EdgeRange() noexcept;
-    // disable copy
-    EdgeRange(const EdgeRange&)            = delete;
-    EdgeRange& operator=(const EdgeRange&) = delete;
-    iterator   begin() const noexcept { return set_->begin(); }
-    iterator   end() const noexcept { return set_->end(); }
-
-  private:
-    const NodeEntry*                          node_;
-    ankerl::unordered_dense::set<Vid>*        set_;
-    bool                                      own_;
-    static ankerl::unordered_dense::set<Vid>* acquire_set() noexcept;
-    static void                               release_set(ankerl::unordered_dense::set<Vid>*) noexcept;
-    static void                               populate_set(const NodeEntry*, ankerl::unordered_dense::set<Vid>&, Nid) noexcept;
-  };
-
-  [[nodiscard]] auto get_edges(Nid nid, const OverflowVec& overflow) const noexcept -> EdgeRange;
-
-private:
-  void clear_node();
-  auto overflow_handling(Nid self_id, Vid other_id, OverflowPool& pool) -> bool;
-
-  Nid     nid : Nid_bits;
-  Type    type : 16;
-  Pid     next_pin_id : Nid_bits;
-  Nid     ledge0 : Nid_bits;
-  Nid     ledge1 : Nid_bits;
-  uint8_t use_overflow : 1;
-  uint8_t padding : 7;
-  union {
-    int64_t  sedges;        // 48 bits (when use_overflow == 0)
-    uint32_t overflow_idx;  // index into Graph::overflow_sets_ (when use_overflow == 1)
-  } sedges_;                // Total: 8 bytes
-};
-static_assert(sizeof(NodeEntry) == 32, "NodeEntry size mismatch");
-
 class Graph;
 class GraphIO;
 class Node_class;
@@ -401,7 +270,140 @@ using Pin  = Pin_class;
 class GraphLibrary;
 
 class Graph : public Attr_host {
+  class __attribute__((packed)) PinEntry {
+    friend class Graph;
+
+  public:
+    PinEntry();
+    PinEntry(Nid master_nid_value, Port_id port_id_value);
+
+    [[nodiscard]] Nid      get_master_nid() const;
+    [[nodiscard]] Port_id  get_port_id() const;
+    auto                   add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
+    auto                   delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
+    [[nodiscard]] bool     has_edges() const;
+    [[nodiscard]] Pid      get_next_pin_id() const;
+    void                   set_next_pin_id(Pid id);
+    [[nodiscard]] bool     check_overflow() const { return use_overflow; }
+    [[nodiscard]] uint32_t get_overflow_idx() const { return sedges_.overflow_idx; }
+
+    static constexpr size_t MAX_EDGES = 8;
+
+    class EdgeRange {
+    public:
+      using iterator = typename ankerl::unordered_dense::set<Vid>::const_iterator;
+      EdgeRange(const PinEntry* pin, Pid pid, const OverflowVec& overflow) noexcept;
+      EdgeRange(EdgeRange&& o) noexcept;
+      ~EdgeRange() noexcept;
+
+      EdgeRange(const EdgeRange&)            = delete;
+      EdgeRange& operator=(const EdgeRange&) = delete;
+
+      iterator begin() const noexcept { return set_->begin(); }
+      iterator end() const noexcept { return set_->end(); }
+
+    private:
+      const PinEntry*                    pin_;
+      ankerl::unordered_dense::set<Vid>* set_;
+      bool                               own_;
+
+      static ankerl::unordered_dense::set<Vid>* acquire_set() noexcept;
+      static void                               release_set(ankerl::unordered_dense::set<Vid>*) noexcept;
+      static void                               populate_set(const PinEntry*, ankerl::unordered_dense::set<Vid>&, Pid) noexcept;
+    };
+    [[nodiscard]] auto get_edges(Pid pid, const OverflowVec& overflow) const noexcept -> EdgeRange;
+
+  private:
+    auto overflow_handling(Pid self_id, Vid other_id, OverflowPool& pool) -> bool;
+
+    Nid     master_nid : Nid_bits;   // 42 bits
+    Port_id port_id : Port_bits;     // 22 bits    => 64 bits (8 bytes)
+    Pid     next_pin_id : Nid_bits;  // 42 bits
+    Nid     ledge0 : Nid_bits;       // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
+    Nid     ledge1 : Nid_bits;       // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
+    uint8_t use_overflow : 1;        // 1 bit      => 64 bits (8 bytes)
+
+    union {
+      int64_t  sedges;        // 48 bits (when use_overflow == 0)
+      uint32_t overflow_idx;  // index into Graph::overflow_sets_ (when use_overflow == 1)
+    } sedges_;                // Total: 8 bytes
+  };
+
+  static_assert(sizeof(PinEntry) == 32, "PinEntry size mismatch");
+
+  class __attribute__((packed)) NodeEntry {
+    friend class Graph;
+
+  public:
+    NodeEntry();
+    explicit NodeEntry(Nid nid_value);
+
+    [[nodiscard]] Nid      get_nid() const;
+    [[nodiscard]] Type     get_type() const;
+    void                   set_type(Type t);
+    [[nodiscard]] Pid      get_next_pin_id() const;
+    void                   set_next_pin_id(Pid id);
+    [[nodiscard]] bool     has_edges(const OverflowVec& overflow) const;
+    auto                   add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
+    auto                   delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
+    [[nodiscard]] bool     check_overflow() const { return use_overflow; }
+    [[nodiscard]] uint32_t get_overflow_idx() const { return sedges_.overflow_idx; }
+
+    void               set_subnode(Gid gid, OverflowPool& pool);
+    [[nodiscard]] Gid  get_subnode() const noexcept;
+    [[nodiscard]] bool has_subnode() const noexcept;
+
+    static constexpr size_t MAX_EDGES = 8;
+
+    class EdgeRange {
+    public:
+      using iterator = typename ankerl::unordered_dense::set<Vid>::const_iterator;
+      EdgeRange(const NodeEntry* node, Nid nid, const OverflowVec& overflow) noexcept;
+      EdgeRange(EdgeRange&& o) noexcept;
+      ~EdgeRange() noexcept;
+
+      EdgeRange(const EdgeRange&)            = delete;
+      EdgeRange& operator=(const EdgeRange&) = delete;
+
+      iterator begin() const noexcept { return set_->begin(); }
+      iterator end() const noexcept { return set_->end(); }
+
+    private:
+      const NodeEntry*                          node_;
+      ankerl::unordered_dense::set<Vid>*        set_;
+      bool                                      own_;
+      static ankerl::unordered_dense::set<Vid>* acquire_set() noexcept;
+      static void                               release_set(ankerl::unordered_dense::set<Vid>*) noexcept;
+      static void                               populate_set(const NodeEntry*, ankerl::unordered_dense::set<Vid>&, Nid) noexcept;
+    };
+
+    [[nodiscard]] auto get_edges(Nid nid, const OverflowVec& overflow) const noexcept -> EdgeRange;
+
+  private:
+    void clear_node();
+    auto overflow_handling(Nid self_id, Vid other_id, OverflowPool& pool) -> bool;
+
+    Nid     nid : Nid_bits;
+    Type    type : 16;
+    Pid     next_pin_id : Nid_bits;
+    Nid     ledge0 : Nid_bits;
+    Nid     ledge1 : Nid_bits;
+    uint8_t use_overflow : 1;
+    uint8_t padding : 7;
+    union {
+      int64_t  sedges;        // 48 bits (when use_overflow == 0)
+      uint32_t overflow_idx;  // index into Graph::overflow_sets_ (when use_overflow == 1)
+    } sedges_;                // Total: 8 bytes
+  };
+
+  static_assert(sizeof(NodeEntry) == 32, "NodeEntry size mismatch");
+
 public:
+  static constexpr size_t PIN_ENTRY_SIZE       = sizeof(PinEntry);
+  static constexpr size_t NODE_ENTRY_SIZE      = sizeof(NodeEntry);
+  static constexpr size_t PIN_ENTRY_MAX_EDGES  = PinEntry::MAX_EDGES;
+  static constexpr size_t NODE_ENTRY_MAX_EDGES = NodeEntry::MAX_EDGES;
+
   Graph();
   // Graphs are owned via handles; copying or moving would break library identity and traversal caches.
   Graph(const Graph&)            = delete;
@@ -425,25 +427,14 @@ public:
   static constexpr Nid INPUT_NODE  = (static_cast<Nid>(1) << 2);
   static constexpr Nid OUTPUT_NODE = (static_cast<Nid>(2) << 2);
 
-  [[nodiscard]] auto ref_node(Nid id) const -> NodeEntry*;
-  [[nodiscard]] auto ref_pin(Pid id) const -> PinEntry*;
-
-  [[nodiscard]] std::vector<Edge_class> out_edges(Node_class node);
-  [[nodiscard]] std::vector<Edge_class> inp_edges(Node_class node);
-  [[nodiscard]] std::vector<Edge_class> out_edges(Pin_class pin);
-  [[nodiscard]] std::vector<Edge_class> inp_edges(Pin_class pin);
-  [[nodiscard]] std::vector<Pin_class>  get_pins(Node_class node);
-  [[nodiscard]] std::vector<Pin_class>  get_driver_pins(Node_class node);
-  [[nodiscard]] std::vector<Pin_class>  get_sink_pins(Node_class node);
-  [[nodiscard]] auto                    fast_class() const -> std::span<const Node>;
-  [[nodiscard]] auto                    forward_class() const -> std::span<const Node>;
-  [[nodiscard]] auto                    fast_flat() const -> std::span<const Node>;
-  [[nodiscard]] auto                    forward_flat() const -> std::span<const Node>;
-  [[nodiscard]] auto                    fast_hier() const -> std::span<const Node>;
-  [[nodiscard]] auto                    forward_hier() const -> std::span<const Node>;
-  void                                  delete_node(Nid nid);
-  void                                  display_graph() const;
-  void                                  display_next_pin_of_node() const;
+  [[nodiscard]] auto fast_class() const -> std::span<const Node>;
+  [[nodiscard]] auto forward_class() const -> std::span<const Node>;
+  [[nodiscard]] auto fast_flat() const -> std::span<const Node>;
+  [[nodiscard]] auto forward_flat() const -> std::span<const Node>;
+  [[nodiscard]] auto fast_hier() const -> std::span<const Node>;
+  [[nodiscard]] auto forward_hier() const -> std::span<const Node>;
+  void               display_graph() const;
+  void               display_next_pin_of_node() const;
 
   class FastIterator {
   public:
@@ -480,8 +471,11 @@ private:
   void                       assert_pin_exists(const Pin_class& pin) const noexcept;
   [[nodiscard]] bool         is_node_valid(Nid nid) const noexcept;
   [[nodiscard]] bool         is_pin_valid(Pid pid) const noexcept;
+  [[nodiscard]] auto         ref_node(Nid id) const -> NodeEntry*;
+  [[nodiscard]] auto         ref_pin(Pid id) const -> PinEntry*;
   void                       invalidate_from_library() noexcept;
   void                       release_storage() noexcept;
+  void                       delete_node(Nid nid);
   [[nodiscard]] Pid          materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
                                                          ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
   void erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
@@ -498,21 +492,28 @@ private:
   void                           add_edge(Pid driver_id, Pid sink_id);
   void add_edge(Pin_class driver_pin, Pin_class sink_pin) { add_edge(driver_pin.get_pin_pid(), sink_pin.get_pin_pid()); }
   void del_edge(Pin_class driver_pin, Pin_class sink_pin);
-  void del_edge_int(Vid driver_id, Vid sink_id);
-  void add_edge_int(Pid self_id, Pid other_id);
-  void set_next_pin(Nid nid, Pid next_pin);
-  [[nodiscard]] Pin_class make_pin_class(Pid pin_pid) const;
-  void                    bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
-  void                    set_name(std::string_view name) { name_ = name; }
-  void                    invalidate_traversal_caches() noexcept;
-  void                    rebuild_fast_class_cache() const;
-  void                    rebuild_fast_flat_cache() const;
-  void                    rebuild_fast_hier_cache() const;
-  void                    rebuild_forward_class_cache() const;
-  void                    rebuild_forward_flat_cache() const;
-  void                    rebuild_forward_hier_cache() const;
-  void                    fast_iter_impl(bool hierarchy, Gid top_graph, uint32_t tree_node_num, uint32_t& next_tree_node_num,
-                                         ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<FastIterator>& out) const;
+  [[nodiscard]] std::vector<Edge_class> out_edges(Node_class node);
+  [[nodiscard]] std::vector<Edge_class> inp_edges(Node_class node);
+  [[nodiscard]] std::vector<Edge_class> out_edges(Pin_class pin);
+  [[nodiscard]] std::vector<Edge_class> inp_edges(Pin_class pin);
+  [[nodiscard]] std::vector<Pin_class>  get_pins(Node_class node);
+  [[nodiscard]] std::vector<Pin_class>  get_driver_pins(Node_class node);
+  [[nodiscard]] std::vector<Pin_class>  get_sink_pins(Node_class node);
+  void                                  del_edge_int(Vid driver_id, Vid sink_id);
+  void                                  add_edge_int(Pid self_id, Pid other_id);
+  void                                  set_next_pin(Nid nid, Pid next_pin);
+  [[nodiscard]] Pin_class               make_pin_class(Pid pin_pid) const;
+  void                                  bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
+  void                                  set_name(std::string_view name) { name_ = name; }
+  void                                  invalidate_traversal_caches() noexcept;
+  void                                  rebuild_fast_class_cache() const;
+  void                                  rebuild_fast_flat_cache() const;
+  void                                  rebuild_fast_hier_cache() const;
+  void                                  rebuild_forward_class_cache() const;
+  void                                  rebuild_forward_flat_cache() const;
+  void                                  rebuild_forward_hier_cache() const;
+  void fast_iter_impl(bool hierarchy, Gid top_graph, uint32_t tree_node_num, uint32_t& next_tree_node_num,
+                      ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<FastIterator>& out) const;
   void fast_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos,
                       ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const;
   void forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const;

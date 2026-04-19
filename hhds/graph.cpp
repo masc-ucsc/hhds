@@ -81,17 +81,18 @@ auto Pin_class::get_current_gid() const noexcept -> Gid {
   return graph_ != nullptr ? graph_->get_gid() : Gid_invalid;
 }
 
-PinEntry::PinEntry() : master_nid(0), port_id(0), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.sedges = 0} {}
+Graph::PinEntry::PinEntry()
+    : master_nid(0), port_id(0), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.sedges = 0} {}
 
-PinEntry::PinEntry(Nid mn, Port_id pid)
+Graph::PinEntry::PinEntry(Nid mn, Port_id pid)
     : master_nid(mn), port_id(pid), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.sedges = 0} {}
 
-Nid     PinEntry::get_master_nid() const { return master_nid; }
-Port_id PinEntry::get_port_id() const { return port_id; }
-Pid     PinEntry::get_next_pin_id() const { return next_pin_id; }
-void    PinEntry::set_next_pin_id(Pid id) { next_pin_id = id; }
+Nid     Graph::PinEntry::get_master_nid() const { return master_nid; }
+Port_id Graph::PinEntry::get_port_id() const { return port_id; }
+Pid     Graph::PinEntry::get_next_pin_id() const { return next_pin_id; }
+void    Graph::PinEntry::set_next_pin_id(Pid id) { next_pin_id = id; }
 
-auto PinEntry::overflow_handling(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
+auto Graph::PinEntry::overflow_handling(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
     pool.sets[sedges_.overflow_idx].insert(other_id);
     return true;
@@ -132,7 +133,7 @@ auto PinEntry::overflow_handling(Pid self_id, Vid other_id, OverflowPool& pool) 
   return true;
 }
 
-auto PinEntry::add_edge(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
+auto Graph::PinEntry::add_edge(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
     return overflow_handling(self_id, other_id, pool);
   }
@@ -189,7 +190,7 @@ auto PinEntry::add_edge(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
   return overflow_handling(self_id, other_id, pool);
 }
 
-auto PinEntry::delete_edge(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
+auto Graph::PinEntry::delete_edge(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
     return pool.sets[sedges_.overflow_idx].erase(other_id) != 0;
   }
@@ -216,7 +217,7 @@ auto PinEntry::delete_edge(Pid self_id, Vid other_id, OverflowPool& pool) -> boo
   return true;
 }
 
-PinEntry::EdgeRange::EdgeRange(const PinEntry* pin, Pid pid, const OverflowVec& overflow) noexcept
+Graph::PinEntry::EdgeRange::EdgeRange(const Graph::PinEntry* pin, Pid pid, const OverflowVec& overflow) noexcept
     : pin_(pin), set_(nullptr), own_(false) {
   if (pin->use_overflow) {
     set_ = acquire_set();
@@ -232,18 +233,18 @@ PinEntry::EdgeRange::EdgeRange(const PinEntry* pin, Pid pid, const OverflowVec& 
   }
 }
 
-PinEntry::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : pin_(o.pin_), set_(o.set_), own_(o.own_) {
+Graph::PinEntry::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : pin_(o.pin_), set_(o.set_), own_(o.own_) {
   o.pin_ = nullptr;
   o.set_ = nullptr;
 }
 
-PinEntry::EdgeRange::~EdgeRange() noexcept {
+Graph::PinEntry::EdgeRange::~EdgeRange() noexcept {
   if (own_) {
     release_set(set_);
   }
 }
 
-ankerl::unordered_dense::set<Vid>* PinEntry::EdgeRange::acquire_set() noexcept {
+ankerl::unordered_dense::set<Vid>* Graph::PinEntry::EdgeRange::acquire_set() noexcept {
   static thread_local std::vector<ankerl::unordered_dense::set<Vid>*> pool;
   if (!pool.empty()) {
     ankerl::unordered_dense::set<Vid>* set = pool.back();
@@ -256,12 +257,13 @@ ankerl::unordered_dense::set<Vid>* PinEntry::EdgeRange::acquire_set() noexcept {
   }
 }
 
-void PinEntry::EdgeRange::release_set(ankerl::unordered_dense::set<Vid>* set) noexcept {
+void Graph::PinEntry::EdgeRange::release_set(ankerl::unordered_dense::set<Vid>* set) noexcept {
   static thread_local std::vector<ankerl::unordered_dense::set<Vid>*> pool;
   pool.push_back(set);
 }
 
-void PinEntry::EdgeRange::populate_set(const PinEntry* pin, ankerl::unordered_dense::set<Vid>& set, Pid pid) noexcept {
+void Graph::PinEntry::EdgeRange::populate_set(const Graph::PinEntry* pin, ankerl::unordered_dense::set<Vid>& set,
+                                              Pid pid) noexcept {
   constexpr uint64_t SLOT_MASK  = (1ULL << 14) - 1;  // grab 14 bits
   constexpr uint64_t SIGN_BIT   = 1ULL << 13;
   constexpr uint64_t DRIVER_BIT = 1ULL << 1;
@@ -304,11 +306,11 @@ void PinEntry::EdgeRange::populate_set(const PinEntry* pin, ankerl::unordered_de
   }
 }
 
-auto PinEntry::get_edges(Pid pid, const OverflowVec& overflow) const noexcept -> EdgeRange {
+auto Graph::PinEntry::get_edges(Pid pid, const OverflowVec& overflow) const noexcept -> EdgeRange {
   return EdgeRange(this, pid, overflow);
 }
 
-bool PinEntry::has_edges() const {
+bool Graph::PinEntry::has_edges() const {
   if (use_overflow) {
     return true;
   }
@@ -324,21 +326,21 @@ bool PinEntry::has_edges() const {
   return false;
 }
 
-NodeEntry::NodeEntry() { clear_node(); }
-NodeEntry::NodeEntry(Nid nid_val) {
+Graph::NodeEntry::NodeEntry() { clear_node(); }
+Graph::NodeEntry::NodeEntry(Nid nid_val) {
   clear_node();
   nid = nid_val;
 }
 
-void NodeEntry::clear_node() { bzero(this, sizeof(NodeEntry)); }
+void Graph::NodeEntry::clear_node() { bzero(this, sizeof(NodeEntry)); }
 
-void NodeEntry::set_type(Type t) { type = t; }
-Nid  NodeEntry::get_nid() const { return nid; }
-Type NodeEntry::get_type() const { return type; }
-Pid  NodeEntry::get_next_pin_id() const { return next_pin_id; }
-void NodeEntry::set_next_pin_id(Pid id) { next_pin_id = id; }
+void Graph::NodeEntry::set_type(Type t) { type = t; }
+Nid  Graph::NodeEntry::get_nid() const { return nid; }
+Type Graph::NodeEntry::get_type() const { return type; }
+Pid  Graph::NodeEntry::get_next_pin_id() const { return next_pin_id; }
+void Graph::NodeEntry::set_next_pin_id(Pid id) { next_pin_id = id; }
 
-auto NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
+auto Graph::NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
     if (other_id) {
       pool.sets[sedges_.overflow_idx].insert(other_id);
@@ -392,7 +394,7 @@ auto NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool& pool)
   return true;
 }
 
-auto NodeEntry::add_edge(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
+auto Graph::NodeEntry::add_edge(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
     return overflow_handling(self_id, other_id, pool);
   }
@@ -449,7 +451,7 @@ auto NodeEntry::add_edge(Nid self_id, Vid other_id, OverflowPool& pool) -> bool 
   return overflow_handling(self_id, other_id, pool);
 }
 
-auto NodeEntry::delete_edge(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
+auto Graph::NodeEntry::delete_edge(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
     return pool.sets[sedges_.overflow_idx].erase(other_id) != 0;
   }
@@ -476,7 +478,7 @@ auto NodeEntry::delete_edge(Nid self_id, Vid other_id, OverflowPool& pool) -> bo
   return true;
 }
 
-bool NodeEntry::has_edges(const OverflowVec& overflow) const {
+bool Graph::NodeEntry::has_edges(const OverflowVec& overflow) const {
   if (use_overflow) {
     return !overflow[sedges_.overflow_idx].empty();
   }
@@ -492,7 +494,7 @@ bool NodeEntry::has_edges(const OverflowVec& overflow) const {
   return false;
 }
 
-void NodeEntry::set_subnode(Gid gid, OverflowPool& pool) {
+void Graph::NodeEntry::set_subnode(Gid gid, OverflowPool& pool) {
   // Existence inside GraphLibrary must be checked by the caller (NodeEntry has no library pointer).
   if (gid == Gid_invalid) {
     return;
@@ -509,16 +511,16 @@ void NodeEntry::set_subnode(Gid gid, OverflowPool& pool) {
   ledge0 = static_cast<Nid>(g);
 }
 
-Gid NodeEntry::get_subnode() const noexcept {
+Gid Graph::NodeEntry::get_subnode() const noexcept {
   if (!use_overflow || ledge0 == 0) {
     return Gid_invalid;
   }
   return static_cast<Gid>(static_cast<uint64_t>(ledge0));
 }
 
-bool NodeEntry::has_subnode() const noexcept { return use_overflow && ledge0 != 0; }
+bool Graph::NodeEntry::has_subnode() const noexcept { return use_overflow && ledge0 != 0; }
 
-NodeEntry::EdgeRange::EdgeRange(const NodeEntry* node, Nid nid, const OverflowVec& overflow) noexcept
+Graph::NodeEntry::EdgeRange::EdgeRange(const Graph::NodeEntry* node, Nid nid, const OverflowVec& overflow) noexcept
     : node_(node), set_(nullptr), own_(false) {
   if (node->use_overflow) {
     set_ = acquire_set();
@@ -534,18 +536,18 @@ NodeEntry::EdgeRange::EdgeRange(const NodeEntry* node, Nid nid, const OverflowVe
   }
 }
 
-NodeEntry::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : node_(o.node_), /* nid_(o.nid_), */ set_(o.set_), own_(o.own_) {
+Graph::NodeEntry::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : node_(o.node_), /* nid_(o.nid_), */ set_(o.set_), own_(o.own_) {
   o.node_ = nullptr;
   o.set_  = nullptr;
 }
 
-NodeEntry::EdgeRange::~EdgeRange() noexcept {
+Graph::NodeEntry::EdgeRange::~EdgeRange() noexcept {
   if (own_) {
     release_set(set_);
   }
 }
 
-ankerl::unordered_dense::set<Nid>* NodeEntry::EdgeRange::acquire_set() noexcept {
+ankerl::unordered_dense::set<Nid>* Graph::NodeEntry::EdgeRange::acquire_set() noexcept {
   static thread_local std::vector<ankerl::unordered_dense::set<Nid>*> pool;
   if (!pool.empty()) {
     ankerl::unordered_dense::set<Nid>* set = pool.back();
@@ -558,12 +560,13 @@ ankerl::unordered_dense::set<Nid>* NodeEntry::EdgeRange::acquire_set() noexcept 
   }
 }
 
-void NodeEntry::EdgeRange::release_set(ankerl::unordered_dense::set<Nid>* set) noexcept {
+void Graph::NodeEntry::EdgeRange::release_set(ankerl::unordered_dense::set<Nid>* set) noexcept {
   static thread_local std::vector<ankerl::unordered_dense::set<Nid>*> pool;
   pool.push_back(set);
 }
 
-void NodeEntry::EdgeRange::populate_set(const NodeEntry* node, ankerl::unordered_dense::set<Nid>& set, Nid nid) noexcept {
+void Graph::NodeEntry::EdgeRange::populate_set(const Graph::NodeEntry* node, ankerl::unordered_dense::set<Nid>& set,
+                                               Nid nid) noexcept {
   constexpr uint64_t SLOT_MASK  = (1ULL << 14) - 1;  // grab 14 bits
   constexpr uint64_t SIGN_BIT   = 1ULL << 13;
   constexpr uint64_t DRIVER_BIT = 1ULL << 1;
@@ -606,7 +609,7 @@ void NodeEntry::EdgeRange::populate_set(const NodeEntry* node, ankerl::unordered
   }
 }
 
-auto NodeEntry::get_edges(Nid nid, const OverflowVec& overflow) const noexcept -> EdgeRange {
+auto Graph::NodeEntry::get_edges(Nid nid, const OverflowVec& overflow) const noexcept -> EdgeRange {
   return EdgeRange(this, nid, overflow);
 }
 
