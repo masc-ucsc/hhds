@@ -19,6 +19,7 @@
 #include "attr.hpp"
 #include "attrs/name.hpp"
 #include "graph_sizing.hpp"
+#include "index.hpp"
 #include "tree.hpp"
 #include "unordered_dense.hpp"
 
@@ -216,6 +217,18 @@ public:
   [[nodiscard]] Tid               get_hier_tid() const noexcept { return hier_tid_; }
   [[nodiscard]] Tree_pos          get_hier_pos() const noexcept { return hier_pos_; }
 
+  // Opaque, hashable keys for use in user-owned maps. See hhds/index.hpp for
+  // semantics. Prefer these over using Pin_class directly as a map key.
+  [[nodiscard]] Class_index get_class_index() const noexcept { return Class_index{pin_pid}; }
+  [[nodiscard]] Flat_index  get_flat_index() const noexcept {
+    assert(graph_ != nullptr && "get_flat_index: pin is not attached to a graph");
+    return Flat_index{get_current_gid(), pin_pid};
+  }
+  [[nodiscard]] Hier_index get_hier_index() const noexcept {
+    assert(context_ == Handle_context::Hier && "get_hier_index: requires hier traversal context");
+    return Hier_index{hier_pos_, pin_pid};
+  }
+
   void                                  connect_driver(Pin_class driver_pin) const;
   void                                  connect_driver(Node_class driver_node) const;
   void                                  connect_sink(Pin_class sink_pin) const;
@@ -301,6 +314,18 @@ public:
   [[nodiscard]] Gid               get_current_gid() const noexcept;
   [[nodiscard]] Tid               get_hier_tid() const noexcept { return hier_tid_; }
   [[nodiscard]] Tree_pos          get_hier_pos() const noexcept { return hier_pos_; }
+
+  // Opaque, hashable keys for use in user-owned maps. See hhds/index.hpp for
+  // semantics. Prefer these over using Node_class directly as a map key.
+  [[nodiscard]] Class_index get_class_index() const noexcept { return Class_index{raw_nid}; }
+  [[nodiscard]] Flat_index  get_flat_index() const noexcept {
+    assert(graph_ != nullptr && "get_flat_index: node is not attached to a graph");
+    return Flat_index{get_current_gid(), raw_nid};
+  }
+  [[nodiscard]] Hier_index get_hier_index() const noexcept {
+    assert(context_ == Context::Hier && "get_hier_index: requires hier traversal context");
+    return Hier_index{hier_pos_, raw_nid};
+  }
 
   void                                  set_subnode(const std::shared_ptr<GraphIO>& graphio) const;
   void                                  set_type(Type type) const;

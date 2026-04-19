@@ -109,6 +109,46 @@ namespace hhds {
 using Tree_pos = int64_t;
 using Tid      = Tree_pos;
 
+// Opaque, hashable keys for using Tree::Node_class handles in user-owned
+// maps (std::unordered_map, absl::flat_hash_map). Mirrors the graph
+// Class_index/Flat_index contract from hhds/index.hpp but in the tree
+// address space (Tree_pos values, Tid for the containing tree body).
+//
+//   Tree_class_index — per-tree-body key. One integer (current_pos).
+//                      Safe only when the containing map scope is limited
+//                      to a single tree body.
+//   Tree_flat_index  — forest-wide key. Two integers: (tid, current_pos).
+//
+// Tree_hier_index is intentionally absent: Tree::Node_class does not yet
+// carry hierarchy context (unlike Graph::Node_class). Add it alongside the
+// machinery that tracks hier_pos in the tree handle.
+struct Tree_class_index {
+  Tree_pos value = 0;
+
+  [[nodiscard]] constexpr bool operator==(const Tree_class_index& other) const noexcept { return value == other.value; }
+  [[nodiscard]] constexpr bool operator!=(const Tree_class_index& other) const noexcept { return value != other.value; }
+
+  template <typename H>
+  friend H AbslHashValue(H h, const Tree_class_index& x) {
+    return H::combine(std::move(h), x.value);
+  }
+};
+
+struct Tree_flat_index {
+  Tid      tid   = 0;
+  Tree_pos value = 0;
+
+  [[nodiscard]] constexpr bool operator==(const Tree_flat_index& other) const noexcept {
+    return tid == other.tid && value == other.value;
+  }
+  [[nodiscard]] constexpr bool operator!=(const Tree_flat_index& other) const noexcept { return !(*this == other); }
+
+  template <typename H>
+  friend H AbslHashValue(H h, const Tree_flat_index& x) {
+    return H::combine(std::move(h), x.tid, x.value);
+  }
+};
+
 static constexpr int16_t  CHUNK_SHIFT = 3;                 // The number of bits in a chunk offset
 static constexpr int16_t  CHUNK_SIZE  = 1 << CHUNK_SHIFT;  // Size of a chunk in bits
 static constexpr int16_t  CHUNK_MASK  = CHUNK_SIZE - 1;    // Mask for chunk offset
@@ -383,6 +423,14 @@ public:
              && tree_ptr->_contains_data(current_pos);
     }
     [[nodiscard]] bool is_invalid() const noexcept { return !is_valid(); }
+
+    // Opaque, hashable keys for use in user-owned maps. Prefer these over using
+    // Node_class directly as a map key.
+    [[nodiscard]] Tree_class_index get_class_index() const noexcept { return Tree_class_index{current_pos}; }
+    [[nodiscard]] Tree_flat_index  get_flat_index() const noexcept {
+      I(tree_ptr != nullptr, "get_flat_index: node is not attached to a tree");
+      return Tree_flat_index{tree_ptr->get_tid(), current_pos};
+    }
     [[nodiscard]] auto add_child() const -> Node_class;
     void               set_subnode(const std::shared_ptr<TreeIO>& treeio) const;
     void               set_type(Type type) const;
@@ -1923,3 +1971,23 @@ inline void Tree::set_subnode(const Tree_pos& node_pos, Tree_pos subnode_ref) {
 }
 
 }  // namespace hhds
+
+namespace std {
+
+template <>
+struct hash<hhds::Tree_class_index> {
+  [[nodiscard]] size_t operator()(const hhds::Tree_class_index& x) const noexcept {
+    return std::hash<hhds::Tree_pos>{}(x.value);
+  }
+};
+
+template <>
+struct hash<hhds::Tree_flat_index> {
+  [[nodiscard]] size_t operator()(const hhds::Tree_flat_index& x) const noexcept {
+    const size_t h1 = std::hash<hhds::Tid>{}(x.tid);
+    const size_t h2 = std::hash<hhds::Tree_pos>{}(x.value);
+    return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6U) + (h1 >> 2U));
+  }
+};
+
+}  // namespace std

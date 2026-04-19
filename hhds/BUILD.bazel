@@ -74,6 +74,7 @@ cc_library(
         "graph.hpp",
         "graph_sizing.hpp",
         "hash_set3.hpp",
+        "index.hpp",
         "tree.hpp",
         "tree_print.hpp",
         "unordered_dense.hpp",
@@ -322,6 +323,16 @@ cc_test(
     srcs = ["contracts/graph_api.cpp"],
     deps = [
         ":graph",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "attr_contract",
+    srcs = ["contracts/attr.cpp"],
+    deps = [
+        ":graph",
+        "@abseil-cpp//absl/container:flat_hash_map",
         "@googletest//:gtest_main",
     ],
 )
