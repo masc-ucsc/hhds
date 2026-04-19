@@ -19,7 +19,7 @@ void build_hhds_tree(hhds::Tree& hhds_tree, int num_nodes) {
 
   for (int i = 0; i < num_nodes; ++i) {
     benchmark::DoNotOptimize(generate_random_int(generator, 1, 100));
-    hhds_tree.add_child(root);
+    root.add_child();
   }
 }
 

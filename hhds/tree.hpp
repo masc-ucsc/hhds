@@ -475,11 +475,13 @@ public:
       I(context_ == Context::Hier, "get_hier_index: requires hier traversal context");
       return Tree_hier_index{hier_pos_, current_pos};
     }
-    [[nodiscard]] auto add_child() const -> Node_class;
-    void               set_subnode(const std::shared_ptr<TreeIO>& treeio) const;
-    void               set_type(Type type) const;
-    [[nodiscard]] Type get_type() const;
-    void               del_node() const;
+    [[nodiscard]] auto       add_child() const -> Node_class;
+    [[nodiscard]] Node_class append_sibling() const;
+    [[nodiscard]] Node_class insert_next_sibling() const;
+    void                     set_subnode(const std::shared_ptr<TreeIO>& treeio) const;
+    void                     set_type(Type type) const;
+    [[nodiscard]] Type       get_type() const;
+    void                     del_node() const;
 
     [[nodiscard]] Node_class parent() const;
     [[nodiscard]] Node_class first_child() const;
@@ -489,7 +491,9 @@ public:
     [[nodiscard]] bool       is_leaf() const;
     [[nodiscard]] bool       is_first_child() const;
     [[nodiscard]] bool       is_last_child() const;
-    [[nodiscard]] bool       has_subnode() const;
+    [[nodiscard]] bool       is_subnode() const;
+    [[nodiscard]] Tree*      get_subnode() const;
+    [[nodiscard]] Tid        get_subnode_tid() const;
 
     [[nodiscard]] auto pre_order_class() const;
     [[nodiscard]] auto post_order_class() const;
@@ -564,33 +568,13 @@ public:
     return Node_class(const_cast<Tree*>(this), idx.value, get_tid(), nullptr, nullptr, idx.hier_pos);
   }
 
-  // Node_class-level navigation/mutation forwarders. Most callers should
-  // prefer the handle-level methods on Node_class (e.g. `node.first_child()`,
-  // `node.add_child()`); these tree-level helpers exist for ergonomic
-  // algorithms that already have a `Tree&` in scope.
-  [[nodiscard]] Node_class get_parent(Node_class node) const { return as_class(get_parent(node.get_debug_nid())); }
-  [[nodiscard]] Node_class get_last_child(Node_class parent_node) const {
-    return as_class(get_last_child(parent_node.get_debug_nid()));
-  }
-  [[nodiscard]] Node_class get_first_child(Node_class parent_node) const {
-    return as_class(get_first_child(parent_node.get_debug_nid()));
-  }
-  [[nodiscard]] Type       get_type(Node_class node) const { return get_type(node.get_debug_nid()); }
-  [[nodiscard]] bool       is_last_child(Node_class node) const { return is_last_child(node.get_debug_nid()); }
-  [[nodiscard]] bool       is_first_child(Node_class node) const { return is_first_child(node.get_debug_nid()); }
-  [[nodiscard]] Node_class get_sibling_next(Node_class node) const { return as_class(get_sibling_next(node.get_debug_nid())); }
-  [[nodiscard]] Node_class get_sibling_prev(Node_class node) const { return as_class(get_sibling_prev(node.get_debug_nid())); }
-  [[nodiscard]] bool       is_leaf(Node_class node) const { return is_leaf(node.get_debug_nid()); }
-
+  // Node_class-level navigation and mutation is done on the handle itself
+  // (e.g. `node.first_child()`, `node.add_child()`). See hhds/tree.hpp's
+  // Tree::Node_class definition for the full list; Tree-level forwarders
+  // taking Node_class are intentionally absent to keep the public API
+  // narrow.
   void       clear();
-  Node_class append_sibling(Node_class sibling_node) { return as_class(append_sibling(sibling_node.get_debug_nid())); }
-  Node_class add_child(Node_class parent_node) { return as_class(add_child(parent_node.get_debug_nid())); }
   Node_class add_root_node() { return as_class(add_root()); }
-  void       set_type(Node_class node, Type type) { set_type(node.get_debug_nid(), type); }
-  void       delete_leaf(Node_class leaf_node) { delete_leaf(leaf_node.get_debug_nid()); }
-  void       delete_subtree(Node_class subtree_root_node) { delete_subtree(subtree_root_node.get_debug_nid()); }
-  void       set_subnode(Node_class node, Tid subnode_tid) { set_subnode(node.get_debug_nid(), subnode_tid); }
-  Node_class insert_next_sibling(Node_class sibling_node) { return as_class(insert_next_sibling(sibling_node.get_debug_nid())); }
   void       set_name(std::string_view n);
   [[nodiscard]] std::string_view        get_name() const { return name_; }
   [[nodiscard]] Tid                     get_tid() const noexcept { return self_tid_; }
@@ -1276,8 +1260,9 @@ private:
   }
 
 public:
-  [[nodiscard]] bool has_subnode(Node_class node) const { return has_subnode(node.get_debug_nid()); }
-  [[nodiscard]] Tid  get_subnode(Node_class node) const { return get_subnode(node.get_debug_nid()); }
+  // Subnode access is handle-level: node.is_subnode(), node.get_subnode()
+  // (returns Tree*), node.get_subnode_tid() (debug). Tree-level Node_class
+  // forwarders intentionally omitted.
   [[nodiscard]] auto get_subs() const -> std::span<const Node_class> {
     if (!subs_cache_valid_) {
       subs_cache_.clear();
@@ -1454,73 +1439,97 @@ private:
 
 inline auto Tree::Node_class::add_child() const -> Node_class {
   I(tree_ptr != nullptr, "add_child: node is not attached to a tree");
-  return tree_ptr->add_child(*this);
+  return tree_ptr->as_class(tree_ptr->add_child(current_pos));
+}
+
+inline Tree::Node_class Tree::Node_class::append_sibling() const {
+  I(tree_ptr != nullptr, "append_sibling: node is not attached to a tree");
+  return tree_ptr->as_class(tree_ptr->append_sibling(current_pos));
+}
+
+inline Tree::Node_class Tree::Node_class::insert_next_sibling() const {
+  I(tree_ptr != nullptr, "insert_next_sibling: node is not attached to a tree");
+  return tree_ptr->as_class(tree_ptr->insert_next_sibling(current_pos));
 }
 
 inline void Tree::Node_class::set_subnode(const std::shared_ptr<TreeIO>& treeio) const {
   I(tree_ptr != nullptr, "set_subnode: node is not attached to a tree");
   I(treeio != nullptr, "set_subnode: null TreeIO");
-  tree_ptr->set_subnode(*this, treeio->get_tid());
+  tree_ptr->set_subnode(current_pos, treeio->get_tid());
 }
 
 inline void Tree::Node_class::set_type(Type type) const {
   I(tree_ptr != nullptr, "set_type: node is not attached to a tree");
-  tree_ptr->set_type(*this, type);
+  tree_ptr->set_type(current_pos, type);
 }
 
 inline Type Tree::Node_class::get_type() const {
   I(tree_ptr != nullptr, "get_type: node is not attached to a tree");
-  return tree_ptr->get_type(*this);
+  return tree_ptr->get_type(current_pos);
 }
 
 inline void Tree::Node_class::del_node() const {
   I(tree_ptr != nullptr, "del_node: node is not attached to a tree");
-  tree_ptr->delete_subtree(*this);
+  tree_ptr->delete_subtree(current_pos);
 }
 
 inline Tree::Node_class Tree::Node_class::parent() const {
   I(tree_ptr != nullptr, "parent: node is not attached to a tree");
-  return tree_ptr->get_parent(*this);
+  return tree_ptr->as_class(tree_ptr->get_parent(current_pos));
 }
 
 inline Tree::Node_class Tree::Node_class::first_child() const {
   I(tree_ptr != nullptr, "first_child: node is not attached to a tree");
-  return tree_ptr->get_first_child(*this);
+  return tree_ptr->as_class(tree_ptr->get_first_child(current_pos));
 }
 
 inline Tree::Node_class Tree::Node_class::last_child() const {
   I(tree_ptr != nullptr, "last_child: node is not attached to a tree");
-  return tree_ptr->get_last_child(*this);
+  return tree_ptr->as_class(tree_ptr->get_last_child(current_pos));
 }
 
 inline Tree::Node_class Tree::Node_class::next_sibling() const {
   I(tree_ptr != nullptr, "next_sibling: node is not attached to a tree");
-  return tree_ptr->get_sibling_next(*this);
+  return tree_ptr->as_class(tree_ptr->get_sibling_next(current_pos));
 }
 
 inline Tree::Node_class Tree::Node_class::prev_sibling() const {
   I(tree_ptr != nullptr, "prev_sibling: node is not attached to a tree");
-  return tree_ptr->get_sibling_prev(*this);
+  return tree_ptr->as_class(tree_ptr->get_sibling_prev(current_pos));
 }
 
 inline bool Tree::Node_class::is_leaf() const {
   I(tree_ptr != nullptr, "is_leaf: node is not attached to a tree");
-  return tree_ptr->is_leaf(*this);
+  return tree_ptr->is_leaf(current_pos);
 }
 
 inline bool Tree::Node_class::is_first_child() const {
   I(tree_ptr != nullptr, "is_first_child: node is not attached to a tree");
-  return tree_ptr->is_first_child(*this);
+  return tree_ptr->is_first_child(current_pos);
 }
 
 inline bool Tree::Node_class::is_last_child() const {
   I(tree_ptr != nullptr, "is_last_child: node is not attached to a tree");
-  return tree_ptr->is_last_child(*this);
+  return tree_ptr->is_last_child(current_pos);
 }
 
-inline bool Tree::Node_class::has_subnode() const {
-  I(tree_ptr != nullptr, "has_subnode: node is not attached to a tree");
-  return tree_ptr->has_subnode(*this);
+inline bool Tree::Node_class::is_subnode() const {
+  I(tree_ptr != nullptr, "is_subnode: node is not attached to a tree");
+  return tree_ptr->has_subnode(current_pos);
+}
+
+inline Tid Tree::Node_class::get_subnode_tid() const {
+  I(tree_ptr != nullptr, "get_subnode_tid: node is not attached to a tree");
+  return tree_ptr->get_subnode(current_pos);
+}
+
+inline Tree* Tree::Node_class::get_subnode() const {
+  I(tree_ptr != nullptr, "get_subnode: node is not attached to a tree");
+  const auto tid = tree_ptr->get_subnode(current_pos);
+  if (tid == INVALID || tid >= 0 || tree_ptr->forest_ptr == nullptr) {
+    return nullptr;
+  }
+  return tree_ptr->_get_forest_tree(tid);
 }
 
 inline auto Tree::Node_class::pre_order_class() const {
@@ -1944,11 +1953,13 @@ public:
     return true;
   }
 
-  [[nodiscard]] Tree_pos get_current_pos() const noexcept { return current_pos_; }
-  [[nodiscard]] Tree_pos get_root_pos() const noexcept { return root_pos_; }
-  [[nodiscard]] bool     is_root() const noexcept { return current_pos_ == root_pos_; }
-  [[nodiscard]] bool     is_leaf() const { return tree_ && tree_->is_leaf(current_pos_); }
-  [[nodiscard]] int      depth() const noexcept { return static_cast<int>(depth_); }
+  [[nodiscard]] Tree_class_index get_current_index() const noexcept { return Tree_class_index{current_pos_}; }
+  [[nodiscard]] Tree_class_index get_root_index() const noexcept { return Tree_class_index{root_pos_}; }
+  [[nodiscard]] Tree::Node_class get_current_node() const { return tree_ ? tree_->as_class(current_pos_) : Tree::Node_class(); }
+  [[nodiscard]] Tree::Node_class get_root_node() const { return tree_ ? tree_->as_class(root_pos_) : Tree::Node_class(); }
+  [[nodiscard]] bool             is_root() const noexcept { return current_pos_ == root_pos_; }
+  [[nodiscard]] bool             is_leaf() const { return tree_ && tree_->is_leaf(current_pos_); }
+  [[nodiscard]] int              depth() const noexcept { return static_cast<int>(depth_); }
 };
 
 class ForestCursor {
@@ -2076,11 +2087,21 @@ public:
     return true;
   }
 
-  [[nodiscard]] Tid      get_current_tid() const noexcept { return current_tid_; }
-  [[nodiscard]] Tree_pos get_current_pos() const noexcept { return current_pos_; }
-  [[nodiscard]] Tid      get_root_tid() const noexcept { return root_tid_; }
-  [[nodiscard]] Tree_pos get_root_pos() const noexcept { return root_pos_; }
-  [[nodiscard]] bool     is_root() const noexcept {
+  [[nodiscard]] Tid              get_current_tid() const noexcept { return current_tid_; }
+  [[nodiscard]] Tid              get_root_tid() const noexcept { return root_tid_; }
+  [[nodiscard]] Tree_flat_index  get_current_index() const noexcept { return Tree_flat_index{current_tid_, current_pos_}; }
+  [[nodiscard]] Tree_flat_index  get_root_index() const noexcept { return Tree_flat_index{root_tid_, root_pos_}; }
+  [[nodiscard]] Tree::Node_class get_current_node() const {
+    return current_tree_ ? Tree::Node_class(current_tree_.get(), current_pos_, current_tid_) : Tree::Node_class();
+  }
+  [[nodiscard]] Tree::Node_class get_root_node() const {
+    if (!forest_) {
+      return Tree::Node_class();
+    }
+    auto root_tree = forest_->get_tree_ptr(root_tid_);
+    return root_tree ? Tree::Node_class(root_tree.get(), root_pos_, root_tid_) : Tree::Node_class();
+  }
+  [[nodiscard]] bool is_root() const noexcept {
     return current_tid_ == root_tid_ && current_pos_ == root_pos_ && return_stack_.empty();
   }
   [[nodiscard]] bool is_leaf() const {

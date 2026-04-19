@@ -28,20 +28,20 @@ inline IntNode add_root(hhds::Tree& tree, std::vector<int>& values, int value) {
   return node;
 }
 
-inline IntNode add_child(hhds::Tree& tree, std::vector<int>& values, IntNode parent, int value) {
-  const auto node = tree.add_child(parent);
+inline IntNode add_child(hhds::Tree& /*tree*/, std::vector<int>& values, IntNode parent, int value) {
+  const auto node = parent.add_child();
   set_value(values, node, value);
   return node;
 }
 
-inline IntNode append_sibling(hhds::Tree& tree, std::vector<int>& values, IntNode sibling, int value) {
-  const auto node = tree.append_sibling(sibling);
+inline IntNode append_sibling(hhds::Tree& /*tree*/, std::vector<int>& values, IntNode sibling, int value) {
+  const auto node = sibling.append_sibling();
   set_value(values, node, value);
   return node;
 }
 
-inline IntNode insert_next_sibling(hhds::Tree& tree, std::vector<int>& values, IntNode sibling, int value) {
-  const auto node = tree.insert_next_sibling(sibling);
+inline IntNode insert_next_sibling(hhds::Tree& /*tree*/, std::vector<int>& values, IntNode sibling, int value) {
+  const auto node = sibling.insert_next_sibling();
   set_value(values, node, value);
   return node;
 }

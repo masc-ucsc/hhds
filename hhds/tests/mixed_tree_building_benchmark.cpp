@@ -27,15 +27,15 @@ void build_mixed_tree(hhds::Tree& tree, int depth_val) {
       int num_children = generate_random_int(generator, 4, 10);
 
       if (num_children > 0) {
-        auto first_child = tree.add_child(node);
+        auto first_child = node.add_child();
         next_level.push_back(first_child);
 
         auto current_sibling = first_child;
         for (int i = 1; i < num_children; ++i) {
           if (generate_random_int(generator, 1, 100) <= 70) {
-            current_sibling = tree.add_child(node);
+            current_sibling = node.add_child();
           } else {
-            current_sibling = tree.insert_next_sibling(current_sibling);
+            current_sibling = current_sibling.insert_next_sibling();
           }
           next_level.push_back(current_sibling);
         }

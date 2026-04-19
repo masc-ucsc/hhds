@@ -27,7 +27,7 @@ void build_hhds_tree(hhds::Tree& tree, int depth_val) {
     for (auto node : current_level) {
       int num_children = generate_random_int(generator, 3, 14);
       for (int i = 0; i < num_children; ++i) {
-        next_level.push_back(tree.add_child(node));
+        next_level.push_back(node.add_child());
       }
     }
 
@@ -39,23 +39,23 @@ uint64_t test_hhds_navigation(const hhds::Tree& tree) {
   uint64_t operation_count = 0;
 
   for (auto node : tree.pre_order()) {
-    if (tree.get_parent(node).is_valid()) {
+    if (node.parent().is_valid()) {
       operation_count++;
     }
 
-    if (tree.get_first_child(node).is_valid()) {
+    if (node.first_child().is_valid()) {
       operation_count++;
     }
 
-    if (tree.get_last_child(node).is_valid()) {
+    if (node.last_child().is_valid()) {
       operation_count++;
     }
 
-    if (tree.get_sibling_next(node).is_valid()) {
+    if (node.next_sibling().is_valid()) {
       operation_count++;
     }
 
-    if (tree.get_sibling_prev(node).is_valid()) {
+    if (node.prev_sibling().is_valid()) {
       operation_count++;
     }
   }

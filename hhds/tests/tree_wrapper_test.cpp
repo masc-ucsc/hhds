@@ -59,8 +59,9 @@ TEST(TreeWrappers, ForestContextAndSubtreeRefs) {
 
   ref_node.set_subnode(child_tio);
 
-  EXPECT_TRUE(ref_node.has_subnode());
-  EXPECT_EQ(parent.get_subnode(ref_node), child_tio->get_tid());
+  EXPECT_TRUE(ref_node.is_subnode());
+  EXPECT_EQ(ref_node.get_subnode_tid(), child_tio->get_tid());
+  EXPECT_EQ(ref_node.get_subnode(), &child);
 }
 
 TEST(TreeWrappers, TraversalsYieldNodeClass) {
@@ -110,28 +111,28 @@ TEST(TreeWrappers, TreeCursorNavigatesSingleTree) {
 
   auto cursor = tree->create_cursor(root);
   EXPECT_TRUE(cursor.is_root());
-  EXPECT_EQ(cursor.get_current_pos(), root.get_debug_nid());
+  EXPECT_EQ(cursor.get_current_node(), root);
   EXPECT_EQ(cursor.depth(), 0);
 
   EXPECT_TRUE(cursor.goto_first_child());
-  EXPECT_EQ(cursor.get_current_pos(), child1.get_debug_nid());
+  EXPECT_EQ(cursor.get_current_node(), child1);
   EXPECT_EQ(cursor.depth(), 1);
 
   EXPECT_TRUE(cursor.goto_first_child());
-  EXPECT_EQ(cursor.get_current_pos(), grand.get_debug_nid());
+  EXPECT_EQ(cursor.get_current_node(), grand);
   EXPECT_TRUE(cursor.is_leaf());
   EXPECT_EQ(cursor.depth(), 2);
 
   EXPECT_TRUE(cursor.goto_parent());
-  EXPECT_EQ(cursor.get_current_pos(), child1.get_debug_nid());
+  EXPECT_EQ(cursor.get_current_node(), child1);
   EXPECT_EQ(cursor.depth(), 1);
 
   EXPECT_TRUE(cursor.goto_next_sibling());
-  EXPECT_EQ(cursor.get_current_pos(), child2.get_debug_nid());
+  EXPECT_EQ(cursor.get_current_node(), child2);
   EXPECT_EQ(cursor.depth(), 1);
 
   EXPECT_TRUE(cursor.goto_prev_sibling());
-  EXPECT_EQ(cursor.get_current_pos(), child1.get_debug_nid());
+  EXPECT_EQ(cursor.get_current_node(), child1);
   EXPECT_FALSE(cursor.goto_prev_sibling());
 }
 
@@ -158,38 +159,38 @@ TEST(TreeWrappers, ForestCursorFollowsSubtreeRefs) {
   auto cursor = forest->create_cursor(parent_tid);
   EXPECT_TRUE(cursor.is_root());
   EXPECT_EQ(cursor.get_current_tid(), parent_tid);
-  EXPECT_EQ(cursor.get_current_pos(), parent_root.get_debug_nid());
+  EXPECT_EQ(cursor.get_current_node(), parent_root);
   EXPECT_EQ(cursor.depth(), 0);
 
   EXPECT_TRUE(cursor.goto_first_child());
   EXPECT_EQ(cursor.get_current_tid(), parent_tid);
-  EXPECT_EQ(cursor.get_current_pos(), callsite.get_debug_nid());
+  EXPECT_EQ(cursor.get_current_node(), callsite);
   EXPECT_EQ(cursor.depth(), 1);
 
   EXPECT_TRUE(cursor.goto_first_child());
   EXPECT_EQ(cursor.get_current_tid(), child_tid);
-  EXPECT_EQ(cursor.get_current_pos(), child_root.get_debug_nid());
+  EXPECT_EQ(cursor.get_current_node(), child_root);
   EXPECT_EQ(cursor.depth(), 2);
 
   EXPECT_TRUE(cursor.goto_first_child());
   EXPECT_EQ(cursor.get_current_tid(), child_tid);
-  EXPECT_EQ(cursor.get_current_pos(), child_leaf.get_debug_nid());
+  EXPECT_EQ(cursor.get_current_node(), child_leaf);
   EXPECT_TRUE(cursor.is_leaf());
   EXPECT_EQ(cursor.depth(), 3);
 
   EXPECT_TRUE(cursor.goto_parent());
   EXPECT_EQ(cursor.get_current_tid(), child_tid);
-  EXPECT_EQ(cursor.get_current_pos(), child_root.get_debug_nid());
+  EXPECT_EQ(cursor.get_current_node(), child_root);
   EXPECT_EQ(cursor.depth(), 2);
 
   EXPECT_TRUE(cursor.goto_parent());
   EXPECT_EQ(cursor.get_current_tid(), parent_tid);
-  EXPECT_EQ(cursor.get_current_pos(), callsite.get_debug_nid());
+  EXPECT_EQ(cursor.get_current_node(), callsite);
   EXPECT_EQ(cursor.depth(), 1);
 
   EXPECT_TRUE(cursor.goto_next_sibling());
   EXPECT_EQ(cursor.get_current_tid(), parent_tid);
-  EXPECT_EQ(cursor.get_current_pos(), parent_other.get_debug_nid());
+  EXPECT_EQ(cursor.get_current_node(), parent_other);
   EXPECT_EQ(cursor.depth(), 1);
 }
 

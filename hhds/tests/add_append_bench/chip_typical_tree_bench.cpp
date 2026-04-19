@@ -25,7 +25,7 @@ void build_hhds_tree(hhds::Tree& hhds_tree, int depth_val) {
       int num_children = generate_random_int(generator, 1, 7);
       for (int i = 0; i < num_children; ++i) {
         benchmark::DoNotOptimize(generate_random_int(generator, 1, 100));
-        next_level.push_back(hhds_tree.add_child(node));
+        next_level.push_back(node.add_child());
       }
     }
 

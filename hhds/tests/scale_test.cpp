@@ -32,8 +32,8 @@ inline IntNode add_root(hhds::Tree& tree, std::vector<int>& values, int value) {
   return node;
 }
 
-inline IntNode add_child(hhds::Tree& tree, std::vector<int>& values, IntNode parent, int value) {
-  const auto node = tree.add_child(parent);
+inline IntNode add_child(hhds::Tree& /*tree*/, std::vector<int>& values, IntNode parent, int value) {
+  const auto node = parent.add_child();
   set_value(values, node, value);
   return node;
 }
