@@ -30,8 +30,8 @@ TEST(TreeWrappers, NodeClassHashable) {
   const auto root  = tree->add_root_node();
   const auto child = tree->add_child(root);
 
-  EXPECT_TRUE(hhds::Tree::is_valid(root));
-  EXPECT_TRUE(hhds::Tree::is_valid(child));
+  EXPECT_TRUE(root.is_valid());
+  EXPECT_TRUE(child.is_valid());
   EXPECT_NE(root, child);
   EXPECT_EQ(tree->get_parent(child), root);
 

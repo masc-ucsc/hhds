@@ -332,7 +332,7 @@ TEST(TreeStorage, RootAllocatesTwoChunks) {
 
   // add_root allocates 2 chunks: dummy (index 0) + root (index 1)
   auto root = tree->add_root_node();
-  EXPECT_TRUE(hhds::Tree::is_valid(root));
+  EXPECT_TRUE(root.is_valid());
   EXPECT_EQ(root.get_current_pos(), hhds::ROOT);
 }
 
@@ -346,7 +346,7 @@ TEST(TreeStorage, SiblingsPackWithinChunk) {
   // Add 8 children — first fills chunk, rest should pack or link
   hhds::Tree_pos first_child = 0;
   for (int i = 0; i < 8; ++i) {
-    auto child = tree->add_child(root);
+    auto child = root.add_child();
     if (i == 0) {
       first_child = child.get_current_pos();
     }
@@ -358,7 +358,7 @@ TEST(TreeStorage, SiblingsPackWithinChunk) {
   // All 8 siblings: first 8 fit in one chunk. The 8th slot (offset 7)
   // uses the full chunk. Verify last child is reachable.
   auto last = tree->get_last_child(root);
-  EXPECT_TRUE(hhds::Tree::is_valid(last));
+  EXPECT_TRUE(last.is_valid());
 }
 
 TEST(TreeStorage, ChildCreatesNewChunk) {
@@ -367,7 +367,7 @@ TEST(TreeStorage, ChildCreatesNewChunk) {
   auto tree   = tio->create_tree();
 
   auto root  = tree->add_root_node();
-  auto child = tree->add_child(root);
+  auto child = root.add_child();
 
   // The child lives in a new chunk (not the root's chunk).
   auto root_chunk  = root.get_current_pos() >> hhds::CHUNK_SHIFT;
@@ -381,20 +381,20 @@ TEST(TreeStorage, DeleteLeafTombstones) {
   auto tree   = tio->create_tree();
 
   auto root = tree->add_root_node();
-  auto c1   = tree->add_child(root);
-  auto c2   = tree->add_child(root);
+  auto c1   = root.add_child();
+  auto c2   = root.add_child();
 
-  tree->delete_leaf(c2);
+  c2.del_node();
 
   // c1 should still be valid, c2 should be gone
-  EXPECT_TRUE(hhds::Tree::is_valid(tree->as_class(c1.get_current_pos())));
+  EXPECT_TRUE(tree->as_class(c1.get_current_pos()).is_valid());
   EXPECT_TRUE(c2.is_invalid());
 
   // After deletion, last child should be c1
   auto last = tree->get_last_child(root);
   EXPECT_EQ(last.get_current_pos(), c1.get_current_pos());
 
-  auto c3 = tree->add_child(root);
+  auto c3 = root.add_child();
   EXPECT_NE(c3.get_current_pos(), c2.get_current_pos());
 }
 
@@ -587,9 +587,9 @@ TEST(TreePersistence, SaveLoadRoundTrip) {
   auto tree   = tio->create_tree();
 
   auto root = tree->add_root_node();
-  auto c1   = tree->add_child(root);
-  auto c2   = tree->add_child(root);
-  auto gc1  = tree->add_child(c1);
+  auto c1   = root.add_child();
+  auto c2   = root.add_child();
+  auto gc1  = c1.add_child();
 
   root.set_type(10);
   c1.set_type(20);
@@ -598,25 +598,34 @@ TEST(TreePersistence, SaveLoadRoundTrip) {
   root.attr(hhds::attrs::name).set("program");
   gc1.attr(test_attrs::loc).set(99);
 
-  tree->save_body(test_dir);
-  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "body.bin"));
+  const auto root_pos = root.get_current_pos();
+  const auto c1_pos   = c1.get_current_pos();
+  const auto c2_pos   = c2.get_current_pos();
+  const auto gc1_pos  = gc1.get_current_pos();
 
-  // Create a fresh tree and load.
-  auto tio2  = forest->create_io("t2");
-  auto tree2 = tio2->create_tree();
-  tree2->load_body(test_dir);
+  forest->save(test_dir);
+  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "forest.txt"));
+  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "tree_0" / "body.bin"));
+
+  // Create a fresh forest and load.
+  auto forest2 = hhds::Forest::create();
+  forest2->load(test_dir);
+  auto tio2 = forest2->find_io("t");
+  ASSERT_NE(tio2, nullptr);
+  auto tree2 = tio2->get_tree();
+  ASSERT_NE(tree2, nullptr);
 
   // Verify types survived.
-  EXPECT_EQ(tree2->get_type(root.get_current_pos()), 10);
-  EXPECT_EQ(tree2->get_type(c1.get_current_pos()), 20);
-  EXPECT_EQ(tree2->get_type(c2.get_current_pos()), 30);
-  EXPECT_EQ(tree2->get_type(gc1.get_current_pos()), 40);
-  EXPECT_EQ(tree2->as_class(root.get_current_pos()).attr(hhds::attrs::name).get(), "program");
-  EXPECT_EQ(tree2->as_class(gc1.get_current_pos()).attr(test_attrs::loc).get(), 99);
+  EXPECT_EQ(tree2->get_type(root_pos), 10);
+  EXPECT_EQ(tree2->get_type(c1_pos), 20);
+  EXPECT_EQ(tree2->get_type(c2_pos), 30);
+  EXPECT_EQ(tree2->get_type(gc1_pos), 40);
+  EXPECT_EQ(tree2->as_class(root_pos).attr(hhds::attrs::name).get(), "program");
+  EXPECT_EQ(tree2->as_class(gc1_pos).attr(test_attrs::loc).get(), 99);
 
   // Verify structure.
-  auto loaded_c1 = tree2->get_first_child(root);
-  EXPECT_EQ(loaded_c1.get_current_pos(), c1.get_current_pos());
+  auto loaded_c1 = tree2->get_first_child(tree2->as_class(root_pos));
+  EXPECT_EQ(loaded_c1.get_current_pos(), c1_pos);
 
   fs::remove_all(test_dir);
 }

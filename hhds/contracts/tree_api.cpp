@@ -147,8 +147,8 @@ TEST(TreeApiContract, ForestHierarchySubnodeReferences) {
   EXPECT_EQ(forest->find_io("common_expr"), expr_tio);
   EXPECT_EQ(forest->find_io("main_func"), func_tio);
 
-  using hhds::attrs::name;
   using contract_attrs::loc;
+  using hhds::attrs::name;
 
   // Reusable expression subtree.
   auto expr  = expr_tio->create_tree();
@@ -197,8 +197,8 @@ TEST(TreeApiContract, ClearAndAttrClearSemantics) {
   auto tio    = forest->create_io("clearable");
   auto t      = tio->create_tree();
 
-  using hhds::attrs::name;
   using contract_attrs::loc;
+  using hhds::attrs::name;
 
   auto root  = t->add_root_node();
   auto child = root.add_child();
@@ -235,17 +235,17 @@ TEST(TreeApiContract, PersistenceRoundTrip) {
 
   hhds::register_attr_tag<contract_attrs::loc_t>("contract_attrs::loc");
 
-  using hhds::attrs::name;
   using contract_attrs::loc;
+  using hhds::attrs::name;
 
   auto forest = hhds::Forest::create();
   auto tio    = forest->create_io("saved");
   auto t      = tio->create_tree();
 
   auto root = t->add_root_node();
-  auto c1   = t->add_child(root);
-  auto c2   = t->add_child(root);
-  auto gc1  = t->add_child(c1);
+  auto c1   = root.add_child();
+  auto c2   = root.add_child();
+  auto gc1  = c1.add_child();
 
   root.set_type(1);
   c1.set_type(2);
@@ -254,17 +254,23 @@ TEST(TreeApiContract, PersistenceRoundTrip) {
   root.attr(name).set("program");
   gc1.attr(loc).set(99);
 
-  t->save_body(test_dir);
-  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "body.bin"));
+  const auto gc1_pos = gc1.get_current_pos();
 
-  // Load into a fresh tree attached to the same forest.
-  auto tio2 = forest->create_io("restored");
-  auto t2   = tio2->create_tree();
-  t2->load_body(test_dir);
+  forest->save(test_dir);
+  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "forest.txt"));
+  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "tree_0" / "body.bin"));
+
+  // Load into a fresh forest.
+  auto forest2 = hhds::Forest::create();
+  forest2->load(test_dir);
+  auto tio2 = forest2->find_io("saved");
+  ASSERT_NE(tio2, nullptr);
+  auto t2 = tio2->get_tree();
+  ASSERT_NE(t2, nullptr);
 
   // Types and attributes survived.
   auto loaded_root = t2->get_root_node();
-  auto loaded_gc1  = t2->as_class(gc1.get_current_pos());
+  auto loaded_gc1  = t2->as_class(gc1_pos);
   EXPECT_EQ(t2->get_type(loaded_root), 1);
   EXPECT_EQ(loaded_root.attr(name).get(), "program");
   EXPECT_EQ(loaded_gc1.attr(loc).get(), 99u);
@@ -285,17 +291,17 @@ TEST(TreeApiContract, PersistenceRoundTrip) {
 namespace {
 
 struct TreeIndexFixture {
-  std::shared_ptr<hhds::Forest>                  forest = hhds::Forest::create();
-  std::shared_ptr<hhds::TreeIO>                  bottom_io;
-  std::shared_ptr<hhds::Tree>                    bottom;
-  hhds::Tree::Node_class                         bottom_root;
-  hhds::Tree::Node_class                         bottom_leaf;
+  std::shared_ptr<hhds::Forest> forest = hhds::Forest::create();
+  std::shared_ptr<hhds::TreeIO> bottom_io;
+  std::shared_ptr<hhds::Tree>   bottom;
+  hhds::Tree::Node_class        bottom_root;
+  hhds::Tree::Node_class        bottom_leaf;
 
-  std::shared_ptr<hhds::TreeIO>                  top_io;
-  std::shared_ptr<hhds::Tree>                    top;
-  hhds::Tree::Node_class                         top_root;
-  hhds::Tree::Node_class                         inst1;
-  hhds::Tree::Node_class                         inst2;
+  std::shared_ptr<hhds::TreeIO> top_io;
+  std::shared_ptr<hhds::Tree>   top;
+  hhds::Tree::Node_class        top_root;
+  hhds::Tree::Node_class        inst1;
+  hhds::Tree::Node_class        inst2;
 
   TreeIndexFixture() {
     bottom_io   = forest->create_io("bottom");
@@ -326,7 +332,7 @@ struct TreeIndexFixture {
 TEST(TreeIndexContract, ClassOrderStaysInTopBody) {
   TreeIndexFixture f;
 
-  std::vector<std::string> visited;
+  std::vector<std::string>                                visited;
   std::unordered_map<hhds::Tree_class_index, std::string> by_class;
   for (auto node : f.top_root.pre_order_class()) {
     EXPECT_TRUE(node.is_class());
@@ -345,7 +351,7 @@ TEST(TreeIndexContract, ClassOrderStaysInTopBody) {
 TEST(TreeIndexContract, FlatOrderEntersSharedSubtreeOnce) {
   TreeIndexFixture f;
 
-  std::vector<std::string>                              visited;
+  std::vector<std::string>                               visited;
   std::unordered_set<hhds::Tree_flat_index>              bottom_keys;
   std::unordered_map<hhds::Tree_flat_index, std::string> by_flat;
   for (auto node : f.top->pre_order_flat()) {
@@ -370,15 +376,14 @@ TEST(TreeIndexContract, FlatOrderEntersSharedSubtreeOnce) {
 TEST(TreeIndexContract, HierOrderDistinguishesInstantiations) {
   TreeIndexFixture f;
 
-  std::vector<hhds::Tree::Node_class>                     bottom_leaf_visits;
-  std::unordered_map<hhds::Tree_hier_index, std::string>  by_hier;
-  std::vector<std::string>                                visited;
+  std::vector<hhds::Tree::Node_class>                    bottom_leaf_visits;
+  std::unordered_map<hhds::Tree_hier_index, std::string> by_hier;
+  std::vector<std::string>                               visited;
   for (auto node : f.top->pre_order_hier()) {
     EXPECT_TRUE(node.is_hier());
     visited.push_back(std::string(node.attr(hhds::attrs::name).get()));
     by_hier[node.get_hier_index()] = std::string(node.attr(hhds::attrs::name).get());
-    if (node.get_current_tid() == f.bottom->get_tid()
-        && node.attr(hhds::attrs::name).get() == "bottom_leaf") {
+    if (node.get_current_tid() == f.bottom->get_tid() && node.attr(hhds::attrs::name).get() == "bottom_leaf") {
       bottom_leaf_visits.push_back(node);
     }
   }
@@ -408,8 +413,7 @@ TEST(TreeIndexContract, PostOrderFlatAndHierMirrorPreOrder) {
     flat_visited.push_back(std::string(node.attr(hhds::attrs::name).get()));
   }
   // bottom entered under inst1, inst2 not re-entered.
-  EXPECT_EQ(flat_visited,
-            (std::vector<std::string>{"bottom_leaf", "bottom_root", "inst1", "inst2", "top_root"}));
+  EXPECT_EQ(flat_visited, (std::vector<std::string>{"bottom_leaf", "bottom_root", "inst1", "inst2", "top_root"}));
 
   std::vector<std::string> hier_visited;
   for (auto node : f.top->post_order_hier()) {

@@ -39,23 +39,23 @@ uint64_t test_hhds_navigation(const hhds::Tree& tree) {
   uint64_t operation_count = 0;
 
   for (auto node : tree.pre_order()) {
-    if (hhds::Tree::is_valid(tree.get_parent(node))) {
+    if (tree.get_parent(node).is_valid()) {
       operation_count++;
     }
 
-    if (hhds::Tree::is_valid(tree.get_first_child(node))) {
+    if (tree.get_first_child(node).is_valid()) {
       operation_count++;
     }
 
-    if (hhds::Tree::is_valid(tree.get_last_child(node))) {
+    if (tree.get_last_child(node).is_valid()) {
       operation_count++;
     }
 
-    if (hhds::Tree::is_valid(tree.get_sibling_next(node))) {
+    if (tree.get_sibling_next(node).is_valid()) {
       operation_count++;
     }
 
-    if (hhds::Tree::is_valid(tree.get_sibling_prev(node))) {
+    if (tree.get_sibling_prev(node).is_valid()) {
       operation_count++;
     }
   }

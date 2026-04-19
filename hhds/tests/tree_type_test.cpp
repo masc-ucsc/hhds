@@ -37,6 +37,6 @@ TEST(TreeType, TypeSurvivesLeafCompaction) {
   tree->delete_leaf(child1);
 
   const auto surviving = tree->get_first_child(root);
-  EXPECT_TRUE(hhds::Tree::is_valid(surviving));
+  EXPECT_TRUE(surviving.is_valid());
   EXPECT_EQ(tree->get_type(surviving), 22);
 }

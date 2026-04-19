@@ -466,16 +466,14 @@ public:
       return tree_ptr != nullptr && generation == tree_ptr->generation_ && tree_ptr->_check_idx_exists(current_pos)
              && tree_ptr->_contains_data(current_pos);
     }
-    [[nodiscard]] bool    is_invalid() const noexcept { return !is_valid(); }
-    [[nodiscard]] Context get_context() const noexcept { return context_; }
-    [[nodiscard]] bool    is_class() const noexcept { return context_ == Context::Class; }
-    [[nodiscard]] bool    is_flat() const noexcept { return context_ == Context::Flat; }
-    [[nodiscard]] bool    is_hier() const noexcept { return context_ == Context::Hier; }
-    [[nodiscard]] Tid     get_current_tid() const noexcept { return tree_ptr != nullptr ? tree_ptr->get_tid() : INVALID; }
-    [[nodiscard]] Tid     get_root_tid() const noexcept {
-      return context_ == Context::Class ? get_current_tid() : root_tid_;
-    }
-    [[nodiscard]] Tree_pos                                 get_hier_pos() const noexcept { return hier_pos_; }
+    [[nodiscard]] bool     is_invalid() const noexcept { return !is_valid(); }
+    [[nodiscard]] Context  get_context() const noexcept { return context_; }
+    [[nodiscard]] bool     is_class() const noexcept { return context_ == Context::Class; }
+    [[nodiscard]] bool     is_flat() const noexcept { return context_ == Context::Flat; }
+    [[nodiscard]] bool     is_hier() const noexcept { return context_ == Context::Hier; }
+    [[nodiscard]] Tid      get_current_tid() const noexcept { return tree_ptr != nullptr ? tree_ptr->get_tid() : INVALID; }
+    [[nodiscard]] Tid      get_root_tid() const noexcept { return context_ == Context::Class ? get_current_tid() : root_tid_; }
+    [[nodiscard]] Tree_pos get_hier_pos() const noexcept { return hier_pos_; }
     [[nodiscard]] const std::shared_ptr<Tree>&             get_hier_tree() const noexcept { return hier_tree_; }
     [[nodiscard]] const std::shared_ptr<std::vector<Tid>>& get_hier_tids() const noexcept { return hier_tids_; }
 
@@ -533,8 +531,6 @@ public:
   Tree& operator=(const Tree&) = delete;
   Tree(Tree&&)                 = delete;
   Tree& operator=(Tree&&)      = delete;
-
-  [[nodiscard]] static bool is_valid(Node_class node) noexcept { return node.is_valid(); }
 
   [[nodiscard]] Node_class as_class(Tree_pos node_pos) const {
     return (_check_idx_exists(node_pos) && _contains_data(node_pos)) ? Node_class(const_cast<Tree*>(this), node_pos) : Node_class();
@@ -639,10 +635,6 @@ public:
   [[nodiscard]] static ReadDumpResult read_dump(std::istream& is, std::span<const Type_entry> type_table);
   [[nodiscard]] static ReadDumpResult read_dump(const std::string& filename, std::span<const Type_entry> type_table);
 
-  // Binary persistence — saves/loads body data (pointers_stack, validity_stack, subnode_refs).
-  // dir_path is the tree-specific directory (e.g., "db/tree_1/").
-  void               save_body(const std::string& dir_path) const;
-  void               load_body(const std::string& dir_path);
   [[nodiscard]] bool is_dirty() const noexcept { return dirty_; }
 
   void print_tree(int deep = 0) {
@@ -1218,6 +1210,11 @@ public:
   friend class Forest;
 
 private:
+  // Binary persistence — saves/loads body data (pointers_stack, validity_stack, subnode_refs).
+  // dir_path is the tree-specific directory (e.g., "db/tree_1/").
+  void save_body(const std::string& dir_path) const;
+  void load_body(const std::string& dir_path);
+
   struct PrintAlign {
     size_t pos_width  = 0;  // max digits in %pos (to align '=')
     size_t name_width = 0;  // max node_text length among nodes with ':' (to align ':')
@@ -1247,7 +1244,8 @@ private:
   void pre_order_flat_impl(Tree_pos node_pos, Tid root_tid, std::set<Tid>& visited_tids, std::vector<Node_class>& out) {
     out.emplace_back(this, node_pos, root_tid);
     const Tid subnode_ref = get_subnode(node_pos);
-    if (subnode_ref != INVALID && subnode_ref < 0 && forest_ptr != nullptr && visited_tids.find(subnode_ref) == visited_tids.end()) {
+    if (subnode_ref != INVALID && subnode_ref < 0 && forest_ptr != nullptr
+        && visited_tids.find(subnode_ref) == visited_tids.end()) {
       Tree* subtree = _get_forest_tree(subnode_ref);
       if (subtree != nullptr && subtree->_contains_data(subtree->get_root())) {
         visited_tids.insert(subnode_ref);
@@ -1262,7 +1260,8 @@ private:
 
   void post_order_flat_impl(Tree_pos node_pos, Tid root_tid, std::set<Tid>& visited_tids, std::vector<Node_class>& out) {
     const Tid subnode_ref = get_subnode(node_pos);
-    if (subnode_ref != INVALID && subnode_ref < 0 && forest_ptr != nullptr && visited_tids.find(subnode_ref) == visited_tids.end()) {
+    if (subnode_ref != INVALID && subnode_ref < 0 && forest_ptr != nullptr
+        && visited_tids.find(subnode_ref) == visited_tids.end()) {
       Tree* subtree = _get_forest_tree(subnode_ref);
       if (subtree != nullptr && subtree->_contains_data(subtree->get_root())) {
         visited_tids.insert(subnode_ref);
@@ -2235,9 +2234,7 @@ namespace std {
 
 template <>
 struct hash<hhds::Tree_class_index> {
-  [[nodiscard]] size_t operator()(const hhds::Tree_class_index& x) const noexcept {
-    return std::hash<hhds::Tree_pos>{}(x.value);
-  }
+  [[nodiscard]] size_t operator()(const hhds::Tree_class_index& x) const noexcept { return std::hash<hhds::Tree_pos>{}(x.value); }
 };
 
 template <>
