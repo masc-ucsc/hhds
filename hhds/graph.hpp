@@ -133,15 +133,14 @@ public:
   }
 
 private:
-  Graph*         graph_       = nullptr;
-  Nid            raw_nid      = 0;
-  Port_id        port_id      = 0;
-  Pid            pin_pid      = 0;
-  Handle_context context_     = Handle_context::Class;
-  Gid            root_gid_    = Gid_invalid;  // Flat & Hier: root graph of the traversal
-  Gid            current_gid_ = Gid_invalid;  // Flat: current graph gid
-  Gid            owner_gid_   = Gid_invalid;  // Hier: graph whose structure tree owns hier_pos_
-  Tree_pos       hier_pos_    = INVALID;      // Hier: position in that tree
+  Graph*         graph_     = nullptr;
+  Nid            raw_nid    = 0;
+  Port_id        port_id    = 0;
+  Pid            pin_pid    = 0;
+  Handle_context context_   = Handle_context::Class;
+  Gid            root_gid_  = Gid_invalid;  // Flat & Hier: root graph of the traversal
+  Gid            owner_gid_ = Gid_invalid;  // Hier: graph whose structure tree owns hier_pos_
+  Tree_pos       hier_pos_  = INVALID;      // Hier: position in that tree
 
   friend class Graph;
   friend class GraphLibrary;
@@ -155,12 +154,8 @@ public:
 
   Node_class() = default;
   Node_class(Graph* graph_value, Nid raw_nid_value) : graph_(graph_value), raw_nid(raw_nid_value) {}
-  Node_class(Graph* graph_value, Gid root_gid_value, Gid current_gid_value, Nid raw_nid_value)
-      : graph_(graph_value)
-      , raw_nid(raw_nid_value)
-      , context_(Context::Flat)
-      , root_gid_(root_gid_value)
-      , current_gid_(current_gid_value) {}
+  Node_class(Graph* graph_value, Gid root_gid_value, Nid raw_nid_value)
+      : graph_(graph_value), raw_nid(raw_nid_value), context_(Context::Flat), root_gid_(root_gid_value) {}
   Node_class(Graph* graph_value, Gid root_gid_value, Gid owner_gid_value, Tree_pos hier_pos_value, Nid raw_nid_value)
       : graph_(graph_value)
       , raw_nid(raw_nid_value)
@@ -235,13 +230,12 @@ public:
   }
 
 private:
-  Graph*   graph_       = nullptr;
-  Nid      raw_nid      = 0;
-  Context  context_     = Context::Class;
-  Gid      root_gid_    = Gid_invalid;  // Flat & Hier: root graph of the traversal
-  Gid      current_gid_ = Gid_invalid;  // Flat: current graph gid
-  Gid      owner_gid_   = Gid_invalid;  // Hier: graph whose structure tree owns hier_pos_
-  Tree_pos hier_pos_    = INVALID;      // Hier: position in that tree
+  Graph*   graph_     = nullptr;
+  Nid      raw_nid    = 0;
+  Context  context_   = Context::Class;
+  Gid      root_gid_  = Gid_invalid;  // Flat & Hier: root graph of the traversal
+  Gid      owner_gid_ = Gid_invalid;  // Hier: graph whose structure tree owns hier_pos_
+  Tree_pos hier_pos_  = INVALID;      // Hier: position in that tree
 
   friend class Graph;
   friend void inherit_pin_context(Pin_class& pin, const Node_class& node);
@@ -875,7 +869,7 @@ public:
     if (!graph->is_node_valid(idx.value)) {
       return Node_class();
     }
-    return Node_class(graph.get(), idx.gid, idx.gid, idx.value);
+    return Node_class(graph.get(), idx.gid, idx.value);
   }
   [[nodiscard]] Pin_class get_pin(Flat_index idx) {
     if (!has_graph(idx.gid)) {
@@ -885,10 +879,9 @@ public:
     if (!graph->is_pin_valid(idx.value)) {
       return Pin_class();
     }
-    Pin_class pin       = graph->make_pin_class(idx.value);
-    pin.context_        = Handle_context::Flat;
-    pin.root_gid_       = idx.gid;
-    pin.current_gid_    = idx.gid;
+    Pin_class pin = graph->make_pin_class(idx.value);
+    pin.context_  = Handle_context::Flat;
+    pin.root_gid_ = idx.gid;
     return pin;
   }
 

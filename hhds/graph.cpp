@@ -37,9 +37,6 @@ auto Node_class::get_root_gid() const noexcept -> Gid {
 }
 
 auto Node_class::get_current_gid() const noexcept -> Gid {
-  if (context_ == Context::Flat) {
-    return current_gid_;
-  }
   return graph_ != nullptr ? graph_->get_gid() : Gid_invalid;
 }
 
@@ -51,9 +48,6 @@ auto Pin_class::get_root_gid() const noexcept -> Gid {
 }
 
 auto Pin_class::get_current_gid() const noexcept -> Gid {
-  if (context_ == Handle_context::Flat) {
-    return current_gid_;
-  }
   return graph_ != nullptr ? graph_->get_gid() : Gid_invalid;
 }
 
@@ -913,7 +907,7 @@ void Graph::forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& 
     const Nid   node_nid = node.get_debug_nid();
     const auto& node_ref = node_table[static_cast<size_t>(node_nid >> 2)];
 
-    out.emplace_back(const_cast<Graph*>(this), top_graph, self_gid_, node_nid);
+    out.emplace_back(const_cast<Graph*>(this), top_graph, node_nid);
 
     if (node_ref.has_subnode() && owner_lib_ != nullptr) {
       const Gid other_graph_id = node_ref.get_subnode();
@@ -1017,7 +1011,6 @@ auto Graph::make_pin_class(Pid pin_pid) const -> Pin_class {
 void inherit_pin_context(Pin_class& pin, const Node_class& node) {
   pin.context_     = node.context_;
   pin.root_gid_    = node.root_gid_;
-  pin.current_gid_ = node.current_gid_;
   pin.owner_gid_   = node.owner_gid_;
   pin.hier_pos_    = node.hier_pos_;
 }
@@ -1397,7 +1390,7 @@ void Graph::delete_pin(Pid pin_pid) {
 
 auto Pin_class::get_master_node() const -> Node_class {
   if (context_ == Handle_context::Flat) {
-    return Node_class(graph_, root_gid_, current_gid_, raw_nid);
+    return Node_class(graph_, root_gid_, raw_nid);
   }
   if (context_ == Handle_context::Hier) {
     return Node_class(graph_, root_gid_, owner_gid_, hier_pos_, raw_nid);
@@ -1748,7 +1741,7 @@ void FastFlatIterator::advance() {
 auto FastFlatIterator::operator*() const -> Node_class {
   const Frame& frame   = stack_.back();
   const Nid    raw_nid = static_cast<Nid>(frame.node_idx) << 2;
-  return Node_class(frame.graph, top_graph_, frame.graph->self_gid_, raw_nid);
+  return Node_class(frame.graph, top_graph_, raw_nid);
 }
 
 auto FastFlatIterator::operator++() -> FastFlatIterator& {
@@ -1956,7 +1949,6 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
     Pin_class self_driver_pin(this, self_nid, 0, self_nid | static_cast<Pid>(2));
     self_driver_pin.context_     = pin.context_;
     self_driver_pin.root_gid_    = pin.root_gid_;
-    self_driver_pin.current_gid_ = pin.current_gid_;
     self_driver_pin.owner_gid_ = pin.owner_gid_;
     self_driver_pin.hier_pos_    = pin.hier_pos_;
 
@@ -1971,7 +1963,6 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
         e.sink              = make_pin_class(static_cast<Pid>(vid));
         e.sink.context_     = pin.context_;
         e.sink.root_gid_    = pin.root_gid_;
-        e.sink.current_gid_ = pin.current_gid_;
         e.sink.owner_gid_ = pin.owner_gid_;
         e.sink.hier_pos_    = pin.hier_pos_;
         out.push_back(e);
@@ -1982,7 +1973,6 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
         e.sink              = Pin_class(this, sink_nid & ~static_cast<Nid>(2), 0, sink_nid & ~static_cast<Nid>(2));
         e.sink.context_     = pin.context_;
         e.sink.root_gid_    = pin.root_gid_;
-        e.sink.current_gid_ = pin.current_gid_;
         e.sink.owner_gid_ = pin.owner_gid_;
         e.sink.hier_pos_    = pin.hier_pos_;
         out.push_back(e);
@@ -2000,7 +1990,6 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
   Pin_class               context_driver_pin = self_driver_pin;
   context_driver_pin.context_                = pin.context_;
   context_driver_pin.root_gid_               = pin.root_gid_;
-  context_driver_pin.current_gid_            = pin.current_gid_;
   context_driver_pin.owner_gid_ = pin.owner_gid_;
   context_driver_pin.hier_pos_               = pin.hier_pos_;
 
@@ -2016,7 +2005,6 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
       e.sink              = make_pin_class(sink_pid);
       e.sink.context_     = pin.context_;
       e.sink.root_gid_    = pin.root_gid_;
-      e.sink.current_gid_ = pin.current_gid_;
       e.sink.owner_gid_ = pin.owner_gid_;
       e.sink.hier_pos_    = pin.hier_pos_;
       out.push_back(e);
@@ -2046,7 +2034,6 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
     Pin_class self_sink_pin(this, self_nid, 0, self_nid);
     self_sink_pin.context_     = pin.context_;
     self_sink_pin.root_gid_    = pin.root_gid_;
-    self_sink_pin.current_gid_ = pin.current_gid_;
     self_sink_pin.owner_gid_ = pin.owner_gid_;
     self_sink_pin.hier_pos_    = pin.hier_pos_;
 
@@ -2060,7 +2047,6 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
         e.driver              = make_pin_class(static_cast<Pid>(vid));
         e.driver.context_     = pin.context_;
         e.driver.root_gid_    = pin.root_gid_;
-        e.driver.current_gid_ = pin.current_gid_;
         e.driver.owner_gid_ = pin.owner_gid_;
         e.driver.hier_pos_    = pin.hier_pos_;
         e.sink                = self_sink_pin;
@@ -2071,7 +2057,6 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
         e.driver              = Pin_class(this, driver_nid & ~static_cast<Nid>(2), 0, driver_nid | static_cast<Nid>(2));
         e.driver.context_     = pin.context_;
         e.driver.root_gid_    = pin.root_gid_;
-        e.driver.current_gid_ = pin.current_gid_;
         e.driver.owner_gid_ = pin.owner_gid_;
         e.driver.hier_pos_    = pin.hier_pos_;
         e.sink                = self_sink_pin;
@@ -2090,7 +2075,6 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
   Pin_class               context_sink_pin = self_sink_pin;
   context_sink_pin.context_                = pin.context_;
   context_sink_pin.root_gid_               = pin.root_gid_;
-  context_sink_pin.current_gid_            = pin.current_gid_;
   context_sink_pin.owner_gid_ = pin.owner_gid_;
   context_sink_pin.hier_pos_               = pin.hier_pos_;
 
@@ -2105,7 +2089,6 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
       e.driver              = make_pin_class(driver_pid);
       e.driver.context_     = pin.context_;
       e.driver.root_gid_    = pin.root_gid_;
-      e.driver.current_gid_ = pin.current_gid_;
       e.driver.owner_gid_ = pin.owner_gid_;
       e.driver.hier_pos_    = pin.hier_pos_;
       e.sink                = context_sink_pin;
