@@ -90,7 +90,6 @@ public:
   [[nodiscard]] Handle_context    get_context() const noexcept { return context_; }
   [[nodiscard]] Gid               get_root_gid() const noexcept;
   [[nodiscard]] Gid               get_current_gid() const noexcept;
-  [[nodiscard]] Gid               get_hier_owner_gid() const noexcept { return owner_gid_; }
   [[nodiscard]] Tree_pos          get_hier_pos() const noexcept { return hier_pos_; }
 
   // Opaque, hashable keys for use in user-owned maps. See hhds/index.hpp for
@@ -102,7 +101,7 @@ public:
   }
   [[nodiscard]] Hier_index get_hier_index() const noexcept {
     assert(context_ == Handle_context::Hier && "get_hier_index: requires hier traversal context");
-    return Hier_index{owner_gid_, hier_pos_, pin_pid};
+    return Hier_index{get_current_gid(), hier_pos_, pin_pid};
   }
 
   void                                  connect_driver(Pin_class driver_pin) const;
@@ -133,14 +132,13 @@ public:
   }
 
 private:
-  Graph*         graph_     = nullptr;
-  Nid            raw_nid    = 0;
-  Port_id        port_id    = 0;
-  Pid            pin_pid    = 0;
-  Handle_context context_   = Handle_context::Class;
-  Gid            root_gid_  = Gid_invalid;  // Flat & Hier: root graph of the traversal
-  Gid            owner_gid_ = Gid_invalid;  // Hier: graph whose structure tree owns hier_pos_
-  Tree_pos       hier_pos_  = INVALID;      // Hier: position in that tree
+  Graph*         graph_    = nullptr;
+  Nid            raw_nid   = 0;
+  Port_id        port_id   = 0;
+  Pid            pin_pid   = 0;
+  Handle_context context_  = Handle_context::Class;
+  Gid            root_gid_ = Gid_invalid;  // Flat & Hier: root graph of the traversal
+  Tree_pos       hier_pos_ = INVALID;      // Hier: per-instance token (parent's structure-tree pos)
 
   friend class Graph;
   friend class GraphLibrary;
@@ -156,12 +154,11 @@ public:
   Node_class(Graph* graph_value, Nid raw_nid_value) : graph_(graph_value), raw_nid(raw_nid_value) {}
   Node_class(Graph* graph_value, Gid root_gid_value, Nid raw_nid_value)
       : graph_(graph_value), raw_nid(raw_nid_value), context_(Context::Flat), root_gid_(root_gid_value) {}
-  Node_class(Graph* graph_value, Gid root_gid_value, Gid owner_gid_value, Tree_pos hier_pos_value, Nid raw_nid_value)
+  Node_class(Graph* graph_value, Gid root_gid_value, Tree_pos hier_pos_value, Nid raw_nid_value)
       : graph_(graph_value)
       , raw_nid(raw_nid_value)
       , context_(Context::Hier)
       , root_gid_(root_gid_value)
-      , owner_gid_(owner_gid_value)
       , hier_pos_(hier_pos_value) {}
   explicit Node_class(Nid raw_nid_value) : raw_nid(raw_nid_value) {}
 
@@ -176,7 +173,6 @@ public:
   [[nodiscard]] Context           get_context() const noexcept { return context_; }
   [[nodiscard]] Gid               get_root_gid() const noexcept;
   [[nodiscard]] Gid               get_current_gid() const noexcept;
-  [[nodiscard]] Gid               get_hier_owner_gid() const noexcept { return owner_gid_; }
   [[nodiscard]] Tree_pos          get_hier_pos() const noexcept { return hier_pos_; }
 
   // Opaque, hashable keys for use in user-owned maps. See hhds/index.hpp for
@@ -188,7 +184,7 @@ public:
   }
   [[nodiscard]] Hier_index get_hier_index() const noexcept {
     assert(context_ == Context::Hier && "get_hier_index: requires hier traversal context");
-    return Hier_index{owner_gid_, hier_pos_, raw_nid};
+    return Hier_index{get_current_gid(), hier_pos_, raw_nid};
   }
 
   void                                  set_subnode(const std::shared_ptr<GraphIO>& graphio) const;
@@ -230,12 +226,11 @@ public:
   }
 
 private:
-  Graph*   graph_     = nullptr;
-  Nid      raw_nid    = 0;
-  Context  context_   = Context::Class;
-  Gid      root_gid_  = Gid_invalid;  // Flat & Hier: root graph of the traversal
-  Gid      owner_gid_ = Gid_invalid;  // Hier: graph whose structure tree owns hier_pos_
-  Tree_pos hier_pos_  = INVALID;      // Hier: position in that tree
+  Graph*   graph_    = nullptr;
+  Nid      raw_nid   = 0;
+  Context  context_  = Context::Class;
+  Gid      root_gid_ = Gid_invalid;  // Flat & Hier: root graph of the traversal
+  Tree_pos hier_pos_ = INVALID;      // Hier: per-instance token (parent's structure-tree pos)
 
   friend class Graph;
   friend void inherit_pin_context(Pin_class& pin, const Node_class& node);
@@ -421,7 +416,7 @@ public:
     // root_gid unknown from a bare Hier_index — reconstructing a Node for
     // a key outside an active traversal yields a Node valid for identity
     // and attr lookups but with get_root_gid() == invalid.
-    return Node_class(const_cast<Graph*>(this), static_cast<Gid>(Gid_invalid), idx.owner_gid, idx.hier_pos, idx.value);
+    return Node_class(const_cast<Graph*>(this), static_cast<Gid>(Gid_invalid), idx.hier_pos, idx.value);
   }
   [[nodiscard]] Pin_class get_pin(Class_index idx) const {
     if (!is_pin_valid(idx.value)) {
@@ -435,7 +430,6 @@ public:
     }
     Pin_class pin = make_pin_class(idx.value);
     pin.context_  = Handle_context::Hier;
-    pin.owner_gid_ = idx.owner_gid;
     pin.hier_pos_ = idx.hier_pos;
     return pin;
   }
@@ -508,7 +502,7 @@ private:
   void rebuild_forward_flat_cache() const;
   void rebuild_forward_hier_cache() const;
   void forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const;
-  void forward_hier_impl(Gid root_gid, Gid owner_gid, Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs,
+  void forward_hier_impl(Gid root_gid, Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs,
                          std::vector<Node>& out) const;
 
   std::vector<NodeEntry>                         node_table;
@@ -674,8 +668,7 @@ private:
     Graph*   graph;
     size_t   node_idx;
     size_t   end;
-    Gid      owner_gid;  // graph whose structure tree holds `hier_pos`
-    Tree_pos hier_pos;
+    Tree_pos hier_pos;  // position in the parent graph's structure tree
   };
 
   explicit FastHierIterator(Graph* root_graph);

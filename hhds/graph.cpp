@@ -923,13 +923,13 @@ void Graph::forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& 
   }
 }
 
-void Graph::forward_hier_impl(Gid root_gid, Gid owner_gid, Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs,
+void Graph::forward_hier_impl(Gid root_gid, Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs,
                               std::vector<Node>& out) const {
   for (const auto& node : forward_class()) {
     const Nid   node_nid = node.get_debug_nid();
     const auto& node_ref = node_table[static_cast<size_t>(node_nid >> 2)];
 
-    out.emplace_back(const_cast<Graph*>(this), root_gid, owner_gid, hier_pos, node_nid);
+    out.emplace_back(const_cast<Graph*>(this), root_gid, hier_pos, node_nid);
 
     if (node_ref.has_subnode() && owner_lib_ != nullptr) {
       const Gid other_graph_id = node_ref.get_subnode();
@@ -938,7 +938,7 @@ void Graph::forward_hier_impl(Gid root_gid, Gid owner_gid, Tree_pos hier_pos, an
         auto           it             = subnode_tree_pos_.find(node_nid);
         const Tree_pos child_hier_pos = (it != subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
         active_graphs.insert(other_graph_id);
-        owner_lib_->get_graph(other_graph_id)->forward_hier_impl(root_gid, self_gid_, child_hier_pos, active_graphs, out);
+        owner_lib_->get_graph(other_graph_id)->forward_hier_impl(root_gid, child_hier_pos, active_graphs, out);
         active_graphs.erase(other_graph_id);
       }
     }
@@ -968,7 +968,7 @@ void Graph::rebuild_forward_hier_cache() const {
     active_graphs.insert(root_gid);
   }
 
-  forward_hier_impl(root_gid, root_gid, static_cast<Tree_pos>(ROOT), active_graphs, forward_hier_cache_);
+  forward_hier_impl(root_gid, static_cast<Tree_pos>(ROOT), active_graphs, forward_hier_cache_);
 
   forward_hier_cache_epoch_ = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
   forward_hier_cache_valid_ = true;
@@ -1009,10 +1009,9 @@ auto Graph::make_pin_class(Pid pin_pid) const -> Pin_class {
 }
 
 void inherit_pin_context(Pin_class& pin, const Node_class& node) {
-  pin.context_     = node.context_;
-  pin.root_gid_    = node.root_gid_;
-  pin.owner_gid_   = node.owner_gid_;
-  pin.hier_pos_    = node.hier_pos_;
+  pin.context_  = node.context_;
+  pin.root_gid_ = node.root_gid_;
+  pin.hier_pos_ = node.hier_pos_;
 }
 
 auto Graph::find_pin(Node_class node, Port_id port_id, bool driver) const -> Pin_class {
@@ -1393,7 +1392,7 @@ auto Pin_class::get_master_node() const -> Node_class {
     return Node_class(graph_, root_gid_, raw_nid);
   }
   if (context_ == Handle_context::Hier) {
-    return Node_class(graph_, root_gid_, owner_gid_, hier_pos_, raw_nid);
+    return Node_class(graph_, root_gid_, hier_pos_, raw_nid);
   }
   return Node_class(graph_, raw_nid);
 }
@@ -1764,9 +1763,9 @@ FastHierIterator::FastHierIterator(Graph* root_graph) {
   if (root_gid_ != Gid_invalid) {
     active_graphs_.insert(root_gid_);
   }
-  // Root frame: all top-level nodes share (owner=root_gid, hier_pos=ROOT)
-  // — the position of the root graph itself in its own structure tree.
-  stack_.push_back(Frame{root_graph, 1, root_graph->node_table.size(), root_gid_, static_cast<Tree_pos>(ROOT)});
+  // Root frame: top-level nodes share hier_pos = ROOT (the root graph's own
+  // structure-tree root).
+  stack_.push_back(Frame{root_graph, 1, root_graph->node_table.size(), static_cast<Tree_pos>(ROOT)});
   advance();
 }
 
@@ -1793,14 +1792,11 @@ void FastHierIterator::advance() {
         Graph*    child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
         const Nid subnode_nid = static_cast<Nid>(frame.node_idx) << 2;
         // Stable Tree_pos from the structure tree that set_subnode built.
-        auto it = frame.graph->subnode_tree_pos_.find(subnode_nid);
-        const Tree_pos child_pos = (it != frame.graph->subnode_tree_pos_.end())
-                                     ? it->second
-                                     : static_cast<Tree_pos>(ROOT);
-        const Gid child_owner_gid = frame.graph->self_gid_;
+        auto           it        = frame.graph->subnode_tree_pos_.find(subnode_nid);
+        const Tree_pos child_pos = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
         ++frame.node_idx;
         active_graphs_.insert(sub);
-        stack_.push_back(Frame{child_graph, 1, child_graph->node_table.size(), child_owner_gid, child_pos});
+        stack_.push_back(Frame{child_graph, 1, child_graph->node_table.size(), child_pos});
         continue;
       }
     }
@@ -1811,7 +1807,7 @@ void FastHierIterator::advance() {
 auto FastHierIterator::operator*() const -> Node_class {
   const Frame& frame   = stack_.back();
   const Nid    raw_nid = static_cast<Nid>(frame.node_idx) << 2;
-  return Node_class(frame.graph, root_gid_, frame.owner_gid, frame.hier_pos, raw_nid);
+  return Node_class(frame.graph, root_gid_, frame.hier_pos, raw_nid);
 }
 
 auto FastHierIterator::operator++() -> FastHierIterator& {
@@ -1949,7 +1945,6 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
     Pin_class self_driver_pin(this, self_nid, 0, self_nid | static_cast<Pid>(2));
     self_driver_pin.context_     = pin.context_;
     self_driver_pin.root_gid_    = pin.root_gid_;
-    self_driver_pin.owner_gid_ = pin.owner_gid_;
     self_driver_pin.hier_pos_    = pin.hier_pos_;
 
     std::vector<Edge_class> out;
@@ -1963,7 +1958,6 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
         e.sink              = make_pin_class(static_cast<Pid>(vid));
         e.sink.context_     = pin.context_;
         e.sink.root_gid_    = pin.root_gid_;
-        e.sink.owner_gid_ = pin.owner_gid_;
         e.sink.hier_pos_    = pin.hier_pos_;
         out.push_back(e);
       } else {
@@ -1973,7 +1967,6 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
         e.sink              = Pin_class(this, sink_nid & ~static_cast<Nid>(2), 0, sink_nid & ~static_cast<Nid>(2));
         e.sink.context_     = pin.context_;
         e.sink.root_gid_    = pin.root_gid_;
-        e.sink.owner_gid_ = pin.owner_gid_;
         e.sink.hier_pos_    = pin.hier_pos_;
         out.push_back(e);
       }
@@ -1990,7 +1983,6 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
   Pin_class               context_driver_pin = self_driver_pin;
   context_driver_pin.context_                = pin.context_;
   context_driver_pin.root_gid_               = pin.root_gid_;
-  context_driver_pin.owner_gid_ = pin.owner_gid_;
   context_driver_pin.hier_pos_               = pin.hier_pos_;
 
   for (auto vid : edges) {
@@ -2005,7 +1997,6 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
       e.sink              = make_pin_class(sink_pid);
       e.sink.context_     = pin.context_;
       e.sink.root_gid_    = pin.root_gid_;
-      e.sink.owner_gid_ = pin.owner_gid_;
       e.sink.hier_pos_    = pin.hier_pos_;
       out.push_back(e);
       continue;
@@ -2034,7 +2025,6 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
     Pin_class self_sink_pin(this, self_nid, 0, self_nid);
     self_sink_pin.context_     = pin.context_;
     self_sink_pin.root_gid_    = pin.root_gid_;
-    self_sink_pin.owner_gid_ = pin.owner_gid_;
     self_sink_pin.hier_pos_    = pin.hier_pos_;
 
     std::vector<Edge_class> out;
@@ -2047,7 +2037,6 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
         e.driver              = make_pin_class(static_cast<Pid>(vid));
         e.driver.context_     = pin.context_;
         e.driver.root_gid_    = pin.root_gid_;
-        e.driver.owner_gid_ = pin.owner_gid_;
         e.driver.hier_pos_    = pin.hier_pos_;
         e.sink                = self_sink_pin;
         out.push_back(e);
@@ -2057,7 +2046,6 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
         e.driver              = Pin_class(this, driver_nid & ~static_cast<Nid>(2), 0, driver_nid | static_cast<Nid>(2));
         e.driver.context_     = pin.context_;
         e.driver.root_gid_    = pin.root_gid_;
-        e.driver.owner_gid_ = pin.owner_gid_;
         e.driver.hier_pos_    = pin.hier_pos_;
         e.sink                = self_sink_pin;
         out.push_back(e);
@@ -2075,7 +2063,6 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
   Pin_class               context_sink_pin = self_sink_pin;
   context_sink_pin.context_                = pin.context_;
   context_sink_pin.root_gid_               = pin.root_gid_;
-  context_sink_pin.owner_gid_ = pin.owner_gid_;
   context_sink_pin.hier_pos_               = pin.hier_pos_;
 
   for (auto vid : edges) {
@@ -2089,7 +2076,6 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
       e.driver              = make_pin_class(driver_pid);
       e.driver.context_     = pin.context_;
       e.driver.root_gid_    = pin.root_gid_;
-      e.driver.owner_gid_ = pin.owner_gid_;
       e.driver.hier_pos_    = pin.hier_pos_;
       e.sink                = context_sink_pin;
       out.push_back(e);
