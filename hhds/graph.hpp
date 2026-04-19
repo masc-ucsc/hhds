@@ -59,6 +59,13 @@ class Pin_class;
 class Edge_class;
 class Tree;
 
+class FastClassIterator;
+class FastClassRange;
+class FastFlatIterator;
+class FastFlatRange;
+class FastHierIterator;
+class FastHierRange;
+
 enum class Handle_context : uint8_t { Class, Flat, Hier };
 
 class Pin_class {
@@ -126,16 +133,16 @@ public:
   }
 
 private:
-  Graph*                            graph_       = nullptr;
-  Nid                               raw_nid      = 0;
-  Port_id                           port_id      = 0;
-  Pid                               pin_pid      = 0;
-  Handle_context                    context_     = Handle_context::Class;
-  Gid                               root_gid_    = Gid_invalid;
-  Gid                               current_gid_ = Gid_invalid;
-  std::shared_ptr<std::vector<Gid>> hier_gids_;
-  Tid                               hier_tid_ = INVALID;
-  Tree_pos                          hier_pos_ = INVALID;
+  Graph*                   graph_       = nullptr;
+  Nid                      raw_nid      = 0;
+  Port_id                  port_id      = 0;
+  Pid                      pin_pid      = 0;
+  Handle_context           context_     = Handle_context::Class;
+  Gid                      root_gid_    = Gid_invalid;
+  Gid                      current_gid_ = Gid_invalid;
+  const std::vector<Gid>*  hier_gids_   = nullptr;
+  Tid                      hier_tid_    = INVALID;
+  Tree_pos                 hier_pos_    = INVALID;
 
   friend class Graph;
   friend class GraphLibrary;
@@ -155,12 +162,12 @@ public:
       , context_(Context::Flat)
       , root_gid_(root_gid_value)
       , current_gid_(current_gid_value) {}
-  Node_class(Graph* graph_value, Tid hier_tid_value, std::shared_ptr<std::vector<Gid>> hier_gids_value, Tree_pos hier_pos_value,
+  Node_class(Graph* graph_value, Tid hier_tid_value, const std::vector<Gid>* hier_gids_value, Tree_pos hier_pos_value,
              Nid raw_nid_value)
       : graph_(graph_value)
       , raw_nid(raw_nid_value)
       , context_(Context::Hier)
-      , hier_gids_(std::move(hier_gids_value))
+      , hier_gids_(hier_gids_value)
       , hier_tid_(hier_tid_value)
       , hier_pos_(hier_pos_value) {}
   explicit Node_class(Nid raw_nid_value) : raw_nid(raw_nid_value) {}
@@ -230,14 +237,14 @@ public:
   }
 
 private:
-  Graph*                            graph_       = nullptr;
-  Nid                               raw_nid      = 0;
-  Context                           context_     = Context::Class;
-  Gid                               root_gid_    = Gid_invalid;
-  Gid                               current_gid_ = Gid_invalid;
-  std::shared_ptr<std::vector<Gid>> hier_gids_;
-  Tid                               hier_tid_ = INVALID;
-  Tree_pos                          hier_pos_ = INVALID;
+  Graph*                   graph_       = nullptr;
+  Nid                      raw_nid      = 0;
+  Context                  context_     = Context::Class;
+  Gid                      root_gid_    = Gid_invalid;
+  Gid                      current_gid_ = Gid_invalid;
+  const std::vector<Gid>*  hier_gids_   = nullptr;
+  Tid                      hier_tid_    = INVALID;
+  Tree_pos                 hier_pos_    = INVALID;
 
   friend class Graph;
   friend void inherit_pin_context(Pin_class& pin, const Node_class& node);
@@ -442,12 +449,12 @@ public:
   static constexpr Nid INPUT_NODE  = (static_cast<Nid>(1) << 2);
   static constexpr Nid OUTPUT_NODE = (static_cast<Nid>(2) << 2);
 
-  [[nodiscard]] auto fast_class() const -> std::span<const Node>;
-  [[nodiscard]] auto forward_class() const -> std::span<const Node>;
-  [[nodiscard]] auto fast_flat() const -> std::span<const Node>;
-  [[nodiscard]] auto forward_flat() const -> std::span<const Node>;
-  [[nodiscard]] auto fast_hier() const -> std::span<const Node>;
-  [[nodiscard]] auto forward_hier() const -> std::span<const Node>;
+  [[nodiscard]] FastClassRange fast_class() const noexcept;
+  [[nodiscard]] auto           forward_class() const -> std::span<const Node>;
+  [[nodiscard]] FastFlatRange  fast_flat() const noexcept;
+  [[nodiscard]] auto           forward_flat() const -> std::span<const Node>;
+  [[nodiscard]] FastHierRange  fast_hier() const noexcept;
+  [[nodiscard]] auto           forward_hier() const -> std::span<const Node>;
   void               display_graph() const;
   void               display_next_pin_of_node() const;
 
@@ -455,23 +462,6 @@ public:
   [[nodiscard]] std::string print() const;
 
 private:
-  class FastIterator {
-  public:
-    FastIterator(Nid node_id_value, Gid top_graph_value, Gid curr_graph_value, uint32_t tree_node_num_value) noexcept
-        : node_id(node_id_value), top_graph(top_graph_value), curr_graph(curr_graph_value), tree_node_num(tree_node_num_value) {}
-
-    [[nodiscard]] Nid      get_debug_nid() const noexcept { return node_id; }
-    [[nodiscard]] uint32_t get_debug_hier_pos() const noexcept { return tree_node_num; }
-
-  private:
-    Nid      node_id;        // encoded nid vid: (nid << 2) | 0
-    Gid      top_graph;      // root graph of traversal
-    Gid      curr_graph;     // graph that owns node_id
-    uint32_t tree_node_num;  // DFS tree-node id (root graph == 1)
-
-    friend class Graph;
-  };
-
   void                       attr_note_modified() noexcept override { dirty_ = true; }
   [[nodiscard]] OverflowPool get_overflow_pool() { return {overflow_sets_, overflow_free_}; }
   void                       assert_accessible() const noexcept;
@@ -518,42 +508,26 @@ private:
   [[nodiscard]] Pin_class                 make_pin_class(Pid pin_pid) const;
   void                                    bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
   void                                    set_name(std::string_view name) { name_ = name; }
-  void                                    invalidate_traversal_caches() noexcept;
-  void                                    rebuild_fast_class_cache() const;
-  void                                    rebuild_fast_flat_cache() const;
-  void                                    rebuild_fast_hier_cache() const;
-  void                                    rebuild_forward_class_cache() const;
-  void                                    rebuild_forward_flat_cache() const;
-  void                                    rebuild_forward_hier_cache() const;
-  [[nodiscard]] std::vector<FastIterator> fast_iter(bool hierarchy, Gid top_graph = 0, uint32_t tree_node_num = 0) const;
-  void fast_iter_impl(bool hierarchy, Gid top_graph, uint32_t tree_node_num, uint32_t& next_tree_node_num,
-                      ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<FastIterator>& out) const;
-  void fast_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos,
-                      ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const;
+  void invalidate_traversal_caches() noexcept;
+  void rebuild_forward_class_cache() const;
+  void rebuild_forward_flat_cache() const;
+  void rebuild_forward_hier_cache() const;
   void forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const;
-  void forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids,
-                         Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const;
+  void forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::vector<Gid>& hier_gids, Tree_pos hier_pos,
+                         ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const;
 
   std::vector<NodeEntry>                         node_table;
   std::vector<PinEntry>                          pin_table;
   OverflowVec                                    overflow_sets_;
   std::vector<uint32_t>                          overflow_free_;
-  mutable std::vector<Node>                      fast_class_cache_;
-  mutable std::vector<Node>                      fast_flat_cache_;
-  mutable std::vector<Node>                      fast_hier_cache_;
   mutable std::vector<Node>                      forward_class_cache_;
   mutable std::vector<Node>                      forward_flat_cache_;
   mutable std::vector<Node>                      forward_hier_cache_;
-  mutable std::shared_ptr<Tree>                  fast_hier_tree_cache_;
-  mutable std::shared_ptr<std::vector<Gid>>      fast_hier_gid_cache_;
   mutable std::shared_ptr<Tree>                  forward_hier_tree_cache_;
-  mutable std::shared_ptr<std::vector<Gid>>      forward_hier_gid_cache_;
-  mutable bool                                   fast_class_cache_valid_    = false;
-  mutable bool                                   fast_hier_cache_valid_     = false;
+  mutable std::unique_ptr<std::vector<Gid>>      forward_hier_gid_cache_;
   mutable bool                                   forward_class_cache_valid_ = false;
   mutable bool                                   forward_flat_cache_valid_  = false;
   mutable bool                                   forward_hier_cache_valid_  = false;
-  mutable uint64_t                               fast_hier_cache_epoch_     = 0;
   mutable uint64_t                               forward_flat_cache_epoch_  = 0;
   mutable uint64_t                               forward_hier_cache_epoch_  = 0;
   ankerl::unordered_dense::map<std::string, Pid> input_pins_;
@@ -570,6 +544,160 @@ private:
   friend class Edge_class;
   friend class GraphIO;
   friend class GraphLibrary;
+  friend class FastClassIterator;
+  friend class FastClassRange;
+  friend class FastFlatIterator;
+  friend class FastFlatRange;
+  friend class FastHierIterator;
+  friend class FastHierRange;
+};
+
+// Lazy, single-pass iterator over a graph's live nodes (node_table scan,
+// tombstones skipped). No materialization; no per-node shared_ptr overhead.
+class FastClassIterator {
+public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type        = Node_class;
+  using difference_type   = std::ptrdiff_t;
+  using pointer           = void;
+  using reference         = Node_class;
+
+  FastClassIterator() noexcept = default;
+
+  [[nodiscard]] Node_class operator*() const noexcept;
+  FastClassIterator&       operator++() noexcept;
+  FastClassIterator        operator++(int) noexcept {
+    FastClassIterator tmp = *this;
+    ++*this;
+    return tmp;
+  }
+  [[nodiscard]] bool operator==(const FastClassIterator& o) const noexcept { return graph_ == o.graph_ && idx_ == o.idx_; }
+  [[nodiscard]] bool operator!=(const FastClassIterator& o) const noexcept { return !(*this == o); }
+
+private:
+  FastClassIterator(Graph* graph, size_t idx, size_t end) noexcept;
+  void skip_tombstones() noexcept;
+
+  Graph* graph_ = nullptr;
+  size_t idx_   = 0;
+  size_t end_   = 0;
+
+  friend class FastClassRange;
+};
+
+class FastClassRange {
+public:
+  explicit FastClassRange(Graph* graph) noexcept : graph_(graph) {}
+  [[nodiscard]] FastClassIterator begin() const noexcept;
+  [[nodiscard]] FastClassIterator end() const noexcept;
+
+private:
+  Graph* graph_;
+};
+
+// Instance-level flat traversal (sub-graphs visited per instance).
+class FastFlatIterator {
+public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type        = Node_class;
+  using difference_type   = std::ptrdiff_t;
+  using pointer           = void;
+  using reference         = Node_class;
+
+  FastFlatIterator() noexcept = default;
+  FastFlatIterator(const FastFlatIterator&)            = default;
+  FastFlatIterator(FastFlatIterator&&)                 = default;
+  FastFlatIterator& operator=(const FastFlatIterator&) = default;
+  FastFlatIterator& operator=(FastFlatIterator&&)      = default;
+  ~FastFlatIterator()                                  = default;
+
+  [[nodiscard]] Node_class operator*() const;
+  FastFlatIterator&        operator++();
+  FastFlatIterator         operator++(int) {
+    FastFlatIterator tmp = *this;
+    ++*this;
+    return tmp;
+  }
+  [[nodiscard]] bool operator==(const FastFlatIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool operator!=(const FastFlatIterator& o) const noexcept { return !(*this == o); }
+
+private:
+  struct Frame {
+    Graph* graph;
+    size_t node_idx;
+    size_t end;
+  };
+
+  explicit FastFlatIterator(Graph* root_graph);
+  void advance();
+
+  Gid                               top_graph_ = Gid_invalid;
+  std::vector<Frame>                stack_;
+  ankerl::unordered_dense::set<Gid> active_graphs_;
+
+  friend class FastFlatRange;
+};
+
+class FastFlatRange {
+public:
+  explicit FastFlatRange(Graph* graph) noexcept : graph_(graph) {}
+  [[nodiscard]] FastFlatIterator begin() const;
+  [[nodiscard]] FastFlatIterator end() const noexcept { return FastFlatIterator{}; }
+
+private:
+  Graph* graph_;
+};
+
+// Hierarchical traversal with per-instance hier_pos (unique token that maps
+// through `hier_gids_` back to the owning Gid for downstream Node APIs).
+class FastHierIterator {
+public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type        = Node_class;
+  using difference_type   = std::ptrdiff_t;
+  using pointer           = void;
+  using reference         = Node_class;
+
+  FastHierIterator() noexcept                          = default;
+  FastHierIterator(const FastHierIterator&)            = delete;
+  FastHierIterator(FastHierIterator&&)                 = default;
+  FastHierIterator& operator=(const FastHierIterator&) = delete;
+  FastHierIterator& operator=(FastHierIterator&&)      = default;
+  ~FastHierIterator()                                  = default;
+
+  [[nodiscard]] Node_class operator*() const;
+  FastHierIterator&        operator++();
+  [[nodiscard]] bool operator==(const FastHierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool operator!=(const FastHierIterator& o) const noexcept { return !(*this == o); }
+
+private:
+  struct Frame {
+    Graph*   graph;
+    size_t   node_idx;
+    size_t   end;
+    Tree_pos hier_pos;
+  };
+
+  explicit FastHierIterator(Graph* root_graph);
+  void advance();
+
+  Tid                               hier_tid_      = INVALID;
+  Tree_pos                          next_hier_pos_ = 0;
+  std::unique_ptr<std::vector<Gid>> hier_gids_;
+  std::vector<Frame>                stack_;
+  ankerl::unordered_dense::set<Gid> active_graphs_;
+
+  friend class FastHierRange;
+};
+
+class FastHierRange {
+public:
+  explicit FastHierRange(Graph* graph) noexcept : graph_(graph) {}
+  [[nodiscard]] FastHierIterator begin() const;
+  [[nodiscard]] FastHierIterator end() const noexcept { return FastHierIterator{}; }
+
+private:
+  Graph* graph_;
 };
 
 class GraphIO : public std::enable_shared_from_this<GraphIO> {

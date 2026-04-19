@@ -681,18 +681,12 @@ void Graph::invalidate_from_library() noexcept {
   owner_lib_ = nullptr;
   node_table.clear();
   pin_table.clear();
-  fast_class_cache_.clear();
-  fast_flat_cache_.clear();
-  fast_hier_cache_.clear();
   forward_class_cache_.clear();
   forward_flat_cache_.clear();
   forward_hier_cache_.clear();
-  fast_class_cache_valid_    = false;
-  fast_hier_cache_valid_     = false;
   forward_class_cache_valid_ = false;
   forward_flat_cache_valid_  = false;
   forward_hier_cache_valid_  = false;
-  fast_hier_tree_cache_.reset();
   forward_hier_tree_cache_.reset();
   input_pins_.clear();
   output_pins_.clear();
@@ -768,66 +762,14 @@ void Graph::bind_library(const GraphLibrary* owner, Gid self_gid) noexcept {
 
 void Graph::invalidate_traversal_caches() noexcept {
   dirty_                     = true;
-  fast_class_cache_valid_    = false;
-  fast_hier_cache_valid_     = false;
   forward_class_cache_valid_ = false;
   forward_flat_cache_valid_  = false;
   forward_hier_cache_valid_  = false;
-  fast_hier_tree_cache_.reset();
-  fast_hier_gid_cache_.reset();
   forward_hier_tree_cache_.reset();
   forward_hier_gid_cache_.reset();
   if (owner_lib_ != nullptr) {
     owner_lib_->note_graph_mutation();
   }
-}
-
-void Graph::rebuild_fast_class_cache() const {
-  fast_class_cache_.clear();
-  if (node_table.size() > 1) {
-    fast_class_cache_.reserve(node_table.size() - 1);
-    for (size_t i = 1; i < node_table.size(); ++i) {
-      if (node_table[i].get_nid() == 0) {
-        continue;
-      }
-      const Nid raw_nid = static_cast<Nid>(i) << 2;
-      fast_class_cache_.emplace_back(const_cast<Graph*>(this), raw_nid);
-    }
-  }
-  fast_class_cache_valid_ = true;
-}
-
-void Graph::rebuild_fast_flat_cache() const {
-  fast_flat_cache_.clear();
-  const auto traversal = fast_iter(true, 0, 0);
-  fast_flat_cache_.reserve(traversal.size());
-  for (const auto& it : traversal) {
-    fast_flat_cache_.emplace_back(const_cast<Graph*>(this), it.top_graph, it.curr_graph, it.node_id);
-  }
-}
-
-void Graph::rebuild_fast_hier_cache() const {
-  fast_hier_cache_.clear();
-  fast_hier_tree_cache_ = Tree::create();
-  fast_hier_gid_cache_  = std::make_shared<std::vector<Gid>>();
-  const Tid hier_tid    = self_gid_ != Gid_invalid ? static_cast<Tid>(self_gid_) : static_cast<Tid>(-1);
-
-  Gid root_gid = self_gid_;
-  if (root_gid == Gid_invalid) {
-    root_gid = 0;
-  }
-  const Tree_pos root_pos = fast_hier_tree_cache_->add_root();
-  fast_hier_gid_cache_->resize(static_cast<size_t>(root_pos + 1), Gid_invalid);
-  (*fast_hier_gid_cache_)[static_cast<size_t>(root_pos)] = root_gid;
-
-  ankerl::unordered_dense::set<Gid> active_graphs;
-  if (self_gid_ != Gid_invalid) {
-    active_graphs.insert(self_gid_);
-  }
-  fast_hier_impl(fast_hier_tree_cache_, hier_tid, fast_hier_gid_cache_, root_pos, active_graphs, fast_hier_cache_);
-
-  fast_hier_cache_epoch_ = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
-  fast_hier_cache_valid_ = true;
 }
 
 void Graph::rebuild_forward_class_cache() const {
@@ -996,50 +938,22 @@ void Graph::forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& 
   }
 }
 
-void Graph::fast_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids,
-                           Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const {
-  for (size_t i = 1; i < node_table.size(); ++i) {
-    if (node_table[i].get_nid() == 0) {
-      continue;
-    }
-    const Nid   node_id = static_cast<Nid>(i) << 2;
-    const auto& node    = node_table[i];
-
-    if (node.has_subnode() && owner_lib_ != nullptr) {
-      const Gid other_graph_id = node.get_subnode();
-      if (owner_lib_->has_graph(other_graph_id) && active_graphs.find(other_graph_id) == active_graphs.end()) {
-        const Tree_pos child_hier_pos = hier_tree->add_child(hier_pos);
-        if (static_cast<size_t>(child_hier_pos) >= hier_gids->size()) {
-          hier_gids->resize(static_cast<size_t>(child_hier_pos + 1), Gid_invalid);
-        }
-        (*hier_gids)[static_cast<size_t>(child_hier_pos)] = other_graph_id;
-        active_graphs.insert(other_graph_id);
-        owner_lib_->get_graph(other_graph_id)->fast_hier_impl(hier_tree, hier_tid, hier_gids, child_hier_pos, active_graphs, out);
-        active_graphs.erase(other_graph_id);
-        continue;
-      }
-    }
-
-    out.emplace_back(const_cast<Graph*>(this), hier_tid, hier_gids, hier_pos, node_id);
-  }
-}
-
-void Graph::forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids,
-                              Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const {
+void Graph::forward_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::vector<Gid>& hier_gids, Tree_pos hier_pos,
+                              ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const {
   for (const auto& node : forward_class()) {
     const Nid   node_nid = node.get_debug_nid();
     const auto& node_ref = node_table[static_cast<size_t>(node_nid >> 2)];
 
-    out.emplace_back(const_cast<Graph*>(this), hier_tid, hier_gids, hier_pos, node_nid);
+    out.emplace_back(const_cast<Graph*>(this), hier_tid, &hier_gids, hier_pos, node_nid);
 
     if (node_ref.has_subnode() && owner_lib_ != nullptr) {
       const Gid other_graph_id = node_ref.get_subnode();
       if (owner_lib_->has_graph(other_graph_id) && active_graphs.find(other_graph_id) == active_graphs.end()) {
         const Tree_pos child_hier_pos = hier_tree->add_child(hier_pos);
-        if (static_cast<size_t>(child_hier_pos) >= hier_gids->size()) {
-          hier_gids->resize(static_cast<size_t>(child_hier_pos + 1), Gid_invalid);
+        if (static_cast<size_t>(child_hier_pos) >= hier_gids.size()) {
+          hier_gids.resize(static_cast<size_t>(child_hier_pos + 1), Gid_invalid);
         }
-        (*hier_gids)[static_cast<size_t>(child_hier_pos)] = other_graph_id;
+        hier_gids[static_cast<size_t>(child_hier_pos)] = other_graph_id;
         active_graphs.insert(other_graph_id);
         owner_lib_->get_graph(other_graph_id)
             ->forward_hier_impl(hier_tree, hier_tid, hier_gids, child_hier_pos, active_graphs, out);
@@ -1066,7 +980,7 @@ void Graph::rebuild_forward_flat_cache() const {
 void Graph::rebuild_forward_hier_cache() const {
   forward_hier_cache_.clear();
   forward_hier_tree_cache_ = Tree::create();
-  forward_hier_gid_cache_  = std::make_shared<std::vector<Gid>>();
+  forward_hier_gid_cache_  = std::make_unique<std::vector<Gid>>();
   const Tid hier_tid       = self_gid_ != Gid_invalid ? static_cast<Tid>(self_gid_) : static_cast<Tid>(-1);
 
   Gid root_gid = self_gid_;
@@ -1082,58 +996,10 @@ void Graph::rebuild_forward_hier_cache() const {
     active_graphs.insert(self_gid_);
   }
 
-  forward_hier_impl(forward_hier_tree_cache_, hier_tid, forward_hier_gid_cache_, root_pos, active_graphs, forward_hier_cache_);
+  forward_hier_impl(forward_hier_tree_cache_, hier_tid, *forward_hier_gid_cache_, root_pos, active_graphs, forward_hier_cache_);
 
   forward_hier_cache_epoch_ = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
   forward_hier_cache_valid_ = true;
-}
-
-auto Graph::fast_iter(bool hierarchy, Gid top_graph, uint32_t tree_node_num) const -> std::vector<FastIterator> {
-  assert_accessible();
-  if (top_graph == 0) {
-    top_graph = self_gid_;
-  }
-  if (tree_node_num == 0) {
-    tree_node_num = 1;
-  }
-
-  std::vector<FastIterator> result;
-  result.reserve(node_table.size());
-
-  ankerl::unordered_dense::set<Gid> active_graphs;
-  if (self_gid_ != Gid_invalid) {
-    active_graphs.insert(self_gid_);
-  }
-
-  uint32_t next_tree_node_num = tree_node_num;
-  fast_iter_impl(hierarchy, top_graph, tree_node_num, next_tree_node_num, active_graphs, result);
-  return result;
-}
-
-void Graph::fast_iter_impl(bool hierarchy, Gid top_graph, uint32_t tree_node_num, uint32_t& next_tree_node_num,
-                           ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<FastIterator>& out) const {
-  const Gid curr_graph = self_gid_;
-  for (size_t i = 1; i < node_table.size(); ++i) {
-    if (node_table[i].get_nid() == 0) {
-      continue;
-    }
-    const Nid   node_id = static_cast<Nid>(i) << 2;
-    const auto& node    = node_table[i];
-
-    if (hierarchy && node.has_subnode() && owner_lib_ != nullptr) {
-      const Gid other_graph_id = node.get_subnode();
-      if (owner_lib_->has_graph(other_graph_id) && active_graphs.find(other_graph_id) == active_graphs.end()) {
-        active_graphs.insert(other_graph_id);
-        const uint32_t child_tree_node_num = ++next_tree_node_num;
-        owner_lib_->get_graph(other_graph_id)
-            ->fast_iter_impl(hierarchy, top_graph, child_tree_node_num, next_tree_node_num, active_graphs, out);
-        active_graphs.erase(other_graph_id);
-        continue;
-      }
-    }
-
-    out.emplace_back(node_id, top_graph, curr_graph, tree_node_num);
-  }
 }
 
 auto Graph::create_node() -> Node {
@@ -1799,13 +1665,7 @@ void Graph::del_edge(Pin_class driver_pin, Pin_class sink_pin) {
   invalidate_traversal_caches();
 }
 
-auto Graph::fast_class() const -> std::span<const Node> {
-  assert_accessible();
-  if (!fast_class_cache_valid_) {
-    rebuild_fast_class_cache();
-  }
-  return std::span<const Node>(fast_class_cache_.data(), fast_class_cache_.size());
-}
+FastClassRange Graph::fast_class() const noexcept { return FastClassRange(const_cast<Graph*>(this)); }
 
 auto Graph::forward_class() const -> std::span<const Node> {
   assert_accessible();
@@ -1815,20 +1675,176 @@ auto Graph::forward_class() const -> std::span<const Node> {
   return std::span<const Node>(forward_class_cache_.data(), forward_class_cache_.size());
 }
 
-auto Graph::fast_flat() const -> std::span<const Node> {
-  assert_accessible();
-  rebuild_fast_flat_cache();
-  return std::span<const Node>(fast_flat_cache_.data(), fast_flat_cache_.size());
+FastFlatRange Graph::fast_flat() const noexcept { return FastFlatRange(const_cast<Graph*>(this)); }
+
+FastHierRange Graph::fast_hier() const noexcept { return FastHierRange(const_cast<Graph*>(this)); }
+
+// --- FastClassIterator ---
+
+FastClassIterator::FastClassIterator(Graph* graph, size_t idx, size_t end) noexcept : graph_(graph), idx_(idx), end_(end) {
+  skip_tombstones();
 }
 
-auto Graph::fast_hier() const -> std::span<const Node> {
-  assert_accessible();
-  const uint64_t expected_epoch = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
-  if (!fast_hier_cache_valid_ || (owner_lib_ != nullptr && fast_hier_cache_epoch_ != expected_epoch)) {
-    rebuild_fast_hier_cache();
+void FastClassIterator::skip_tombstones() noexcept {
+  while (idx_ < end_ && graph_->node_table[idx_].get_nid() == 0) {
+    ++idx_;
   }
-  return std::span<const Node>(fast_hier_cache_.data(), fast_hier_cache_.size());
 }
+
+auto FastClassIterator::operator*() const noexcept -> Node_class { return Node_class(graph_, static_cast<Nid>(idx_) << 2); }
+
+auto FastClassIterator::operator++() noexcept -> FastClassIterator& {
+  ++idx_;
+  skip_tombstones();
+  return *this;
+}
+
+FastClassIterator FastClassRange::begin() const noexcept {
+  if (graph_ == nullptr) {
+    return FastClassIterator{};
+  }
+  return FastClassIterator(graph_, 1, graph_->node_table.size());
+}
+
+FastClassIterator FastClassRange::end() const noexcept {
+  if (graph_ == nullptr) {
+    return FastClassIterator{};
+  }
+  const size_t n = graph_->node_table.size();
+  return FastClassIterator(graph_, n, n);
+}
+
+// --- FastFlatIterator ---
+
+FastFlatIterator::FastFlatIterator(Graph* root_graph) {
+  if (root_graph == nullptr) {
+    return;
+  }
+  root_graph->assert_accessible();
+  top_graph_ = root_graph->self_gid_;
+  if (top_graph_ != Gid_invalid) {
+    active_graphs_.insert(top_graph_);
+  }
+  stack_.push_back(Frame{root_graph, 1, root_graph->node_table.size()});
+  advance();
+}
+
+void FastFlatIterator::advance() {
+  while (!stack_.empty()) {
+    Frame& frame = stack_.back();
+    if (frame.node_idx >= frame.end) {
+      const Gid popped = frame.graph->self_gid_;
+      stack_.pop_back();
+      if (popped != Gid_invalid) {
+        active_graphs_.erase(popped);
+      }
+      continue;
+    }
+    const auto& entry = frame.graph->node_table[frame.node_idx];
+    if (entry.get_nid() == 0) {
+      ++frame.node_idx;
+      continue;
+    }
+    if (entry.has_subnode() && frame.graph->owner_lib_ != nullptr) {
+      const Gid   sub = entry.get_subnode();
+      const auto* lib = frame.graph->owner_lib_;
+      if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
+        Graph* child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
+        ++frame.node_idx;  // parent resumes past this subnode on pop
+        active_graphs_.insert(sub);
+        stack_.push_back(Frame{child_graph, 1, child_graph->node_table.size()});
+        continue;
+      }
+    }
+    return;  // positioned at an emittable node
+  }
+}
+
+auto FastFlatIterator::operator*() const -> Node_class {
+  const Frame& frame   = stack_.back();
+  const Nid    raw_nid = static_cast<Nid>(frame.node_idx) << 2;
+  return Node_class(frame.graph, top_graph_, frame.graph->self_gid_, raw_nid);
+}
+
+auto FastFlatIterator::operator++() -> FastFlatIterator& {
+  ++stack_.back().node_idx;
+  advance();
+  return *this;
+}
+
+FastFlatIterator FastFlatRange::begin() const { return FastFlatIterator(graph_); }
+
+// --- FastHierIterator ---
+
+FastHierIterator::FastHierIterator(Graph* root_graph) {
+  if (root_graph == nullptr) {
+    return;
+  }
+  root_graph->assert_accessible();
+  hier_tid_      = root_graph->self_gid_ != Gid_invalid ? static_cast<Tid>(root_graph->self_gid_) : static_cast<Tid>(-1);
+  hier_gids_     = std::make_unique<std::vector<Gid>>();
+  next_hier_pos_ = ROOT;
+
+  const Gid root_gid = root_graph->self_gid_ != Gid_invalid ? root_graph->self_gid_ : static_cast<Gid>(0);
+  hier_gids_->resize(static_cast<size_t>(next_hier_pos_) + 1, Gid_invalid);
+  (*hier_gids_)[static_cast<size_t>(next_hier_pos_)] = root_gid;
+
+  if (root_graph->self_gid_ != Gid_invalid) {
+    active_graphs_.insert(root_graph->self_gid_);
+  }
+  stack_.push_back(Frame{root_graph, 1, root_graph->node_table.size(), next_hier_pos_});
+  advance();
+}
+
+void FastHierIterator::advance() {
+  while (!stack_.empty()) {
+    Frame& frame = stack_.back();
+    if (frame.node_idx >= frame.end) {
+      const Gid popped = frame.graph->self_gid_;
+      stack_.pop_back();
+      if (popped != Gid_invalid) {
+        active_graphs_.erase(popped);
+      }
+      continue;
+    }
+    const auto& entry = frame.graph->node_table[frame.node_idx];
+    if (entry.get_nid() == 0) {
+      ++frame.node_idx;
+      continue;
+    }
+    if (entry.has_subnode() && frame.graph->owner_lib_ != nullptr) {
+      const Gid   sub = entry.get_subnode();
+      const auto* lib = frame.graph->owner_lib_;
+      if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
+        Graph*         child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
+        const Tree_pos child_pos   = ++next_hier_pos_;
+        if (static_cast<size_t>(child_pos) >= hier_gids_->size()) {
+          hier_gids_->resize(static_cast<size_t>(child_pos) + 1, Gid_invalid);
+        }
+        (*hier_gids_)[static_cast<size_t>(child_pos)] = sub;
+        ++frame.node_idx;
+        active_graphs_.insert(sub);
+        stack_.push_back(Frame{child_graph, 1, child_graph->node_table.size(), child_pos});
+        continue;
+      }
+    }
+    return;
+  }
+}
+
+auto FastHierIterator::operator*() const -> Node_class {
+  const Frame& frame   = stack_.back();
+  const Nid    raw_nid = static_cast<Nid>(frame.node_idx) << 2;
+  return Node_class(frame.graph, hier_tid_, hier_gids_.get(), frame.hier_pos, raw_nid);
+}
+
+auto FastHierIterator::operator++() -> FastHierIterator& {
+  ++stack_.back().node_idx;
+  advance();
+  return *this;
+}
+
+FastHierIterator FastHierRange::begin() const { return FastHierIterator(graph_); }
 
 auto Graph::forward_flat() const -> std::span<const Node> {
   assert_accessible();
