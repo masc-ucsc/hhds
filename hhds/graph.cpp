@@ -1528,7 +1528,7 @@ void Pin_class::connect_driver(Pin_class driver_pin) const {
 
 void Pin_class::connect_driver(Node_class driver_node) const {
   assert(graph_ != nullptr && "connect_driver: pin is not attached to a graph");
-  graph_->add_edge(driver_node, *this);
+  graph_->add_edge(driver_node.create_driver_pin(), *this);
 }
 
 void Pin_class::connect_sink(Pin_class sink_pin) const {
@@ -1538,7 +1538,7 @@ void Pin_class::connect_sink(Pin_class sink_pin) const {
 
 void Pin_class::connect_sink(Node_class sink_node) const {
   assert(graph_ != nullptr && "connect_sink: pin is not attached to a graph");
-  graph_->add_edge(*this, sink_node);
+  graph_->add_edge(*this, sink_node.create_sink_pin());
 }
 
 void Pin_class::del_sink(Pin_class driver_pin) const {
@@ -1550,11 +1550,7 @@ void Pin_class::del_sink() const {
   assert(graph_ != nullptr && "del_sink: pin is not attached to a graph");
   auto edges = graph_->inp_edges(*this);
   for (const auto& edge : edges) {
-    if (edge.driver_pin().is_valid()) {
-      graph_->del_edge(edge.driver_pin(), edge.sink_pin());
-    } else {
-      graph_->del_edge(edge.driver_node(), edge.sink_pin());
-    }
+    edge.del_edge();
   }
 }
 
@@ -1562,11 +1558,7 @@ void Pin_class::del_driver() const {
   assert(graph_ != nullptr && "del_driver: pin is not attached to a graph");
   auto edges = graph_->out_edges(*this);
   for (const auto& edge : edges) {
-    if (edge.sink_pin().is_valid()) {
-      graph_->del_edge(edge.driver_pin(), edge.sink_pin());
-    } else {
-      graph_->del_edge(edge.driver_pin(), edge.sink_node());
-    }
+    edge.del_edge();
   }
 }
 
@@ -1667,22 +1659,22 @@ auto Node_class::get_sink_pin(std::string_view name) const -> Pin_class {
 
 void Node_class::connect_driver(Pin_class driver_pin) const {
   assert(graph_ != nullptr && "connect_driver: node is not attached to a graph");
-  graph_->add_edge(driver_pin, *this);
+  graph_->add_edge(driver_pin, create_sink_pin());
 }
 
 void Node_class::connect_driver(Node_class driver_node) const {
   assert(graph_ != nullptr && "connect_driver: node is not attached to a graph");
-  graph_->add_edge(driver_node, *this);
+  graph_->add_edge(driver_node.create_driver_pin(), create_sink_pin());
 }
 
 void Node_class::connect_sink(Pin_class sink_pin) const {
   assert(graph_ != nullptr && "connect_sink: node is not attached to a graph");
-  graph_->add_edge(*this, sink_pin);
+  graph_->add_edge(create_driver_pin(), sink_pin);
 }
 
 void Node_class::connect_sink(Node_class sink_node) const {
   assert(graph_ != nullptr && "connect_sink: node is not attached to a graph");
-  graph_->add_edge(*this, sink_node);
+  graph_->add_edge(create_driver_pin(), sink_node.create_sink_pin());
 }
 
 void Node_class::del_node() const {
@@ -1744,35 +1736,18 @@ void Graph::add_edge(Vid driver_id, Vid sink_id) {
   invalidate_traversal_caches();
 }
 
-void Graph::del_edge(Node_class node1, Node_class node2) {
-  assert_accessible();
-  assert_node_exists(node1);
-  assert_node_exists(node2);
-  del_edge_int(node1.get_raw_nid(), node2.get_raw_nid());
-  invalidate_traversal_caches();
+void Edge_class::del_edge() const {
+  auto* graph = driver.get_graph();
+  assert(graph != nullptr && "del_edge: edge driver is not attached to a graph");
+  assert(graph == sink.get_graph() && "del_edge: edge endpoints belong to different graphs");
+  graph->del_edge(driver, sink);
 }
 
-void Graph::del_edge(Node_class node, Pin_class pin) {
+void Graph::del_edge(Pin_class driver_pin, Pin_class sink_pin) {
   assert_accessible();
-  assert_node_exists(node);
-  assert_pin_exists(pin);
-  del_edge_int(node.get_raw_nid(), pin.get_pin_pid());
-  invalidate_traversal_caches();
-}
-
-void Graph::del_edge(Pin_class pin, Node_class node) {
-  assert_accessible();
-  assert_pin_exists(pin);
-  assert_node_exists(node);
-  del_edge_int(pin.get_pin_pid(), node.get_raw_nid());
-  invalidate_traversal_caches();
-}
-
-void Graph::del_edge(Pin_class pin1, Pin_class pin2) {
-  assert_accessible();
-  assert_pin_exists(pin1);
-  assert_pin_exists(pin2);
-  del_edge_int(pin1.get_pin_pid(), pin2.get_pin_pid());
+  assert_pin_exists(driver_pin);
+  assert_pin_exists(sink_pin);
+  del_edge_int(driver_pin.get_pin_pid(), sink_pin.get_pin_pid());
   invalidate_traversal_caches();
 }
 
@@ -1847,7 +1822,8 @@ auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
   const Nid               self_nid = node.get_raw_nid() & ~static_cast<Nid>(2);
   auto*                   self     = ref_node(self_nid);
   auto                    edges    = self->get_edges(self_nid, overflow_sets_);
-  const Node_class        self_driver(this, self_nid | static_cast<Nid>(2));
+  Pin_class               self_driver(this, self_nid, 0, self_nid | static_cast<Pid>(2));
+  inherit_pin_context(self_driver, node);
 
   for (auto vid : edges) {
     if (vid & 2) {
@@ -1857,19 +1833,17 @@ auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
       const Pid sink_pid = static_cast<Pid>(vid);
 
       Edge_class e{};
-      e.type      = 3;  // n -> p
-      e.driver_   = self_driver;
-      e.sink_pin_ = make_pin_class(sink_pid);
-      inherit_pin_context(e.sink_pin_, node);
+      e.driver = self_driver;
+      e.sink   = make_pin_class(sink_pid);
+      inherit_pin_context(e.sink, node);
       out.push_back(e);
       continue;
     } else {
       const Nid sink_nid = static_cast<Nid>(vid);
 
       Edge_class e{};
-      e.type    = 1;  // n -> n
-      e.driver_ = self_driver;
-      e.sink_   = Node_class(this, sink_nid);
+      e.driver = self_driver;
+      e.sink   = Pin_class(this, sink_nid & ~static_cast<Nid>(2), 0, sink_nid & ~static_cast<Nid>(2));
       out.push_back(e);
     }
   }
@@ -1889,7 +1863,8 @@ auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
   const Nid               self_nid = node.get_raw_nid() & ~static_cast<Nid>(2);
   auto*                   self     = ref_node(self_nid);
   auto                    edges    = self->get_edges(self_nid, overflow_sets_);
-  const Node_class        self_sink(this, self_nid & ~static_cast<Nid>(2));
+  Pin_class               self_sink(this, self_nid, 0, self_nid & ~static_cast<Pid>(2));
+  inherit_pin_context(self_sink, node);
 
   for (auto vid : edges) {
     if (!(vid & 2)) {
@@ -1899,19 +1874,17 @@ auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
       const Pid driver_pid = static_cast<Pid>(vid);
 
       Edge_class e{};
-      e.type        = 4;  // p -> n
-      e.driver_pin_ = make_pin_class(driver_pid);
-      inherit_pin_context(e.driver_pin_, node);
-      e.sink_ = self_sink;
+      e.driver = make_pin_class(driver_pid);
+      inherit_pin_context(e.driver, node);
+      e.sink = self_sink;
       out.push_back(e);
       continue;
     } else {
       const Nid driver_nid = static_cast<Nid>(vid);
 
       Edge_class e{};
-      e.type    = 1;  // n -> n
-      e.driver_ = Node_class(this, driver_nid);
-      e.sink_   = self_sink;
+      e.driver = Pin_class(this, driver_nid & ~static_cast<Nid>(2), 0, driver_nid | static_cast<Nid>(2));
+      e.sink   = self_sink;
       out.push_back(e);
     }
   }
@@ -1940,7 +1913,6 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
     self_driver_pin.hier_gids_   = pin.hier_gids_;
     self_driver_pin.hier_tid_    = pin.hier_tid_;
     self_driver_pin.hier_pos_    = pin.hier_pos_;
-    Node_class self_driver(this, self_nid | static_cast<Nid>(2));
 
     std::vector<Edge_class> out;
     for (auto vid : edges) {
@@ -1949,31 +1921,26 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
       }
       if (vid & 1) {
         Edge_class e{};
-        e.type                   = 2;  // p -> p
-        e.driver_                = self_driver;
-        e.driver_pin_            = self_driver_pin;
-        e.sink_pin_              = make_pin_class(static_cast<Pid>(vid));
-        e.sink_pin_.context_     = pin.context_;
-        e.sink_pin_.root_gid_    = pin.root_gid_;
-        e.sink_pin_.current_gid_ = pin.current_gid_;
-        e.sink_pin_.hier_gids_   = pin.hier_gids_;
-        e.sink_pin_.hier_tid_    = pin.hier_tid_;
-        e.sink_pin_.hier_pos_    = pin.hier_pos_;
+        e.driver            = self_driver_pin;
+        e.sink              = make_pin_class(static_cast<Pid>(vid));
+        e.sink.context_     = pin.context_;
+        e.sink.root_gid_    = pin.root_gid_;
+        e.sink.current_gid_ = pin.current_gid_;
+        e.sink.hier_gids_   = pin.hier_gids_;
+        e.sink.hier_tid_    = pin.hier_tid_;
+        e.sink.hier_pos_    = pin.hier_pos_;
         out.push_back(e);
       } else {
         const Nid  sink_nid = static_cast<Nid>(vid);
         Edge_class e{};
-        e.type                   = 1;  // n -> n
-        e.driver_                = self_driver;
-        e.driver_pin_            = self_driver_pin;
-        e.sink_                  = Node_class(this, sink_nid);
-        e.sink_pin_              = Pin_class(this, sink_nid, 0, sink_nid);
-        e.sink_pin_.context_     = pin.context_;
-        e.sink_pin_.root_gid_    = pin.root_gid_;
-        e.sink_pin_.current_gid_ = pin.current_gid_;
-        e.sink_pin_.hier_gids_   = pin.hier_gids_;
-        e.sink_pin_.hier_tid_    = pin.hier_tid_;
-        e.sink_pin_.hier_pos_    = pin.hier_pos_;
+        e.driver            = self_driver_pin;
+        e.sink              = Pin_class(this, sink_nid & ~static_cast<Nid>(2), 0, sink_nid & ~static_cast<Nid>(2));
+        e.sink.context_     = pin.context_;
+        e.sink.root_gid_    = pin.root_gid_;
+        e.sink.current_gid_ = pin.current_gid_;
+        e.sink.hier_gids_   = pin.hier_gids_;
+        e.sink.hier_tid_    = pin.hier_tid_;
+        e.sink.hier_pos_    = pin.hier_pos_;
         out.push_back(e);
       }
     }
@@ -2002,15 +1969,14 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
       const Pid sink_pid = static_cast<Pid>(vid);
 
       Edge_class e{};
-      e.type                   = 2;  // p -> p
-      e.driver_pin_            = context_driver_pin;
-      e.sink_pin_              = make_pin_class(sink_pid);
-      e.sink_pin_.context_     = pin.context_;
-      e.sink_pin_.root_gid_    = pin.root_gid_;
-      e.sink_pin_.current_gid_ = pin.current_gid_;
-      e.sink_pin_.hier_gids_   = pin.hier_gids_;
-      e.sink_pin_.hier_tid_    = pin.hier_tid_;
-      e.sink_pin_.hier_pos_    = pin.hier_pos_;
+      e.driver            = context_driver_pin;
+      e.sink              = make_pin_class(sink_pid);
+      e.sink.context_     = pin.context_;
+      e.sink.root_gid_    = pin.root_gid_;
+      e.sink.current_gid_ = pin.current_gid_;
+      e.sink.hier_gids_   = pin.hier_gids_;
+      e.sink.hier_tid_    = pin.hier_tid_;
+      e.sink.hier_pos_    = pin.hier_pos_;
       out.push_back(e);
       continue;
     }
@@ -2018,9 +1984,8 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
     const Nid sink_nid = static_cast<Nid>(vid);
 
     Edge_class e{};
-    e.type        = 4;  // p -> n
-    e.driver_pin_ = context_driver_pin;
-    e.sink_       = Node_class(this, sink_nid);
+    e.driver = context_driver_pin;
+    e.sink   = Pin_class(this, sink_nid & ~static_cast<Nid>(2), 0, sink_nid & ~static_cast<Nid>(2));
     out.push_back(e);
   }
 
@@ -2043,7 +2008,6 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
     self_sink_pin.hier_gids_   = pin.hier_gids_;
     self_sink_pin.hier_tid_    = pin.hier_tid_;
     self_sink_pin.hier_pos_    = pin.hier_pos_;
-    Node_class self_sink(this, self_nid & ~static_cast<Nid>(2));
 
     std::vector<Edge_class> out;
     for (auto vid : edges) {
@@ -2052,31 +2016,26 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
       }
       if (vid & 1) {
         Edge_class e{};
-        e.type                     = 2;  // p -> p
-        e.driver_pin_              = make_pin_class(static_cast<Pid>(vid));
-        e.driver_pin_.context_     = pin.context_;
-        e.driver_pin_.root_gid_    = pin.root_gid_;
-        e.driver_pin_.current_gid_ = pin.current_gid_;
-        e.driver_pin_.hier_gids_   = pin.hier_gids_;
-        e.driver_pin_.hier_tid_    = pin.hier_tid_;
-        e.driver_pin_.hier_pos_    = pin.hier_pos_;
-        e.sink_                    = self_sink;
-        e.sink_pin_                = self_sink_pin;
+        e.driver              = make_pin_class(static_cast<Pid>(vid));
+        e.driver.context_     = pin.context_;
+        e.driver.root_gid_    = pin.root_gid_;
+        e.driver.current_gid_ = pin.current_gid_;
+        e.driver.hier_gids_   = pin.hier_gids_;
+        e.driver.hier_tid_    = pin.hier_tid_;
+        e.driver.hier_pos_    = pin.hier_pos_;
+        e.sink                = self_sink_pin;
         out.push_back(e);
       } else {
         const Nid  driver_nid = static_cast<Nid>(vid);
         Edge_class e{};
-        e.type                     = 1;  // n -> n
-        e.driver_                  = Node_class(this, driver_nid);
-        e.driver_pin_              = Pin_class(this, driver_nid & ~static_cast<Nid>(2), 0, driver_nid);
-        e.driver_pin_.context_     = pin.context_;
-        e.driver_pin_.root_gid_    = pin.root_gid_;
-        e.driver_pin_.current_gid_ = pin.current_gid_;
-        e.driver_pin_.hier_gids_   = pin.hier_gids_;
-        e.driver_pin_.hier_tid_    = pin.hier_tid_;
-        e.driver_pin_.hier_pos_    = pin.hier_pos_;
-        e.sink_                    = self_sink;
-        e.sink_pin_                = self_sink_pin;
+        e.driver              = Pin_class(this, driver_nid & ~static_cast<Nid>(2), 0, driver_nid | static_cast<Nid>(2));
+        e.driver.context_     = pin.context_;
+        e.driver.root_gid_    = pin.root_gid_;
+        e.driver.current_gid_ = pin.current_gid_;
+        e.driver.hier_gids_   = pin.hier_gids_;
+        e.driver.hier_tid_    = pin.hier_tid_;
+        e.driver.hier_pos_    = pin.hier_pos_;
+        e.sink                = self_sink_pin;
         out.push_back(e);
       }
     }
@@ -2105,15 +2064,14 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
       const Pid driver_pid = static_cast<Pid>(vid);
 
       Edge_class e{};
-      e.type                     = 2;  // p -> p
-      e.driver_pin_              = make_pin_class(driver_pid);
-      e.driver_pin_.context_     = pin.context_;
-      e.driver_pin_.root_gid_    = pin.root_gid_;
-      e.driver_pin_.current_gid_ = pin.current_gid_;
-      e.driver_pin_.hier_gids_   = pin.hier_gids_;
-      e.driver_pin_.hier_tid_    = pin.hier_tid_;
-      e.driver_pin_.hier_pos_    = pin.hier_pos_;
-      e.sink_pin_                = context_sink_pin;
+      e.driver              = make_pin_class(driver_pid);
+      e.driver.context_     = pin.context_;
+      e.driver.root_gid_    = pin.root_gid_;
+      e.driver.current_gid_ = pin.current_gid_;
+      e.driver.hier_gids_   = pin.hier_gids_;
+      e.driver.hier_tid_    = pin.hier_tid_;
+      e.driver.hier_pos_    = pin.hier_pos_;
+      e.sink                = context_sink_pin;
       out.push_back(e);
       continue;
     }
@@ -2121,9 +2079,8 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
     const Nid driver_nid = static_cast<Nid>(vid);
 
     Edge_class e{};
-    e.type      = 3;  // n -> p
-    e.driver_   = Node_class(this, driver_nid);
-    e.sink_pin_ = context_sink_pin;
+    e.driver = Pin_class(this, driver_nid & ~static_cast<Nid>(2), 0, driver_nid | static_cast<Nid>(2));
+    e.sink   = context_sink_pin;
     out.push_back(e);
   }
 

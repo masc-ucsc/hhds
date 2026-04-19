@@ -386,22 +386,10 @@ private:
 
 class Edge_class {
 public:
-  [[nodiscard]] Node_class driver_node() const noexcept { return driver_; }
-  [[nodiscard]] Node_class sink_node() const noexcept { return sink_; }
-  [[nodiscard]] Pin_class  driver_pin() const noexcept { return driver_pin_; }
-  [[nodiscard]] Pin_class  sink_pin() const noexcept { return sink_pin_; }
+  void del_edge() const;
 
-  // edge kind mapping:
-  // 1 => n -> n
-  // 2 => p -> p
-  // 3 => n -> p
-  // 4 => p -> n
-  uint8_t type : 3;
-
-  Node_class driver_;
-  Node_class sink_;
-  Pin_class  driver_pin_;
-  Pin_class  sink_pin_;
+  Pin_class driver;
+  Pin_class sink;
 
 private:
   friend class Graph;
@@ -440,10 +428,6 @@ public:
   [[nodiscard]] auto ref_node(Nid id) const -> NodeEntry*;
   [[nodiscard]] auto ref_pin(Pid id) const -> PinEntry*;
 
-  void                                  del_edge(Node_class node1, Node_class node2);
-  void                                  del_edge(Node_class node, Pin_class pin);
-  void                                  del_edge(Pin_class pin, Node_class node);
-  void                                  del_edge(Pin_class pin1, Pin_class pin2);
   [[nodiscard]] std::vector<Edge_class> out_edges(Node_class node);
   [[nodiscard]] std::vector<Edge_class> inp_edges(Node_class node);
   [[nodiscard]] std::vector<Edge_class> out_edges(Pin_class pin);
@@ -512,10 +496,8 @@ private:
   void                           set_subnode(Node_class node, Gid gid);
   void                           set_subnode(Nid nid, Gid gid);
   void                           add_edge(Pid driver_id, Pid sink_id);
-  void add_edge(Node_class driver_node, Node_class sink_node) { add_edge(driver_node.get_raw_nid(), sink_node.get_raw_nid()); }
-  void add_edge(Node_class driver_node, Pin_class sink_pin) { add_edge(driver_node.get_raw_nid(), sink_pin.get_pin_pid()); }
-  void add_edge(Pin_class driver_pin, Node_class sink_node) { add_edge(driver_pin.get_pin_pid(), sink_node.get_raw_nid()); }
   void add_edge(Pin_class driver_pin, Pin_class sink_pin) { add_edge(driver_pin.get_pin_pid(), sink_pin.get_pin_pid()); }
+  void del_edge(Pin_class driver_pin, Pin_class sink_pin);
   void del_edge_int(Vid driver_id, Vid sink_id);
   void add_edge_int(Pid self_id, Pid other_id);
   void set_next_pin(Nid nid, Pid next_pin);
@@ -570,6 +552,7 @@ private:
 
   friend class Node_class;
   friend class Pin_class;
+  friend class Edge_class;
   friend class GraphIO;
   friend class GraphLibrary;
 };

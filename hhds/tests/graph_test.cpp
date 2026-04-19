@@ -56,13 +56,13 @@ void test_wrapper_pin_connect_api() {
   auto input_edges = and1_in.inp_edges();
   assert(input_edges.size() == 2);
   for (const auto& edge : input_edges) {
-    assert(edge.sink_pin() == and1_in);
+    assert(edge.sink == and1_in);
   }
 
   auto output_edges = and1_out.out_edges();
   assert(output_edges.size() == 1);
-  assert(output_edges.front().driver_pin() == and1_out);
-  assert(output_edges.front().sink_pin() == z);
+  assert(output_edges.front().driver == and1_out);
+  assert(output_edges.front().sink == z);
 }
 
 void test_forward_class_returns_wrappers() {

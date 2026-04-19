@@ -45,9 +45,9 @@ TEST(GraphWrapperApi, PinsConnectAndIterateEdges) {
   out.connect_sink(top->get_output_pin("z"));
 
   ASSERT_EQ(in.inp_edges().size(), 1);
-  EXPECT_EQ(in.inp_edges().front().sink_pin(), in);
+  EXPECT_EQ(in.inp_edges().front().sink, in);
   ASSERT_EQ(out.out_edges().size(), 1);
-  EXPECT_EQ(out.out_edges().front().driver_pin(), out);
+  EXPECT_EQ(out.out_edges().front().driver, out);
 }
 
 TEST(GraphTraversalApi, ForwardClassUsesNodeWrappers) {

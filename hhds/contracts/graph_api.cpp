@@ -85,8 +85,8 @@ TEST(GraphApiContract, CustomAttributeDeclarations) {
 
   auto node = g->create_node();
 
-  using hhds::attrs::name;
   using contract_attrs::bits;
+  using hhds::attrs::name;
 
   // Flat attributes work from class traversal.
   for (auto n : g->forward_class()) {
@@ -121,8 +121,8 @@ TEST(GraphApiContract, PinsAttributesAndEdgeIteration) {
 
   auto g = top_gio->create_graph();
 
-  using hhds::attrs::name;
   using contract_attrs::delay;
+  using hhds::attrs::name;
 
   auto and1 = g->create_node();
   and1.set_subnode(and_gio);
@@ -160,13 +160,13 @@ TEST(GraphApiContract, PinsAttributesAndEdgeIteration) {
   auto inp = and1_in.inp_edges();
   EXPECT_EQ(inp.size(), 2u);
   for (const auto& edge : inp) {
-    EXPECT_EQ(edge.sink_pin(), and1_in);
+    EXPECT_EQ(edge.sink, and1_in);
   }
 
   auto outp = and1_out.out_edges();
   EXPECT_EQ(outp.size(), 1u);
-  EXPECT_EQ(outp.front().driver_pin(), and1_out);
-  EXPECT_EQ(outp.front().sink_pin(), g_z);
+  EXPECT_EQ(outp.front().driver, and1_out);
+  EXPECT_EQ(outp.front().sink, g_z);
 
   // Pin iteration — enumerate pins on a node directly.
   EXPECT_EQ(and1.inp_pins().size(), 1u);
@@ -182,8 +182,8 @@ TEST(GraphApiContract, PersistenceAndClearSemantics) {
 
   hhds::register_attr_tag<contract_attrs::bits_t>("contract_attrs::bits");
 
-  using hhds::attrs::name;
   using contract_attrs::bits;
+  using hhds::attrs::name;
 
   hhds::GraphLibrary glib;
   auto               gio = glib.create_io("alu");
@@ -242,7 +242,7 @@ TEST(GraphApiContract, PersistenceAndClearSemantics) {
 //     b ─┘
 //              c ─────────→ [XOR].a ──→ [XOR].y ──→ y2
 //
-// Tests cover del_sink(driver), del_sink(), del_driver(), and del_node().
+// Tests cover Edge::del_edge(), del_sink(), del_driver(), and del_node().
 TEST(GraphApiContract, FineGrainedDeletion) {
   hhds::GraphLibrary glib;
 
@@ -305,8 +305,13 @@ TEST(GraphApiContract, FineGrainedDeletion) {
   EXPECT_EQ(and1_out.out_edges().size(), 2u);  // AND.y → OR.a, AND.y → XOR.a
   EXPECT_EQ(xor1_in.inp_edges().size(), 2u);   // AND.y → XOR.a, c → XOR.a
 
-  // del_sink(specific_driver): remove only that one edge into the sink.
-  xor1_in.del_sink(and1_out);
+  // Edge::del_edge(): remove only that one enumerated edge.
+  for (const auto& edge : xor1_in.inp_edges()) {
+    if (edge.driver == and1_out) {
+      edge.del_edge();
+      break;
+    }
+  }
   EXPECT_EQ(xor1_in.inp_edges().size(), 1u);
   EXPECT_EQ(and1_out.out_edges().size(), 1u);
   EXPECT_TRUE(xor1.is_valid());
@@ -367,8 +372,8 @@ TEST(GraphApiContract, HierAttributesAreKeyedByHierPosition) {
   inst1.set_subnode(leaf_io);
   inst2.set_subnode(leaf_io);
 
-  using hhds::attrs::name;
   using contract_attrs::hbits;
+  using hhds::attrs::name;
 
   // forward_hier enters the leaf body once per instantiation.
   std::vector<hhds::Node> leaf_instances;

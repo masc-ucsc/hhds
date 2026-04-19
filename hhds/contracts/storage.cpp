@@ -86,7 +86,7 @@ TEST(GraphStorage, Pin0CreatesNoPinEntry) {
 
   auto inp = spin0.inp_edges();
   EXPECT_EQ(inp.size(), 1u);
-  EXPECT_EQ(inp[0].sink_pin(), spin0);
+  EXPECT_EQ(inp[0].sink, spin0);
 
   auto outp = n2.create_driver_pin(0).out_edges();
   EXPECT_EQ(outp.size(), 1u);
