@@ -200,6 +200,16 @@ cc_test(
     deps = [":graph"],
 )
 
+cc_binary(
+    name = "forward_graph_bench",
+    srcs = ["tests/forward_graph_bench.cpp"],
+    tags = ["manual"],
+    deps = [
+        ":graph",
+        "@google_benchmark//:benchmark_main",
+    ],
+)
+
 cc_test(
     name = "storage_contract",
     srcs = ["contracts/storage.cpp"],

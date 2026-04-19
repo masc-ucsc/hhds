@@ -127,6 +127,94 @@ void test_traversal_contexts_use_one_node_type() {
   assert(saw_hier_leaf);
 }
 
+void test_forward_loop_last_is_source() {
+  // A user node marked loop_last (odd type) acts as a forward source:
+  // emitted unconditionally and does not propagate to sinks. The feedback
+  // edge through the flop therefore does not block combinational users.
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+  n3.set_type(3);  // bit 0 set -> is_loop_last
+
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+  n2.create_driver_pin().connect_sink(n3.create_sink_pin());
+  // Feedback: flop drives n2, closing the loop. Without loop_last, this
+  // would either cycle or force n3 before n2. With loop_last, n3 is a
+  // source and does not contribute to n2's pending count.
+  n3.create_driver_pin().connect_sink(n2.create_sink_pin());
+
+  assert(n3.is_loop_last());
+  assert(!n1.is_loop_last());
+  assert(!n2.is_loop_last());
+
+  std::vector<hhds::Nid> order;
+  for (auto node : graph->forward_class()) {
+    order.push_back(node.get_debug_nid());
+  }
+  assert(order.size() == 3);
+  assert(order[0] == n1.get_debug_nid());
+  assert(order[1] == n2.get_debug_nid());
+  assert(order[2] == n3.get_debug_nid());
+}
+
+void test_forward_out_of_order_uses_pending_list() {
+  // Exercises Pass 2: a driver created AFTER its sink in storage order.
+  // Pass 1 skips the sink (count > 0), emits the driver, decrements the
+  // sink to zero, and pushes it onto the pending FIFO.
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+  n3.create_driver_pin().connect_sink(n1.create_sink_pin());
+
+  std::vector<hhds::Nid> order;
+  for (auto node : graph->forward_class()) {
+    order.push_back(node.get_debug_nid());
+  }
+  assert(order.size() == 3);
+  assert(order[0] == n3.get_debug_nid());
+  assert(order[1] == n1.get_debug_nid());
+  assert(order[2] == n2.get_debug_nid());
+}
+
+void test_subnode_with_loop_last_pin_marks_node() {
+  // set_subnode must stamp the node type with bit 0 set iff the subnode's
+  // declared IO contains any loop_last pin (flop/register instance).
+  hhds::GraphLibrary lib;
+
+  auto flop_gio = lib.create_io("flop");
+  flop_gio->add_input("D", 0, /*loop_last=*/false);
+  flop_gio->add_output("Q", 0, /*loop_last=*/true);
+  (void)flop_gio->create_graph();
+
+  auto buf_gio = lib.create_io("buf");
+  buf_gio->add_input("a", 0);
+  buf_gio->add_output("y", 0);
+  (void)buf_gio->create_graph();
+
+  auto top_gio = lib.create_io("top");
+  auto top     = top_gio->create_graph();
+
+  auto flop_inst = top->create_node();
+  flop_inst.set_subnode(flop_gio);
+  auto buf_inst = top->create_node();
+  buf_inst.set_subnode(buf_gio);
+
+  assert(flop_inst.is_loop_last());
+  assert((flop_inst.get_type() & 1) == 1);
+  assert(!buf_inst.is_loop_last());
+  assert((buf_inst.get_type() & 1) == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -134,6 +222,9 @@ int main() {
   test_wrapper_pin_connect_api();
   test_forward_class_returns_wrappers();
   test_traversal_contexts_use_one_node_type();
+  test_forward_loop_last_is_source();
+  test_forward_out_of_order_uses_pending_list();
+  test_subnode_with_loop_last_pin_marks_node();
   std::cout << "graph_test passed\n";
   return 0;
 }

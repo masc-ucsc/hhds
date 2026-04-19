@@ -337,6 +337,7 @@ void Graph::NodeEntry::clear_node() { bzero(this, sizeof(NodeEntry)); }
 void Graph::NodeEntry::set_type(Type t) { type = t; }
 Nid  Graph::NodeEntry::get_nid() const { return nid; }
 Type Graph::NodeEntry::get_type() const { return type; }
+bool Graph::NodeEntry::is_loop_last() const noexcept { return (type & 1u) != 0u; }
 Pid  Graph::NodeEntry::get_next_pin_id() const { return next_pin_id; }
 void Graph::NodeEntry::set_next_pin_id(Pid id) { next_pin_id = id; }
 
@@ -837,44 +838,48 @@ void Graph::rebuild_forward_class_cache() const {
     return;
   }
 
-  const size_t                                      node_count = node_table.size();
-  std::vector<ankerl::unordered_dense::set<size_t>> adjacency(node_count);
-  std::vector<uint32_t>                             indegree(node_count, 0);
+  const size_t node_count = node_table.size();
 
-  auto add_dependency = [&](size_t driver_idx, Vid sink_vid) {
-    Nid sink_nid = 0;
+  // A forward "source" is a hard start of propagation. INPUT (idx=1) and
+  // CONST (idx=3) are implicit sources; any user node with is_loop_last
+  // (Type bit 0) is an explicit source (flop/register/clocked pin). Sources
+  // are emitted unconditionally and do not propagate on emission — this is
+  // what lets combinational users of a flop's Q pin start without waiting
+  // for the feedback path that drives the flop's D pin.
+  auto is_source = [&](size_t idx) -> bool {
+    if (idx == 1 || idx == 3) {  // INPUT / CONST
+      return true;
+    }
+    if (idx < first_user_node_idx) {
+      return false;  // OUTPUT (idx=2) is a forward sink, not a source.
+    }
+    return node_table[idx].is_loop_last();
+  };
+
+  auto get_sink_idx = [&](Vid sink_vid) -> size_t {
+    Nid sink_nid;
     if (sink_vid & static_cast<Vid>(1)) {
       const Pid sink_pid = (static_cast<Pid>(sink_vid) & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
       sink_nid           = ref_pin(sink_pid)->get_master_nid();
     } else {
       sink_nid = static_cast<Nid>(sink_vid);
     }
-
     sink_nid &= ~static_cast<Nid>(3);
-    const size_t sink_idx = static_cast<size_t>(sink_nid >> 2);
-    if (sink_idx < first_user_node_idx || sink_idx >= node_count) {
-      return;
-    }
-
-    if (adjacency[driver_idx].insert(sink_idx).second) {
-      ++indegree[sink_idx];
-    }
+    return static_cast<size_t>(sink_nid >> 2);
   };
 
-  for (size_t driver_idx = first_user_node_idx; driver_idx < node_count; ++driver_idx) {
-    if (node_table[driver_idx].get_nid() == 0) {
-      continue;
-    }
+  auto for_each_out_edge = [&](size_t driver_idx, auto&& f) {
     const Nid driver_nid = static_cast<Nid>(driver_idx) << 2;
-
-    auto node_edges = node_table[driver_idx].get_edges(driver_nid, overflow_sets_);
+    auto      node_edges = node_table[driver_idx].get_edges(driver_nid, overflow_sets_);
     for (auto vid : node_edges) {
       if (vid & static_cast<Vid>(2)) {
-        continue;
+        continue;  // in-edge (other end is a driver); we only want out-edges
       }
-      add_dependency(driver_idx, vid);
+      const size_t sink_idx = get_sink_idx(vid);
+      if (sink_idx >= first_user_node_idx && sink_idx < node_count) {
+        f(sink_idx);
+      }
     }
-
     for (Pid pin_vid = node_table[driver_idx].get_next_pin_id(); pin_vid != 0;) {
       const Pid canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
       auto      pin_edges     = ref_pin(canonical_pin)->get_edges(canonical_pin, overflow_sets_);
@@ -882,46 +887,86 @@ void Graph::rebuild_forward_class_cache() const {
         if (vid & static_cast<Vid>(2)) {
           continue;
         }
-        add_dependency(driver_idx, vid);
+        const size_t sink_idx = get_sink_idx(vid);
+        if (sink_idx >= first_user_node_idx && sink_idx < node_count) {
+          f(sink_idx);
+        }
       }
       pin_vid = ref_pin(canonical_pin)->get_next_pin_id();
     }
-  }
+  };
 
-  std::priority_queue<size_t, std::vector<size_t>, std::greater<size_t>> ready;
-  for (size_t idx = first_user_node_idx; idx < node_count; ++idx) {
-    if (node_table[idx].get_nid() != 0 && indegree[idx] == 0) {
-      ready.push(idx);
-    }
-  }
-
-  std::vector<bool> emitted(node_count, false);
-  forward_class_cache_.reserve(node_count - first_user_node_idx);
-  while (!ready.empty()) {
-    const size_t node_idx = ready.top();
-    ready.pop();
-    if (emitted[node_idx]) {
+  // Pre-pass: count each non-source user node's pending in-edges, ignoring
+  // edges that originate from a source (sources are already "visited").
+  std::vector<uint32_t> remaining_in(node_count, 0);
+  for (size_t driver_idx = first_user_node_idx; driver_idx < node_count; ++driver_idx) {
+    if (node_table[driver_idx].get_nid() == 0 || is_source(driver_idx)) {
       continue;
     }
-
-    emitted[node_idx] = true;
-    forward_class_cache_.emplace_back(const_cast<Graph*>(this), static_cast<Nid>(node_idx) << 2);
-
-    for (auto sink_idx : adjacency[node_idx]) {
-      if (indegree[sink_idx] == 0) {
-        continue;
+    for_each_out_edge(driver_idx, [&](size_t sink_idx) {
+      if (!is_source(sink_idx)) {
+        ++remaining_in[sink_idx];
       }
-      --indegree[sink_idx];
-      if (indegree[sink_idx] == 0) {
-        ready.push(sink_idx);
+    });
+  }
+
+  std::vector<bool>   emitted(node_count, false);
+  std::vector<size_t> pending;
+  forward_class_cache_.reserve(node_count - first_user_node_idx);
+
+  auto emit = [&](size_t idx) {
+    emitted[idx] = true;
+    forward_class_cache_.emplace_back(const_cast<Graph*>(this), static_cast<Nid>(idx) << 2);
+  };
+
+  // On emission, decrement downstream sinks. Sources do not propagate. A
+  // sink whose counter hits zero at or before the current cursor is queued
+  // for Pass 2; sinks ahead of the cursor are reached naturally by Pass 1.
+  auto propagate = [&](size_t driver_idx, size_t cursor) {
+    if (is_source(driver_idx)) {
+      return;
+    }
+    for_each_out_edge(driver_idx, [&](size_t sink_idx) {
+      if (emitted[sink_idx] || is_source(sink_idx)) {
+        return;
       }
+      if (remaining_in[sink_idx] == 0) {
+        return;
+      }
+      --remaining_in[sink_idx];
+      if (remaining_in[sink_idx] == 0 && sink_idx <= cursor) {
+        pending.push_back(sink_idx);
+      }
+    });
+  };
+
+  // Pass 1 — storage-order scan. EDA graphs are typically constructed in
+  // near-topological order, so most user nodes emit here in a single pass.
+  for (size_t idx = first_user_node_idx; idx < node_count; ++idx) {
+    if (node_table[idx].get_nid() == 0 || emitted[idx]) {
+      continue;
+    }
+    if (is_source(idx) || remaining_in[idx] == 0) {
+      emit(idx);
+      propagate(idx, idx);
     }
   }
 
-  // Preserve determinism under cycles by appending unresolved nodes by ID.
+  // Pass 2 — drain the pending FIFO. Insertion order is deterministic for a
+  // given graph state, so no explicit sort is needed.
+  for (size_t head = 0; head < pending.size(); ++head) {
+    const size_t idx = pending[head];
+    if (emitted[idx]) {
+      continue;
+    }
+    emit(idx);
+    propagate(idx, node_count);
+  }
+
+  // Tail — any unemitted node is part of a (rare) cycle. Append by ID.
   for (size_t idx = first_user_node_idx; idx < node_count; ++idx) {
     if (node_table[idx].get_nid() != 0 && !emitted[idx]) {
-      forward_class_cache_.emplace_back(const_cast<Graph*>(this), static_cast<Nid>(idx) << 2);
+      emit(idx);
     }
   }
 
@@ -1584,6 +1629,16 @@ void Node_class::set_type(Type type) const {
   graph_->ref_node(raw_nid)->set_type(type);
 }
 
+Type Node_class::get_type() const {
+  assert(graph_ != nullptr && "get_type: node is not attached to a graph");
+  return graph_->ref_node(raw_nid)->get_type();
+}
+
+bool Node_class::is_loop_last() const {
+  assert(graph_ != nullptr && "is_loop_last: node is not attached to a graph");
+  return graph_->ref_node(raw_nid)->is_loop_last();
+}
+
 auto Node_class::create_driver_pin() const -> Pin_class { return create_driver_pin(0); }
 auto Node_class::create_driver_pin(Port_id port_id) const -> Pin_class {
   assert(graph_ != nullptr && "create_driver_pin: node is not attached to a graph");
@@ -1681,17 +1736,42 @@ void Graph::set_subnode(Nid nid, Gid gid) {
     return;
   }
 
+  const GraphIO* subnode_gio = nullptr;
   if (owner_lib_ != nullptr) {
     const size_t idx = static_cast<size_t>(gid);
     assert(idx < owner_lib_->graph_ios_.size() && owner_lib_->graph_ios_[idx] != nullptr);
     if (idx >= owner_lib_->graph_ios_.size() || owner_lib_->graph_ios_[idx] == nullptr) {
       return;
     }
+    subnode_gio = owner_lib_->graph_ios_[idx].get();
   }
 
   nid &= ~static_cast<Nid>(3);
   auto pool = get_overflow_pool();
   ref_node(nid)->set_subnode(gid, pool);
+
+  // Stamp node type so the forward iterator can O(1) tell whether this
+  // subnode contains any loop_last boundary (flop/register/clocked pin).
+  // Bit 0 of Type encodes is_loop_last (odd == loop_last, even == not).
+  if (subnode_gio != nullptr) {
+    bool has_loop_last = false;
+    for (const auto& decl : subnode_gio->input_pin_decls_) {
+      if (decl.loop_last) {
+        has_loop_last = true;
+        break;
+      }
+    }
+    if (!has_loop_last) {
+      for (const auto& decl : subnode_gio->output_pin_decls_) {
+        if (decl.loop_last) {
+          has_loop_last = true;
+          break;
+        }
+      }
+    }
+    ref_node(nid)->set_type(has_loop_last ? static_cast<Type>(3) : static_cast<Type>(2));
+  }
+
   invalidate_traversal_caches();
 }
 

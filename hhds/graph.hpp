@@ -193,6 +193,8 @@ public:
 
   void                                  set_subnode(const std::shared_ptr<GraphIO>& graphio) const;
   void                                  set_type(Type type) const;
+  [[nodiscard]] Type                    get_type() const;
+  [[nodiscard]] bool                    is_loop_last() const;
   [[nodiscard]] Pin_class               create_driver_pin() const;
   [[nodiscard]] Pin_class               create_driver_pin(Port_id port_id) const;
   [[nodiscard]] Pin_class               create_driver_pin(std::string_view name) const;
@@ -329,6 +331,7 @@ class Graph : public Attr_host {
     [[nodiscard]] Nid      get_nid() const;
     [[nodiscard]] Type     get_type() const;
     void                   set_type(Type t);
+    [[nodiscard]] bool     is_loop_last() const noexcept;
     [[nodiscard]] Pid      get_next_pin_id() const;
     void                   set_next_pin_id(Pid id);
     [[nodiscard]] bool     has_edges(const OverflowVec& overflow) const;

@@ -255,7 +255,7 @@ const Attr_tag_registry_entry& Attr_tag_registry::register_tag(std::string_view 
           by_id_.erase(current_id_it);
         }
 
-        const auto new_id_it = by_id_.find(std::string(persistent_id));
+        [[maybe_unused]] const auto new_id_it = by_id_.find(std::string(persistent_id));
         assert((new_id_it == by_id_.end() || new_id_it->second == type_key)
                && "register_tag: persistent id already registered for another attribute tag");
 
@@ -267,8 +267,8 @@ const Attr_tag_registry_entry& Attr_tag_registry::register_tag(std::string_view 
     return type_it->second;
   }
 
-  const std::string id    = persistent_id.empty() ? attr_tag_name<Tag>() : std::string(persistent_id);
-  const auto        id_it = by_id_.find(id);
+  const std::string                  id    = persistent_id.empty() ? attr_tag_name<Tag>() : std::string(persistent_id);
+  [[maybe_unused]] const auto        id_it = by_id_.find(id);
   assert(id_it == by_id_.end() && "register_tag: persistent id already registered for another attribute tag");
 
   Attr_tag_registry_entry entry;
@@ -408,7 +408,7 @@ protected:
 
       uint8_t storage_kind_u8 = 0;
       is.read(reinterpret_cast<char*>(&storage_kind_u8), sizeof(storage_kind_u8));
-      const auto storage_kind = static_cast<Attr_storage_kind>(storage_kind_u8);
+      [[maybe_unused]] const auto storage_kind = static_cast<Attr_storage_kind>(storage_kind_u8);
 
       uint64_t entry_count = 0;
       is.read(reinterpret_cast<char*>(&entry_count), sizeof(entry_count));
