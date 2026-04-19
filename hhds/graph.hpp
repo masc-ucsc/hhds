@@ -414,11 +414,6 @@ public:
   void               display_graph() const;
   void               display_next_pin_of_node() const;
 
-  // Binary persistence — saves/loads body data (node_table, pin_table, overflow sets).
-  // dir_path is the graph-specific directory (e.g., "db/graph_1/").
-  void save_body(const std::string& dir_path) const;
-  void load_body(const std::string& dir_path);
-
   void                      print(std::ostream& os) const;
   [[nodiscard]] std::string print() const;
 
@@ -452,11 +447,15 @@ private:
   void                       invalidate_from_library() noexcept;
   void                       release_storage() noexcept;
   void                       clear_graph();
-  void                       delete_node(Nid nid);
-  [[nodiscard]] Pid          materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
-                                                         ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
-  void erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
-  void delete_pin(Pid pin_pid);
+  // Binary persistence — saves/loads body data (node_table, pin_table, overflow sets).
+  // dir_path is the graph-specific directory (e.g., "db/graph_1/").
+  void              save_body(const std::string& dir_path) const;
+  void              load_body(const std::string& dir_path);
+  void              delete_node(Nid nid);
+  [[nodiscard]] Pid materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
+                                                ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
+  void              erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
+  void              delete_pin(Pid pin_pid);
   [[nodiscard]] Pin_class        create_pin(Node_class node, Port_id port_id);
   [[nodiscard]] Pid              create_pin(Nid nid, Port_id port_id);
   [[nodiscard]] Pin_class        find_pin(Node_class node, Port_id port_id, bool driver) const;

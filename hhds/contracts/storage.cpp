@@ -493,22 +493,29 @@ TEST(GraphPersistence, SaveLoadRoundTrip) {
   // Collect original edges.
   auto orig_out_n1 = n1.out_edges();
   auto orig_out_n2 = n2.out_edges();
+  auto n1_nid      = n1.get_debug_nid();
+  auto n2_nid      = n2.get_debug_nid();
+  auto n3_nid      = n3.get_debug_nid();
 
   // Save.
-  graph->save_body(test_dir);
+  lib.save(test_dir);
 
   // Verify files exist.
-  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "body.bin"));
+  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "library.txt"));
+  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "graph_1" / "body.bin"));
 
-  // Create a fresh graph, load into it.
-  auto top_gio2 = lib.create_io("top2");
-  auto graph2   = top_gio2->create_graph();
-  graph2->load_body(test_dir);
+  // Create a fresh library, load into it.
+  hhds::GraphLibrary lib2;
+  lib2.load(test_dir);
+  auto top_gio2 = lib2.find_io("top");
+  ASSERT_NE(top_gio2, nullptr);
+  auto graph2 = top_gio2->get_graph();
+  ASSERT_NE(graph2, nullptr);
 
   // Verify round-trip: same node count, same edges.
-  auto loaded_n1 = hhds::Node_class(graph2.get(), n1.get_debug_nid());
-  auto loaded_n2 = hhds::Node_class(graph2.get(), n2.get_debug_nid());
-  auto loaded_n3 = hhds::Node_class(graph2.get(), n3.get_debug_nid());
+  auto loaded_n1 = hhds::Node_class(graph2.get(), n1_nid);
+  auto loaded_n2 = hhds::Node_class(graph2.get(), n2_nid);
+  auto loaded_n3 = hhds::Node_class(graph2.get(), n3_nid);
 
   auto loaded_out_n1 = loaded_n1.out_edges();
   auto loaded_out_n2 = loaded_n2.out_edges();
@@ -549,15 +556,19 @@ TEST(GraphPersistence, OverflowSetRoundTrip) {
 
   auto orig_edges = hub.out_edges();
   EXPECT_EQ(orig_edges.size(), overflow_edge_count);
+  auto hub_nid = hub.get_debug_nid();
 
   // Save and reload.
-  graph->save_body(test_dir);
+  lib.save(test_dir);
 
-  auto gio2   = lib.create_io("top_reload");
-  auto graph2 = gio2->create_graph();
-  graph2->load_body(test_dir);
+  hhds::GraphLibrary lib2;
+  lib2.load(test_dir);
+  auto gio2 = lib2.find_io("top");
+  ASSERT_NE(gio2, nullptr);
+  auto graph2 = gio2->get_graph();
+  ASSERT_NE(graph2, nullptr);
 
-  auto loaded_hub   = hhds::Node_class(graph2.get(), hub.get_debug_nid());
+  auto loaded_hub   = hhds::Node_class(graph2.get(), hub_nid);
   auto loaded_edges = loaded_hub.out_edges();
   EXPECT_EQ(loaded_edges.size(), orig_edges.size());
 

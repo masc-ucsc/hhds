@@ -280,17 +280,24 @@ TEST(GraphApiContract, PersistenceAndClearSemantics) {
   auto add_drv = add.create_driver_pin(0);
   add_drv.connect_sink(g->get_output_pin("y"));
 
-  // Save body + attribute maps.
-  g->save_body(test_dir);
-  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "body.bin"));
+  const auto add_nid = add.get_debug_nid();
+  const auto sub_nid = sub.get_debug_nid();
 
-  // Load into a fresh graph from a new declaration.
-  auto gio2 = glib.create_io("alu_loaded");
-  auto g2   = gio2->create_graph();
-  g2->load_body(test_dir);
+  // Save the graph library, including graph bodies and attribute maps.
+  glib.save(test_dir);
+  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "library.txt"));
+  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "graph_1" / "body.bin"));
 
-  auto loaded_add = hhds::Node(g2.get(), add.get_debug_nid());
-  auto loaded_sub = hhds::Node(g2.get(), sub.get_debug_nid());
+  // Load into a fresh library.
+  hhds::GraphLibrary loaded_glib;
+  loaded_glib.load(test_dir);
+  auto gio2 = loaded_glib.find_io("alu");
+  ASSERT_NE(gio2, nullptr);
+  auto g2 = gio2->get_graph();
+  ASSERT_NE(g2, nullptr);
+
+  auto loaded_add = hhds::Node(g2.get(), add_nid);
+  auto loaded_sub = hhds::Node(g2.get(), sub_nid);
   EXPECT_EQ(loaded_add.attr(name).get(), "adder");
   EXPECT_EQ(loaded_add.attr(bits).get(), 32);
   EXPECT_EQ(loaded_sub.attr(name).get(), "subtractor");
