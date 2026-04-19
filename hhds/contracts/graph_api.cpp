@@ -76,6 +76,83 @@ TEST(GraphApiContract, BasicsFlatAttributesForwardTraversal) {
   EXPECT_EQ(names.size(), 2u);
 }
 
+TEST(GraphApiContract, FastTraversalVariants) {
+  hhds::GraphLibrary glib;
+
+  auto leaf_io = glib.create_io("leaf_fast");
+  auto leaf    = leaf_io->create_graph();
+  auto leaf_n  = leaf->create_node();
+
+  auto top_io = glib.create_io("top_fast");
+  auto top    = top_io->create_graph();
+  auto inst1  = top->create_node();
+  auto inst2  = top->create_node();
+  inst1.set_subnode(leaf_io);
+  inst2.set_subnode(leaf_io);
+
+  bool saw_inst1 = false;
+  bool saw_inst2 = false;
+  for (auto node : top->fast_class()) {
+    EXPECT_TRUE(node.is_class());
+    if (node == inst1) {
+      saw_inst1 = true;
+    }
+    if (node == inst2) {
+      saw_inst2 = true;
+    }
+  }
+  EXPECT_TRUE(saw_inst1);
+  EXPECT_TRUE(saw_inst2);
+
+  size_t fast_flat_leaf_visits = 0;
+  for (auto node : top->fast_flat()) {
+    EXPECT_TRUE(node.is_flat());
+    if (node.get_current_gid() == leaf->get_gid() && node.get_debug_nid() == leaf_n.get_debug_nid()) {
+      ++fast_flat_leaf_visits;
+    }
+  }
+  EXPECT_EQ(fast_flat_leaf_visits, 2u);
+
+  size_t fast_hier_leaf_visits = 0;
+  for (auto node : top->fast_hier()) {
+    EXPECT_TRUE(node.is_hier());
+    if (node.get_current_gid() == leaf->get_gid() && node.get_debug_nid() == leaf_n.get_debug_nid()) {
+      ++fast_hier_leaf_visits;
+    }
+  }
+  EXPECT_EQ(fast_hier_leaf_visits, 2u);
+}
+
+TEST(GraphApiContract, PinConnectPinApi) {
+  hhds::GraphLibrary glib;
+
+  auto gio = glib.create_io("pins");
+  auto g   = gio->create_graph();
+
+  auto src0 = g->create_node();
+  auto dst0 = g->create_node();
+  auto src1 = g->create_node();
+  auto dst1 = g->create_node();
+
+  auto src0_out = src0.create_driver_pin();
+  auto dst0_in  = dst0.create_sink_pin();
+  auto src1_out = src1.create_driver_pin();
+  auto dst1_in  = dst1.create_sink_pin();
+
+  dst0_in.connect_driver(src0_out);
+  src1_out.connect_sink(dst1_in);
+
+  auto dst0_inp = dst0_in.inp_edges();
+  ASSERT_EQ(dst0_inp.size(), 1u);
+  EXPECT_EQ(dst0_inp[0].driver, src0_out);
+  EXPECT_EQ(dst0_inp[0].sink, dst0_in);
+
+  auto src1_outp = src1_out.out_edges();
+  ASSERT_EQ(src1_outp.size(), 1u);
+  EXPECT_EQ(src1_outp[0].driver, src1_out);
+  EXPECT_EQ(src1_outp[0].sink, dst1_in);
+}
+
 // Sample Example 3: declaring custom attributes. Flat vs hier storage
 // is picked at compile time via Tag::storage.
 TEST(GraphApiContract, CustomAttributeDeclarations) {
@@ -150,6 +227,8 @@ TEST(GraphApiContract, PinsAttributesAndEdgeIteration) {
   auto g_x = g->get_input_pin("x");
   auto g_y = g->get_input_pin("y");
   auto g_z = g->get_output_pin("z");
+  EXPECT_EQ(g_x.get_master_node().get_debug_nid(), hhds::Graph::INPUT_NODE);
+  EXPECT_EQ(g_z.get_master_node().get_debug_nid(), hhds::Graph::OUTPUT_NODE);
 
   and1_in.connect_driver(g_x);
   and1_in.connect_driver(g_y);
@@ -210,8 +289,8 @@ TEST(GraphApiContract, PersistenceAndClearSemantics) {
   auto g2   = gio2->create_graph();
   g2->load_body(test_dir);
 
-  auto loaded_add = hhds::Node(g2.get(), add.get_raw_nid());
-  auto loaded_sub = hhds::Node(g2.get(), sub.get_raw_nid());
+  auto loaded_add = hhds::Node(g2.get(), add.get_debug_nid());
+  auto loaded_sub = hhds::Node(g2.get(), sub.get_debug_nid());
   EXPECT_EQ(loaded_add.attr(name).get(), "adder");
   EXPECT_EQ(loaded_add.attr(bits).get(), 32);
   EXPECT_EQ(loaded_sub.attr(name).get(), "subtractor");
@@ -378,7 +457,7 @@ TEST(GraphApiContract, HierAttributesAreKeyedByHierPosition) {
   // forward_hier enters the leaf body once per instantiation.
   std::vector<hhds::Node> leaf_instances;
   for (auto node : top->forward_hier()) {
-    if (node.get_current_gid() == leaf->get_gid() && node.get_raw_nid() == leaf_n.get_raw_nid()) {
+    if (node.get_current_gid() == leaf->get_gid() && node.get_debug_nid() == leaf_n.get_debug_nid()) {
       leaf_instances.push_back(node);
     }
   }

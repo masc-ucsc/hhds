@@ -70,8 +70,8 @@ public:
       : raw_nid(raw_nid_value & ~static_cast<Nid>(2)), port_id(port_id_value), pin_pid(pin_pid_value) {}
 
   [[nodiscard]] Node_class        get_master_node() const;
-  [[nodiscard]] constexpr Nid     get_raw_nid() const noexcept { return raw_nid; }
-  [[nodiscard]] constexpr Pid     get_pin_pid() const noexcept { return pin_pid; }
+  [[nodiscard]] constexpr Nid     get_debug_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] constexpr Pid     get_debug_pid() const noexcept { return pin_pid; }
   [[nodiscard]] constexpr Port_id get_port_id() const noexcept { return port_id; }
   [[nodiscard]] Graph*            get_graph() const noexcept { return graph_; }
   [[nodiscard]] std::string_view  get_pin_name() const;
@@ -99,14 +99,11 @@ public:
   }
 
   void                                  connect_driver(Pin_class driver_pin) const;
-  void                                  connect_driver(Node_class driver_node) const;
   void                                  connect_sink(Pin_class sink_pin) const;
-  void                                  connect_sink(Node_class sink_node) const;
   void                                  del_sink(Pin_class driver_pin) const;
   void                                  del_sink() const;
   void                                  del_driver() const;
   void                                  del_pin() const;
-  void                                  del_node() const;
   [[nodiscard]] std::vector<Edge_class> out_edges() const;
   [[nodiscard]] std::vector<Edge_class> inp_edges() const;
 
@@ -119,9 +116,6 @@ public:
     }
     return AttrRef<Tag>(graph_, flat_key);
   }
-
-  // Interop with existing APIs that still accept raw Pid.
-  [[nodiscard]] constexpr operator Pid() const noexcept { return pin_pid; }
 
   [[nodiscard]] bool operator==(const Pin_class& other) const noexcept { return pin_pid == other.pin_pid; }
   [[nodiscard]] bool operator!=(const Pin_class& other) const noexcept { return !(*this == other); }
@@ -171,7 +165,7 @@ public:
   explicit Node_class(Nid raw_nid_value) : raw_nid(raw_nid_value) {}
 
   [[nodiscard]] constexpr Port_id get_port_id() const noexcept { return 0; }
-  [[nodiscard]] constexpr Nid     get_raw_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] constexpr Nid     get_debug_nid() const noexcept { return raw_nid; }
   [[nodiscard]] Graph*            get_graph() const noexcept { return graph_; }
   [[nodiscard]] bool              is_valid() const noexcept;
   [[nodiscard]] bool              is_invalid() const noexcept { return !is_valid(); }
@@ -208,10 +202,6 @@ public:
   [[nodiscard]] Pin_class               get_driver_pin(std::string_view name) const;
   [[nodiscard]] Pin_class               get_sink_pin(Port_id port_id) const;
   [[nodiscard]] Pin_class               get_sink_pin(std::string_view name) const;
-  void                                  connect_driver(Pin_class driver_pin) const;
-  void                                  connect_driver(Node_class driver_node) const;
-  void                                  connect_sink(Pin_class sink_pin) const;
-  void                                  connect_sink(Node_class sink_node) const;
   void                                  del_node() const;
   [[nodiscard]] std::vector<Edge_class> out_edges() const;
   [[nodiscard]] std::vector<Edge_class> inp_edges() const;
@@ -227,9 +217,6 @@ public:
     }
     return AttrRef<Tag>(graph_, flat_key);
   }
-
-  // Interop with existing APIs that still accept raw Nid.
-  [[nodiscard]] constexpr operator Nid() const noexcept { return raw_nid; }
 
   [[nodiscard]] bool operator==(const Node_class& other) const noexcept { return raw_nid == other.raw_nid; }
   [[nodiscard]] bool operator!=(const Node_class& other) const noexcept { return !(*this == other); }
@@ -399,21 +386,12 @@ class Graph : public Attr_host {
   static_assert(sizeof(NodeEntry) == 32, "NodeEntry size mismatch");
 
 public:
-  static constexpr size_t PIN_ENTRY_SIZE       = sizeof(PinEntry);
-  static constexpr size_t NODE_ENTRY_SIZE      = sizeof(NodeEntry);
-  static constexpr size_t PIN_ENTRY_MAX_EDGES  = PinEntry::MAX_EDGES;
-  static constexpr size_t NODE_ENTRY_MAX_EDGES = NodeEntry::MAX_EDGES;
-
   Graph();
   // Graphs are owned via handles; copying or moving would break library identity and traversal caches.
   Graph(const Graph&)            = delete;
   Graph& operator=(const Graph&) = delete;
   Graph(Graph&&)                 = delete;
   Graph& operator=(Graph&&)      = delete;
-  void   clear_graph();
-
-  [[nodiscard]] static bool is_valid(Node_class node) noexcept { return node.is_valid(); }
-  [[nodiscard]] static bool is_valid(Pin_class pin) noexcept { return pin.is_valid(); }
 
   [[nodiscard]] Node                     create_node();
   void                                   clear();
@@ -423,7 +401,7 @@ public:
   [[nodiscard]] Pin_class                get_input_pin(std::string_view name) const;
   [[nodiscard]] Pin_class                get_output_pin(std::string_view name) const;
 
-  // Built-in nodes created by Graph::clear_graph()
+  // Built-in nodes reserved by graph storage initialization.
   static constexpr Nid INPUT_NODE  = (static_cast<Nid>(1) << 2);
   static constexpr Nid OUTPUT_NODE = (static_cast<Nid>(2) << 2);
 
@@ -436,25 +414,6 @@ public:
   void               display_graph() const;
   void               display_next_pin_of_node() const;
 
-  class FastIterator {
-  public:
-    FastIterator(Nid node_id_value, Gid top_graph_value, Gid curr_graph_value, uint32_t tree_node_num_value) noexcept
-        : node_id(node_id_value), top_graph(top_graph_value), curr_graph(curr_graph_value), tree_node_num(tree_node_num_value) {}
-
-    [[nodiscard]] Nid      get_node_id() const noexcept { return node_id; }
-    [[nodiscard]] Gid      get_top_graph() const noexcept { return top_graph; }
-    [[nodiscard]] Gid      get_curr_graph() const noexcept { return curr_graph; }
-    [[nodiscard]] uint32_t get_tree_node_num() const noexcept { return tree_node_num; }
-
-  private:
-    Nid      node_id;        // encoded nid vid: (nid << 2) | 0
-    Gid      top_graph;      // root graph of traversal
-    Gid      curr_graph;     // graph that owns node_id
-    uint32_t tree_node_num;  // DFS tree-node id (root graph == 1)
-  };
-
-  [[nodiscard]] std::vector<FastIterator> fast_iter(bool hierarchy, Gid top_graph = 0, uint32_t tree_node_num = 0) const;
-
   // Binary persistence — saves/loads body data (node_table, pin_table, overflow sets).
   // dir_path is the graph-specific directory (e.g., "db/graph_1/").
   void save_body(const std::string& dir_path) const;
@@ -464,6 +423,23 @@ public:
   [[nodiscard]] std::string print() const;
 
 private:
+  class FastIterator {
+  public:
+    FastIterator(Nid node_id_value, Gid top_graph_value, Gid curr_graph_value, uint32_t tree_node_num_value) noexcept
+        : node_id(node_id_value), top_graph(top_graph_value), curr_graph(curr_graph_value), tree_node_num(tree_node_num_value) {}
+
+    [[nodiscard]] Nid      get_debug_nid() const noexcept { return node_id; }
+    [[nodiscard]] uint32_t get_debug_hier_pos() const noexcept { return tree_node_num; }
+
+  private:
+    Nid      node_id;        // encoded nid vid: (nid << 2) | 0
+    Gid      top_graph;      // root graph of traversal
+    Gid      curr_graph;     // graph that owns node_id
+    uint32_t tree_node_num;  // DFS tree-node id (root graph == 1)
+
+    friend class Graph;
+  };
+
   void                       attr_note_modified() noexcept override { dirty_ = true; }
   [[nodiscard]] OverflowPool get_overflow_pool() { return {overflow_sets_, overflow_free_}; }
   void                       assert_accessible() const noexcept;
@@ -475,6 +451,7 @@ private:
   [[nodiscard]] auto         ref_pin(Pid id) const -> PinEntry*;
   void                       invalidate_from_library() noexcept;
   void                       release_storage() noexcept;
+  void                       clear_graph();
   void                       delete_node(Nid nid);
   [[nodiscard]] Pid          materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
                                                          ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
@@ -490,28 +467,29 @@ private:
   void                           set_subnode(Node_class node, Gid gid);
   void                           set_subnode(Nid nid, Gid gid);
   void                           add_edge(Pid driver_id, Pid sink_id);
-  void add_edge(Pin_class driver_pin, Pin_class sink_pin) { add_edge(driver_pin.get_pin_pid(), sink_pin.get_pin_pid()); }
+  void add_edge(Pin_class driver_pin, Pin_class sink_pin) { add_edge(driver_pin.get_debug_pid(), sink_pin.get_debug_pid()); }
   void del_edge(Pin_class driver_pin, Pin_class sink_pin);
-  [[nodiscard]] std::vector<Edge_class> out_edges(Node_class node);
-  [[nodiscard]] std::vector<Edge_class> inp_edges(Node_class node);
-  [[nodiscard]] std::vector<Edge_class> out_edges(Pin_class pin);
-  [[nodiscard]] std::vector<Edge_class> inp_edges(Pin_class pin);
-  [[nodiscard]] std::vector<Pin_class>  get_pins(Node_class node);
-  [[nodiscard]] std::vector<Pin_class>  get_driver_pins(Node_class node);
-  [[nodiscard]] std::vector<Pin_class>  get_sink_pins(Node_class node);
-  void                                  del_edge_int(Vid driver_id, Vid sink_id);
-  void                                  add_edge_int(Pid self_id, Pid other_id);
-  void                                  set_next_pin(Nid nid, Pid next_pin);
-  [[nodiscard]] Pin_class               make_pin_class(Pid pin_pid) const;
-  void                                  bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
-  void                                  set_name(std::string_view name) { name_ = name; }
-  void                                  invalidate_traversal_caches() noexcept;
-  void                                  rebuild_fast_class_cache() const;
-  void                                  rebuild_fast_flat_cache() const;
-  void                                  rebuild_fast_hier_cache() const;
-  void                                  rebuild_forward_class_cache() const;
-  void                                  rebuild_forward_flat_cache() const;
-  void                                  rebuild_forward_hier_cache() const;
+  [[nodiscard]] std::vector<Edge_class>   out_edges(Node_class node);
+  [[nodiscard]] std::vector<Edge_class>   inp_edges(Node_class node);
+  [[nodiscard]] std::vector<Edge_class>   out_edges(Pin_class pin);
+  [[nodiscard]] std::vector<Edge_class>   inp_edges(Pin_class pin);
+  [[nodiscard]] std::vector<Pin_class>    get_pins(Node_class node);
+  [[nodiscard]] std::vector<Pin_class>    get_driver_pins(Node_class node);
+  [[nodiscard]] std::vector<Pin_class>    get_sink_pins(Node_class node);
+  void                                    del_edge_int(Vid driver_id, Vid sink_id);
+  void                                    add_edge_int(Pid self_id, Pid other_id);
+  void                                    set_next_pin(Nid nid, Pid next_pin);
+  [[nodiscard]] Pin_class                 make_pin_class(Pid pin_pid) const;
+  void                                    bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
+  void                                    set_name(std::string_view name) { name_ = name; }
+  void                                    invalidate_traversal_caches() noexcept;
+  void                                    rebuild_fast_class_cache() const;
+  void                                    rebuild_fast_flat_cache() const;
+  void                                    rebuild_fast_hier_cache() const;
+  void                                    rebuild_forward_class_cache() const;
+  void                                    rebuild_forward_flat_cache() const;
+  void                                    rebuild_forward_hier_cache() const;
+  [[nodiscard]] std::vector<FastIterator> fast_iter(bool hierarchy, Gid top_graph = 0, uint32_t tree_node_num = 0) const;
   void fast_iter_impl(bool hierarchy, Gid top_graph, uint32_t tree_node_num, uint32_t& next_tree_node_num,
                       ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<FastIterator>& out) const;
   void fast_hier_impl(std::shared_ptr<Tree> hier_tree, Tid hier_tid, std::shared_ptr<std::vector<Gid>> hier_gids, Tree_pos hier_pos,

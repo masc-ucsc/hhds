@@ -72,18 +72,18 @@ void test_forward_class_returns_wrappers() {
 
   auto n1 = graph->create_node();
   auto n2 = graph->create_node();
-  n1.connect_sink(n2);
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
 
   std::vector<hhds::Nid> order;
   for (auto node : graph->forward_class()) {
     assert(node.get_graph() == graph.get());
     assert(node.is_class());
-    order.push_back(node.get_raw_nid());
+    order.push_back(node.get_debug_nid());
   }
 
   assert(order.size() == 2);
-  assert(order[0] == n1.get_raw_nid());
-  assert(order[1] == n2.get_raw_nid());
+  assert(order[0] == n1.get_debug_nid());
+  assert(order[1] == n2.get_debug_nid());
 }
 
 void test_traversal_contexts_use_one_node_type() {
@@ -107,7 +107,7 @@ void test_traversal_contexts_use_one_node_type() {
   for (auto node : top->forward_flat()) {
     assert(node.is_flat());
     assert(!node.is_hier());
-    if (node.get_raw_nid() == leaf_n.get_raw_nid()) {
+    if (node.get_debug_nid() == leaf_n.get_debug_nid()) {
       auto pin = node.create_sink_pin();
       assert(pin.is_flat());
       saw_flat_leaf = true;
@@ -118,7 +118,7 @@ void test_traversal_contexts_use_one_node_type() {
   bool saw_hier_leaf = false;
   for (auto node : top->forward_hier()) {
     assert(node.is_hier());
-    if (node.get_raw_nid() == leaf_n.get_raw_nid()) {
+    if (node.get_debug_nid() == leaf_n.get_debug_nid()) {
       auto pin = node.create_driver_pin();
       assert(pin.is_hier());
       saw_hier_leaf = true;

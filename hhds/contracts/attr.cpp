@@ -24,6 +24,8 @@
 // shape. Flat/class keys collapse both bottom instances to the same entry;
 // hier keys keep them distinct.
 
+#include "hhds/attr.hpp"
+
 #include <gtest/gtest.h>
 
 #include <string>
@@ -31,7 +33,6 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
-#include "hhds/attr.hpp"
 #include "hhds/attrs/name.hpp"
 #include "hhds/graph.hpp"
 #include "hhds/index.hpp"
@@ -39,15 +40,15 @@
 namespace {
 
 struct Fixture {
-  hhds::GraphLibrary        lib;
+  hhds::GraphLibrary             lib;
   std::shared_ptr<hhds::GraphIO> bottom_io;
   std::shared_ptr<hhds::Graph>   bottom;
-  hhds::Node                bottom_body_node;
+  hhds::Node                     bottom_body_node;
 
   std::shared_ptr<hhds::GraphIO> top_io;
   std::shared_ptr<hhds::Graph>   top;
-  hhds::Node                inst1;
-  hhds::Node                inst2;
+  hhds::Node                     inst1;
+  hhds::Node                     inst2;
 
   Fixture() {
     // Shared leaf body with a single node inside.
@@ -78,7 +79,7 @@ TEST(IndexContract, ClassIndexKeysSingleGraphBody) {
 
   // User-owned side table keyed by Class_index (std and absl variants,
   // both hash the underlying integer).
-  std::unordered_map<hhds::Class_index, int>       std_cost;
+  std::unordered_map<hhds::Class_index, int>          std_cost;
   absl::flat_hash_map<hhds::Class_index, std::string> absl_label;
 
   for (auto node : f.top->forward_class()) {
@@ -103,7 +104,7 @@ TEST(IndexContract, ClassIndexKeysSingleGraphBody) {
 TEST(IndexContract, FlatIndexSharesKeyAcrossInstantiations) {
   Fixture f;
 
-  std::unordered_map<hhds::Flat_index, int>        std_hits;
+  std::unordered_map<hhds::Flat_index, int>          std_hits;
   absl::flat_hash_map<hhds::Flat_index, std::string> absl_trace;
 
   std::vector<hhds::Node> bottom_visits;
@@ -141,13 +142,12 @@ TEST(IndexContract, FlatIndexSharesKeyAcrossInstantiations) {
 TEST(IndexContract, HierIndexDistinguishesInstantiations) {
   Fixture f;
 
-  std::unordered_map<hhds::Hier_index, int>       std_delay;
+  std::unordered_map<hhds::Hier_index, int>          std_delay;
   absl::flat_hash_map<hhds::Hier_index, std::string> absl_path;
 
   std::vector<hhds::Node> bottom_instances;
   for (auto node : f.top->forward_hier()) {
-    if (node.get_current_gid() == f.bottom->get_gid()
-        && node.get_raw_nid() == f.bottom_body_node.get_raw_nid()) {
+    if (node.get_current_gid() == f.bottom->get_gid() && node.get_debug_nid() == f.bottom_body_node.get_debug_nid()) {
       bottom_instances.push_back(node);
     }
   }
@@ -159,10 +159,10 @@ TEST(IndexContract, HierIndexDistinguishesInstantiations) {
   EXPECT_NE(hi0, hi1);
 
   // Per-instance values survive independently in the map.
-  std_delay[hi0]  = 11;
-  std_delay[hi1]  = 22;
-  absl_path[hi0]  = "top/inst1/bottom_cell";
-  absl_path[hi1]  = "top/inst2/bottom_cell";
+  std_delay[hi0] = 11;
+  std_delay[hi1] = 22;
+  absl_path[hi0] = "top/inst1/bottom_cell";
+  absl_path[hi1] = "top/inst2/bottom_cell";
 
   EXPECT_EQ(std_delay.size(), 2u);
   EXPECT_EQ(std_delay[hi0], 11);
@@ -184,7 +184,7 @@ TEST(IndexContract, PinIndexesUseSameKeySpaceAsNodes) {
 
   // Give the bottom body node a driver pin; every instantiation reaches
   // the same pin body.
-  constexpr hhds::Port_id pin_port = 1;
+  constexpr hhds::Port_id pin_port   = 1;
   auto                    bottom_out = f.bottom_body_node.create_driver_pin(pin_port);
 
   // Per-instance timing on each bottom_out pin.
@@ -194,7 +194,7 @@ TEST(IndexContract, PinIndexesUseSameKeySpaceAsNodes) {
     if (node.get_current_gid() != f.bottom->get_gid()) {
       continue;
     }
-    if (node.get_raw_nid() != f.bottom_body_node.get_raw_nid()) {
+    if (node.get_debug_nid() != f.bottom_body_node.get_debug_nid()) {
       continue;
     }
     auto pin = node.get_driver_pin(pin_port);

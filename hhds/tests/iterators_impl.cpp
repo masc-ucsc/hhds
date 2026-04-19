@@ -59,19 +59,19 @@ TEST(GraphTraversalApi, ForwardClassUsesNodeWrappers) {
   auto n2 = graph->create_node();
   auto n3 = graph->create_node();
 
-  n1.connect_sink(n2);
-  n2.connect_sink(n3);
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+  n2.create_driver_pin().connect_sink(n3.create_sink_pin());
 
   std::vector<hhds::Nid> order;
   for (auto node : graph->forward_class()) {
     EXPECT_EQ(node.get_graph(), graph.get());
-    order.push_back(node.get_raw_nid());
+    order.push_back(node.get_debug_nid());
   }
 
   ASSERT_EQ(order.size(), 3);
-  EXPECT_EQ(order[0], n1.get_raw_nid());
-  EXPECT_EQ(order[1], n2.get_raw_nid());
-  EXPECT_EQ(order[2], n3.get_raw_nid());
+  EXPECT_EQ(order[0], n1.get_debug_nid());
+  EXPECT_EQ(order[1], n2.get_debug_nid());
+  EXPECT_EQ(order[2], n3.get_debug_nid());
 }
 
 TEST(TreeDeclarationApi, CreateFindAndNavigate) {

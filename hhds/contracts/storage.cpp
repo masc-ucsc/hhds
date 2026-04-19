@@ -28,14 +28,10 @@ inline constexpr loc_t loc{};
 }  // namespace test_attrs
 
 // ------------------------------------------------------------------
-// Compile-time size checks — these enforce the storage layout
+// Compile-time size checks — these enforce the public storage layout
 // documented in docs/storage_internals.md.
 // ------------------------------------------------------------------
 
-static_assert(hhds::Graph::NODE_ENTRY_SIZE == 32, "NodeEntry must be 32 bytes");
-static_assert(hhds::Graph::PIN_ENTRY_SIZE == 32, "PinEntry must be 32 bytes");
-static_assert(hhds::Graph::NODE_ENTRY_MAX_EDGES == 8, "NodeEntry inline edge capacity changed");
-static_assert(hhds::Graph::PIN_ENTRY_MAX_EDGES == 8, "PinEntry inline edge capacity changed");
 static_assert(sizeof(hhds::Tree_pointers) == 192, "Tree_pointers must be 192 bytes (3 cache lines)");
 
 // ------------------------------------------------------------------
@@ -54,8 +50,8 @@ TEST(GraphStorage, InitialTableSizes) {
   // Creating a node should add exactly 1 NodeEntry.
   auto n1 = graph->create_node();
   auto n2 = graph->create_node();
-  EXPECT_TRUE(hhds::Graph::is_valid(n1));
-  EXPECT_TRUE(hhds::Graph::is_valid(n2));
+  EXPECT_TRUE(n1.is_valid());
+  EXPECT_TRUE(n2.is_valid());
 }
 
 TEST(GraphStorage, Pin0CreatesNoPinEntry) {
@@ -72,16 +68,16 @@ TEST(GraphStorage, Pin0CreatesNoPinEntry) {
   EXPECT_EQ(dpin0.get_port_id(), 0u);
 
   // The pin_pid should have bit 0 = 0 (node, not pin).
-  EXPECT_EQ(dpin0.get_pin_pid() & 1u, 0u);
+  EXPECT_EQ(dpin0.get_debug_pid() & 1u, 0u);
 
   // create_sink_pin(0) should also return the node-as-pin.
   auto spin0 = n1.create_sink_pin(0);
   EXPECT_TRUE(spin0.is_valid());
   EXPECT_EQ(spin0.get_port_id(), 0u);
-  EXPECT_EQ(spin0.get_pin_pid() & 1u, 0u);
+  EXPECT_EQ(spin0.get_debug_pid() & 1u, 0u);
 
   // The raw_nid should be the same for both.
-  EXPECT_EQ(dpin0.get_raw_nid(), spin0.get_raw_nid());
+  EXPECT_EQ(dpin0.get_debug_nid(), spin0.get_debug_nid());
 
   // connect through pin(0) and verify edges work
   spin0.connect_driver(n2.create_driver_pin(0));
@@ -111,16 +107,16 @@ TEST(GraphStorage, NonZeroPortSharesSinglePinEntry) {
   auto sink_pin = node.create_sink_pin("a");
   EXPECT_TRUE(sink_pin.is_valid());
   EXPECT_EQ(sink_pin.get_port_id(), 1u);
-  EXPECT_EQ(sink_pin.get_pin_pid() & 1u, 1u);  // real PinEntry
+  EXPECT_EQ(sink_pin.get_debug_pid() & 1u, 1u);  // real PinEntry
 
   // Second call with the same port_id should reuse the PinEntry (same Pid base).
   auto driver_pin = node.create_driver_pin("y");
   EXPECT_TRUE(driver_pin.is_valid());
   EXPECT_EQ(driver_pin.get_port_id(), 1u);
-  EXPECT_EQ(driver_pin.get_pin_pid() & 1u, 1u);
+  EXPECT_EQ(driver_pin.get_debug_pid() & 1u, 1u);
 
   // Both should resolve to the same underlying PinEntry (same id ignoring bit 1).
-  EXPECT_EQ(driver_pin.get_pin_pid() & ~static_cast<hhds::Pid>(2), sink_pin.get_pin_pid() & ~static_cast<hhds::Pid>(2));
+  EXPECT_EQ(driver_pin.get_debug_pid() & ~static_cast<hhds::Pid>(2), sink_pin.get_debug_pid() & ~static_cast<hhds::Pid>(2));
 }
 
 TEST(GraphStorage, EdgeBidirectionalBits) {
@@ -132,7 +128,7 @@ TEST(GraphStorage, EdgeBidirectionalBits) {
   auto n2 = graph->create_node();
 
   // n1 drives n2 (n1 = driver, n2 = sink)
-  n1.connect_sink(n2);
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
 
   // n1 out_edges: should see n2 as a sink (local edge, bit 1 = 0)
   auto out = n1.out_edges();
@@ -172,10 +168,10 @@ TEST(GraphStorage, EdgeAndNodeDeletionTombstones) {
 
   std::vector<hhds::Nid> visited;
   for (auto node : graph->forward_class()) {
-    visited.push_back(node.get_raw_nid());
+    visited.push_back(node.get_debug_nid());
   }
   EXPECT_EQ(visited.size(), 1u);
-  EXPECT_EQ(visited[0], sink.get_raw_nid());
+  EXPECT_EQ(visited[0], sink.get_debug_nid());
 }
 
 TEST(GraphStorage, ClearSemantics) {
@@ -193,7 +189,7 @@ TEST(GraphStorage, ClearSemantics) {
   auto node_after_clear = graph->create_node();
   EXPECT_TRUE(node.is_invalid());
   EXPECT_TRUE(node_after_clear.is_valid());
-  EXPECT_NE(node_after_clear.get_raw_nid(), node.get_raw_nid());
+  EXPECT_NE(node_after_clear.get_debug_nid(), node.get_debug_nid());
 
   gio->clear();
   EXPECT_EQ(lib.find_io("top"), nullptr);
@@ -309,7 +305,7 @@ TEST(GraphAttrs, HierAttrUsesHierarchyContext) {
 
   std::vector<hhds::Node_class> leaf_instances;
   for (auto node : top->forward_hier()) {
-    if (node.get_current_gid() == leaf->get_gid() && node.get_raw_nid() == leaf_n.get_raw_nid()) {
+    if (node.get_current_gid() == leaf->get_gid() && node.get_debug_nid() == leaf_n.get_debug_nid()) {
       leaf_instances.push_back(node);
     }
   }
@@ -510,9 +506,9 @@ TEST(GraphPersistence, SaveLoadRoundTrip) {
   graph2->load_body(test_dir);
 
   // Verify round-trip: same node count, same edges.
-  auto loaded_n1 = hhds::Node_class(graph2.get(), n1.get_raw_nid());
-  auto loaded_n2 = hhds::Node_class(graph2.get(), n2.get_raw_nid());
-  auto loaded_n3 = hhds::Node_class(graph2.get(), n3.get_raw_nid());
+  auto loaded_n1 = hhds::Node_class(graph2.get(), n1.get_debug_nid());
+  auto loaded_n2 = hhds::Node_class(graph2.get(), n2.get_debug_nid());
+  auto loaded_n3 = hhds::Node_class(graph2.get(), n3.get_debug_nid());
 
   auto loaded_out_n1 = loaded_n1.out_edges();
   auto loaded_out_n2 = loaded_n2.out_edges();
@@ -534,6 +530,7 @@ TEST(GraphPersistence, OverflowSetRoundTrip) {
   namespace fs               = std::filesystem;
   const std::string test_dir = "/tmp/hhds_test_graph_overflow";
   fs::remove_all(test_dir);
+  constexpr size_t overflow_edge_count = 20;
 
   hhds::GraphLibrary lib;
   auto               gio   = lib.create_io("top");
@@ -542,7 +539,7 @@ TEST(GraphPersistence, OverflowSetRoundTrip) {
   // Create a hub node connected to enough others to exceed inline storage.
   auto                          hub = graph->create_node();
   std::vector<hhds::Node_class> targets;
-  for (size_t i = 0; i < hhds::Graph::NODE_ENTRY_MAX_EDGES + 12; ++i) {
+  for (size_t i = 0; i < overflow_edge_count; ++i) {
     auto t = graph->create_node();
     targets.push_back(t);
     auto d = hub.create_driver_pin(0);
@@ -551,7 +548,7 @@ TEST(GraphPersistence, OverflowSetRoundTrip) {
   }
 
   auto orig_edges = hub.out_edges();
-  EXPECT_GT(orig_edges.size(), hhds::Graph::NODE_ENTRY_MAX_EDGES);
+  EXPECT_EQ(orig_edges.size(), overflow_edge_count);
 
   // Save and reload.
   graph->save_body(test_dir);
@@ -560,7 +557,7 @@ TEST(GraphPersistence, OverflowSetRoundTrip) {
   auto graph2 = gio2->create_graph();
   graph2->load_body(test_dir);
 
-  auto loaded_hub   = hhds::Node_class(graph2.get(), hub.get_raw_nid());
+  auto loaded_hub   = hhds::Node_class(graph2.get(), hub.get_debug_nid());
   auto loaded_edges = loaded_hub.out_edges();
   EXPECT_EQ(loaded_edges.size(), orig_edges.size());
 
