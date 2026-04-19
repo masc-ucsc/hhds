@@ -520,6 +520,12 @@ private:
   std::vector<PinEntry>                          pin_table;
   OverflowVec                                    overflow_sets_;
   std::vector<uint32_t>                          overflow_free_;
+  // Persistent hierarchy: one Tree per Graph, populated by set_subnode and
+  // torn down in clear()/load_body rebuild. The tree's children correspond
+  // 1:1 with live subnode NodeEntries. `subnode_tree_pos_` maps a subnode
+  // Nid back to its Tree_pos so del_node / debug cycle checks can find it.
+  std::shared_ptr<Tree>                          tree_;
+  ankerl::unordered_dense::map<Nid, Tree_pos>    subnode_tree_pos_;
   mutable std::vector<Node>                      forward_class_cache_;
   mutable std::vector<Node>                      forward_flat_cache_;
   mutable std::vector<Node>                      forward_hier_cache_;

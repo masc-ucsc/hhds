@@ -688,6 +688,10 @@ void Graph::invalidate_from_library() noexcept {
   forward_flat_cache_valid_  = false;
   forward_hier_cache_valid_  = false;
   forward_hier_tree_cache_.reset();
+  if (tree_) {
+    tree_->clear();
+  }
+  subnode_tree_pos_.clear();
   input_pins_.clear();
   output_pins_.clear();
 }
@@ -705,6 +709,13 @@ void Graph::clear_graph() {
   node_table.emplace_back(2);  // Output node
   node_table.emplace_back(3);  // Constant (common value/issue to handle for toposort) - Each const value is a pin in node3
   pin_table.emplace_back(0, 0);
+  if (!tree_) {
+    tree_ = Tree::create();
+  } else {
+    tree_->clear();
+  }
+  (void)tree_->add_root();
+  subnode_tree_pos_.clear();
   invalidate_traversal_caches();
 }
 
@@ -743,6 +754,13 @@ void Graph::clear() {
 
   input_pins_.clear();
   output_pins_.clear();
+  if (tree_) {
+    tree_->clear();
+  } else {
+    tree_ = Tree::create();
+  }
+  (void)tree_->add_root();
+  subnode_tree_pos_.clear();
   invalidate_traversal_caches();
   if (auto graphio = get_io()) {
     for (const auto& input : graphio->input_pin_decls_) {
@@ -1615,6 +1633,14 @@ void Graph::set_subnode(Nid nid, Gid gid) {
   nid &= ~static_cast<Nid>(3);
   auto pool = get_overflow_pool();
   ref_node(nid)->set_subnode(gid, pool);
+
+  // Persistent hierarchy: add a child to this graph's tree representing
+  // this subnode instance. Only add if not already tracked (re-calling
+  // set_subnode on the same node just updates the target Gid).
+  if (tree_ && subnode_tree_pos_.find(nid) == subnode_tree_pos_.end()) {
+    const Tree_pos child_pos = tree_->add_child(static_cast<Tree_pos>(ROOT));
+    subnode_tree_pos_.emplace(nid, child_pos);
+  }
 
   // Stamp node type so the forward iterator can O(1) tell whether this
   // subnode contains any loop_last boundary (flop/register/clocked pin).
