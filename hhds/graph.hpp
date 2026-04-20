@@ -65,6 +65,12 @@ class FastFlatIterator;
 class FastFlatRange;
 class FastHierIterator;
 class FastHierRange;
+class ForwardClassIterator;
+class ForwardClassRange;
+class ForwardFlatIterator;
+class ForwardFlatRange;
+class ForwardHierIterator;
+class ForwardHierRange;
 
 enum class Handle_context : uint8_t { Class, Flat, Hier };
 
@@ -303,7 +309,7 @@ class Graph : public Attr_host {
     uint8_t use_overflow : 1;        // 1 bit      => 64 bits (8 bytes)
 
     union {
-      int64_t  sedges;        // 48 bits (when use_overflow == 0)
+      int64_t  sedges;        // 4 × 16-bit packed slots (when use_overflow == 0)
       uint32_t overflow_idx;  // index into Graph::overflow_sets_ (when use_overflow == 1)
     } sedges_;                // Total: 8 bytes
   };
@@ -315,9 +321,9 @@ class Graph : public Attr_host {
 
   public:
     NodeEntry();
-    explicit NodeEntry(Nid nid_value);
+    explicit NodeEntry(bool alive_value);
 
-    [[nodiscard]] Nid      get_nid() const;
+    [[nodiscard]] bool     is_alive() const noexcept { return alive != 0; }
     [[nodiscard]] Type     get_type() const;
     void                   set_type(Type t);
     [[nodiscard]] bool     is_loop_last() const noexcept;
@@ -329,7 +335,7 @@ class Graph : public Attr_host {
     [[nodiscard]] bool     check_overflow() const { return use_overflow; }
     [[nodiscard]] uint32_t get_overflow_idx() const { return sedges_.overflow_idx; }
 
-    void               set_subnode(Gid gid, OverflowPool& pool);
+    void               set_subnode(Nid self_nid, Gid gid, OverflowPool& pool);
     [[nodiscard]] Gid  get_subnode() const noexcept;
     [[nodiscard]] bool has_subnode() const noexcept;
 
@@ -363,17 +369,26 @@ class Graph : public Attr_host {
     void clear_node();
     auto overflow_handling(Nid self_id, Vid other_id, OverflowPool& pool) -> bool;
 
-    Nid     nid : Nid_bits;
-    Type    type : 16;
-    Pid     next_pin_id : Nid_bits;
-    Nid     ledge0 : Nid_bits;
-    Nid     ledge1 : Nid_bits;
-    uint8_t use_overflow : 1;
-    uint8_t padding : 7;
+    // Layout (packed, 32 bytes):
+    //   type            : 16 bits
+    //   next_pin_id     : 42 bits
+    //   ledge0          : 42 bits
+    //   ledge1          : 42 bits
+    //   use_overflow    :  1 bit
+    //   alive           :  1 bit   (tombstone = 0)
+    //   sedges_extra    : 48 bits  (3 extra 16-bit slots, exact fit)
+    // -> 192 bits = 24 bytes; sedges_ begins at byte 24 (8-byte aligned).
+    Type     type : 16;
+    Pid      next_pin_id : Nid_bits;
+    Nid      ledge0 : Nid_bits;
+    Nid      ledge1 : Nid_bits;
+    uint8_t  use_overflow : 1;
+    uint8_t  alive : 1;
+    uint64_t sedges_extra : 48;
     union {
-      int64_t  sedges;        // 48 bits (when use_overflow == 0)
+      int64_t  sedges;        // low-4 slots of 16 bits (fills 64 bits exactly)
       uint32_t overflow_idx;  // index into Graph::overflow_sets_ (when use_overflow == 1)
-    } sedges_;                // Total: 8 bytes
+    } sedges_;                // 8 bytes
   };
 
   static_assert(sizeof(NodeEntry) == 32, "NodeEntry size mismatch");
@@ -433,13 +448,14 @@ public:
   // Built-in nodes reserved by graph storage initialization.
   static constexpr Nid INPUT_NODE  = (static_cast<Nid>(1) << 2);
   static constexpr Nid OUTPUT_NODE = (static_cast<Nid>(2) << 2);
+  static constexpr Nid CONST_NODE  = (static_cast<Nid>(3) << 2);
 
-  [[nodiscard]] FastClassRange fast_class() const noexcept;
-  [[nodiscard]] auto           forward_class() const -> std::span<const Node>;
-  [[nodiscard]] FastFlatRange  fast_flat() const noexcept;
-  [[nodiscard]] auto           forward_flat() const -> std::span<const Node>;
-  [[nodiscard]] FastHierRange  fast_hier() const noexcept;
-  [[nodiscard]] auto           forward_hier() const -> std::span<const Node>;
+  [[nodiscard]] FastClassRange    fast_class() const noexcept;
+  [[nodiscard]] ForwardClassRange forward_class() const noexcept;
+  [[nodiscard]] FastFlatRange     fast_flat() const noexcept;
+  [[nodiscard]] ForwardFlatRange  forward_flat() const noexcept;
+  [[nodiscard]] FastHierRange     fast_hier() const noexcept;
+  [[nodiscard]] ForwardHierRange  forward_hier() const noexcept;
   void               display_graph() const;
   void               display_next_pin_of_node() const;
 
@@ -494,12 +510,12 @@ private:
   void                                    bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
   void                                    set_name(std::string_view name) { name_ = name; }
   void invalidate_traversal_caches() noexcept;
-  void rebuild_forward_class_cache() const;
-  void rebuild_forward_flat_cache() const;
-  void rebuild_forward_hier_cache() const;
-  void forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const;
-  void forward_hier_impl(Gid root_gid, Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs,
-                         std::vector<Node>& out) const;
+  // Build (or refresh) the Pass-2 deferred list and the initial in-edge counts
+  // used by the forward_class streaming iterator. The full emission ordering
+  // is never materialized — only these two small caches persist.
+  void ensure_forward_caches() const;
+  // Exposed to the Forward iterator classes (which are friends).
+  [[nodiscard]] bool forward_is_source(size_t idx) const noexcept;
 
   std::vector<NodeEntry>                         node_table;
   std::vector<PinEntry>                          pin_table;
@@ -511,14 +527,15 @@ private:
   // Nid back to its Tree_pos so del_node / debug cycle checks can find it.
   std::shared_ptr<Tree>                          tree_;
   ankerl::unordered_dense::map<Nid, Tree_pos>    subnode_tree_pos_;
-  mutable std::vector<Node>                      forward_class_cache_;
-  mutable std::vector<Node>                      forward_flat_cache_;
-  mutable std::vector<Node>                      forward_hier_cache_;
-  mutable bool                                   forward_class_cache_valid_ = false;
-  mutable bool                                   forward_flat_cache_valid_  = false;
-  mutable bool                                   forward_hier_cache_valid_  = false;
-  mutable uint64_t                               forward_flat_cache_epoch_  = 0;
-  mutable uint64_t                               forward_hier_cache_epoch_  = 0;
+  // Forward-traversal caches, shared across forward_class / forward_flat /
+  // forward_hier for this graph body. Only the Pass-2 deferral list and the
+  // initial in-edge counts are kept — the Pass-1 emission order is replayed
+  // from storage order and the Tail from alive-but-unemitted survivors. No
+  // Node_class objects are cached, so memory is O(Pass2) + O(N × 4 bytes)
+  // rather than O(N × sizeof(Node_class)).
+  mutable std::vector<Nid>                       forward_pass2_cache_;
+  mutable std::vector<uint32_t>                  forward_remaining_in_cache_;
+  mutable bool                                   forward_caches_valid_ = false;
   ankerl::unordered_dense::map<std::string, Pid> input_pins_;
   ankerl::unordered_dense::map<std::string, Pid> output_pins_;
   const GraphLibrary*                            owner_lib_ = nullptr;
@@ -539,6 +556,12 @@ private:
   friend class FastFlatRange;
   friend class FastHierIterator;
   friend class FastHierRange;
+  friend class ForwardClassIterator;
+  friend class ForwardClassRange;
+  friend class ForwardFlatIterator;
+  friend class ForwardFlatRange;
+  friend class ForwardHierIterator;
+  friend class ForwardHierRange;
 };
 
 // Lazy, single-pass iterator over a graph's live nodes (node_table scan,
@@ -682,6 +705,179 @@ public:
   explicit FastHierRange(Graph* graph) noexcept : graph_(graph) {}
   [[nodiscard]] FastHierIterator begin() const;
   [[nodiscard]] FastHierIterator end() const noexcept { return FastHierIterator{}; }
+
+private:
+  Graph* graph_;
+};
+
+// Forward topological iterator for a single graph body. Emits sources first,
+// then storage-order combinational nodes (Pass 1), then deferred back-edge
+// targets (Pass 2 replayed from Graph::forward_pass2_cache_), then any cycle
+// survivors (Tail). No Node_class objects are cached — per-iteration scratch
+// (a working copy of in-edge counts and an emitted bitset) is the only
+// per-walk allocation. Move-only to keep that scratch unique.
+class ForwardClassIterator {
+public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type        = Node_class;
+  using difference_type   = std::ptrdiff_t;
+  using pointer           = void;
+  using reference         = Node_class;
+
+  ForwardClassIterator() noexcept = default;
+  ForwardClassIterator(const ForwardClassIterator&)            = delete;
+  ForwardClassIterator& operator=(const ForwardClassIterator&) = delete;
+  ForwardClassIterator(ForwardClassIterator&&) noexcept;
+  ForwardClassIterator& operator=(ForwardClassIterator&&) noexcept;
+  ~ForwardClassIterator() = default;
+
+  [[nodiscard]] Node_class operator*() const;
+  ForwardClassIterator&    operator++();
+  [[nodiscard]] bool operator==(const ForwardClassIterator& o) const noexcept {
+    // End sentinel: both iterators at Phase::End compare equal regardless of
+    // graph_, so a default-constructed end iterator terminates range-for.
+    if (phase_ == Phase::End && o.phase_ == Phase::End) {
+      return true;
+    }
+    return graph_ == o.graph_ && phase_ == o.phase_ && current_idx_ == o.current_idx_;
+  }
+  [[nodiscard]] bool operator!=(const ForwardClassIterator& o) const noexcept { return !(*this == o); }
+
+private:
+  enum class Phase : uint8_t { Pass1, Pass2, Tail, End };
+
+  explicit ForwardClassIterator(Graph* graph);
+  void advance();
+  void propagate(size_t driver_idx, size_t cursor);
+  [[nodiscard]] bool is_source(size_t idx) const noexcept;
+  [[nodiscard]] bool is_emitted(size_t idx) const noexcept;
+  void               mark_emitted(size_t idx) noexcept;
+
+  Graph* graph_       = nullptr;
+  Phase  phase_       = Phase::End;
+  size_t idx_         = 0;
+  size_t pass2_head_  = 0;
+  size_t node_count_  = 0;
+  size_t current_idx_ = 0;
+
+  std::vector<uint32_t> working_remaining_in_;
+  std::vector<uint64_t> emitted_bits_;
+
+  friend class ForwardClassRange;
+  friend class ForwardFlatIterator;
+  friend class ForwardHierIterator;
+};
+
+class ForwardClassRange {
+public:
+  explicit ForwardClassRange(Graph* graph) noexcept : graph_(graph) {}
+  [[nodiscard]] ForwardClassIterator begin() const;
+  [[nodiscard]] ForwardClassIterator end() const noexcept { return ForwardClassIterator{}; }
+
+  // Backward-compat helpers for callers that previously used std::span.
+  // size()/front() each walk the iteration once (O(N)) — avoid in hot paths.
+  [[nodiscard]] size_t     size() const;
+  [[nodiscard]] Node_class front() const;
+  [[nodiscard]] bool       empty() const;
+
+private:
+  Graph* graph_;
+};
+
+// Forward flat traversal: local graph's forward order, with subgraph bodies
+// visited once in the order their owning subnodes emit (global active_graphs
+// dedup — a subgraph seen via multiple instances expands only the first time).
+class ForwardFlatIterator {
+public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type        = Node_class;
+  using difference_type   = std::ptrdiff_t;
+  using pointer           = void;
+  using reference         = Node_class;
+
+  ForwardFlatIterator() noexcept = default;
+  ForwardFlatIterator(const ForwardFlatIterator&)            = delete;
+  ForwardFlatIterator& operator=(const ForwardFlatIterator&) = delete;
+  ForwardFlatIterator(ForwardFlatIterator&&) noexcept        = default;
+  ForwardFlatIterator& operator=(ForwardFlatIterator&&) noexcept = default;
+  ~ForwardFlatIterator()                                         = default;
+
+  [[nodiscard]] Node_class operator*() const;
+  ForwardFlatIterator&     operator++();
+  [[nodiscard]] bool operator==(const ForwardFlatIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool operator!=(const ForwardFlatIterator& o) const noexcept { return !(*this == o); }
+
+private:
+  struct Frame {
+    Graph*               graph;
+    ForwardClassIterator it;
+  };
+
+  explicit ForwardFlatIterator(Graph* root_graph);
+  void advance();
+
+  Gid                               top_graph_ = Gid_invalid;
+  std::vector<Frame>                stack_;
+  ankerl::unordered_dense::set<Gid> active_graphs_;
+
+  friend class ForwardFlatRange;
+};
+
+class ForwardFlatRange {
+public:
+  explicit ForwardFlatRange(Graph* graph) noexcept : graph_(graph) {}
+  [[nodiscard]] ForwardFlatIterator begin() const;
+  [[nodiscard]] ForwardFlatIterator end() const noexcept { return ForwardFlatIterator{}; }
+
+private:
+  Graph* graph_;
+};
+
+// Forward hier traversal: per-instance hier_pos token, subgraph bodies visited
+// once per subnode instance (active_graphs is push/pop scoped to the current
+// recursion path, not the whole walk).
+class ForwardHierIterator {
+public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type        = Node_class;
+  using difference_type   = std::ptrdiff_t;
+  using pointer           = void;
+  using reference         = Node_class;
+
+  ForwardHierIterator() noexcept = default;
+  ForwardHierIterator(const ForwardHierIterator&)            = delete;
+  ForwardHierIterator& operator=(const ForwardHierIterator&) = delete;
+  ForwardHierIterator(ForwardHierIterator&&) noexcept        = default;
+  ForwardHierIterator& operator=(ForwardHierIterator&&) noexcept = default;
+  ~ForwardHierIterator()                                         = default;
+
+  [[nodiscard]] Node_class operator*() const;
+  ForwardHierIterator&     operator++();
+  [[nodiscard]] bool operator==(const ForwardHierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool operator!=(const ForwardHierIterator& o) const noexcept { return !(*this == o); }
+
+private:
+  struct Frame {
+    Graph*               graph;
+    ForwardClassIterator it;
+    Tree_pos             hier_pos;
+  };
+
+  explicit ForwardHierIterator(Graph* root_graph);
+  void advance();
+
+  Gid                               root_gid_ = Gid_invalid;
+  std::vector<Frame>                stack_;
+  ankerl::unordered_dense::set<Gid> active_graphs_;
+
+  friend class ForwardHierRange;
+};
+
+class ForwardHierRange {
+public:
+  explicit ForwardHierRange(Graph* graph) noexcept : graph_(graph) {}
+  [[nodiscard]] ForwardHierIterator begin() const;
+  [[nodiscard]] ForwardHierIterator end() const noexcept { return ForwardHierIterator{}; }
 
 private:
   Graph* graph_;

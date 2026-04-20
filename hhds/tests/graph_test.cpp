@@ -81,9 +81,10 @@ void test_forward_class_returns_wrappers() {
     order.push_back(node.get_debug_nid());
   }
 
-  assert(order.size() == 2);
-  assert(order[0] == n1.get_debug_nid());
-  assert(order[1] == n2.get_debug_nid());
+  assert(order.size() == 3);
+  assert(order[0] == hhds::Graph::CONST_NODE);
+  assert(order[1] == n1.get_debug_nid());
+  assert(order[2] == n2.get_debug_nid());
 }
 
 void test_traversal_contexts_use_one_node_type() {
@@ -155,10 +156,11 @@ void test_forward_loop_last_is_source() {
   for (auto node : graph->forward_class()) {
     order.push_back(node.get_debug_nid());
   }
-  assert(order.size() == 3);
-  assert(order[0] == n1.get_debug_nid());
-  assert(order[1] == n2.get_debug_nid());
-  assert(order[2] == n3.get_debug_nid());
+  assert(order.size() == 4);
+  assert(order[0] == hhds::Graph::CONST_NODE);
+  assert(order[1] == n1.get_debug_nid());
+  assert(order[2] == n2.get_debug_nid());
+  assert(order[3] == n3.get_debug_nid());
 }
 
 void test_forward_out_of_order_uses_pending_list() {
@@ -180,10 +182,11 @@ void test_forward_out_of_order_uses_pending_list() {
   for (auto node : graph->forward_class()) {
     order.push_back(node.get_debug_nid());
   }
-  assert(order.size() == 3);
-  assert(order[0] == n3.get_debug_nid());
-  assert(order[1] == n1.get_debug_nid());
-  assert(order[2] == n2.get_debug_nid());
+  assert(order.size() == 4);
+  assert(order[0] == hhds::Graph::CONST_NODE);
+  assert(order[1] == n3.get_debug_nid());
+  assert(order[2] == n1.get_debug_nid());
+  assert(order[3] == n2.get_debug_nid());
 }
 
 void test_subnode_with_loop_last_pin_marks_node() {

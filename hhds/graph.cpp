@@ -92,7 +92,7 @@ auto Graph::PinEntry::overflow_handling(Pid self_id, Vid other_id, OverflowPool&
   }
   uint32_t           idx       = pool.alloc();
   auto&              hs        = pool.sets[idx];
-  constexpr int      SHIFT     = 14;
+  constexpr int      SHIFT     = 16;
   constexpr uint64_t SLOT_MASK = (1ULL << SHIFT) - 1;
 
   for (int i = 0; i < 4; ++i) {
@@ -102,9 +102,9 @@ auto Graph::PinEntry::overflow_handling(Pid self_id, Vid other_id, OverflowPool&
     }
     bool is_driver = raw & (1ULL << 1);
     bool is_pin    = raw & (1ULL << 0);
-    bool neg       = raw & (1ULL << 13);
+    bool neg       = raw & (1ULL << 15);
 
-    uint64_t mag  = (raw >> 2) & ((1ULL << 11) - 1);
+    uint64_t mag  = (raw >> 2) & ((1ULL << 13) - 1);
     int64_t  diff = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
 
     Nid actual_self = self_id >> 2;
@@ -138,7 +138,7 @@ auto Graph::PinEntry::add_edge(Pid self_id, Vid other_id, OverflowPool& pool) ->
   bool     isNeg = diff < 0;
   uint64_t mag   = static_cast<uint64_t>(isNeg ? -diff : diff);
 
-  constexpr uint64_t MAX_MAG = (1ULL << 11) - 1;
+  constexpr uint64_t MAX_MAG = (1ULL << 13) - 1;
   if (mag > MAX_MAG) {
     if (ledge0 == 0) {
       ledge0 = other_id;
@@ -153,7 +153,7 @@ auto Graph::PinEntry::add_edge(Pid self_id, Vid other_id, OverflowPool& pool) ->
 
   uint64_t e = 0;
   if (isNeg) {
-    e |= 1ULL << 13;
+    e |= 1ULL << 15;
   }
   e |= (mag << 2);
   if (other_id & 2) {
@@ -162,7 +162,7 @@ auto Graph::PinEntry::add_edge(Pid self_id, Vid other_id, OverflowPool& pool) ->
   if (other_id & 1) {
     e = e | 1;
   }
-  constexpr int      SHIFT = 14;
+  constexpr int      SHIFT = 16;
   constexpr uint64_t SLOT  = (1ULL << SHIFT) - 1;
   for (int i = 0; i < 4; ++i) {
     uint64_t mask = SLOT << (i * SHIFT);
@@ -257,11 +257,11 @@ void Graph::PinEntry::EdgeRange::release_set(ankerl::unordered_dense::set<Vid>* 
 
 void Graph::PinEntry::EdgeRange::populate_set(const Graph::PinEntry* pin, ankerl::unordered_dense::set<Vid>& set,
                                               Pid pid) noexcept {
-  constexpr uint64_t SLOT_MASK  = (1ULL << 14) - 1;  // grab 14 bits
-  constexpr uint64_t SIGN_BIT   = 1ULL << 13;
+  constexpr uint64_t SLOT_MASK  = (1ULL << 16) - 1;  // grab 16 bits
+  constexpr uint64_t SIGN_BIT   = 1ULL << 15;
   constexpr uint64_t DRIVER_BIT = 1ULL << 1;
   constexpr uint64_t PIN_BIT    = 1ULL << 0;
-  constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;  // bits 12–2
+  constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;  // bits 14–2
 
   // our caller passed us vid_self = (numeric_id << 1) | pin_flag
   // strip off the low two bits to get the pure numeric node index:
@@ -269,7 +269,7 @@ void Graph::PinEntry::EdgeRange::populate_set(const Graph::PinEntry* pin, ankerl
 
   uint64_t packed = pin->sedges_.sedges;
   for (int slot = 0; slot < 4; ++slot) {
-    uint64_t raw = (packed >> (slot * 14)) & SLOT_MASK;
+    uint64_t raw = (packed >> (slot * 16)) & SLOT_MASK;
     if (raw == 0) {
       continue;
     }
@@ -320,15 +320,14 @@ bool Graph::PinEntry::has_edges() const {
 }
 
 Graph::NodeEntry::NodeEntry() { clear_node(); }
-Graph::NodeEntry::NodeEntry(Nid nid_val) {
+Graph::NodeEntry::NodeEntry(bool alive_val) {
   clear_node();
-  nid = nid_val;
+  alive = alive_val ? 1u : 0u;
 }
 
 void Graph::NodeEntry::clear_node() { bzero(this, sizeof(NodeEntry)); }
 
 void Graph::NodeEntry::set_type(Type t) { type = t; }
-Nid  Graph::NodeEntry::get_nid() const { return nid; }
 Type Graph::NodeEntry::get_type() const { return type; }
 bool Graph::NodeEntry::is_loop_last() const noexcept { return (type & 1u) != 0u; }
 Pid  Graph::NodeEntry::get_next_pin_id() const { return next_pin_id; }
@@ -344,20 +343,18 @@ auto Graph::NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool
 
   uint32_t           idx       = pool.alloc();
   auto&              hs        = pool.sets[idx];
-  constexpr int      SHIFT     = 14;
+  constexpr int      SHIFT     = 16;
   constexpr uint64_t SLOT_MASK = (1ULL << SHIFT) - 1;
 
-  for (int i = 0; i < 4; ++i) {
-    uint64_t raw = (sedges_.sedges >> (i * SHIFT)) & SLOT_MASK;
+  auto flush_slot = [&](uint64_t raw) {
     if (!raw) {
-      continue;
+      return;
     }
-    bool is_driver = raw & 2;
-    bool is_pin    = raw & 1;
-
-    bool     neg  = raw & (1ULL << 13);
-    uint64_t mag  = (raw >> 2) & ((1ULL << 11) - 1);
-    int64_t  diff = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+    bool     is_driver = raw & 2;
+    bool     is_pin    = raw & 1;
+    bool     neg       = raw & (1ULL << 15);
+    uint64_t mag       = (raw >> 2) & ((1ULL << 13) - 1);
+    int64_t  diff      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
 
     Nid actual_self = static_cast<Nid>(self_id >> 2);
     Vid target      = static_cast<Vid>(actual_self - diff);
@@ -369,6 +366,14 @@ auto Graph::NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool
       target |= 1;
     }
     hs.insert(target);
+  };
+
+  for (int i = 0; i < 4; ++i) {
+    flush_slot((sedges_.sedges >> (i * SHIFT)) & SLOT_MASK);
+  }
+  const uint64_t extra = sedges_extra;
+  for (int i = 0; i < 3; ++i) {
+    flush_slot((extra >> (i * SHIFT)) & SLOT_MASK);
   }
 
   if (ledge0) {
@@ -379,7 +384,9 @@ auto Graph::NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool
   }
 
   use_overflow         = 1;
+  sedges_.sedges       = 0;
   sedges_.overflow_idx = idx;
+  sedges_extra         = 0;
   ledge0 = ledge1 = 0;
 
   if (other_id) {
@@ -400,7 +407,7 @@ auto Graph::NodeEntry::add_edge(Nid self_id, Vid other_id, OverflowPool& pool) -
   bool     isNeg = diff < 0;
   uint64_t mag   = static_cast<uint64_t>(isNeg ? -diff : diff);
 
-  constexpr uint64_t MAX_MAG = (1ULL << 11) - 1;
+  constexpr uint64_t MAX_MAG = (1ULL << 13) - 1;
   if (mag > MAX_MAG) {
     if (ledge0 == 0) {
       ledge0 = other_id;
@@ -415,7 +422,7 @@ auto Graph::NodeEntry::add_edge(Nid self_id, Vid other_id, OverflowPool& pool) -
 
   uint64_t e = 0;
   if (isNeg) {
-    e |= 1ULL << 13;
+    e |= 1ULL << 15;
   }
   e |= (mag << 2);
   if (other_id & 2) {
@@ -424,12 +431,20 @@ auto Graph::NodeEntry::add_edge(Nid self_id, Vid other_id, OverflowPool& pool) -
   if (other_id & 1) {
     e = e | 1;
   }
-  constexpr int      SHIFT = 14;
+  constexpr int      SHIFT = 16;
   constexpr uint64_t SLOT  = (1ULL << SHIFT) - 1;
   for (int i = 0; i < 4; ++i) {
     uint64_t mask = SLOT << (i * SHIFT);
     if ((sedges_.sedges & mask) == 0) {
       sedges_.sedges |= (e & SLOT) << (i * SHIFT);
+      return true;
+    }
+  }
+  uint64_t extra = sedges_extra;
+  for (int i = 0; i < 3; ++i) {
+    uint64_t mask = SLOT << (i * SHIFT);
+    if ((extra & mask) == 0) {
+      sedges_extra = extra | ((e & SLOT) << (i * SHIFT));
       return true;
     }
   }
@@ -464,6 +479,7 @@ auto Graph::NodeEntry::delete_edge(Nid self_id, Vid other_id, OverflowPool& pool
   }
 
   sedges_.sedges = 0;
+  sedges_extra   = 0;
   ledge0         = 0;
   ledge1         = 0;
   for (auto edge : keep) {
@@ -479,6 +495,9 @@ bool Graph::NodeEntry::has_edges(const OverflowVec& overflow) const {
   if (sedges_.sedges != 0) {
     return true;
   }
+  if (sedges_extra != 0) {
+    return true;
+  }
   if (ledge0 != 0) {
     return true;
   }
@@ -488,15 +507,15 @@ bool Graph::NodeEntry::has_edges(const OverflowVec& overflow) const {
   return false;
 }
 
-void Graph::NodeEntry::set_subnode(Gid gid, OverflowPool& pool) {
+void Graph::NodeEntry::set_subnode(Nid self_nid, Gid gid, OverflowPool& pool) {
   // Existence inside GraphLibrary must be checked by the caller (NodeEntry has no library pointer).
   if (gid == Gid_invalid) {
     return;
   }
   // Ensure overflow mode so ledge0 is no longer used as an edge spill slot.
   if (!use_overflow) {
-    const Vid self_vid = (static_cast<Vid>(nid) << 2);  // nid stored as numeric id
-    (void)overflow_handling(self_vid, 0, pool);         // 0 => promote only, no edge insert
+    const Vid self_vid = static_cast<Vid>(self_nid & ~static_cast<Nid>(3));
+    (void)overflow_handling(self_vid, 0, pool);  // 0 => promote only, no edge insert
   }
 
   // Store gid in ledge0 as (gid + 1) so ledge0==0 means "no subnode".
@@ -561,21 +580,19 @@ void Graph::NodeEntry::EdgeRange::release_set(ankerl::unordered_dense::set<Nid>*
 
 void Graph::NodeEntry::EdgeRange::populate_set(const Graph::NodeEntry* node, ankerl::unordered_dense::set<Nid>& set,
                                                Nid nid) noexcept {
-  constexpr uint64_t SLOT_MASK  = (1ULL << 14) - 1;  // grab 14 bits
-  constexpr uint64_t SIGN_BIT   = 1ULL << 13;
+  constexpr uint64_t SLOT_MASK  = (1ULL << 16) - 1;  // grab 16 bits
+  constexpr uint64_t SIGN_BIT   = 1ULL << 15;
   constexpr uint64_t DRIVER_BIT = 1ULL << 1;
   constexpr uint64_t PIN_BIT    = 1ULL << 0;
-  constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;  // bits 12–2
+  constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;  // bits 14–2
 
   // our caller passed us vid_self = (numeric_id << 1) | pin_flag
   // strip off the low two bits to get the pure numeric node index:
   uint64_t self_num = static_cast<uint64_t>(nid) >> 2;
 
-  uint64_t packed = node->sedges_.sedges;
-  for (int slot = 0; slot < 4; ++slot) {
-    uint64_t raw = (packed >> (slot * 14)) & SLOT_MASK;
+  auto decode_slot = [&](uint64_t raw) {
     if (raw == 0) {
-      continue;
+      return;
     }
 
     bool neg    = (raw & SIGN_BIT) != 0;
@@ -592,6 +609,15 @@ void Graph::NodeEntry::EdgeRange::populate_set(const Graph::NodeEntry* node, ank
     // repack into a Vid: shift left 2, OR back the driver+pin bits
     Vid v = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin ? PIN_BIT : 0));
     set.insert(v);
+  };
+
+  uint64_t packed = node->sedges_.sedges;
+  for (int slot = 0; slot < 4; ++slot) {
+    decode_slot((packed >> (slot * 16)) & SLOT_MASK);
+  }
+  const uint64_t extra = node->sedges_extra;
+  for (int slot = 0; slot < 3; ++slot) {
+    decode_slot((extra >> (slot * 16)) & SLOT_MASK);
   }
 
   // also remember any “overflow” residues
@@ -619,7 +645,7 @@ bool Graph::is_node_valid(Nid nid) const noexcept {
     return false;
   }
   const Nid actual_id = (nid & ~static_cast<Nid>(3)) >> 2;
-  return actual_id > 0 && actual_id < node_table.size() && node_table[actual_id].get_nid() != 0;
+  return actual_id > 0 && actual_id < node_table.size() && node_table[actual_id].is_alive();
 }
 
 bool Graph::is_pin_valid(Pid pid) const noexcept {
@@ -640,7 +666,7 @@ void Graph::assert_node_exists(const Node_class& node) const noexcept {
   assert(node.get_graph() == this && "node handle belongs to a different graph");
   assert((raw_nid & static_cast<Nid>(1)) == 0 && "node handle is not a node");
   assert(actual_id > 0 && actual_id < node_table.size() && "node handle is invalid for this graph");
-  assert(node_table[actual_id].get_nid() != 0 && "node handle refers to a deleted node");
+  assert(node_table[actual_id].is_alive() && "node handle refers to a deleted node");
 }
 
 void Graph::assert_pin_exists(const Pin_class& pin) const noexcept {
@@ -651,7 +677,7 @@ void Graph::assert_pin_exists(const Pin_class& pin) const noexcept {
     // port_id == 0: node-as-pin — validate as a node
     const Nid actual_id = raw_pid >> 2;
     assert(actual_id > 0 && actual_id < node_table.size() && "pin(0) node handle is invalid for this graph");
-    assert(node_table[actual_id].get_nid() != 0 && "pin(0) refers to a deleted node");
+    assert(node_table[actual_id].is_alive() && "pin(0) refers to a deleted node");
     return;
   }
   const Pid actual_id = raw_pid >> 2;
@@ -674,12 +700,9 @@ void Graph::invalidate_from_library() noexcept {
   owner_lib_ = nullptr;
   node_table.clear();
   pin_table.clear();
-  forward_class_cache_.clear();
-  forward_flat_cache_.clear();
-  forward_hier_cache_.clear();
-  forward_class_cache_valid_ = false;
-  forward_flat_cache_valid_  = false;
-  forward_hier_cache_valid_  = false;
+  forward_pass2_cache_.clear();
+  forward_remaining_in_cache_.clear();
+  forward_caches_valid_ = false;
   if (tree_) {
     tree_->clear();
   }
@@ -696,10 +719,10 @@ void Graph::clear_graph() {
   pin_table.clear();
   input_pins_.clear();
   output_pins_.clear();
-  node_table.emplace_back(0);  // Invalid ID
-  node_table.emplace_back(1);  // Input node (can have many pins to node 1)
-  node_table.emplace_back(2);  // Output node
-  node_table.emplace_back(3);  // Constant (common value/issue to handle for toposort) - Each const value is a pin in node3
+  node_table.emplace_back(false);  // Invalid ID (slot 0 is tombstone)
+  node_table.emplace_back(true);   // Input node (can have many pins to node 1)
+  node_table.emplace_back(true);   // Output node
+  node_table.emplace_back(true);   // Constant (common value/issue to handle for toposort) - Each const value is a pin in node3
   pin_table.emplace_back(0, 0);
   if (!tree_) {
     tree_ = Tree::create();
@@ -729,15 +752,17 @@ void Graph::clear() {
 
   if (node_table.size() < 4) {
     node_table.clear();
-    node_table.emplace_back(0);
-    node_table.emplace_back(1);
-    node_table.emplace_back(2);
-    node_table.emplace_back(3);
+    node_table.emplace_back(false);  // Invalid ID
+    node_table.emplace_back(true);   // Input
+    node_table.emplace_back(true);   // Output
+    node_table.emplace_back(true);   // Const
   } else {
     for (size_t idx = 0; idx < node_table.size(); ++idx) {
       auto& node = node_table[idx];
-      if (idx < 4) {
-        node = NodeEntry(static_cast<Nid>(idx));
+      if (idx == 0) {
+        node = NodeEntry();  // slot 0 stays dead
+      } else if (idx < 4) {
+        node = NodeEntry(true);  // built-in IO nodes are alive
       } else {
         node = NodeEntry();
       }
@@ -771,74 +796,85 @@ void Graph::bind_library(const GraphLibrary* owner, Gid self_gid) noexcept {
 }
 
 void Graph::invalidate_traversal_caches() noexcept {
-  dirty_                     = true;
-  forward_class_cache_valid_ = false;
-  forward_flat_cache_valid_  = false;
-  forward_hier_cache_valid_  = false;
+  dirty_                = true;
+  forward_caches_valid_ = false;
   if (owner_lib_ != nullptr) {
     owner_lib_->note_graph_mutation();
   }
 }
 
-void Graph::rebuild_forward_class_cache() const {
-  constexpr size_t first_user_node_idx = 4;  // 0:invalid, 1:INPUT, 2:OUTPUT, 3:CONST
-  forward_class_cache_.clear();
-  if (node_table.size() <= first_user_node_idx) {
-    forward_class_cache_valid_ = true;
+// Shared forward-traversal constant: where topological iteration begins in
+// node_table. 0:invalid, 1:INPUT, 2:OUTPUT, 3:CONST — CONST is a source so we
+// start scanning at idx=3 and let is_source() decide.
+static constexpr size_t kForwardFirstIdx = 3;
+
+// Source classification used by both the cache builder and the streaming
+// iterator. INPUT (idx=1) and CONST (idx=3) are implicit sources; any live
+// user node whose Type's bit 0 is set (is_loop_last — flop/clocked pin) is an
+// explicit source.
+bool Graph::forward_is_source(size_t idx) const noexcept {
+  if (idx == 1 || idx == 3) {
+    return true;
+  }
+  if (idx < kForwardFirstIdx) {
+    return false;  // OUTPUT (idx=2) is a forward sink.
+  }
+  if (idx >= node_table.size()) {
+    return false;
+  }
+  return node_table[idx].is_loop_last();
+}
+
+void Graph::ensure_forward_caches() const {
+  if (forward_caches_valid_) {
+    return;
+  }
+  const size_t node_count = node_table.size();
+
+  forward_pass2_cache_.clear();
+  forward_remaining_in_cache_.assign(node_count, 0);
+
+  if (node_count <= kForwardFirstIdx) {
+    forward_caches_valid_ = true;
     return;
   }
 
-  const size_t node_count = node_table.size();
-
-  // A forward "source" is a hard start of propagation. INPUT (idx=1) and
-  // CONST (idx=3) are implicit sources; any user node with is_loop_last
-  // (Type bit 0) is an explicit source (flop/register/clocked pin). Sources
-  // are emitted unconditionally and do not propagate on emission — this is
-  // what lets combinational users of a flop's Q pin start without waiting
-  // for the feedback path that drives the flop's D pin.
-  auto is_source = [&](size_t idx) -> bool {
-    if (idx == 1 || idx == 3) {  // INPUT / CONST
-      return true;
-    }
-    if (idx < first_user_node_idx) {
-      return false;  // OUTPUT (idx=2) is a forward sink, not a source.
-    }
-    return node_table[idx].is_loop_last();
-  };
-
-  auto get_sink_idx = [&](Vid sink_vid) -> size_t {
+  // Resolve a sink Vid back to its owning node index.
+  auto sink_idx_of = [&](Vid vid) -> size_t {
     Nid sink_nid;
-    if (sink_vid & static_cast<Vid>(1)) {
-      const Pid sink_pid = (static_cast<Pid>(sink_vid) & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    if (vid & static_cast<Vid>(1)) {
+      const Pid sink_pid = (static_cast<Pid>(vid) & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
       sink_nid           = ref_pin(sink_pid)->get_master_nid();
     } else {
-      sink_nid = static_cast<Nid>(sink_vid);
+      sink_nid = static_cast<Nid>(vid);
     }
-    sink_nid &= ~static_cast<Nid>(3);
+    sink_nid = sink_nid & ~static_cast<Nid>(3);
     return static_cast<size_t>(sink_nid >> 2);
   };
 
-  auto for_each_out_edge = [&](size_t driver_idx, auto&& f) {
+  // Enumerate every downstream sink idx reachable from driver_idx (via node
+  // edges and its pin edges); drop in-edges and out-of-range sinks.
+  auto for_each_out_sink = [&](size_t driver_idx, auto&& f) {
     const Nid driver_nid = static_cast<Nid>(driver_idx) << 2;
     auto      node_edges = node_table[driver_idx].get_edges(driver_nid, overflow_sets_);
     for (auto vid : node_edges) {
       if (vid & static_cast<Vid>(2)) {
-        continue;  // in-edge (other end is a driver); we only want out-edges
+        continue;
       }
-      const size_t sink_idx = get_sink_idx(vid);
-      if (sink_idx >= first_user_node_idx && sink_idx < node_count) {
+      const size_t sink_idx = sink_idx_of(vid);
+      if (sink_idx >= kForwardFirstIdx && sink_idx < node_count) {
         f(sink_idx);
       }
     }
     for (Pid pin_vid = node_table[driver_idx].get_next_pin_id(); pin_vid != 0;) {
       const Pid canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
       auto      pin_edges     = ref_pin(canonical_pin)->get_edges(canonical_pin, overflow_sets_);
-      for (auto vid : pin_edges) {
-        if (vid & static_cast<Vid>(2)) {
+      for (auto edge_vid : pin_edges) {
+        if (edge_vid & static_cast<Vid>(2)) {
           continue;
         }
-        const size_t sink_idx = get_sink_idx(vid);
-        if (sink_idx >= first_user_node_idx && sink_idx < node_count) {
+        const size_t sink_idx = sink_idx_of(edge_vid);
+        if (sink_idx >= kForwardFirstIdx && sink_idx < node_count) {
           f(sink_idx);
         }
       }
@@ -846,162 +882,73 @@ void Graph::rebuild_forward_class_cache() const {
     }
   };
 
-  // Pre-pass: count each non-source user node's pending in-edges, ignoring
-  // edges that originate from a source (sources are already "visited").
-  std::vector<uint32_t> remaining_in(node_count, 0);
-  for (size_t driver_idx = first_user_node_idx; driver_idx < node_count; ++driver_idx) {
-    if (node_table[driver_idx].get_nid() == 0 || is_source(driver_idx)) {
+  // Pre-pass: initial in-edge counts (ignoring source-origin edges).
+  auto& remaining_in = forward_remaining_in_cache_;
+  for (size_t driver_idx = kForwardFirstIdx; driver_idx < node_count; ++driver_idx) {
+    if (!node_table[driver_idx].is_alive() || forward_is_source(driver_idx)) {
       continue;
     }
-    for_each_out_edge(driver_idx, [&](size_t sink_idx) {
-      if (!is_source(sink_idx)) {
+    for_each_out_sink(driver_idx, [&](size_t sink_idx) {
+      if (!forward_is_source(sink_idx)) {
         ++remaining_in[sink_idx];
       }
     });
   }
 
-  std::vector<bool>   emitted(node_count, false);
-  std::vector<size_t> pending;
-  forward_class_cache_.reserve(node_count - first_user_node_idx);
+  // Full Pass 1 + Pass 2 dry run to populate forward_pass2_cache_. Uses a
+  // working copy so `remaining_in` (the cache) keeps its initial values.
+  std::vector<uint32_t> working = remaining_in;
+  std::vector<uint64_t> emitted_bits((node_count + 63) / 64, 0);
+  auto                  mark_emit = [&](size_t idx) { emitted_bits[idx >> 6] |= (1ULL << (idx & 63)); };
+  auto                  is_emit   = [&](size_t idx) { return (emitted_bits[idx >> 6] >> (idx & 63)) & 1ULL; };
 
-  auto emit = [&](size_t idx) {
-    emitted[idx] = true;
-    forward_class_cache_.emplace_back(const_cast<Graph*>(this), static_cast<Nid>(idx) << 2);
-  };
-
-  // On emission, decrement downstream sinks. Sources do not propagate. A
-  // sink whose counter hits zero at or before the current cursor is queued
-  // for Pass 2; sinks ahead of the cursor are reached naturally by Pass 1.
   auto propagate = [&](size_t driver_idx, size_t cursor) {
-    if (is_source(driver_idx)) {
+    if (forward_is_source(driver_idx)) {
       return;
     }
-    for_each_out_edge(driver_idx, [&](size_t sink_idx) {
-      if (emitted[sink_idx] || is_source(sink_idx)) {
+    for_each_out_sink(driver_idx, [&](size_t sink_idx) {
+      if (is_emit(sink_idx) || forward_is_source(sink_idx)) {
         return;
       }
-      if (remaining_in[sink_idx] == 0) {
+      if (working[sink_idx] == 0) {
         return;
       }
-      --remaining_in[sink_idx];
-      if (remaining_in[sink_idx] == 0 && sink_idx <= cursor) {
-        pending.push_back(sink_idx);
+      --working[sink_idx];
+      if (working[sink_idx] == 0 && sink_idx <= cursor) {
+        forward_pass2_cache_.push_back(static_cast<Nid>(sink_idx) << 2);
       }
     });
   };
 
-  // Pass 1 — storage-order scan. EDA graphs are typically constructed in
-  // near-topological order, so most user nodes emit here in a single pass.
-  for (size_t idx = first_user_node_idx; idx < node_count; ++idx) {
-    if (node_table[idx].get_nid() == 0 || emitted[idx]) {
+  for (size_t idx = kForwardFirstIdx; idx < node_count; ++idx) {
+    if (!node_table[idx].is_alive() || is_emit(idx)) {
       continue;
     }
-    if (is_source(idx) || remaining_in[idx] == 0) {
-      emit(idx);
+    if (forward_is_source(idx) || working[idx] == 0) {
+      mark_emit(idx);
       propagate(idx, idx);
     }
   }
 
-  // Pass 2 — drain the pending FIFO. Insertion order is deterministic for a
-  // given graph state, so no explicit sort is needed.
-  for (size_t head = 0; head < pending.size(); ++head) {
-    const size_t idx = pending[head];
-    if (emitted[idx]) {
+  for (size_t head = 0; head < forward_pass2_cache_.size(); ++head) {
+    const size_t idx = static_cast<size_t>(forward_pass2_cache_[head] >> 2);
+    if (is_emit(idx)) {
       continue;
     }
-    emit(idx);
+    mark_emit(idx);
     propagate(idx, node_count);
   }
 
-  // Tail — any unemitted node is part of a (rare) cycle. Append by ID.
-  for (size_t idx = first_user_node_idx; idx < node_count; ++idx) {
-    if (node_table[idx].get_nid() != 0 && !emitted[idx]) {
-      emit(idx);
-    }
-  }
-
-  forward_class_cache_valid_ = true;
-}
-
-void Graph::forward_flat_impl(Gid top_graph, ankerl::unordered_dense::set<Gid>& active_graphs, std::vector<Node>& out) const {
-  std::vector<Gid> subgraphs;
-
-  for (const auto& node : forward_class()) {
-    const Nid   node_nid = node.get_debug_nid();
-    const auto& node_ref = node_table[static_cast<size_t>(node_nid >> 2)];
-
-    out.emplace_back(const_cast<Graph*>(this), top_graph, node_nid);
-
-    if (node_ref.has_subnode() && owner_lib_ != nullptr) {
-      const Gid other_graph_id = node_ref.get_subnode();
-      if (owner_lib_->has_graph(other_graph_id) && active_graphs.find(other_graph_id) == active_graphs.end()) {
-        subgraphs.push_back(other_graph_id);
-        active_graphs.insert(other_graph_id);
-      }
-    }
-  }
-
-  for (const auto subgraph_id : subgraphs) {
-    owner_lib_->get_graph(subgraph_id)->forward_flat_impl(top_graph, active_graphs, out);
-  }
-}
-
-void Graph::forward_hier_impl(Gid root_gid, Tree_pos hier_pos, ankerl::unordered_dense::set<Gid>& active_graphs,
-                              std::vector<Node>& out) const {
-  for (const auto& node : forward_class()) {
-    const Nid   node_nid = node.get_debug_nid();
-    const auto& node_ref = node_table[static_cast<size_t>(node_nid >> 2)];
-
-    out.emplace_back(const_cast<Graph*>(this), root_gid, hier_pos, node_nid);
-
-    if (node_ref.has_subnode() && owner_lib_ != nullptr) {
-      const Gid other_graph_id = node_ref.get_subnode();
-      if (owner_lib_->has_graph(other_graph_id) && active_graphs.find(other_graph_id) == active_graphs.end()) {
-        // Stable per-instance Tree_pos from this graph's structure tree.
-        auto           it             = subnode_tree_pos_.find(node_nid);
-        const Tree_pos child_hier_pos = (it != subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
-        active_graphs.insert(other_graph_id);
-        owner_lib_->get_graph(other_graph_id)->forward_hier_impl(root_gid, child_hier_pos, active_graphs, out);
-        active_graphs.erase(other_graph_id);
-      }
-    }
-  }
-}
-
-void Graph::rebuild_forward_flat_cache() const {
-  forward_flat_cache_.clear();
-
-  const Gid                         top_graph = self_gid_;
-  ankerl::unordered_dense::set<Gid> active_graphs;
-  if (self_gid_ != Gid_invalid) {
-    active_graphs.insert(self_gid_);
-  }
-  forward_flat_impl(top_graph, active_graphs, forward_flat_cache_);
-
-  forward_flat_cache_epoch_ = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
-  forward_flat_cache_valid_ = true;
-}
-
-void Graph::rebuild_forward_hier_cache() const {
-  forward_hier_cache_.clear();
-
-  const Gid root_gid = self_gid_;
-  ankerl::unordered_dense::set<Gid> active_graphs;
-  if (root_gid != Gid_invalid) {
-    active_graphs.insert(root_gid);
-  }
-
-  forward_hier_impl(root_gid, static_cast<Tree_pos>(ROOT), active_graphs, forward_hier_cache_);
-
-  forward_hier_cache_epoch_ = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
-  forward_hier_cache_valid_ = true;
+  // Tail (cycle survivors) is not cached — the streaming iterator re-derives
+  // it by scanning for alive-but-unemitted entries after Pass 2 completes.
+  forward_caches_valid_ = true;
 }
 
 auto Graph::create_node() -> Node {
   assert_accessible();
   Nid id = node_table.size();
   assert(id);
-  node_table.emplace_back(id);
+  node_table.emplace_back(true);
   invalidate_traversal_caches();
   Nid raw_nid = id << 2 | 0;
   return Node_class(this, raw_nid);
@@ -1228,12 +1175,12 @@ void Graph::delete_pin(Pid pin_pid) {
         if (other_pin->use_overflow) {
           (void)overflow_sets_[other_pin->get_overflow_idx()].erase(reverse_edge);
         } else {
-          constexpr int      SHIFT      = 14;
+          constexpr int      SHIFT      = 16;
           constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
-          constexpr uint64_t SIGN_BIT   = 1ULL << 13;
+          constexpr uint64_t SIGN_BIT   = 1ULL << 15;
           constexpr uint64_t DRIVER_BIT = 1ULL << 1;
           constexpr uint64_t PIN_BIT    = 1ULL << 0;
-          constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;
+          constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;
           const uint64_t     self_num   = static_cast<uint64_t>(other_vid) >> 2;
           for (int i = 0; i < 4; ++i) {
             const uint64_t raw = (other_pin->sedges_.sedges >> (i * SHIFT)) & SLOT;
@@ -1266,12 +1213,12 @@ void Graph::delete_pin(Pid pin_pid) {
         if (other_node->use_overflow) {
           (void)overflow_sets_[other_node->get_overflow_idx()].erase(reverse_edge);
         } else {
-          constexpr int      SHIFT      = 14;
+          constexpr int      SHIFT      = 16;
           constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
-          constexpr uint64_t SIGN_BIT   = 1ULL << 13;
+          constexpr uint64_t SIGN_BIT   = 1ULL << 15;
           constexpr uint64_t DRIVER_BIT = 1ULL << 1;
           constexpr uint64_t PIN_BIT    = 1ULL << 0;
-          constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;
+          constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;
           const uint64_t     self_num   = static_cast<uint64_t>(other_vid) >> 2;
           for (int i = 0; i < 4; ++i) {
             const uint64_t raw = (other_node->sedges_.sedges >> (i * SHIFT)) & SLOT;
@@ -1308,12 +1255,12 @@ void Graph::delete_pin(Pid pin_pid) {
         if (other_pin->use_overflow) {
           (void)overflow_sets_[other_pin->get_overflow_idx()].erase(reverse_edge);
         } else {
-          constexpr int      SHIFT      = 14;
+          constexpr int      SHIFT      = 16;
           constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
-          constexpr uint64_t SIGN_BIT   = 1ULL << 13;
+          constexpr uint64_t SIGN_BIT   = 1ULL << 15;
           constexpr uint64_t DRIVER_BIT = 1ULL << 1;
           constexpr uint64_t PIN_BIT    = 1ULL << 0;
-          constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;
+          constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;
           const uint64_t     self_num   = static_cast<uint64_t>(other_vid) >> 2;
           for (int i = 0; i < 4; ++i) {
             const uint64_t raw = (other_pin->sedges_.sedges >> (i * SHIFT)) & SLOT;
@@ -1346,12 +1293,12 @@ void Graph::delete_pin(Pid pin_pid) {
         if (other_node->use_overflow) {
           (void)overflow_sets_[other_node->get_overflow_idx()].erase(reverse_edge);
         } else {
-          constexpr int      SHIFT      = 14;
+          constexpr int      SHIFT      = 16;
           constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
-          constexpr uint64_t SIGN_BIT   = 1ULL << 13;
+          constexpr uint64_t SIGN_BIT   = 1ULL << 15;
           constexpr uint64_t DRIVER_BIT = 1ULL << 1;
           constexpr uint64_t PIN_BIT    = 1ULL << 0;
-          constexpr uint64_t MAG_MASK   = (1ULL << 11) - 1;
+          constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;
           const uint64_t     self_num   = static_cast<uint64_t>(other_vid) >> 2;
           for (int i = 0; i < 4; ++i) {
             const uint64_t raw = (other_node->sedges_.sedges >> (i * SHIFT)) & SLOT;
@@ -1604,7 +1551,7 @@ void Graph::set_subnode(Nid nid, Gid gid) {
 
   nid &= ~static_cast<Nid>(3);
   auto pool = get_overflow_pool();
-  ref_node(nid)->set_subnode(gid, pool);
+  ref_node(nid)->set_subnode(nid, gid, pool);
 
   // Persistent hierarchy: add a child to this graph's tree representing
   // this subnode instance. Only add if not already tracked (re-calling
@@ -1665,12 +1612,9 @@ void Graph::del_edge(Pin_class driver_pin, Pin_class sink_pin) {
 
 FastClassRange Graph::fast_class() const noexcept { return FastClassRange(const_cast<Graph*>(this)); }
 
-auto Graph::forward_class() const -> std::span<const Node> {
+ForwardClassRange Graph::forward_class() const noexcept {
   assert_accessible();
-  if (!forward_class_cache_valid_) {
-    rebuild_forward_class_cache();
-  }
-  return std::span<const Node>(forward_class_cache_.data(), forward_class_cache_.size());
+  return ForwardClassRange(const_cast<Graph*>(this));
 }
 
 FastFlatRange Graph::fast_flat() const noexcept { return FastFlatRange(const_cast<Graph*>(this)); }
@@ -1684,7 +1628,7 @@ FastClassIterator::FastClassIterator(Graph* graph, size_t idx, size_t end) noexc
 }
 
 void FastClassIterator::skip_tombstones() noexcept {
-  while (idx_ < end_ && graph_->node_table[idx_].get_nid() == 0) {
+  while (idx_ < end_ && !graph_->node_table[idx_].is_alive()) {
     ++idx_;
   }
 }
@@ -1701,7 +1645,7 @@ FastClassIterator FastClassRange::begin() const noexcept {
   if (graph_ == nullptr) {
     return FastClassIterator{};
   }
-  return FastClassIterator(graph_, 1, graph_->node_table.size());
+  return FastClassIterator(graph_, 3, graph_->node_table.size());
 }
 
 FastClassIterator FastClassRange::end() const noexcept {
@@ -1723,7 +1667,7 @@ FastFlatIterator::FastFlatIterator(Graph* root_graph) {
   if (top_graph_ != Gid_invalid) {
     active_graphs_.insert(top_graph_);
   }
-  stack_.push_back(Frame{root_graph, 1, root_graph->node_table.size()});
+  stack_.push_back(Frame{root_graph, 3, root_graph->node_table.size()});
   advance();
 }
 
@@ -1731,28 +1675,13 @@ void FastFlatIterator::advance() {
   while (!stack_.empty()) {
     Frame& frame = stack_.back();
     if (frame.node_idx >= frame.end) {
-      const Gid popped = frame.graph->self_gid_;
       stack_.pop_back();
-      if (popped != Gid_invalid) {
-        active_graphs_.erase(popped);
-      }
       continue;
     }
     const auto& entry = frame.graph->node_table[frame.node_idx];
-    if (entry.get_nid() == 0) {
+    if (!entry.is_alive()) {
       ++frame.node_idx;
       continue;
-    }
-    if (entry.has_subnode() && frame.graph->owner_lib_ != nullptr) {
-      const Gid   sub = entry.get_subnode();
-      const auto* lib = frame.graph->owner_lib_;
-      if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
-        Graph* child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
-        ++frame.node_idx;  // parent resumes past this subnode on pop
-        active_graphs_.insert(sub);
-        stack_.push_back(Frame{child_graph, 1, child_graph->node_table.size()});
-        continue;
-      }
     }
     return;  // positioned at an emittable node
   }
@@ -1765,7 +1694,21 @@ auto FastFlatIterator::operator*() const -> Node_class {
 }
 
 auto FastFlatIterator::operator++() -> FastFlatIterator& {
-  ++stack_.back().node_idx;
+  Frame&      frame = stack_.back();
+  const auto& entry = frame.graph->node_table[frame.node_idx];
+  if (entry.has_subnode() && frame.graph->owner_lib_ != nullptr) {
+    const Gid   sub = entry.get_subnode();
+    const auto* lib = frame.graph->owner_lib_;
+    if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
+      Graph* child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
+      ++frame.node_idx;  // parent resumes past this subnode on pop
+      active_graphs_.insert(sub);
+      stack_.push_back(Frame{child_graph, 3, child_graph->node_table.size()});
+      advance();
+      return *this;
+    }
+  }
+  ++frame.node_idx;
   advance();
   return *this;
 }
@@ -1786,7 +1729,7 @@ FastHierIterator::FastHierIterator(Graph* root_graph) {
   }
   // Root frame: top-level nodes share hier_pos = ROOT (the root graph's own
   // structure-tree root).
-  stack_.push_back(Frame{root_graph, 1, root_graph->node_table.size(), static_cast<Tree_pos>(ROOT)});
+  stack_.push_back(Frame{root_graph, 3, root_graph->node_table.size(), static_cast<Tree_pos>(ROOT)});
   advance();
 }
 
@@ -1802,24 +1745,9 @@ void FastHierIterator::advance() {
       continue;
     }
     const auto& entry = frame.graph->node_table[frame.node_idx];
-    if (entry.get_nid() == 0) {
+    if (!entry.is_alive()) {
       ++frame.node_idx;
       continue;
-    }
-    if (entry.has_subnode() && frame.graph->owner_lib_ != nullptr) {
-      const Gid   sub = entry.get_subnode();
-      const auto* lib = frame.graph->owner_lib_;
-      if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
-        Graph*    child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
-        const Nid subnode_nid = static_cast<Nid>(frame.node_idx) << 2;
-        // Stable Tree_pos from the structure tree that set_subnode built.
-        auto           it        = frame.graph->subnode_tree_pos_.find(subnode_nid);
-        const Tree_pos child_pos = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
-        ++frame.node_idx;
-        active_graphs_.insert(sub);
-        stack_.push_back(Frame{child_graph, 1, child_graph->node_table.size(), child_pos});
-        continue;
-      }
     }
     return;
   }
@@ -1832,30 +1760,323 @@ auto FastHierIterator::operator*() const -> Node_class {
 }
 
 auto FastHierIterator::operator++() -> FastHierIterator& {
-  ++stack_.back().node_idx;
+  Frame&      frame = stack_.back();
+  const auto& entry = frame.graph->node_table[frame.node_idx];
+  if (entry.has_subnode() && frame.graph->owner_lib_ != nullptr) {
+    const Gid   sub = entry.get_subnode();
+    const auto* lib = frame.graph->owner_lib_;
+    if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
+      Graph*    child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
+      const Nid subnode_nid = static_cast<Nid>(frame.node_idx) << 2;
+      // Stable Tree_pos from the structure tree that set_subnode built.
+      auto           it        = frame.graph->subnode_tree_pos_.find(subnode_nid);
+      const Tree_pos child_pos = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
+      ++frame.node_idx;
+      active_graphs_.insert(sub);
+      stack_.push_back(Frame{child_graph, 3, child_graph->node_table.size(), child_pos});
+      advance();
+      return *this;
+    }
+  }
+  ++frame.node_idx;
   advance();
   return *this;
 }
 
 FastHierIterator FastHierRange::begin() const { return FastHierIterator(graph_); }
 
-auto Graph::forward_flat() const -> std::span<const Node> {
+ForwardFlatRange Graph::forward_flat() const noexcept {
   assert_accessible();
-  const uint64_t expected_epoch = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
-  if (!forward_flat_cache_valid_ || (owner_lib_ != nullptr && forward_flat_cache_epoch_ != expected_epoch)) {
-    rebuild_forward_flat_cache();
-  }
-  return std::span<const Node>(forward_flat_cache_.data(), forward_flat_cache_.size());
+  return ForwardFlatRange(const_cast<Graph*>(this));
 }
 
-auto Graph::forward_hier() const -> std::span<const Node> {
+ForwardHierRange Graph::forward_hier() const noexcept {
   assert_accessible();
-  const uint64_t expected_epoch = owner_lib_ != nullptr ? owner_lib_->mutation_epoch() : 0;
-  if (!forward_hier_cache_valid_ || (owner_lib_ != nullptr && forward_hier_cache_epoch_ != expected_epoch)) {
-    rebuild_forward_hier_cache();
-  }
-  return std::span<const Node>(forward_hier_cache_.data(), forward_hier_cache_.size());
+  return ForwardHierRange(const_cast<Graph*>(this));
 }
+
+// --- ForwardClassIterator ---
+//
+// The iterator replays the topological emission order using the cached Pass-2
+// Nid list and initial in-edge counts. Pass 1 scans storage order with a
+// working copy of in-edge counts (so multiple iterators can coexist without
+// clobbering the cache). Pass 2 reads the cache directly. Tail re-scans
+// storage order for cycle survivors.
+
+ForwardClassIterator::ForwardClassIterator(Graph* graph) : graph_(graph) {
+  if (graph_ == nullptr) {
+    phase_ = Phase::End;
+    return;
+  }
+  graph_->ensure_forward_caches();
+  node_count_ = graph_->node_table.size();
+  if (node_count_ <= kForwardFirstIdx) {
+    phase_ = Phase::End;
+    return;
+  }
+  working_remaining_in_ = graph_->forward_remaining_in_cache_;
+  emitted_bits_.assign((node_count_ + 63) / 64, 0);
+  phase_ = Phase::Pass1;
+  idx_   = kForwardFirstIdx;
+  advance();
+}
+
+ForwardClassIterator::ForwardClassIterator(ForwardClassIterator&& o) noexcept = default;
+ForwardClassIterator& ForwardClassIterator::operator=(ForwardClassIterator&& o) noexcept = default;
+
+bool ForwardClassIterator::is_source(size_t idx) const noexcept { return graph_->forward_is_source(idx); }
+
+bool ForwardClassIterator::is_emitted(size_t idx) const noexcept {
+  return (emitted_bits_[idx >> 6] >> (idx & 63)) & 1ULL;
+}
+
+void ForwardClassIterator::mark_emitted(size_t idx) noexcept { emitted_bits_[idx >> 6] |= (1ULL << (idx & 63)); }
+
+// Decrement downstream sinks for a Pass-1 emission (cached Pass-2 replay does
+// not decrement — the cache already captures the full pending sequence).
+void ForwardClassIterator::propagate(size_t driver_idx, size_t /*cursor*/) {
+  if (is_source(driver_idx)) {
+    return;
+  }
+  const Nid driver_nid = static_cast<Nid>(driver_idx) << 2;
+  auto&     node_table = graph_->node_table;
+  auto&     overflow   = graph_->overflow_sets_;
+
+  auto sink_idx_of = [&](Vid vid) -> size_t {
+    Nid sink_nid;
+    if (vid & static_cast<Vid>(1)) {
+      const Pid sink_pid = (static_cast<Pid>(vid) & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+      sink_nid           = graph_->ref_pin(sink_pid)->get_master_nid();
+    } else {
+      sink_nid = static_cast<Nid>(vid);
+    }
+    sink_nid = sink_nid & ~static_cast<Nid>(3);
+    return static_cast<size_t>(sink_nid >> 2);
+  };
+
+  auto try_dec = [&](size_t sink_idx) {
+    if (sink_idx < kForwardFirstIdx || sink_idx >= node_count_) {
+      return;
+    }
+    if (is_emitted(sink_idx) || is_source(sink_idx)) {
+      return;
+    }
+    if (working_remaining_in_[sink_idx] == 0) {
+      return;
+    }
+    --working_remaining_in_[sink_idx];
+  };
+
+  auto node_edges = node_table[driver_idx].get_edges(driver_nid, overflow);
+  for (auto vid : node_edges) {
+    if (vid & static_cast<Vid>(2)) {
+      continue;
+    }
+    try_dec(sink_idx_of(vid));
+  }
+  for (Pid pin_vid = node_table[driver_idx].get_next_pin_id(); pin_vid != 0;) {
+    const Pid canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    auto      pin_edges     = graph_->ref_pin(canonical_pin)->get_edges(canonical_pin, overflow);
+    for (auto edge_vid : pin_edges) {
+      if (edge_vid & static_cast<Vid>(2)) {
+        continue;
+      }
+      try_dec(sink_idx_of(edge_vid));
+    }
+    pin_vid = graph_->ref_pin(canonical_pin)->get_next_pin_id();
+  }
+}
+
+void ForwardClassIterator::advance() {
+  // Position at the next emittable node; emit it (mark + propagate if Pass1);
+  // leaves current_idx_ set and phase_ == End when exhausted.
+  while (true) {
+    if (phase_ == Phase::Pass1) {
+      while (idx_ < node_count_) {
+        const size_t i = idx_++;
+        if (!graph_->node_table[i].is_alive() || is_emitted(i)) {
+          continue;
+        }
+        if (is_source(i) || working_remaining_in_[i] == 0) {
+          mark_emitted(i);
+          propagate(i, i);
+          current_idx_ = i;
+          return;
+        }
+      }
+      phase_      = Phase::Pass2;
+      pass2_head_ = 0;
+      continue;
+    }
+    if (phase_ == Phase::Pass2) {
+      const auto& cache = graph_->forward_pass2_cache_;
+      while (pass2_head_ < cache.size()) {
+        const size_t i = static_cast<size_t>(cache[pass2_head_++] >> 2);
+        if (i >= node_count_ || is_emitted(i) || !graph_->node_table[i].is_alive()) {
+          continue;
+        }
+        mark_emitted(i);
+        current_idx_ = i;
+        return;
+      }
+      phase_ = Phase::Tail;
+      idx_   = kForwardFirstIdx;
+      continue;
+    }
+    if (phase_ == Phase::Tail) {
+      while (idx_ < node_count_) {
+        const size_t i = idx_++;
+        if (!graph_->node_table[i].is_alive() || is_emitted(i)) {
+          continue;
+        }
+        mark_emitted(i);
+        current_idx_ = i;
+        return;
+      }
+      phase_       = Phase::End;
+      current_idx_ = 0;
+      return;
+    }
+    return;  // End
+  }
+}
+
+Node_class ForwardClassIterator::operator*() const {
+  return Node_class(graph_, static_cast<Nid>(current_idx_) << 2);
+}
+
+ForwardClassIterator& ForwardClassIterator::operator++() {
+  advance();
+  return *this;
+}
+
+ForwardClassIterator ForwardClassRange::begin() const { return ForwardClassIterator(graph_); }
+
+size_t ForwardClassRange::size() const {
+  size_t n = 0;
+  for (auto it = begin(); it != end(); ++it) {
+    ++n;
+  }
+  return n;
+}
+
+Node_class ForwardClassRange::front() const {
+  auto it = begin();
+  assert(it != end() && "ForwardClassRange::front() on empty range");
+  return *it;
+}
+
+bool ForwardClassRange::empty() const { return begin() == end(); }
+
+// --- ForwardFlatIterator ---
+
+ForwardFlatIterator::ForwardFlatIterator(Graph* root_graph) {
+  if (root_graph == nullptr) {
+    return;
+  }
+  root_graph->assert_accessible();
+  top_graph_ = root_graph->self_gid_;
+  if (top_graph_ != Gid_invalid) {
+    active_graphs_.insert(top_graph_);
+  }
+  stack_.push_back(Frame{root_graph, ForwardClassIterator(root_graph)});
+  advance();
+}
+
+void ForwardFlatIterator::advance() {
+  while (!stack_.empty()) {
+    auto& frame = stack_.back();
+    if (frame.it == ForwardClassIterator{}) {
+      stack_.pop_back();
+      continue;
+    }
+    return;  // positioned
+  }
+}
+
+Node_class ForwardFlatIterator::operator*() const {
+  const auto& frame   = stack_.back();
+  const Nid   raw_nid = (*frame.it).get_debug_nid();
+  return Node_class(frame.graph, top_graph_, raw_nid);
+}
+
+ForwardFlatIterator& ForwardFlatIterator::operator++() {
+  auto&       frame      = stack_.back();
+  const Nid   cur_nid    = (*frame.it).get_debug_nid();
+  const auto& entry      = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
+  const auto* lib        = frame.graph->owner_lib_;
+  ++frame.it;
+  if (entry.has_subnode() && lib != nullptr) {
+    const Gid sub = entry.get_subnode();
+    if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
+      Graph* child = const_cast<Graph*>(lib->get_graph(sub).get());
+      active_graphs_.insert(sub);
+      stack_.push_back(Frame{child, ForwardClassIterator(child)});
+    }
+  }
+  advance();
+  return *this;
+}
+
+ForwardFlatIterator ForwardFlatRange::begin() const { return ForwardFlatIterator(graph_); }
+
+// --- ForwardHierIterator ---
+
+ForwardHierIterator::ForwardHierIterator(Graph* root_graph) {
+  if (root_graph == nullptr) {
+    return;
+  }
+  root_graph->assert_accessible();
+  root_gid_ = root_graph->self_gid_;
+  if (root_gid_ != Gid_invalid) {
+    active_graphs_.insert(root_gid_);
+  }
+  stack_.push_back(Frame{root_graph, ForwardClassIterator(root_graph), static_cast<Tree_pos>(ROOT)});
+  advance();
+}
+
+void ForwardHierIterator::advance() {
+  while (!stack_.empty()) {
+    auto& frame = stack_.back();
+    if (frame.it == ForwardClassIterator{}) {
+      const Gid popped = frame.graph->self_gid_;
+      stack_.pop_back();
+      if (popped != Gid_invalid) {
+        active_graphs_.erase(popped);
+      }
+      continue;
+    }
+    return;
+  }
+}
+
+Node_class ForwardHierIterator::operator*() const {
+  const auto& frame   = stack_.back();
+  const Nid   raw_nid = (*frame.it).get_debug_nid();
+  return Node_class(frame.graph, root_gid_, frame.hier_pos, raw_nid);
+}
+
+ForwardHierIterator& ForwardHierIterator::operator++() {
+  auto&     frame     = stack_.back();
+  const Nid cur_nid   = (*frame.it).get_debug_nid();
+  const auto& entry   = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
+  const auto* lib     = frame.graph->owner_lib_;
+  ++frame.it;
+  if (entry.has_subnode() && lib != nullptr) {
+    const Gid sub = entry.get_subnode();
+    if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
+      Graph*         child     = const_cast<Graph*>(lib->get_graph(sub).get());
+      auto           it        = frame.graph->subnode_tree_pos_.find(cur_nid);
+      const Tree_pos child_pos = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
+      active_graphs_.insert(sub);
+      stack_.push_back(Frame{child, ForwardClassIterator(child), child_pos});
+    }
+  }
+  advance();
+  return *this;
+}
+
+ForwardHierIterator ForwardHierRange::begin() const { return ForwardHierIterator(graph_); }
 
 void Graph::del_edge_int(Vid driver_id, Vid sink_id) {
   auto pool = get_overflow_pool();
@@ -2176,7 +2397,7 @@ void Graph::delete_node(Nid nid) {
   nid &= ~static_cast<Nid>(3);
   const Nid actual_id = nid >> 2;
   assert(actual_id >= 4 && "delete_node: built-in graph IO nodes cannot be deleted through node handles");
-  assert(actual_id < node_table.size() && node_table[actual_id].get_nid() != 0 && "delete_node: node handle is invalid");
+  assert(actual_id < node_table.size() && node_table[actual_id].is_alive() && "delete_node: node handle is invalid");
 
   auto* node = ref_node(nid);
 
@@ -2255,7 +2476,7 @@ void Graph::add_edge_int(Vid self_id, Vid other_id) {
   if (!self_type) {
     auto* node = ref_node(self_id);
     if (!node->add_edge(self_id, other_id, pool)) {
-      std::cerr << "Error: NodeEntry " << node->get_nid() << " overflowed edges while adding edge from " << self_id << " to "
+      std::cerr << "Error: NodeEntry " << (self_id >> 2) << " overflowed edges while adding edge from " << self_id << " to "
                 << other_id << "\n";
     }
   } else {
@@ -2361,7 +2582,7 @@ std::string Graph::print() const {
 // --------------------------------------------------------------------------
 
 static constexpr uint32_t GRAPH_BODY_MAGIC   = 0x48484742;  // "HHGB"
-static constexpr uint32_t GRAPH_BODY_VERSION = 2;
+static constexpr uint32_t GRAPH_BODY_VERSION = 3;
 static constexpr uint32_t ENDIAN_CHECK       = 0x01020304;
 
 void Graph::save_body(const std::string& dir_path) const {
@@ -2424,7 +2645,7 @@ void Graph::load_body(const std::string& dir_path) {
     ifs.read(reinterpret_cast<char*>(&version), sizeof(version));
     ifs.read(reinterpret_cast<char*>(&endian), sizeof(endian));
     assert(magic == GRAPH_BODY_MAGIC && "load_body: bad magic");
-    assert((version == 1 || version == GRAPH_BODY_VERSION) && "load_body: unsupported version");
+    assert(version == GRAPH_BODY_VERSION && "load_body: unsupported version");
     assert(endian == ENDIAN_CHECK && "load_body: endian mismatch — file from different platform");
 
     uint64_t node_count = 0, pin_count = 0, overflow_count = 0;
@@ -2443,11 +2664,7 @@ void Graph::load_body(const std::string& dir_path) {
     overflow_sets_.resize(overflow_count);
     overflow_free_.clear();
 
-    if (version >= 2) {
-      load_attr_stores(ifs);
-    } else {
-      discard_attr_stores();
-    }
+    load_attr_stores(ifs);
   }
 
   // --- overflow_<idx>.bin ---
@@ -2476,7 +2693,7 @@ void Graph::load_body(const std::string& dir_path) {
   (void)tree_->add_root();
   subnode_tree_pos_.clear();
   for (size_t i = 1; i < node_table.size(); ++i) {
-    if (node_table[i].get_nid() == 0 || !node_table[i].has_subnode()) {
+    if (!node_table[i].is_alive() || !node_table[i].has_subnode()) {
       continue;
     }
     const Nid      subnode_nid = static_cast<Nid>(i) << 2;

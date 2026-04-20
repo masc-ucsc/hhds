@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -44,6 +45,43 @@ struct delay_t {
 inline constexpr delay_t delay{};
 
 }  // namespace contract_attrs
+
+namespace {
+
+std::vector<hhds::Nid> class_order(auto&& range) {
+  std::vector<hhds::Nid> order;
+  for (auto node : range) {
+    order.push_back(node.get_debug_nid());
+  }
+  return order;
+}
+
+std::string flat_order_key(const hhds::Node& node) {
+  return std::to_string(node.get_current_gid()) + ":" + std::to_string(node.get_debug_nid());
+}
+
+std::vector<std::string> flat_order(auto&& range) {
+  std::vector<std::string> order;
+  for (auto node : range) {
+    order.push_back(flat_order_key(node));
+  }
+  return order;
+}
+
+std::string hier_order_key(const hhds::Node& node) {
+  return std::to_string(node.get_current_gid()) + ":" + std::to_string(node.get_hier_pos()) + ":"
+         + std::to_string(node.get_debug_nid());
+}
+
+std::vector<std::string> hier_order(auto&& range) {
+  std::vector<std::string> order;
+  for (auto node : range) {
+    order.push_back(hier_order_key(node));
+  }
+  return order;
+}
+
+}  // namespace
 
 // Sample Example 1: graph basics, flat attributes, forward traversal.
 TEST(GraphApiContract, BasicsFlatAttributesForwardTraversal) {
@@ -111,7 +149,7 @@ TEST(GraphApiContract, FastTraversalVariants) {
       ++fast_flat_leaf_visits;
     }
   }
-  EXPECT_EQ(fast_flat_leaf_visits, 2u);
+  EXPECT_EQ(fast_flat_leaf_visits, 1u);
 
   size_t fast_hier_leaf_visits = 0;
   for (auto node : top->fast_hier()) {
@@ -121,6 +159,77 @@ TEST(GraphApiContract, FastTraversalVariants) {
     }
   }
   EXPECT_EQ(fast_hier_leaf_visits, 2u);
+}
+
+TEST(GraphApiContract, DefaultTraversalsStartAtConstAndSkipIo) {
+  hhds::GraphLibrary glib;
+
+  auto gio = glib.create_io("default_order");
+  gio->add_input("in", 0);
+  gio->add_output("out", 0);
+  auto g = gio->create_graph();
+
+  auto n1 = g->create_node();
+  auto n2 = g->create_node();
+  g->get_input_pin("in").connect_sink(n1.create_sink_pin());
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+  n2.create_driver_pin().connect_sink(g->get_output_pin("out"));
+
+  const auto forward = class_order(g->forward_class());
+  const auto fast    = class_order(g->fast_class());
+
+  ASSERT_GE(forward.size(), 1u);
+  ASSERT_GE(fast.size(), 1u);
+  EXPECT_EQ(forward.front(), hhds::Graph::CONST_NODE);
+  EXPECT_EQ(fast.front(), hhds::Graph::CONST_NODE);
+  EXPECT_EQ(forward, fast);
+
+  for (auto nid : forward) {
+    EXPECT_NE(nid, hhds::Graph::INPUT_NODE);
+    EXPECT_NE(nid, hhds::Graph::OUTPUT_NODE);
+  }
+}
+
+TEST(GraphApiContract, FastHierTouchesForwardHierNodesInForwardOrder) {
+  hhds::GraphLibrary glib;
+
+  auto leaf_io = glib.create_io("leaf_order");
+  auto leaf    = leaf_io->create_graph();
+  auto leaf_n1 = leaf->create_node();
+  auto leaf_n2 = leaf->create_node();
+  leaf_n1.create_driver_pin().connect_sink(leaf_n2.create_sink_pin());
+
+  auto top_io = glib.create_io("top_order");
+  auto top    = top_io->create_graph();
+  auto inst1  = top->create_node();
+  auto inst2  = top->create_node();
+  inst1.set_subnode(leaf_io);
+  inst2.set_subnode(leaf_io);
+
+  EXPECT_EQ(hier_order(top->forward_hier()), hier_order(top->fast_hier()));
+}
+
+TEST(GraphApiContract, FastFlatTouchesForwardFlatNodes) {
+  hhds::GraphLibrary glib;
+
+  auto leaf_io = glib.create_io("leaf_flat_order");
+  auto leaf    = leaf_io->create_graph();
+  auto leaf_n1 = leaf->create_node();
+  auto leaf_n2 = leaf->create_node();
+  leaf_n1.create_driver_pin().connect_sink(leaf_n2.create_sink_pin());
+
+  auto top_io = glib.create_io("top_flat_order");
+  auto top    = top_io->create_graph();
+  auto inst1  = top->create_node();
+  auto inst2  = top->create_node();
+  inst1.set_subnode(leaf_io);
+  inst2.set_subnode(leaf_io);
+
+  auto forward = flat_order(top->forward_flat());
+  auto fast    = flat_order(top->fast_flat());
+  std::sort(forward.begin(), forward.end());
+  std::sort(fast.begin(), fast.end());
+  EXPECT_EQ(forward, fast);
 }
 
 TEST(GraphApiContract, PinConnectPinApi) {

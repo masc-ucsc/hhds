@@ -130,7 +130,9 @@ TEST(NamePersistence, GraphSubnodeSurvivesDeleteRecreateAcrossSaveLoad) {
 
     std::vector<std::string> hier;
     for (auto n : top->forward_hier()) {
-      hier.push_back(std::string(n.attr(name).get()));
+      if (n.attr(name).has()) {
+        hier.push_back(std::string(n.attr(name).get()));
+      }
     }
     EXPECT_EQ(hier, (std::vector<std::string>{"leaf_instance", "leaf_internal_v1"}));
 
@@ -172,7 +174,9 @@ TEST(NamePersistence, GraphSubnodeSurvivesDeleteRecreateAcrossSaveLoad) {
 
     std::vector<std::string> hier;
     for (auto n : top->forward_hier()) {
-      hier.push_back(std::string(n.attr(name).get()));
+      if (n.attr(name).has()) {
+        hier.push_back(std::string(n.attr(name).get()));
+      }
     }
     EXPECT_EQ(hier, (std::vector<std::string>{"leaf_instance", "leaf_internal_v2"}));
   }

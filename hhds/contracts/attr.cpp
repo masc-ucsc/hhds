@@ -83,6 +83,9 @@ TEST(IndexContract, ClassIndexKeysSingleGraphBody) {
   absl::flat_hash_map<hhds::Class_index, std::string> absl_label;
 
   for (auto node : f.top->forward_class()) {
+    if (!node.attr(hhds::attrs::name).has()) {
+      continue;
+    }
     std_cost[node.get_class_index()]   = 7;
     absl_label[node.get_class_index()] = std::string(node.attr(hhds::attrs::name).get());
   }
@@ -109,7 +112,7 @@ TEST(IndexContract, FlatIndexSharesKeyAcrossInstantiations) {
 
   std::vector<hhds::Node> bottom_visits;
   for (auto node : f.top->forward_flat()) {
-    if (node.get_current_gid() == f.bottom->get_gid()) {
+    if (node.get_current_gid() == f.bottom->get_gid() && node.get_debug_nid() == f.bottom_body_node.get_debug_nid()) {
       bottom_visits.push_back(node);
     }
     ++std_hits[node.get_flat_index()];
