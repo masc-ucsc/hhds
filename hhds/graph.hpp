@@ -71,6 +71,9 @@ class ForwardFlatIterator;
 class ForwardFlatRange;
 class ForwardHierIterator;
 class ForwardHierRange;
+class Hier_instance;
+class HierIterator;
+class HierRange;
 
 enum class Handle_context : uint8_t { Class, Flat, Hier };
 
@@ -247,6 +250,55 @@ public:
 
 private:
   friend class Graph;
+};
+
+// Handle for one subnode instance in the structure-tree walk driven by
+// Graph::hier_range(). Unlike Node_class (which yields every graph node),
+// Hier_instance yields exactly once per subnode — so hierarchy traversals
+// pay O(hier_size), not O(graph_size). Carries enough state to both
+// identify the instance (parent_graph + tree_pos) and resolve what it
+// expands into (target_gid). hier_pos matches fast_hier/forward_hier's
+// per-instance token so per-instance attribute lookups agree across APIs.
+class Hier_instance {
+public:
+  Hier_instance() = default;
+  Hier_instance(Graph* parent_graph, Gid root_gid, Tree_pos hier_pos, Tree_pos tree_pos, Nid parent_nid)
+      : parent_graph_(parent_graph)
+      , root_gid_(root_gid)
+      , hier_pos_(hier_pos)
+      , tree_pos_(tree_pos)
+      , parent_nid_(parent_nid) {}
+
+  [[nodiscard]] Graph*                 get_parent_graph() const noexcept { return parent_graph_; }
+  [[nodiscard]] Gid                    get_root_gid() const noexcept { return root_gid_; }
+  [[nodiscard]] Tree_pos               get_tree_pos() const noexcept { return tree_pos_; }
+  [[nodiscard]] Tree_pos               get_hier_pos() const noexcept { return hier_pos_; }
+  [[nodiscard]] Nid                    get_parent_nid() const noexcept { return parent_nid_; }
+  [[nodiscard]] Gid                    get_target_gid() const;
+  [[nodiscard]] std::shared_ptr<Graph> get_target_graph() const;
+  [[nodiscard]] Node_class             get_parent_node() const;
+  [[nodiscard]] bool                   is_valid() const noexcept;
+  [[nodiscard]] bool                   is_invalid() const noexcept { return !is_valid(); }
+
+  [[nodiscard]] bool operator==(const Hier_instance& other) const noexcept {
+    return parent_graph_ == other.parent_graph_ && tree_pos_ == other.tree_pos_ && hier_pos_ == other.hier_pos_;
+  }
+  [[nodiscard]] bool operator!=(const Hier_instance& other) const noexcept { return !(*this == other); }
+
+  template <typename H>
+  friend H AbslHashValue(H h, const Hier_instance& inst) {
+    return H::combine(std::move(h), reinterpret_cast<uintptr_t>(inst.parent_graph_), inst.tree_pos_, inst.hier_pos_);
+  }
+
+private:
+  Graph*   parent_graph_ = nullptr;
+  Gid      root_gid_     = Gid_invalid;
+  Tree_pos hier_pos_     = INVALID;
+  Tree_pos tree_pos_     = INVALID;
+  Nid      parent_nid_   = 0;
+
+  friend class Graph;
+  friend class HierIterator;
 };
 
 using Node = Node_class;
@@ -456,6 +508,13 @@ public:
   [[nodiscard]] ForwardFlatRange  forward_flat() const noexcept;
   [[nodiscard]] FastHierRange     fast_hier() const noexcept;
   [[nodiscard]] ForwardHierRange  forward_hier() const noexcept;
+  // Hierarchy-only traversal: yields one Hier_instance per subnode in the
+  // structure tree, recursing into each instance's target graph (cycle-
+  // guarded by active_graphs). Walks tree_ alone — it never iterates
+  // node_table, so cost is proportional to the hierarchy size (≪ number
+  // of graph nodes). Use this for instance counts, module-tree walks, and
+  // path resolution rather than fast_hier (which visits every graph node).
+  [[nodiscard]] HierRange         hier_range() const noexcept;
   void               display_graph() const;
   void               display_next_pin_of_node() const;
 
@@ -527,6 +586,12 @@ private:
   // Nid back to its Tree_pos so del_node / debug cycle checks can find it.
   std::shared_ptr<Tree>                          tree_;
   ankerl::unordered_dense::map<Nid, Tree_pos>    subnode_tree_pos_;
+  // Reverse map so hier_range can resolve a Tree_pos back to its owning Nid
+  // in O(1) during tree-pre-order iteration. Kept in lockstep with
+  // subnode_tree_pos_ — every set_subnode / load_body insertion updates
+  // both, and all three clear sites (release_storage, clear_graph, clear)
+  // clear both.
+  ankerl::unordered_dense::map<Tree_pos, Nid>    tree_pos_to_nid_;
   // Forward-traversal caches, shared across forward_class / forward_flat /
   // forward_hier for this graph body. Only the Pass-2 deferral list and the
   // initial in-edge counts are kept — the Pass-1 emission order is replayed
@@ -562,6 +627,9 @@ private:
   friend class ForwardFlatRange;
   friend class ForwardHierIterator;
   friend class ForwardHierRange;
+  friend class HierIterator;
+  friend class HierRange;
+  friend class Hier_instance;
 };
 
 // Lazy, single-pass iterator over a graph's live nodes (node_table scan,
@@ -878,6 +946,64 @@ public:
   explicit ForwardHierRange(Graph* graph) noexcept : graph_(graph) {}
   [[nodiscard]] ForwardHierIterator begin() const;
   [[nodiscard]] ForwardHierIterator end() const noexcept { return ForwardHierIterator{}; }
+
+private:
+  Graph* graph_;
+};
+
+// Structure-tree pre-order iterator. Walks tree_ (skipping ROOT) and, when
+// a tree position corresponds to a live subnode, descends into the subnode's
+// target graph's tree to continue recursively. active_graphs_ guards
+// against structural cycles (which are disallowed but not enforced in
+// release builds). Move-only: holds per-walk working state (frame stack +
+// active_graphs set) that we don't want copied implicitly.
+class HierIterator {
+public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type        = Hier_instance;
+  using difference_type   = std::ptrdiff_t;
+  using pointer           = void;
+  using reference         = Hier_instance;
+
+  HierIterator() noexcept                      = default;
+  HierIterator(const HierIterator&)            = delete;
+  HierIterator(HierIterator&&) noexcept        = default;
+  HierIterator& operator=(const HierIterator&) = delete;
+  HierIterator& operator=(HierIterator&&) noexcept = default;
+  ~HierIterator()                              = default;
+
+  [[nodiscard]] Hier_instance operator*() const;
+  HierIterator&               operator++();
+  [[nodiscard]] bool operator==(const HierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool operator!=(const HierIterator& o) const noexcept { return !(*this == o); }
+
+private:
+  struct Frame {
+    Graph*                   graph;     // the graph whose tree is being walked
+    Tree::pre_order_iterator cur;       // cursor into graph->tree_->pre_order()
+    Tree::pre_order_iterator end;       // matching end sentinel
+    Tree_pos                 hier_pos;  // parent subnode's tree_pos within its graph, or ROOT for the top frame
+  };
+
+  explicit HierIterator(Graph* root_graph);
+  // Advance cur_ until it lands on a Tree_pos that corresponds to a live
+  // subnode in the current frame's graph. Pops exhausted frames (unwinding
+  // active_graphs_ as we go) and keeps walking until either a yieldable
+  // instance is found or the stack is empty.
+  void advance_to_next_instance();
+
+  Gid                               root_gid_ = Gid_invalid;
+  std::vector<Frame>                stack_;
+  ankerl::unordered_dense::set<Gid> active_graphs_;
+
+  friend class HierRange;
+};
+
+class HierRange {
+public:
+  explicit HierRange(Graph* graph) noexcept : graph_(graph) {}
+  [[nodiscard]] HierIterator begin() const;
+  [[nodiscard]] HierIterator end() const noexcept { return HierIterator{}; }
 
 private:
   Graph* graph_;

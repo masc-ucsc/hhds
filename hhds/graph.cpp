@@ -707,6 +707,7 @@ void Graph::invalidate_from_library() noexcept {
     tree_->clear();
   }
   subnode_tree_pos_.clear();
+  tree_pos_to_nid_.clear();
   input_pins_.clear();
   output_pins_.clear();
 }
@@ -731,6 +732,7 @@ void Graph::clear_graph() {
   }
   (void)tree_->add_root();
   subnode_tree_pos_.clear();
+  tree_pos_to_nid_.clear();
   invalidate_traversal_caches();
 }
 
@@ -778,6 +780,7 @@ void Graph::clear() {
   }
   (void)tree_->add_root();
   subnode_tree_pos_.clear();
+  tree_pos_to_nid_.clear();
   invalidate_traversal_caches();
   if (auto graphio = get_io()) {
     for (const auto& input : graphio->input_pin_decls_) {
@@ -1559,6 +1562,7 @@ void Graph::set_subnode(Nid nid, Gid gid) {
   if (tree_ && subnode_tree_pos_.find(nid) == subnode_tree_pos_.end()) {
     const Tree_pos child_pos = tree_->add_child(static_cast<Tree_pos>(ROOT));
     subnode_tree_pos_.emplace(nid, child_pos);
+    tree_pos_to_nid_.emplace(child_pos, nid);
   }
 
   // Stamp node type so the forward iterator can O(1) tell whether this
@@ -2077,6 +2081,170 @@ ForwardHierIterator& ForwardHierIterator::operator++() {
 }
 
 ForwardHierIterator ForwardHierRange::begin() const { return ForwardHierIterator(graph_); }
+
+// --- Hier_instance members ---
+
+Gid Hier_instance::get_target_gid() const {
+  if (parent_graph_ == nullptr || !parent_graph_->is_node_valid(parent_nid_)) {
+    return Gid_invalid;
+  }
+  const auto* entry = parent_graph_->ref_node(parent_nid_);
+  if (!entry->has_subnode()) {
+    return Gid_invalid;
+  }
+  return entry->get_subnode();
+}
+
+std::shared_ptr<Graph> Hier_instance::get_target_graph() const {
+  const Gid target = get_target_gid();
+  if (target == Gid_invalid || parent_graph_ == nullptr || parent_graph_->owner_lib_ == nullptr) {
+    return {};
+  }
+  if (!parent_graph_->owner_lib_->has_graph(target)) {
+    return {};
+  }
+  // owner_lib_ is a const GraphLibrary* on Graph (libraries are immutable from
+  // the graph's perspective) — cast to get the non-const get_graph overload
+  // since Hier_instance is designed to hand out a mutable handle for
+  // navigation/mutation, consistent with how Graph::get_io returns a
+  // mutable GraphIO.
+  auto* lib = const_cast<GraphLibrary*>(parent_graph_->owner_lib_);
+  return lib->get_graph(target);
+}
+
+Node_class Hier_instance::get_parent_node() const {
+  if (!is_valid()) {
+    return Node_class();
+  }
+  // Build a hier-context Node_class matching the key that fast_hier/forward_hier
+  // would assign to this same subnode node during their traversal — hier_pos
+  // is the parent frame's hier_pos, not this instance's own tree_pos.
+  return Node_class(parent_graph_, root_gid_, hier_pos_, parent_nid_);
+}
+
+bool Hier_instance::is_valid() const noexcept {
+  if (parent_graph_ == nullptr) {
+    return false;
+  }
+  if (!parent_graph_->is_node_valid(parent_nid_)) {
+    return false;
+  }
+  const auto* entry = parent_graph_->ref_node(parent_nid_);
+  return entry->has_subnode();
+}
+
+// --- HierIterator / HierRange ---
+//
+// The walker keeps one Frame per currently-open tree level. advance_to_next
+// _instance moves the top frame's pre-order cursor forward until it lands on
+// a Tree_pos whose reverse-lookup hit is still a live subnode (stale tombstone
+// tree positions left behind by delete_node are silently skipped). When a
+// frame's iterator reaches end, the frame pops and its Gid is released from
+// active_graphs_. operator++ is responsible for pushing the target-graph
+// frame when the yielded instance expands into an as-yet-unvisited subgraph.
+
+HierIterator::HierIterator(Graph* root_graph) {
+  if (root_graph == nullptr || root_graph->tree_ == nullptr) {
+    return;
+  }
+  root_gid_ = root_graph->self_gid_;
+  // Seed the top frame with pre_order over the root graph's tree, plus a
+  // hier_pos of ROOT so the yielded instances match the top-level naming that
+  // fast_hier and forward_hier produce (their root frame also uses ROOT).
+  auto* tree = root_graph->tree_.get();
+  stack_.push_back(Frame{root_graph,
+                         Tree::pre_order_iterator(static_cast<Tree_pos>(ROOT), tree, false),
+                         Tree::pre_order_iterator(INVALID, tree, false),
+                         static_cast<Tree_pos>(ROOT)});
+  if (root_gid_ != Gid_invalid) {
+    active_graphs_.insert(root_gid_);
+  }
+  advance_to_next_instance();
+}
+
+void HierIterator::advance_to_next_instance() {
+  while (!stack_.empty()) {
+    Frame& frame = stack_.back();
+    while (frame.cur != frame.end) {
+      const Tree_pos pos = (*frame.cur).get_debug_nid();
+      if (pos == static_cast<Tree_pos>(ROOT)) {
+        // ROOT is a structural placeholder — it never corresponds to a
+        // subnode. Skip it silently.
+        ++frame.cur;
+        continue;
+      }
+      auto it = frame.graph->tree_pos_to_nid_.find(pos);
+      if (it == frame.graph->tree_pos_to_nid_.end()) {
+        // Orphan tree node (shouldn't happen in normal operation — every
+        // tree node is inserted by set_subnode, which also updates the map).
+        // Skip defensively so a future tree-only API can't hang iteration.
+        ++frame.cur;
+        continue;
+      }
+      const Nid owner_nid = it->second;
+      if (!frame.graph->is_node_valid(owner_nid)) {
+        // Stale entry left after delete_node — the node is tombstoned but
+        // the tree position / map entry weren't cleaned up (current
+        // delete_node doesn't touch the structure tree). Skip.
+        ++frame.cur;
+        continue;
+      }
+      const auto* entry = frame.graph->ref_node(owner_nid);
+      if (!entry->has_subnode()) {
+        ++frame.cur;
+        continue;
+      }
+      return;
+    }
+    const Gid popped = frame.graph->self_gid_;
+    stack_.pop_back();
+    if (popped != Gid_invalid) {
+      active_graphs_.erase(popped);
+    }
+  }
+}
+
+Hier_instance HierIterator::operator*() const {
+  const Frame&   frame     = stack_.back();
+  const Tree_pos pos       = (*frame.cur).get_debug_nid();
+  auto           nid_it    = frame.graph->tree_pos_to_nid_.find(pos);
+  const Nid      owner_nid = nid_it->second;
+  return Hier_instance(frame.graph, root_gid_, frame.hier_pos, pos, owner_nid);
+}
+
+HierIterator& HierIterator::operator++() {
+  Frame&         frame    = stack_.back();
+  const Tree_pos this_pos  = (*frame.cur).get_debug_nid();
+  auto           it        = frame.graph->tree_pos_to_nid_.find(this_pos);
+  const Nid      owner_nid = (it != frame.graph->tree_pos_to_nid_.end()) ? it->second : static_cast<Nid>(0);
+  const auto*    entry     = frame.graph->ref_node(owner_nid);
+  const Gid      sub       = entry->get_subnode();
+  const auto*    lib       = frame.graph->owner_lib_;
+  ++frame.cur;
+  if (sub != Gid_invalid && lib != nullptr && lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
+    Graph* child = const_cast<Graph*>(lib->get_graph(sub).get());
+    if (child->tree_ != nullptr) {
+      auto* child_tree = child->tree_.get();
+      active_graphs_.insert(sub);
+      // this_pos is the parent subnode's tree_pos within frame.graph — it
+      // becomes the hier_pos for every instance yielded from the child
+      // frame, matching fast_hier's semantics.
+      stack_.push_back(Frame{child,
+                             Tree::pre_order_iterator(static_cast<Tree_pos>(ROOT), child_tree, false),
+                             Tree::pre_order_iterator(INVALID, child_tree, false),
+                             this_pos});
+    }
+  }
+  advance_to_next_instance();
+  return *this;
+}
+
+HierIterator HierRange::begin() const { return HierIterator(graph_); }
+
+HierRange Graph::hier_range() const noexcept {
+  assert_accessible();
+  return HierRange(const_cast<Graph*>(this));
+}
 
 void Graph::del_edge_int(Vid driver_id, Vid sink_id) {
   auto pool = get_overflow_pool();
@@ -2692,6 +2860,7 @@ void Graph::load_body(const std::string& dir_path) {
   }
   (void)tree_->add_root();
   subnode_tree_pos_.clear();
+  tree_pos_to_nid_.clear();
   for (size_t i = 1; i < node_table.size(); ++i) {
     if (!node_table[i].is_alive() || !node_table[i].has_subnode()) {
       continue;
@@ -2699,6 +2868,7 @@ void Graph::load_body(const std::string& dir_path) {
     const Nid      subnode_nid = static_cast<Nid>(i) << 2;
     const Tree_pos child_pos   = tree_->add_child(static_cast<Tree_pos>(ROOT));
     subnode_tree_pos_.emplace(subnode_nid, child_pos);
+    tree_pos_to_nid_.emplace(child_pos, subnode_nid);
   }
 
   invalidate_traversal_caches();
