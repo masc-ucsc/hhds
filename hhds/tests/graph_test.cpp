@@ -218,6 +218,137 @@ void test_subnode_with_loop_last_pin_marks_node() {
   assert((buf_inst.get_type() & 1) == 0);
 }
 
+void test_hier_range_flat_graph_is_empty() {
+  // A graph with no subnodes should produce an empty hier_range — even when
+  // it has plain (non-subnode) graph nodes and IO pins.
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("flat");
+  gio->add_input("in", 0);
+  gio->add_output("out", 0);
+  auto               graph = gio->create_graph();
+  (void)graph->create_node();
+  (void)graph->create_node();
+
+  size_t count = 0;
+  for (auto inst : graph->hier_range()) {
+    (void)inst;
+    ++count;
+  }
+  assert(count == 0);
+}
+
+void test_hier_range_yields_one_per_subnode() {
+  // Two leaf submodules, three top-level instances (two of leaf_a, one of
+  // leaf_b). hier_range should yield exactly 3 entries — one per instance,
+  // even when multiple instances share a GraphIO.
+  hhds::GraphLibrary lib;
+
+  auto leaf_a = lib.create_io("leaf_a");
+  (void)leaf_a->create_graph();
+  auto leaf_b = lib.create_io("leaf_b");
+  (void)leaf_b->create_graph();
+
+  auto top_gio = lib.create_io("top");
+  auto top     = top_gio->create_graph();
+
+  auto i1 = top->create_node();
+  i1.set_subnode(leaf_a);
+  auto i2 = top->create_node();
+  i2.set_subnode(leaf_a);
+  auto i3 = top->create_node();
+  i3.set_subnode(leaf_b);
+
+  std::vector<hhds::Gid> targets;
+  std::vector<hhds::Nid> parents;
+  for (auto inst : top->hier_range()) {
+    targets.push_back(inst.get_target_gid());
+    parents.push_back(inst.get_parent_nid());
+    assert(inst.get_parent_graph() == top.get());
+    assert(inst.is_valid());
+  }
+  assert(targets.size() == 3);
+  // Tree inserts siblings in set_subnode call order, so we expect a, a, b.
+  assert(targets[0] == leaf_a->get_gid());
+  assert(targets[1] == leaf_a->get_gid());
+  assert(targets[2] == leaf_b->get_gid());
+  assert(parents[0] == i1.get_debug_nid());
+  assert(parents[1] == i2.get_debug_nid());
+  assert(parents[2] == i3.get_debug_nid());
+}
+
+void test_hier_range_descends_into_nested_subnodes() {
+  // top contains mid; mid contains leaf. hier_range from top should yield
+  // both the mid instance AND the leaf instance (seen through mid's body),
+  // in that order (mid first, then leaf via recursion).
+  hhds::GraphLibrary lib;
+
+  auto leaf_gio = lib.create_io("leaf");
+  (void)leaf_gio->create_graph();
+
+  auto mid_gio = lib.create_io("mid");
+  auto mid     = mid_gio->create_graph();
+  auto mid_inst_of_leaf = mid->create_node();
+  mid_inst_of_leaf.set_subnode(leaf_gio);
+
+  auto top_gio = lib.create_io("top");
+  auto top     = top_gio->create_graph();
+  auto top_inst_of_mid = top->create_node();
+  top_inst_of_mid.set_subnode(mid_gio);
+
+  std::vector<hhds::Gid> targets;
+  for (auto inst : top->hier_range()) {
+    targets.push_back(inst.get_target_gid());
+  }
+  assert(targets.size() == 2);
+  assert(targets[0] == mid_gio->get_gid());
+  assert(targets[1] == leaf_gio->get_gid());
+}
+
+void test_hier_range_cycle_guard() {
+  // Self-referencing submodule must not cause infinite recursion —
+  // active_graphs_ deduplicates on descent. Cycles are disallowed by design
+  // (see todo.md Task 2), but the iterator must be robust in release
+  // builds regardless.
+  hhds::GraphLibrary lib;
+
+  auto self_gio = lib.create_io("self");
+  auto self     = self_gio->create_graph();
+  auto inst     = self->create_node();
+  inst.set_subnode(self_gio);
+
+  size_t count = 0;
+  for (auto it : self->hier_range()) {
+    assert(it.get_target_gid() == self_gio->get_gid());
+    ++count;
+    assert(count < 100 && "cycle guard failed — hier_range is not terminating");
+  }
+  assert(count == 1);
+}
+
+void test_hier_range_target_graph_and_parent_node() {
+  // get_target_graph() should resolve to the actual body, and
+  // get_parent_node() should return a valid hier-context Node_class usable
+  // for attribute queries.
+  hhds::GraphLibrary lib;
+  auto               leaf_gio = lib.create_io("leaf");
+  auto               leaf     = leaf_gio->create_graph();
+
+  auto top_gio = lib.create_io("top");
+  auto top     = top_gio->create_graph();
+  auto inst    = top->create_node();
+  inst.set_subnode(leaf_gio);
+
+  auto hier = top->hier_range();
+  auto it   = hier.begin();
+  assert(it != hier.end());
+  auto handle = *it;
+  assert(handle.get_target_graph() == leaf);
+  auto pnode = handle.get_parent_node();
+  assert(pnode.is_valid());
+  assert(pnode.is_hier());
+  assert(pnode.get_debug_nid() == inst.get_debug_nid());
+}
+
 }  // namespace
 
 int main() {
@@ -228,6 +359,11 @@ int main() {
   test_forward_loop_last_is_source();
   test_forward_out_of_order_uses_pending_list();
   test_subnode_with_loop_last_pin_marks_node();
+  test_hier_range_flat_graph_is_empty();
+  test_hier_range_yields_one_per_subnode();
+  test_hier_range_descends_into_nested_subnodes();
+  test_hier_range_cycle_guard();
+  test_hier_range_target_graph_and_parent_node();
   std::cout << "graph_test passed\n";
   return 0;
 }
