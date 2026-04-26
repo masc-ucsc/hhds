@@ -1552,6 +1552,13 @@ void Graph::set_subnode(Nid nid, Gid gid) {
     subnode_gio = owner_lib_->graph_ios_[idx].get();
   }
 
+  // Debug-only structural cycle check. Cycles are explicitly disallowed —
+  // they make hier traversal nonsensical (and previously could infinite-loop
+  // fast_hier/forward_hier, which have no runtime guard). Catching at the
+  // call site that creates the cycle gives a localized failure instead of
+  // an infinite loop deep inside an iterator. Compiled out under NDEBUG.
+  assert(!would_create_cycle(gid) && "set_subnode: structure-tree cycle detected");
+
   nid &= ~static_cast<Nid>(3);
   auto pool = get_overflow_pool();
   ref_node(nid)->set_subnode(nid, gid, pool);
@@ -1588,6 +1595,51 @@ void Graph::set_subnode(Nid nid, Gid gid) {
   }
 
   invalidate_traversal_caches();
+}
+
+bool Graph::would_create_cycle(Gid target_gid) const noexcept {
+  if (target_gid == Gid_invalid || self_gid_ == Gid_invalid || owner_lib_ == nullptr) {
+    // Orphan or unbound graphs have no library context to walk; the runtime
+    // active_graphs_ guard in HierIterator covers them as a fallback.
+    return false;
+  }
+  if (target_gid == self_gid_) {
+    return true;  // direct self-instantiation
+  }
+
+  ankerl::unordered_dense::set<Gid> visited;
+  std::vector<Gid>                  stack;
+  stack.push_back(target_gid);
+  while (!stack.empty()) {
+    const Gid current = stack.back();
+    stack.pop_back();
+    if (current == self_gid_) {
+      return true;
+    }
+    if (!visited.insert(current).second) {
+      continue;
+    }
+    if (!owner_lib_->has_graph(current)) {
+      continue;
+    }
+    auto graph = owner_lib_->get_graph(current);
+    if (!graph) {
+      continue;
+    }
+    // Walking subnode_tree_pos_ touches one entry per live submodule
+    // instance (≪ node_table size). Stale entries left by delete_node are
+    // gated by is_alive() + has_subnode() — same defensive check
+    // HierIterator uses.
+    for (const auto& [nid, tree_pos] : graph->subnode_tree_pos_) {
+      (void)tree_pos;
+      const auto* entry = graph->ref_node(nid);
+      if (!entry->is_alive() || !entry->has_subnode()) {
+        continue;
+      }
+      stack.push_back(entry->get_subnode());
+    }
+  }
+  return false;
 }
 
 void Graph::add_edge(Vid driver_id, Vid sink_id) {

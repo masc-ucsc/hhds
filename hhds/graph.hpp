@@ -552,6 +552,12 @@ private:
   [[nodiscard]] std::string_view pin_name(Pin_class pin) const;
   void                           set_subnode(Node_class node, Gid gid);
   void                           set_subnode(Nid nid, Gid gid);
+  // Debug-only structural cycle check used by set_subnode. Returns true iff
+  // making this graph contain an instance of `target_gid` would form a
+  // structure-tree cycle (target_gid transitively contains self_gid_).
+  // BFS over subnode_tree_pos_ entries, so cost scales with hierarchy size,
+  // not graph size. Compiled out under NDEBUG via the call site.
+  [[nodiscard]] bool             would_create_cycle(Gid target_gid) const noexcept;
   void                           add_edge(Pid driver_id, Pid sink_id);
   void add_edge(Pin_class driver_pin, Pin_class sink_pin) { add_edge(driver_pin.get_debug_pid(), sink_pin.get_debug_pid()); }
   void del_edge(Pin_class driver_pin, Pin_class sink_pin);
