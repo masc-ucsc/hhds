@@ -4,22 +4,7 @@ Design decisions from recent sessions are captured in `hhds/CLAUDE.md` and
 `~/.claude/projects/-Users-renau-projs-hhds/memory/`. Treat this file as the
 implementation queue.
 
-## 1. Debug-only cycle check in `set_subnode`
-
-**What:** In debug builds, when `set_subnode(node, gid)` is called,
-verify no cycle would be created in the structure tree forest.
-
-**Why:** Cycles are explicitly disallowed (user decision). Without a
-check, a runtime cycle causes infinite loops in hier traversal. Debug-
-only keeps the production path O(1).
-
-**How:** Breadth-first from `gid` through structure-tree subnode refs,
-asserting we never reach `self_gid_`. Visit set keeps the check linear
-in subnode count, which is bounded by hierarchy size (≪ graph size).
-
----
-
-## 2. Optional: eliminate `context_` field entirely
+## 1. Optional: eliminate `context_` field entirely
 
 **What:** Drop `Context context_` and discriminate by field nullity:
 - `root_gid_ == Gid_invalid` → Class
@@ -38,7 +23,7 @@ assignment.
 
 ---
 
-## 3. Optional: `root_graph_` as `Graph*` instead of `Gid`
+## 2. Optional: `root_graph_` as `Graph*` instead of `Gid`
 
 **What:** Store the root as a pointer rather than an id. Parallels how
 `graph_` works.

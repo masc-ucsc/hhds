@@ -1,8 +1,12 @@
 #include "hhds/graph.hpp"
 
 #include <cassert>
+#include <csignal>
+#include <fcntl.h>
 #include <iostream>
 #include <string>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -304,11 +308,13 @@ void test_hier_range_descends_into_nested_subnodes() {
   assert(targets[1] == leaf_gio->get_gid());
 }
 
+#ifdef NDEBUG
 void test_hier_range_cycle_guard() {
-  // Self-referencing submodule must not cause infinite recursion —
-  // active_graphs_ deduplicates on descent. Cycles are disallowed by design
-  // (see todo.md Task 2), but the iterator must be robust in release
-  // builds regardless.
+  // Release-only: structure-tree cycles are blocked at insert time by the
+  // debug assertion in set_subnode (would_create_cycle). When asserts are
+  // off, the runtime guard in HierIterator (active_graphs_) is the sole
+  // line of defense — verify it still terminates on a self-referencing
+  // submodule and doesn't infinite-loop.
   hhds::GraphLibrary lib;
 
   auto self_gio = lib.create_io("self");
@@ -324,6 +330,7 @@ void test_hier_range_cycle_guard() {
   }
   assert(count == 1);
 }
+#endif
 
 void test_hier_range_target_graph_and_parent_node() {
   // get_target_graph() should resolve to the actual body, and
@@ -349,6 +356,139 @@ void test_hier_range_target_graph_and_parent_node() {
   assert(pnode.get_debug_nid() == inst.get_debug_nid());
 }
 
+void test_set_subnode_linear_deep_chain_ok() {
+  // Linear chain a -> b -> c -> d. No cycle, so set_subnode must succeed
+  // at every level. Walking a's hier_range yields 3 instances.
+  hhds::GraphLibrary lib;
+  auto a_gio = lib.create_io("a");
+  auto a     = a_gio->create_graph();
+  auto b_gio = lib.create_io("b");
+  auto b     = b_gio->create_graph();
+  auto c_gio = lib.create_io("c");
+  auto c     = c_gio->create_graph();
+  auto d_gio = lib.create_io("d");
+  (void)d_gio->create_graph();
+
+  a->create_node().set_subnode(b_gio);
+  b->create_node().set_subnode(c_gio);
+  c->create_node().set_subnode(d_gio);
+
+  size_t count = 0;
+  for (auto inst : a->hier_range()) {
+    (void)inst;
+    ++count;
+  }
+  assert(count == 3);
+}
+
+void test_set_subnode_diamond_ok() {
+  // Diamond DAG: top instantiates b1 and b2; both b1 and b2 instantiate
+  // leaf. This is a DAG (leaf is reached two ways), not a cycle —
+  // would_create_cycle must return false for every set_subnode call here.
+  hhds::GraphLibrary lib;
+  auto top_gio  = lib.create_io("top");
+  auto top      = top_gio->create_graph();
+  auto b1_gio   = lib.create_io("b1");
+  auto b1       = b1_gio->create_graph();
+  auto b2_gio   = lib.create_io("b2");
+  auto b2       = b2_gio->create_graph();
+  auto leaf_gio = lib.create_io("leaf");
+  (void)leaf_gio->create_graph();
+
+  top->create_node().set_subnode(b1_gio);
+  top->create_node().set_subnode(b2_gio);
+  b1->create_node().set_subnode(leaf_gio);
+  b2->create_node().set_subnode(leaf_gio);
+
+  // top -> b1 -> leaf, top -> b2 -> leaf : 4 instances total.
+  size_t count = 0;
+  for (auto inst : top->hier_range()) {
+    (void)inst;
+    ++count;
+  }
+  assert(count == 4);
+}
+
+#ifndef NDEBUG
+// Death-test helper: forks, runs `body` in the child, expects the child to
+// die via SIGABRT (the libc assert path). Returns true on the expected
+// outcome. Used to encode "this set_subnode call must trigger the cycle
+// assertion" without aborting the whole test binary.
+template <typename Fn>
+bool expect_assert_abort(Fn body) {
+  pid_t pid = fork();
+  assert(pid >= 0 && "fork failed");
+  if (pid == 0) {
+    // Child: silence assert's stderr noise so the test log stays readable;
+    // we only care about the exit signal, not the message.
+    int devnull = ::open("/dev/null", O_WRONLY);
+    if (devnull >= 0) {
+      ::dup2(devnull, STDERR_FILENO);
+      ::close(devnull);
+    }
+    body();
+    _exit(0);  // body returned without aborting — failure mode
+  }
+  int status = 0;
+  waitpid(pid, &status, 0);
+  return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
+}
+
+void test_set_subnode_self_cycle_aborts() {
+  // Self-instantiation: graph "self" tries to contain an instance of itself.
+  // would_create_cycle short-circuits on target_gid == self_gid_.
+  const bool aborted = expect_assert_abort([]() {
+    hhds::GraphLibrary lib;
+    auto               gio = lib.create_io("self");
+    auto               g   = gio->create_graph();
+    g->create_node().set_subnode(gio);
+  });
+  assert(aborted && "self-cycle did not trigger the set_subnode assertion");
+}
+
+void test_set_subnode_indirect_cycle_aborts() {
+  // Indirect cycle: a contains b, then b tries to contain a. Exercises the
+  // BFS path of would_create_cycle (not just the self-gid short circuit).
+  const bool aborted = expect_assert_abort([]() {
+    hhds::GraphLibrary lib;
+    auto               a_gio = lib.create_io("a");
+    auto               a     = a_gio->create_graph();
+    auto               b_gio = lib.create_io("b");
+    auto               b     = b_gio->create_graph();
+    a->create_node().set_subnode(b_gio);
+    b->create_node().set_subnode(a_gio);
+  });
+  assert(aborted && "indirect cycle did not trigger the set_subnode assertion");
+}
+#endif
+
+void test_set_subnode_retarget_ok() {
+  // Re-calling set_subnode on the same node with a different target must
+  // succeed (no cycle is created — same node, different target). The
+  // structure tree retains a single child for this subnode, retargeted
+  // to the new gid.
+  hhds::GraphLibrary lib;
+  auto a_gio = lib.create_io("a");
+  auto a     = a_gio->create_graph();
+  auto b_gio = lib.create_io("b");
+  (void)b_gio->create_graph();
+  auto c_gio = lib.create_io("c");
+  (void)c_gio->create_graph();
+
+  auto inst = a->create_node();
+  inst.set_subnode(b_gio);
+  inst.set_subnode(c_gio);
+
+  size_t   count       = 0;
+  hhds::Gid last_target = hhds::Gid_invalid;
+  for (auto h : a->hier_range()) {
+    last_target = h.get_target_gid();
+    ++count;
+  }
+  assert(count == 1);
+  assert(last_target == c_gio->get_gid());
+}
+
 }  // namespace
 
 int main() {
@@ -362,8 +502,21 @@ int main() {
   test_hier_range_flat_graph_is_empty();
   test_hier_range_yields_one_per_subnode();
   test_hier_range_descends_into_nested_subnodes();
+#ifdef NDEBUG
+  // In debug builds, set_subnode asserts on the cycle. The runtime
+  // iterator guard is only the active line of defense in release.
   test_hier_range_cycle_guard();
+#endif
   test_hier_range_target_graph_and_parent_node();
+  test_set_subnode_linear_deep_chain_ok();
+  test_set_subnode_diamond_ok();
+  test_set_subnode_retarget_ok();
+#ifndef NDEBUG
+  // Death tests for the cycle assertion. Each forks a child that should
+  // crash inside set_subnode; parent verifies the child died via SIGABRT.
+  test_set_subnode_self_cycle_aborts();
+  test_set_subnode_indirect_cycle_aborts();
+#endif
   std::cout << "graph_test passed\n";
   return 0;
 }
