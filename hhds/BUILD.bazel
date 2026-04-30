@@ -316,6 +316,18 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "tree_replace_test",
+    srcs = ["tests/tree_replace_test.cpp"],
+    copts = [
+        "-DTESTING",
+    ],
+    deps = [
+        ":core",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "chip_typical_navigation_comparison",
     srcs = ["tests/chip_typical_navigation_comparison.cpp"],

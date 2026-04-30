@@ -1298,6 +1298,7 @@ public:
   [[nodiscard]] TreeCursor create_cursor(Node_class start);
 
   friend class Forest;
+  friend class TreeIO;
   friend class TreeCursor;
   friend class ForestCursor;
   friend class Graph;  // graph uses raw Tree_pos for its internal hier-expansion tree cache
@@ -1424,6 +1425,10 @@ private:
   std::weak_ptr<Forest> forest_owner_;
   Tid                   tid_;
   std::string           name_;
+  // Optional debug slot keeping the previous body alive after a replace().
+  // Holds at most one body — a second replace(..., keep_previous=true)
+  // overwrites it. Never serialized.
+  std::shared_ptr<Tree> previous_;
 
   TreeIO(std::weak_ptr<Forest> forest_owner, Tid tid, std::string name)
       : forest_owner_(std::move(forest_owner)), tid_(tid), name_(std::move(name)) {}
@@ -1442,6 +1447,17 @@ public:
   [[nodiscard]] std::shared_ptr<Tree>       create_tree();
   [[nodiscard]] bool                        has_tree() const;
   void                                      clear();
+
+  // Atomically install new_tree as this slot's current body. new_tree must be
+  // an unattached temp tree (from Forest::create_tree_temp or Tree::clone).
+  // The slot's tid does not change — only the body the tid points at.
+  // Cross-tree refs to the old body do not survive a replace.
+  // keep_previous=false: old body is dropped.
+  // keep_previous=true:  old body is moved into the previous_ debug slot,
+  //                      overwriting whatever was there.
+  void                                replace(std::shared_ptr<Tree> new_tree, bool keep_previous = false);
+  [[nodiscard]] std::shared_ptr<Tree> get_previous() const;
+  void                                drop_previous();
 
 private:
   void invalidate_from_forest() noexcept {
@@ -1933,6 +1949,34 @@ inline void TreeIO::clear() {
   I(forest != nullptr, "clear: TreeIO is no longer attached to a forest");
   forest->delete_treeio(shared_from_this());
 }
+
+inline void TreeIO::replace(std::shared_ptr<Tree> new_tree, bool keep_previous) {
+  I(new_tree != nullptr, "replace: new_tree is null");
+  I(new_tree->forest_owner_.expired(), "replace: new_tree must be unattached (forest_owner is set)");
+  I(new_tree->treeio_owner_.expired(), "replace: new_tree must be unattached (treeio_owner is set)");
+  I(new_tree->self_tid_ == INVALID, "replace: new_tree must be unattached (has tid)");
+
+  auto forest = forest_owner_.lock();
+  I(forest != nullptr, "replace: TreeIO is no longer attached to a forest");
+
+  std::unique_lock lock(forest->registry_mu_);
+
+  const auto tree_idx = static_cast<size_t>(-tid_ - 1);
+  I(tree_idx < forest->trees.size(), "replace: tree slot out of range");
+
+  new_tree->forest_ptr = forest.get();
+  new_tree->bind_forest_owner(forest->weak_from_this());
+  new_tree->bind_treeio_owner(weak_from_this(), tid_, name_);
+
+  if (keep_previous) {
+    previous_ = std::move(forest->trees[tree_idx]);
+  }
+  forest->trees[tree_idx] = std::move(new_tree);
+}
+
+inline std::shared_ptr<Tree> TreeIO::get_previous() const { return previous_; }
+
+inline void TreeIO::drop_previous() { previous_.reset(); }
 
 inline void Tree::set_name(std::string_view n) {
   auto tio = treeio_owner_.lock();
