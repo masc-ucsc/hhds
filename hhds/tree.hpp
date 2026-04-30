@@ -21,6 +21,7 @@
 #include <ostream>
 #include <queue>
 #include <set>
+#include <shared_mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -415,6 +416,20 @@ public:
   // after Node_class is complete.
 
   [[nodiscard]] static std::shared_ptr<Tree> create(Forest* forest = nullptr) { return std::shared_ptr<Tree>(new Tree(forest)); }
+
+  // Body-level deep copy. Returns an unattached tree (no Forest, no TreeIO,
+  // no tid). Same shape as a temp tree from Forest::create_tree_temp.
+  [[nodiscard]] std::shared_ptr<Tree> clone() const {
+    auto new_tree              = std::shared_ptr<Tree>(new Tree(nullptr));
+    new_tree->pointers_stack   = pointers_stack;
+    new_tree->validity_stack   = validity_stack;
+    new_tree->subnode_refs     = subnode_refs;
+    new_tree->name_            = name_;
+    new_tree->generation_      = generation_;
+    new_tree->dirty_           = true;
+    new_tree->clone_attr_stores_from(*this);
+    return new_tree;
+  }
 
   class Node_class {
   public:
@@ -1569,6 +1584,11 @@ inline auto Tree::Node_class::post_order_hier() const {
 
 class Forest : public std::enable_shared_from_this<Forest> {
 private:
+  // Multi-reader / single-writer lock guarding the registry containers below.
+  // Tree/Graph bodies remain single-threaded per pointer; this lock protects
+  // only the slot vectors and name maps, so concurrent find_io / get_tree
+  // callers from different threads can proceed in parallel.
+  mutable std::shared_mutex            registry_mu_;
   std::vector<std::shared_ptr<TreeIO>> tree_ios_;
   std::vector<std::shared_ptr<Tree>>   trees;
   std::vector<size_t>                  reference_counts;
@@ -1585,49 +1605,36 @@ public:
 
   [[nodiscard]] std::shared_ptr<TreeIO> create_io(std::string_view name) {
     I(!name.empty(), "create_io: name is required");
-    const auto it = deleted_name_to_tid_.find(std::string(name));
+    std::unique_lock lock(registry_mu_);
+    const auto       it = deleted_name_to_tid_.find(std::string(name));
     if (it != deleted_name_to_tid_.end()) {
       const auto reused_tid = it->second;
       deleted_name_to_tid_.erase(it);
-      return create_io_impl(reused_tid, name);
+      return create_io_impl_unlocked(reused_tid, name);
     }
-    return create_io_impl(-static_cast<Tree_pos>(tree_ios_.size() + 1), name);
+    return create_io_impl_unlocked(-static_cast<Tree_pos>(tree_ios_.size() + 1), name);
+  }
+
+  // Returns an unattached temp tree with no TreeIO and no registered name.
+  // Lifetime is purely the shared_ptr — destroyed when the last reference
+  // drops. Never serialized by Forest::save. The name_hint is cosmetic only
+  // (used in dump / error messages) and is not registered in the name map.
+  [[nodiscard]] std::shared_ptr<Tree> create_tree_temp(std::string_view name_hint = "") {
+    auto tree = Tree::create(nullptr);
+    if (!name_hint.empty()) {
+      tree->set_name(name_hint);
+    }
+    return tree;
   }
 
   [[nodiscard]] std::shared_ptr<TreeIO> find_io(std::string_view name) {
-    if (name.empty()) {
-      return nullptr;
-    }
-
-    const auto it = tree_name_to_tid_.find(std::string(name));
-    if (it == tree_name_to_tid_.end()) {
-      return nullptr;
-    }
-
-    const auto tree_idx = static_cast<size_t>(-it->second - 1);
-    if (tree_idx >= tree_ios_.size()) {
-      return nullptr;
-    }
-
-    return tree_ios_[tree_idx];
+    std::shared_lock lock(registry_mu_);
+    return find_io_unlocked(name);
   }
 
   [[nodiscard]] std::shared_ptr<const TreeIO> find_io(std::string_view name) const {
-    if (name.empty()) {
-      return nullptr;
-    }
-
-    const auto it = tree_name_to_tid_.find(std::string(name));
-    if (it == tree_name_to_tid_.end()) {
-      return nullptr;
-    }
-
-    const auto tree_idx = static_cast<size_t>(-it->second - 1);
-    if (tree_idx >= tree_ios_.size()) {
-      return nullptr;
-    }
-
-    return tree_ios_[tree_idx];
+    std::shared_lock lock(registry_mu_);
+    return find_io_unlocked(name);
   }
 
   Tree& get_tree(Tree_pos tree_tid) {
@@ -1637,7 +1644,8 @@ public:
 
   [[nodiscard]] std::shared_ptr<Tree> get_tree_ptr(Tree_pos tree_tid) {
     I(tree_tid < 0, "Invalid tree reference - must be negative");
-    const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
+    std::shared_lock lock(registry_mu_);
+    const auto       tree_idx = static_cast<size_t>(-tree_tid - 1);
     I(tree_idx < trees.size(), "Tree index out of range");
     I(trees[tree_idx], "Attempting to access deleted tree");
     return trees[tree_idx];
@@ -1645,26 +1653,37 @@ public:
 
   [[nodiscard]] std::shared_ptr<const Tree> get_tree_ptr(Tree_pos tree_tid) const {
     I(tree_tid < 0, "Invalid tree reference - must be negative");
-    const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
+    std::shared_lock lock(registry_mu_);
+    const auto       tree_idx = static_cast<size_t>(-tree_tid - 1);
     I(tree_idx < trees.size(), "Tree index out of range");
     I(trees[tree_idx], "Attempting to access deleted tree");
     return trees[tree_idx];
   }
 
   [[nodiscard]] std::shared_ptr<Tree> find_tree(std::string_view name) {
-    auto tio = find_io(name);
+    std::shared_lock lock(registry_mu_);
+    auto             tio = find_io_unlocked(name);
     if (!tio) {
       return nullptr;
     }
-    return tio->get_tree();
+    const auto tree_idx = static_cast<size_t>(-tio->get_tid() - 1);
+    if (tree_idx >= trees.size()) {
+      return nullptr;
+    }
+    return trees[tree_idx];
   }
 
   [[nodiscard]] std::shared_ptr<const Tree> find_tree(std::string_view name) const {
-    auto tio = find_io(name);
+    std::shared_lock lock(registry_mu_);
+    auto             tio = find_io_unlocked(name);
     if (!tio) {
       return nullptr;
     }
-    return tio->get_tree();
+    const auto tree_idx = static_cast<size_t>(-tio->get_tid() - 1);
+    if (tree_idx >= trees.size()) {
+      return nullptr;
+    }
+    return trees[tree_idx];
   }
 
   // Forest-wide reverse lookup for an opaque Tree_flat_index key. Returns a
@@ -1672,12 +1691,17 @@ public:
   // tid. Returns an empty Node_class if the tid is deleted or the pos is out
   // of range. See Tree::get_node(Tree_class_index) for the per-body variant.
   [[nodiscard]] Tree::Node_class get_node(Tree_flat_index idx) {
-    const auto tid      = idx.tid;
-    const auto tree_idx = static_cast<size_t>(-tid - 1);
-    if (tid >= 0 || tree_idx >= trees.size() || !trees[tree_idx]) {
-      return Tree::Node_class();
+    const auto            tid      = idx.tid;
+    const auto            tree_idx = static_cast<size_t>(-tid - 1);
+    std::shared_ptr<Tree> tree_ptr;
+    {
+      std::shared_lock lock(registry_mu_);
+      if (tid >= 0 || tree_idx >= trees.size() || !trees[tree_idx]) {
+        return Tree::Node_class();
+      }
+      tree_ptr = trees[tree_idx];
     }
-    auto& tree = *trees[tree_idx];
+    auto& tree = *tree_ptr;
     if (!tree._check_idx_exists(idx.value) || !tree._contains_data(idx.value)) {
       return Tree::Node_class();
     }
@@ -1685,17 +1709,109 @@ public:
   }
 
   void add_reference(Tree_pos tree_tid) {
-    const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
+    std::unique_lock lock(registry_mu_);
+    const auto       tree_idx = static_cast<size_t>(-tree_tid - 1);
     reference_counts[tree_idx]++;
   }
 
   void remove_reference(Tree_pos tree_tid) {
-    const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
+    std::unique_lock lock(registry_mu_);
+    const auto       tree_idx = static_cast<size_t>(-tree_tid - 1);
     I(reference_counts[tree_idx] > 0, "Reference count already zero");
     reference_counts[tree_idx]--;
   }
 
   bool delete_tree(Tree_pos tree_tid) {
+    std::unique_lock lock(registry_mu_);
+    return delete_tree_unlocked(tree_tid);
+  }
+
+  void delete_treeio(const std::shared_ptr<TreeIO>& tio) {
+    I(tio != nullptr, "delete_treeio: null TreeIO");
+    std::unique_lock lock(registry_mu_);
+    delete_treeio_unlocked(tio);
+  }
+
+  void delete_treeio(std::string_view name) {
+    std::unique_lock lock(registry_mu_);
+    auto             tio = find_io_unlocked(name);
+    if (!tio) {
+      return;
+    }
+    delete_treeio_unlocked(tio);
+  }
+
+  [[nodiscard]] ForestCursor create_cursor(Tid tree_tid, Tree_pos start = ROOT);
+
+  // Persistence — saves all declarations (text) and bodies (binary).
+  void save(const std::string& db_path) const;
+  void load(const std::string& db_path);
+
+private:
+  [[nodiscard]] std::shared_ptr<TreeIO> find_io_unlocked(std::string_view name) const {
+    if (name.empty()) {
+      return nullptr;
+    }
+
+    const auto it = tree_name_to_tid_.find(std::string(name));
+    if (it == tree_name_to_tid_.end()) {
+      return nullptr;
+    }
+
+    const auto tree_idx = static_cast<size_t>(-it->second - 1);
+    if (tree_idx >= tree_ios_.size()) {
+      return nullptr;
+    }
+
+    return tree_ios_[tree_idx];
+  }
+
+  [[nodiscard]] std::shared_ptr<TreeIO> create_io_impl_unlocked(Tid tree_tid, std::string_view name) {
+    I(tree_tid < 0, "create_tree: tree id must be negative");
+    I(!name.empty(), "create_io: name is required");
+    assert_name_available_unlocked(name);
+
+    const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
+    if (tree_idx < tree_ios_.size()) {
+      I(!tree_ios_[tree_idx], "create_io: explicit id already exists or is reserved");
+    } else {
+      tree_ios_.resize(tree_idx + 1);
+      trees.resize(tree_idx + 1);
+      reference_counts.resize(tree_idx + 1, 0);
+    }
+
+    auto tio            = std::shared_ptr<TreeIO>(new TreeIO(this->weak_from_this(), tree_tid, std::string(name)));
+    tree_ios_[tree_idx] = tio;
+    tree_name_to_tid_.emplace(std::string(name), tree_tid);
+    reference_counts[tree_idx] = 0;
+    return tio;
+  }
+
+  [[nodiscard]] std::shared_ptr<Tree> create_tree_body(const std::shared_ptr<TreeIO>& tio) {
+    std::unique_lock lock(registry_mu_);
+    return create_tree_body_unlocked(tio);
+  }
+
+  [[nodiscard]] std::shared_ptr<Tree> create_tree_body_unlocked(const std::shared_ptr<TreeIO>& tio) {
+    I(tio != nullptr, "create_tree_body: null TreeIO");
+
+    const auto tree_idx = static_cast<size_t>(-tio->get_tid() - 1);
+    I(tree_idx < tree_ios_.size(), "create_tree_body: tree declaration index out of range");
+    I(tree_ios_[tree_idx] == tio, "create_tree_body: TreeIO is not owned by this forest");
+
+    if (trees[tree_idx]) {
+      return trees[tree_idx];
+    }
+
+    auto tree = Tree::create(this);
+    tree->bind_forest_owner(this->weak_from_this());
+    tree->bind_treeio_owner(tio, tio->get_tid(), tio->get_name());
+
+    trees[tree_idx] = tree;
+    return tree;
+  }
+
+  bool delete_tree_unlocked(Tree_pos tree_tid) {
     const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
     I(tree_idx < trees.size(), "Tree index out of range");
 
@@ -1723,7 +1839,7 @@ public:
     return false;
   }
 
-  void delete_treeio(const std::shared_ptr<TreeIO>& tio) {
+  void delete_treeio_unlocked(const std::shared_ptr<TreeIO>& tio) {
     I(tio != nullptr, "delete_treeio: null TreeIO");
     const auto tree_tid = tio->get_tid();
     const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
@@ -1752,62 +1868,7 @@ public:
     }
   }
 
-  void delete_treeio(std::string_view name) {
-    auto tio = find_io(name);
-    if (!tio) {
-      return;
-    }
-    delete_treeio(tio);
-  }
-
-  [[nodiscard]] ForestCursor create_cursor(Tid tree_tid, Tree_pos start = ROOT);
-
-  // Persistence — saves all declarations (text) and bodies (binary).
-  void save(const std::string& db_path) const;
-  void load(const std::string& db_path);
-
-private:
-  [[nodiscard]] std::shared_ptr<TreeIO> create_io_impl(Tid tree_tid, std::string_view name) {
-    I(tree_tid < 0, "create_tree: tree id must be negative");
-    I(!name.empty(), "create_io: name is required");
-    assert_name_available(name);
-
-    const auto tree_idx = static_cast<size_t>(-tree_tid - 1);
-    if (tree_idx < tree_ios_.size()) {
-      I(!tree_ios_[tree_idx], "create_io: explicit id already exists or is reserved");
-    } else {
-      tree_ios_.resize(tree_idx + 1);
-      trees.resize(tree_idx + 1);
-      reference_counts.resize(tree_idx + 1, 0);
-    }
-
-    auto tio            = std::shared_ptr<TreeIO>(new TreeIO(this->weak_from_this(), tree_tid, std::string(name)));
-    tree_ios_[tree_idx] = tio;
-    tree_name_to_tid_.emplace(std::string(name), tree_tid);
-    reference_counts[tree_idx] = 0;
-    return tio;
-  }
-
-  [[nodiscard]] std::shared_ptr<Tree> create_tree_body(const std::shared_ptr<TreeIO>& tio) {
-    I(tio != nullptr, "create_tree_body: null TreeIO");
-
-    const auto tree_idx = static_cast<size_t>(-tio->get_tid() - 1);
-    I(tree_idx < tree_ios_.size(), "create_tree_body: tree declaration index out of range");
-    I(tree_ios_[tree_idx] == tio, "create_tree_body: TreeIO is not owned by this forest");
-
-    if (trees[tree_idx]) {
-      return trees[tree_idx];
-    }
-
-    auto tree = Tree::create(this);
-    tree->bind_forest_owner(this->weak_from_this());
-    tree->bind_treeio_owner(tio, tio->get_tid(), tio->get_name());
-
-    trees[tree_idx] = tree;
-    return tree;
-  }
-
-  void assert_name_available(std::string_view name, Tid self_tid = INVALID) const {
+  void assert_name_available_unlocked(std::string_view name, Tid self_tid = INVALID) const {
     if (name.empty()) {
       return;
     }
@@ -1830,7 +1891,8 @@ inline std::shared_ptr<Tree> TreeIO::get_tree() {
   if (!forest) {
     return nullptr;
   }
-  const auto tree_idx = static_cast<size_t>(-tid_ - 1);
+  std::shared_lock lock(forest->registry_mu_);
+  const auto       tree_idx = static_cast<size_t>(-tid_ - 1);
   if (tree_idx >= forest->trees.size()) {
     return nullptr;
   }
@@ -1842,7 +1904,8 @@ inline std::shared_ptr<const Tree> TreeIO::get_tree() const {
   if (!forest) {
     return nullptr;
   }
-  const auto tree_idx = static_cast<size_t>(-tid_ - 1);
+  std::shared_lock lock(forest->registry_mu_);
+  const auto       tree_idx = static_cast<size_t>(-tid_ - 1);
   if (tree_idx >= forest->trees.size()) {
     return nullptr;
   }
@@ -1860,7 +1923,8 @@ inline bool TreeIO::has_tree() const {
   if (!forest) {
     return false;
   }
-  const auto tree_idx = static_cast<size_t>(-tid_ - 1);
+  std::shared_lock lock(forest->registry_mu_);
+  const auto       tree_idx = static_cast<size_t>(-tid_ - 1);
   return tree_idx < forest->trees.size() && forest->trees[tree_idx] != nullptr;
 }
 

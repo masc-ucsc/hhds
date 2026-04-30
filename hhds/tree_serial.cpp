@@ -416,6 +416,8 @@ void Forest::save(const std::string& db_path) const {
   namespace fs = std::filesystem;
   fs::create_directories(db_path);
 
+  std::shared_lock lock(registry_mu_);
+
   // --- forest.txt (declarations, text format) ---
   {
     std::ofstream ofs(fs::path(db_path) / "forest.txt");
@@ -451,6 +453,8 @@ void Forest::save(const std::string& db_path) const {
 
 void Forest::load(const std::string& db_path) {
   namespace fs = std::filesystem;
+
+  std::unique_lock lock(registry_mu_);
 
   // Clear current state.
   tree_ios_.clear();
@@ -490,7 +494,7 @@ void Forest::load(const std::string& db_path) {
         std::string        name;
         ss >> idx >> name;
         Tid tid = -static_cast<Tree_pos>(idx + 1);
-        (void)create_io_impl(tid, name);
+        (void)create_io_impl_unlocked(tid, name);
       }
     }
   }
@@ -503,7 +507,7 @@ void Forest::load(const std::string& db_path) {
     }
     const auto dir = fs::path(db_path) / ("tree_" + std::to_string(i));
     if (fs::exists(dir / "body.bin")) {
-      auto tree = tio->create_tree();
+      auto tree = create_tree_body_unlocked(tio);
       tree->load_body(dir.string());
     }
   }

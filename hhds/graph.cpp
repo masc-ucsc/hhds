@@ -2935,6 +2935,8 @@ void GraphLibrary::save(const std::string& db_path) const {
   namespace fs = std::filesystem;
   fs::create_directories(db_path);
 
+  std::shared_lock lock(registry_mu_);
+
   // --- library.txt (declarations, text format) ---
   {
     std::ofstream ofs(fs::path(db_path) / "library.txt");
@@ -2986,6 +2988,8 @@ void GraphLibrary::save(const std::string& db_path) const {
 void GraphLibrary::load(const std::string& db_path) {
   namespace fs = std::filesystem;
 
+  std::unique_lock lock(registry_mu_);
+
   // Clear current state.
   for (auto& g : graphs_) {
     if (g) {
@@ -2996,8 +3000,8 @@ void GraphLibrary::load(const std::string& db_path) {
   graphs_.clear();
   graph_name_to_id_.clear();
   deleted_name_to_id_.clear();
-  live_count_     = 0;
-  mutation_epoch_ = 1;
+  live_count_ = 0;
+  mutation_epoch_.store(1, std::memory_order_release);
 
   // Reserve slot 0.
   graph_ios_.push_back(nullptr);
@@ -3035,7 +3039,7 @@ void GraphLibrary::load(const std::string& db_path) {
         Gid                gid;
         std::string        name;
         ss >> gid >> name;
-        current_gio = create_io_impl(gid, name);
+        current_gio = create_io_impl_unlocked(gid, name);
       } else if (line.size() > 2 && line[0] == ' ' && line[1] == ' ') {
         assert(current_gio && "GraphLibrary::load: pin decl without graph_io");
         std::istringstream ss(line.substr(2));
@@ -3048,11 +3052,22 @@ void GraphLibrary::load(const std::string& db_path) {
         if (ss >> rest && rest == "loop_last") {
           loop_last = true;
         }
+        // We hold registry_mu_ exclusively here, so we can't reach into
+        // GraphIO::add_input/add_output (those call get_graph() which would
+        // reacquire the lock as a reader). The body hasn't been materialized
+        // yet, so this only needs to populate the GraphIO declaration vectors.
         if (direction == "input") {
-          current_gio->add_input(name, port_id, loop_last);
+          current_gio->input_pin_decls_.push_back(GraphIO::DeclaredIoPin{name, port_id, loop_last});
+          current_gio->declared_io_pins_.emplace(
+              current_gio->input_pin_decls_.back().name,
+              GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Input, current_gio->input_pin_decls_.size() - 1});
         } else {
-          current_gio->add_output(name, port_id, loop_last);
+          current_gio->output_pin_decls_.push_back(GraphIO::DeclaredIoPin{name, port_id, loop_last});
+          current_gio->declared_io_pins_.emplace(
+              current_gio->output_pin_decls_.back().name,
+              GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Output, current_gio->output_pin_decls_.size() - 1});
         }
+        note_graph_mutation();
       }
     }
   }
@@ -3065,7 +3080,7 @@ void GraphLibrary::load(const std::string& db_path) {
     }
     const auto dir = fs::path(db_path) / ("graph_" + std::to_string(i));
     if (fs::exists(dir / "body.bin")) {
-      auto graph = gio->create_graph();
+      auto graph = create_graph_body_unlocked(gio);
       graph->load_body(dir.string());
     }
   }

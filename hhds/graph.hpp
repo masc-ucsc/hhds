@@ -9,7 +9,9 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <atomic>
 #include <memory>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -1098,80 +1100,67 @@ public:
 
   [[nodiscard]] std::shared_ptr<GraphIO> create_io(std::string_view name) {
     assert(!name.empty() && "create_io: name is required");
-    const auto it = deleted_name_to_id_.find(std::string(name));
+    std::unique_lock lock(registry_mu_);
+    const auto       it = deleted_name_to_id_.find(std::string(name));
     if (it != deleted_name_to_id_.end()) {
       const auto reused_gid = it->second;
       deleted_name_to_id_.erase(it);
-      return create_io_impl(reused_gid, name);
+      return create_io_impl_unlocked(reused_gid, name);
     }
-    return create_io_impl(static_cast<Gid>(graph_ios_.size()), name);
+    return create_io_impl_unlocked(static_cast<Gid>(graph_ios_.size()), name);
   }
 
   [[nodiscard]] std::shared_ptr<GraphIO> find_io(std::string_view name) {
-    if (name.empty()) {
-      return {};
-    }
-
-    const auto it = graph_name_to_id_.find(std::string(name));
-    if (it == graph_name_to_id_.end()) {
-      return {};
-    }
-
-    const size_t idx = static_cast<size_t>(it->second);
-    if (idx >= graph_ios_.size()) {
-      return {};
-    }
-
-    return graph_ios_[idx];
+    std::shared_lock lock(registry_mu_);
+    return find_io_unlocked(name);
   }
 
   [[nodiscard]] std::shared_ptr<const GraphIO> find_io(std::string_view name) const {
-    if (name.empty()) {
-      return {};
-    }
-
-    const auto it = graph_name_to_id_.find(std::string(name));
-    if (it == graph_name_to_id_.end()) {
-      return {};
-    }
-
-    const size_t idx = static_cast<size_t>(it->second);
-    if (idx >= graph_ios_.size()) {
-      return {};
-    }
-
-    return graph_ios_[idx];
+    std::shared_lock lock(registry_mu_);
+    return find_io_unlocked(name);
   }
 
   [[nodiscard]] bool has_graph(Gid id) const noexcept {
-    const size_t idx = static_cast<size_t>(id);
-    return idx < graphs_.size() && graphs_[idx] != nullptr && !graphs_[idx]->deleted_;
+    std::shared_lock lock(registry_mu_);
+    return has_graph_unlocked(id);
   }
 
   [[nodiscard]] std::shared_ptr<Graph> get_graph(Gid id) {
-    assert(has_graph(id));
+    std::shared_lock lock(registry_mu_);
+    assert(has_graph_unlocked(id));
     return graphs_[static_cast<size_t>(id)];
   }
 
   [[nodiscard]] std::shared_ptr<const Graph> get_graph(Gid id) const {
-    assert(has_graph(id));
+    std::shared_lock lock(registry_mu_);
+    assert(has_graph_unlocked(id));
     return graphs_[static_cast<size_t>(id)];
   }
 
   [[nodiscard]] std::shared_ptr<Graph> find_graph(std::string_view name) {
-    auto gio = find_io(name);
+    std::shared_lock lock(registry_mu_);
+    auto             gio = find_io_unlocked(name);
     if (!gio) {
       return {};
     }
-    return gio->get_graph();
+    const size_t idx = static_cast<size_t>(gio->get_gid());
+    if (idx >= graphs_.size() || !graphs_[idx] || graphs_[idx]->deleted_) {
+      return {};
+    }
+    return graphs_[idx];
   }
 
   [[nodiscard]] std::shared_ptr<const Graph> find_graph(std::string_view name) const {
-    auto gio = find_io(name);
+    std::shared_lock lock(registry_mu_);
+    auto             gio = find_io_unlocked(name);
     if (!gio) {
       return {};
     }
-    return gio->get_graph();
+    const size_t idx = static_cast<size_t>(gio->get_gid());
+    if (idx >= graphs_.size() || !graphs_[idx] || graphs_[idx]->deleted_) {
+      return {};
+    }
+    return graphs_[idx];
   }
 
   // Library-wide reverse lookup for an opaque Flat_index key. The gid selects
@@ -1179,20 +1168,28 @@ public:
   // handle if the graph is tombstone-deleted or the raw id is invalid for
   // that body.
   [[nodiscard]] Node_class get_node(Flat_index idx) {
-    if (!has_graph(idx.gid)) {
-      return Node_class();
+    std::shared_ptr<Graph> graph;
+    {
+      std::shared_lock lock(registry_mu_);
+      if (!has_graph_unlocked(idx.gid)) {
+        return Node_class();
+      }
+      graph = graphs_[static_cast<size_t>(idx.gid)];
     }
-    auto graph = get_graph(idx.gid);
     if (!graph->is_node_valid(idx.value)) {
       return Node_class();
     }
     return Node_class(graph.get(), idx.gid, idx.value);
   }
   [[nodiscard]] Pin_class get_pin(Flat_index idx) {
-    if (!has_graph(idx.gid)) {
-      return Pin_class();
+    std::shared_ptr<Graph> graph;
+    {
+      std::shared_lock lock(registry_mu_);
+      if (!has_graph_unlocked(idx.gid)) {
+        return Pin_class();
+      }
+      graph = graphs_[static_cast<size_t>(idx.gid)];
     }
-    auto graph = get_graph(idx.gid);
     if (!graph->is_pin_valid(idx.value)) {
       return Pin_class();
     }
@@ -1202,20 +1199,12 @@ public:
     return pin;
   }
 
-  [[nodiscard]] uint64_t mutation_epoch() const noexcept { return mutation_epoch_; }
+  [[nodiscard]] uint64_t mutation_epoch() const noexcept { return mutation_epoch_.load(std::memory_order_acquire); }
 
   // Tombstone-delete (IDs are not reused).
   void delete_graph(Gid id) noexcept {
-    if (static_cast<size_t>(id) >= graphs_.size()) {
-      return;
-    }
-    auto& slot = graphs_[static_cast<size_t>(id)];
-    if (slot && !slot->deleted_) {
-      slot->invalidate_from_library();
-      slot.reset();
-      --live_count_;
-      note_graph_mutation();
-    }
+    std::unique_lock lock(registry_mu_);
+    delete_graph_unlocked(id);
   }
 
   void delete_graph(const std::shared_ptr<Graph>& graph) noexcept {
@@ -1229,37 +1218,30 @@ public:
     if (!graphio) {
       return;
     }
-
-    const size_t idx = static_cast<size_t>(graphio->get_gid());
-    if (idx >= graph_ios_.size() || graph_ios_[idx] != graphio) {
-      return;
-    }
-
-    const auto gid  = graphio->get_gid();
-    const auto name = std::string(graphio->get_name());
-    delete_graph(gid);
-    if (!name.empty()) {
-      graph_name_to_id_.erase(name);
-      deleted_name_to_id_[name] = gid;
-    }
-    graphio->invalidate_from_library();
-    graph_ios_[idx].reset();
-    note_graph_mutation();
+    std::unique_lock lock(registry_mu_);
+    delete_graphio_unlocked(graphio);
   }
 
   void delete_graphio(std::string_view name) noexcept {
-    auto gio = find_io(name);
+    std::unique_lock lock(registry_mu_);
+    auto             gio = find_io_unlocked(name);
     if (!gio) {
       return;
     }
-    delete_graphio(gio);
+    delete_graphio_unlocked(gio);
   }
 
   // Slots (including tombstones).
-  [[nodiscard]] size_t capacity() const noexcept { return graphs_.size(); }
+  [[nodiscard]] size_t capacity() const noexcept {
+    std::shared_lock lock(registry_mu_);
+    return graphs_.size();
+  }
 
   // Count of live graphs.
-  [[nodiscard]] Gid live_count() const noexcept { return live_count_; }
+  [[nodiscard]] Gid live_count() const noexcept {
+    std::shared_lock lock(registry_mu_);
+    return live_count_;
+  }
 
   // Persistence — saves all declarations (text) and bodies (binary).
   // db_path is the root directory (e.g., "my_db/").
@@ -1267,10 +1249,33 @@ public:
   void load(const std::string& db_path);
 
 private:
-  [[nodiscard]] std::shared_ptr<GraphIO> create_io_impl(Gid id, std::string_view name) {
+  [[nodiscard]] std::shared_ptr<GraphIO> find_io_unlocked(std::string_view name) const {
+    if (name.empty()) {
+      return {};
+    }
+
+    const auto it = graph_name_to_id_.find(std::string(name));
+    if (it == graph_name_to_id_.end()) {
+      return {};
+    }
+
+    const size_t idx = static_cast<size_t>(it->second);
+    if (idx >= graph_ios_.size()) {
+      return {};
+    }
+
+    return graph_ios_[idx];
+  }
+
+  [[nodiscard]] bool has_graph_unlocked(Gid id) const noexcept {
+    const size_t idx = static_cast<size_t>(id);
+    return idx < graphs_.size() && graphs_[idx] != nullptr && !graphs_[idx]->deleted_;
+  }
+
+  [[nodiscard]] std::shared_ptr<GraphIO> create_io_impl_unlocked(Gid id, std::string_view name) {
     assert(id != invalid_id && "create_io: graph id 0 is reserved");
     assert(!name.empty() && "create_io: name is required");
-    assert_name_available(name);
+    assert_name_available_unlocked(name);
 
     const size_t idx = static_cast<size_t>(id);
     if (idx < graph_ios_.size()) {
@@ -1301,6 +1306,11 @@ private:
   }
 
   [[nodiscard]] std::shared_ptr<Graph> create_graph_body(const std::shared_ptr<GraphIO>& graphio) {
+    std::unique_lock lock(registry_mu_);
+    return create_graph_body_unlocked(graphio);
+  }
+
+  [[nodiscard]] std::shared_ptr<Graph> create_graph_body_unlocked(const std::shared_ptr<GraphIO>& graphio) {
     assert(graphio != nullptr && "create_graph_body: null GraphIO");
 
     const size_t idx = static_cast<size_t>(graphio->get_gid());
@@ -1331,7 +1341,42 @@ private:
     return graph;
   }
 
-  void assert_name_available(std::string_view name) const noexcept {
+  void delete_graph_unlocked(Gid id) noexcept {
+    if (static_cast<size_t>(id) >= graphs_.size()) {
+      return;
+    }
+    auto& slot = graphs_[static_cast<size_t>(id)];
+    if (slot && !slot->deleted_) {
+      slot->invalidate_from_library();
+      slot.reset();
+      --live_count_;
+      note_graph_mutation();
+    }
+  }
+
+  void delete_graphio_unlocked(const std::shared_ptr<GraphIO>& graphio) noexcept {
+    if (!graphio) {
+      return;
+    }
+
+    const size_t idx = static_cast<size_t>(graphio->get_gid());
+    if (idx >= graph_ios_.size() || graph_ios_[idx] != graphio) {
+      return;
+    }
+
+    const auto gid  = graphio->get_gid();
+    const auto name = std::string(graphio->get_name());
+    delete_graph_unlocked(gid);
+    if (!name.empty()) {
+      graph_name_to_id_.erase(name);
+      deleted_name_to_id_[name] = gid;
+    }
+    graphio->invalidate_from_library();
+    graph_ios_[idx].reset();
+    note_graph_mutation();
+  }
+
+  void assert_name_available_unlocked(std::string_view name) const noexcept {
     if (name.empty()) {
       return;
     }
@@ -1340,15 +1385,20 @@ private:
     assert(it == graph_name_to_id_.end() && "create_graph: graph name already exists");
   }
 
-  void note_graph_mutation() const noexcept { ++mutation_epoch_; }
+  void note_graph_mutation() const noexcept { mutation_epoch_.fetch_add(1, std::memory_order_acq_rel); }
 
+  // Multi-reader / single-writer lock guarding the registry containers below.
+  // Graph bodies remain single-threaded per pointer; this lock protects only
+  // the slot vectors and name maps so concurrent find_io / find_graph callers
+  // from different threads can proceed in parallel.
+  mutable std::shared_mutex                      registry_mu_;
   std::vector<std::shared_ptr<GraphIO>>          graph_ios_;
   std::vector<std::shared_ptr<Graph>>            graphs_;
   ankerl::unordered_dense::map<std::string, Gid> graph_name_to_id_;
   ankerl::unordered_dense::map<std::string, Gid> deleted_name_to_id_;
   // count of live graphs
-  Gid              live_count_     = 0;
-  mutable uint64_t mutation_epoch_ = 1;
+  Gid                           live_count_     = 0;
+  mutable std::atomic<uint64_t> mutation_epoch_ = 1;
 
   friend class Graph;
   friend class GraphIO;
@@ -1358,7 +1408,8 @@ inline std::shared_ptr<Graph> GraphIO::get_graph() {
   if (owner_lib_ == nullptr) {
     return {};
   }
-  const size_t idx = static_cast<size_t>(gid_);
+  std::shared_lock lock(owner_lib_->registry_mu_);
+  const size_t     idx = static_cast<size_t>(gid_);
   if (idx >= owner_lib_->graphs_.size()) {
     return {};
   }
@@ -1373,7 +1424,8 @@ inline std::shared_ptr<const Graph> GraphIO::get_graph() const {
   if (owner_lib_ == nullptr) {
     return {};
   }
-  const size_t idx = static_cast<size_t>(gid_);
+  std::shared_lock lock(owner_lib_->registry_mu_);
+  const size_t     idx = static_cast<size_t>(gid_);
   if (idx >= owner_lib_->graphs_.size()) {
     return {};
   }
