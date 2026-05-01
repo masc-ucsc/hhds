@@ -440,6 +440,17 @@ cc_test(
     ],
 )
 
+cc_binary(
+    name = "tree_edit_distance_bench",
+    srcs = ["tests/tree_edit_distance_bench.cpp"],
+    tags = ["manual"],
+    deps = [
+        ":core",
+        ":tree_edit_distance",
+        "@google_benchmark//:benchmark_main",
+    ],
+)
+
 # cc_binary(
 #     name = "graph_bin",
 #     srcs = ["graph_main.cpp"],
