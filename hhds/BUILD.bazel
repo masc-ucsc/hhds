@@ -425,6 +425,13 @@ cc_binary(
     ],
 )
 
+cc_binary(
+    name = "hhds_tree_cat",
+    srcs = ["hhds_tree_cat.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [":core"],
+)
+
 cc_library(
     name = "tree_edit_distance",
     hdrs = ["tree_edit_distance.hpp"],
