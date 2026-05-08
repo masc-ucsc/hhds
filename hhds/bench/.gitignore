@@ -1,0 +1,5 @@
+.venv/
+results/
+*.png
+*.pdf
+__pycache__/
