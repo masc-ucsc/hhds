@@ -18,16 +18,28 @@ Topology parse_topology(std::string_view name) {
   if (name == "eda_typical") {
     return Topology::EdaTypical;
   }
+  if (name == "dense") {
+    return Topology::Dense;
+  }
+  if (name == "sedges_only") {
+    return Topology::SedgesOnly;
+  }
+  if (name == "overflow_only") {
+    return Topology::OverflowOnly;
+  }
   assert(false && "unknown topology");
   return Topology::Chain;
 }
 
 std::string_view topology_name(Topology t) {
   switch (t) {
-    case Topology::Chain:      return "chain";
-    case Topology::Fanout:     return "fanout";
-    case Topology::RandomDag:  return "random_dag";
-    case Topology::EdaTypical: return "eda_typical";
+    case Topology::Chain:        return "chain";
+    case Topology::Fanout:       return "fanout";
+    case Topology::RandomDag:    return "random_dag";
+    case Topology::EdaTypical:   return "eda_typical";
+    case Topology::Dense:        return "dense";
+    case Topology::SedgesOnly:   return "sedges_only";
+    case Topology::OverflowOnly: return "overflow_only";
   }
   return "unknown";
 }
@@ -81,6 +93,42 @@ EdgeList make_random_dag(const GraphSpec& spec) {
   return out;
 }
 
+// Helper: each node connects to the next K nodes (forward, capped at N-1).
+// Result: middle nodes have ~K incoming + ~K outgoing edges = ~2K total.
+EdgeList make_forward_k(const GraphSpec& spec, int k) {
+  EdgeList out;
+  out.nodes = spec.nodes;
+  out.edges.reserve(static_cast<size_t>(spec.nodes) * k);
+  for (int i = 0; i < spec.nodes; ++i) {
+    const int last = std::min(i + k, spec.nodes - 1);
+    for (int j = i + 1; j <= last; ++j) {
+      out.edges.emplace_back(i, j);
+    }
+  }
+  return out;
+}
+
+EdgeList make_dense(const GraphSpec& spec) {
+  // 32 forward edges per node -> middle nodes have ~64 total edges,
+  // well past the 10-edge node-overflow threshold.
+  return make_forward_k(spec, 32);
+}
+
+EdgeList make_sedges_only(const GraphSpec& spec) {
+  // 2 forward edges per node -> middle nodes have ~4 total edges
+  // (2 in + 2 out), all of which fit in the 4-slot sedges_ packed
+  // path. No overflow, no ledge slots, no sedges_extra.
+  return make_forward_k(spec, 2);
+}
+
+EdgeList make_overflow_only(const GraphSpec& spec) {
+  // 16 forward edges per node -> middle nodes have ~32 total edges,
+  // well past the 10-edge node-overflow threshold. When overflow is
+  // first triggered hhds flushes all inline content into the overflow
+  // set, so every node's edges live entirely in overflow.
+  return make_forward_k(spec, 16);
+}
+
 EdgeList make_eda_typical(const GraphSpec& spec) {
   // Mostly-pin-0 chain backbone (90% of edges) + 10% sparse cross-edges
   // skipping ahead 2-8 nodes. Mimics LUT/gate netlist where most signals
@@ -107,10 +155,13 @@ EdgeList make_eda_typical(const GraphSpec& spec) {
 
 EdgeList make_edge_list(const GraphSpec& spec) {
   switch (spec.topology) {
-    case Topology::Chain:      return make_chain(spec);
-    case Topology::Fanout:     return make_fanout(spec);
-    case Topology::RandomDag:  return make_random_dag(spec);
-    case Topology::EdaTypical: return make_eda_typical(spec);
+    case Topology::Chain:        return make_chain(spec);
+    case Topology::Fanout:       return make_fanout(spec);
+    case Topology::RandomDag:    return make_random_dag(spec);
+    case Topology::EdaTypical:   return make_eda_typical(spec);
+    case Topology::Dense:        return make_dense(spec);
+    case Topology::SedgesOnly:   return make_sedges_only(spec);
+    case Topology::OverflowOnly: return make_overflow_only(spec);
   }
   return {};
 }
