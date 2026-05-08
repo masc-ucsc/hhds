@@ -1,0 +1,28 @@
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//tools:copt_default.bzl", "COPTS")
+
+cc_library(
+    name = "graph_spec",
+    srcs = ["generator/graph_spec.cpp"],
+    hdrs = ["generator/graph_spec.hpp"],
+    copts = COPTS,
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "hhds_bench",
+    srcs = ["hhds_bench.cpp"],
+    copts = COPTS + [
+        "-Wno-unused-parameter",
+        "-Wno-unused-variable",
+        "-Wno-shadow",
+    ],
+    tags = ["manual"],
+    deps = [
+        ":graph_spec",
+        "//hhds:graph",
+        "@google_benchmark//:benchmark",
+    ],
+)
