@@ -19,7 +19,7 @@ std::optional<std::string> Tree::node_text_override(Tree_pos node_pos, const Pri
 }
 
 Type_entry Tree::resolve_print_type(Type type, const PrintOptions& options) const {
-  if (type >= 0 && static_cast<size_t>(type) < options.type_table.size()) {
+  if (static_cast<size_t>(type) < options.type_table.size()) {
     return options.type_table[static_cast<size_t>(type)];
   }
 
