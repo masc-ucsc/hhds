@@ -73,6 +73,12 @@ class ForwardFlatIterator;
 class ForwardFlatRange;
 class ForwardHierIterator;
 class ForwardHierRange;
+class BackwardClassIterator;
+class BackwardClassRange;
+class BackwardFlatIterator;
+class BackwardFlatRange;
+class BackwardHierIterator;
+class BackwardHierRange;
 class Hier_instance;
 class HierIterator;
 class HierRange;
@@ -510,6 +516,9 @@ public:
   [[nodiscard]] ForwardFlatRange  forward_flat() const noexcept;
   [[nodiscard]] FastHierRange     fast_hier() const noexcept;
   [[nodiscard]] ForwardHierRange  forward_hier() const noexcept;
+  [[nodiscard]] BackwardClassRange backward_class() const noexcept;
+  [[nodiscard]] BackwardFlatRange  backward_flat() const noexcept;
+  [[nodiscard]] BackwardHierRange  backward_hier() const noexcept;
   // Hierarchy-only traversal: yields one Hier_instance per subnode in the
   // structure tree, recursing into each instance's target graph (cycle-
   // guarded by active_graphs). Walks tree_ alone — it never iterates
@@ -584,6 +593,10 @@ private:
   // Exposed to the Forward iterator classes (which are friends).
   [[nodiscard]] bool forward_is_source(size_t idx) const noexcept;
 
+  void ensure_backward_caches() const;
+  // Exposed to the Backward iterator classes (which are friends).
+  [[nodiscard]] bool backward_is_sink(size_t idx) const noexcept;
+
   std::vector<NodeEntry>                         node_table;
   std::vector<PinEntry>                          pin_table;
   OverflowVec                                    overflow_sets_;
@@ -609,6 +622,9 @@ private:
   mutable std::vector<Nid>                       forward_pass2_cache_;
   mutable std::vector<uint32_t>                  forward_remaining_in_cache_;
   mutable bool                                   forward_caches_valid_ = false;
+  mutable std::vector<Nid>                       backward_pass2_cache_;
+  mutable std::vector<uint32_t>                  backward_remaining_out_cache_;
+  mutable bool                                   backward_caches_valid_ = false;
   ankerl::unordered_dense::map<std::string, Pid> input_pins_;
   ankerl::unordered_dense::map<std::string, Pid> output_pins_;
   const GraphLibrary*                            owner_lib_ = nullptr;
@@ -635,6 +651,12 @@ private:
   friend class ForwardFlatRange;
   friend class ForwardHierIterator;
   friend class ForwardHierRange;
+  friend class BackwardClassIterator;
+  friend class BackwardClassRange;
+  friend class BackwardFlatIterator;
+  friend class BackwardFlatRange;
+  friend class BackwardHierIterator;
+  friend class BackwardHierRange;
   friend class HierIterator;
   friend class HierRange;
   friend class Hier_instance;
@@ -954,6 +976,167 @@ public:
   explicit ForwardHierRange(Graph* graph) noexcept : graph_(graph) {}
   [[nodiscard]] ForwardHierIterator begin() const;
   [[nodiscard]] ForwardHierIterator end() const noexcept { return ForwardHierIterator{}; }
+
+private:
+  Graph* graph_;
+};
+
+// Backward topological iterator for a single graph body. Emits sinks first,
+// then reverse storage-order combinational nodes (Pass 1), then deferred back-edge
+// sources (Pass 2 replayed from Graph::backward_pass2_cache_), then any cycle
+// survivors (Tail).
+class BackwardClassIterator {
+public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type        = Node_class;
+  using difference_type   = std::ptrdiff_t;
+  using pointer           = void;
+  using reference         = Node_class;
+
+  BackwardClassIterator() noexcept = default;
+  BackwardClassIterator(const BackwardClassIterator&)            = delete;
+  BackwardClassIterator& operator=(const BackwardClassIterator&) = delete;
+  BackwardClassIterator(BackwardClassIterator&&) noexcept;
+  BackwardClassIterator& operator=(BackwardClassIterator&&) noexcept;
+  ~BackwardClassIterator() = default;
+
+  [[nodiscard]] Node_class operator*() const;
+  BackwardClassIterator&   operator++();
+  [[nodiscard]] bool operator==(const BackwardClassIterator& o) const noexcept {
+    if (phase_ == Phase::End && o.phase_ == Phase::End) {
+      return true;
+    }
+    return graph_ == o.graph_ && phase_ == o.phase_ && current_idx_ == o.current_idx_;
+  }
+  [[nodiscard]] bool operator!=(const BackwardClassIterator& o) const noexcept { return !(*this == o); }
+
+private:
+  enum class Phase : uint8_t { Pass1, Pass2, Tail, End };
+
+  explicit BackwardClassIterator(Graph* graph);
+  void advance();
+  void propagate(size_t sink_idx, size_t cursor);
+  [[nodiscard]] bool is_sink(size_t idx) const noexcept;
+  [[nodiscard]] bool is_emitted(size_t idx) const noexcept;
+  void               mark_emitted(size_t idx) noexcept;
+
+  Graph* graph_       = nullptr;
+  Phase  phase_       = Phase::End;
+  size_t idx_         = 0;
+  size_t pass2_head_  = 0;
+  size_t node_count_  = 0;
+  size_t current_idx_ = 0;
+
+  std::vector<uint32_t> working_remaining_out_;
+  std::vector<uint64_t> emitted_bits_;
+
+  friend class BackwardClassRange;
+  friend class BackwardFlatIterator;
+  friend class BackwardHierIterator;
+};
+
+class BackwardClassRange {
+public:
+  explicit BackwardClassRange(Graph* graph) noexcept : graph_(graph) {}
+  [[nodiscard]] BackwardClassIterator begin() const;
+  [[nodiscard]] BackwardClassIterator end() const noexcept { return BackwardClassIterator{}; }
+
+  [[nodiscard]] size_t     size() const;
+  [[nodiscard]] Node_class front() const;
+  [[nodiscard]] bool       empty() const;
+
+private:
+  Graph* graph_;
+};
+
+class BackwardFlatIterator {
+public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type        = Node_class;
+  using difference_type   = std::ptrdiff_t;
+  using pointer           = void;
+  using reference         = Node_class;
+
+  BackwardFlatIterator() noexcept = default;
+  BackwardFlatIterator(const BackwardFlatIterator&)            = delete;
+  BackwardFlatIterator& operator=(const BackwardFlatIterator&) = delete;
+  BackwardFlatIterator(BackwardFlatIterator&&) noexcept        = default;
+  BackwardFlatIterator& operator=(BackwardFlatIterator&&) noexcept = default;
+  ~BackwardFlatIterator()                                          = default;
+
+  [[nodiscard]] Node_class operator*() const;
+  BackwardFlatIterator&    operator++();
+  [[nodiscard]] bool operator==(const BackwardFlatIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool operator!=(const BackwardFlatIterator& o) const noexcept { return !(*this == o); }
+
+private:
+  struct Frame {
+    Graph*                graph;
+    BackwardClassIterator it;
+  };
+
+  explicit BackwardFlatIterator(Graph* root_graph);
+  void advance();
+
+  Gid                               top_graph_ = Gid_invalid;
+  std::vector<Frame>                stack_;
+  ankerl::unordered_dense::set<Gid> active_graphs_;
+
+  friend class BackwardFlatRange;
+};
+
+class BackwardFlatRange {
+public:
+  explicit BackwardFlatRange(Graph* graph) noexcept : graph_(graph) {}
+  [[nodiscard]] BackwardFlatIterator begin() const;
+  [[nodiscard]] BackwardFlatIterator end() const noexcept { return BackwardFlatIterator{}; }
+
+private:
+  Graph* graph_;
+};
+
+class BackwardHierIterator {
+public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type        = Node_class;
+  using difference_type   = std::ptrdiff_t;
+  using pointer           = void;
+  using reference         = Node_class;
+
+  BackwardHierIterator() noexcept = default;
+  BackwardHierIterator(const BackwardHierIterator&)            = delete;
+  BackwardHierIterator& operator=(const BackwardHierIterator&) = delete;
+  BackwardHierIterator(BackwardHierIterator&&) noexcept        = default;
+  BackwardHierIterator& operator=(BackwardHierIterator&&) noexcept = default;
+  ~BackwardHierIterator()                                          = default;
+
+  [[nodiscard]] Node_class operator*() const;
+  BackwardHierIterator&    operator++();
+  [[nodiscard]] bool operator==(const BackwardHierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool operator!=(const BackwardHierIterator& o) const noexcept { return !(*this == o); }
+
+private:
+  struct Frame {
+    Graph*                graph;
+    BackwardClassIterator it;
+    Tree_pos              hier_pos;
+  };
+
+  explicit BackwardHierIterator(Graph* root_graph);
+  void advance();
+
+  Gid                               root_gid_ = Gid_invalid;
+  std::vector<Frame>                stack_;
+  ankerl::unordered_dense::set<Gid> active_graphs_;
+
+  friend class BackwardHierRange;
+};
+
+class BackwardHierRange {
+public:
+  explicit BackwardHierRange(Graph* graph) noexcept : graph_(graph) {}
+  [[nodiscard]] BackwardHierIterator begin() const;
+  [[nodiscard]] BackwardHierIterator end() const noexcept { return BackwardHierIterator{}; }
 
 private:
   Graph* graph_;

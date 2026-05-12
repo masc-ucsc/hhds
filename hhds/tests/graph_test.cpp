@@ -1,15 +1,35 @@
 #include "hhds/graph.hpp"
 
-#include <cassert>
-#include <csignal>
 #include <fcntl.h>
-#include <iostream>
-#include <string>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <cassert>
+#include <csignal>
+#include <iostream>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace {
+
+template <typename Range>
+std::vector<hhds::Nid> collect_nids(Range&& range) {
+  std::vector<hhds::Nid> order;
+  for (auto node : range) {
+    order.push_back(node.get_debug_nid());
+  }
+  return order;
+}
+
+template <typename Range>
+std::vector<std::pair<hhds::Gid, hhds::Nid>> collect_gid_nids(Range&& range) {
+  std::vector<std::pair<hhds::Gid, hhds::Nid>> order;
+  for (auto node : range) {
+    order.emplace_back(node.get_current_gid(), node.get_debug_nid());
+  }
+  return order;
+}
 
 void test_declaration_api() {
   hhds::GraphLibrary lib;
@@ -91,6 +111,28 @@ void test_forward_class_returns_wrappers() {
   assert(order[2] == n2.get_debug_nid());
 }
 
+void test_backward_class_returns_wrappers() {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+
+  std::vector<hhds::Nid> order;
+  for (auto node : graph->backward_class()) {
+    assert(node.get_graph() == graph.get());
+    assert(node.is_class());
+    order.push_back(node.get_debug_nid());
+  }
+
+  assert(order.size() == 3);
+  assert(order[0] == n2.get_debug_nid());
+  assert(order[1] == n1.get_debug_nid());
+  assert(order[2] == hhds::Graph::CONST_NODE);
+}
+
 void test_traversal_contexts_use_one_node_type() {
   hhds::GraphLibrary lib;
   auto               leaf_io = lib.create_io("leaf");
@@ -130,6 +172,29 @@ void test_traversal_contexts_use_one_node_type() {
     }
   }
   assert(saw_hier_leaf);
+
+  bool saw_backward_flat_leaf = false;
+  for (auto node : top->backward_flat()) {
+    assert(node.is_flat());
+    assert(!node.is_hier());
+    if (node.get_debug_nid() == leaf_n.get_debug_nid()) {
+      auto pin = node.create_sink_pin();
+      assert(pin.is_flat());
+      saw_backward_flat_leaf = true;
+    }
+  }
+  assert(saw_backward_flat_leaf);
+
+  bool saw_backward_hier_leaf = false;
+  for (auto node : top->backward_hier()) {
+    assert(node.is_hier());
+    if (node.get_debug_nid() == leaf_n.get_debug_nid()) {
+      auto pin = node.create_driver_pin();
+      assert(pin.is_hier());
+      saw_backward_hier_leaf = true;
+    }
+  }
+  assert(saw_backward_hier_leaf);
 }
 
 void test_forward_loop_last_is_source() {
@@ -167,6 +232,31 @@ void test_forward_loop_last_is_source() {
   assert(order[3] == n3.get_debug_nid());
 }
 
+void test_backward_loop_last_is_sink() {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+  n3.set_type(3);  // bit 0 set -> is_loop_last
+
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+  n2.create_driver_pin().connect_sink(n3.create_sink_pin());
+  n3.create_driver_pin().connect_sink(n2.create_sink_pin());
+
+  std::vector<hhds::Nid> order;
+  for (auto node : graph->backward_class()) {
+    order.push_back(node.get_debug_nid());
+  }
+  assert(order.size() == 4);
+  assert(order[0] == n3.get_debug_nid());
+  assert(order[1] == n2.get_debug_nid());
+  assert(order[2] == n1.get_debug_nid());
+  assert(order[3] == hhds::Graph::CONST_NODE);
+}
+
 void test_forward_out_of_order_uses_pending_list() {
   // Exercises Pass 2: a driver created AFTER its sink in storage order.
   // Pass 1 skips the sink (count > 0), emits the driver, decrements the
@@ -191,6 +281,240 @@ void test_forward_out_of_order_uses_pending_list() {
   assert(order[1] == n3.get_debug_nid());
   assert(order[2] == n1.get_debug_nid());
   assert(order[3] == n2.get_debug_nid());
+}
+
+void test_backward_out_of_order_uses_pending_list() {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+  n3.create_driver_pin().connect_sink(n1.create_sink_pin());
+
+  std::vector<hhds::Nid> order;
+  for (auto node : graph->backward_class()) {
+    order.push_back(node.get_debug_nid());
+  }
+  assert(order.size() == 4);
+  assert(order[0] == n2.get_debug_nid());
+  assert(order[1] == n1.get_debug_nid());
+  assert(order[2] == hhds::Graph::CONST_NODE);
+  assert(order[3] == n3.get_debug_nid());
+}
+
+void test_backward_cache_invalidates_after_set_type() {
+  // Cycle n1<->n2 with no loop_last: both nodes fall through to the Tail
+  // phase (Pass 1 and Pass 2 can't break the cycle), so order is
+  // [CONST, n2, n1]. After set_type marks n2 as loop_last, n2 becomes a
+  // sink: Pass 1 emits it first and frees n1's count, yielding [n2, n1, CONST].
+  // A stale cache would replay the old Tail-based order, so this test fails
+  // unless set_type invalidates backward_caches_valid_.
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+  n2.create_driver_pin().connect_sink(n1.create_sink_pin());
+
+  const std::vector<hhds::Nid> before{hhds::Graph::CONST_NODE, n2.get_debug_nid(), n1.get_debug_nid()};
+  assert(collect_nids(graph->backward_class()) == before);
+
+  n2.set_type(3);
+  assert(n2.is_loop_last());
+
+  const std::vector<hhds::Nid> after{n2.get_debug_nid(), n1.get_debug_nid(), hhds::Graph::CONST_NODE};
+  assert(collect_nids(graph->backward_class()) == after);
+}
+
+void test_backward_cache_invalidates_after_edge_mutation() {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+
+  const std::vector<hhds::Nid> initial{n3.get_debug_nid(), n2.get_debug_nid(), n1.get_debug_nid(), hhds::Graph::CONST_NODE};
+  assert(collect_nids(graph->backward_class()) == initial);
+
+  n3.create_driver_pin().connect_sink(n1.create_sink_pin());
+
+  const std::vector<hhds::Nid> after_edge{n2.get_debug_nid(), n1.get_debug_nid(), hhds::Graph::CONST_NODE, n3.get_debug_nid()};
+  assert(collect_nids(graph->backward_class()) == after_edge);
+}
+
+void test_backward_diamond_fan_in() {
+  // Diamond: n1 fans out to n2 and n3, both feed n4.
+  // remaining_out: n1=2, n2=1, n3=1, n4=0. Pass 1 reverse emits n4 (sink),
+  // then n3 and n2 (counts hit zero in storage-reverse order), then n1.
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+  auto n4 = graph->create_node();
+
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+  n1.create_driver_pin().connect_sink(n3.create_sink_pin());
+  n2.create_driver_pin().connect_sink(n4.create_sink_pin());
+  n3.create_driver_pin().connect_sink(n4.create_sink_pin());
+
+  const std::vector<hhds::Nid> expected{
+      n4.get_debug_nid(),
+      n3.get_debug_nid(),
+      n2.get_debug_nid(),
+      n1.get_debug_nid(),
+      hhds::Graph::CONST_NODE,
+  };
+  assert(collect_nids(graph->backward_class()) == expected);
+}
+
+void test_backward_named_pin_and_declared_io_edges() {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_io("top");
+  gio->add_input("in", 1);
+  gio->add_output("out", 2);
+  auto graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+
+  graph->get_input_pin("in").connect_sink(n1.create_sink_pin(11));
+  n1.create_driver_pin(7).connect_sink(n2.create_sink_pin(8));
+  n2.create_driver_pin(9).connect_sink(graph->get_output_pin("out"));
+
+  const std::vector<hhds::Nid> expected{n2.get_debug_nid(), n1.get_debug_nid(), hhds::Graph::CONST_NODE};
+  assert(collect_nids(graph->backward_class()) == expected);
+}
+
+void test_backward_skips_tombstones_after_delete() {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+
+  const std::vector<hhds::Nid> initial{n3.get_debug_nid(), n2.get_debug_nid(), n1.get_debug_nid(), hhds::Graph::CONST_NODE};
+  assert(collect_nids(graph->backward_class()) == initial);
+
+  n2.del_node();
+
+  const std::vector<hhds::Nid> after_delete{n3.get_debug_nid(), n1.get_debug_nid(), hhds::Graph::CONST_NODE};
+  assert(collect_nids(graph->backward_class()) == after_delete);
+}
+
+void test_backward_cycle_tail_without_loop_last() {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+  n2.create_driver_pin().connect_sink(n1.create_sink_pin());
+
+  const std::vector<hhds::Nid> expected{hhds::Graph::CONST_NODE, n2.get_debug_nid(), n1.get_debug_nid()};
+  assert(collect_nids(graph->backward_class()) == expected);
+}
+
+void test_backward_flat_exact_order_and_shared_body_dedup() {
+  hhds::GraphLibrary lib;
+
+  auto leaf_io = lib.create_io("leaf");
+  auto leaf    = leaf_io->create_graph();
+  auto leaf_n1 = leaf->create_node();
+  auto leaf_n2 = leaf->create_node();
+  leaf_n1.create_driver_pin().connect_sink(leaf_n2.create_sink_pin());
+
+  auto top_io = lib.create_io("top");
+  auto top    = top_io->create_graph();
+  auto inst1  = top->create_node();
+  auto inst2  = top->create_node();
+  inst1.set_subnode(leaf_io);
+  inst2.set_subnode(leaf_io);
+
+  const std::vector<std::pair<hhds::Gid, hhds::Nid>> expected{
+      {top->get_gid(), inst2.get_debug_nid()},
+      {leaf->get_gid(), leaf_n2.get_debug_nid()},
+      {leaf->get_gid(), leaf_n1.get_debug_nid()},
+      {leaf->get_gid(), hhds::Graph::CONST_NODE},
+      {top->get_gid(), inst1.get_debug_nid()},
+      {top->get_gid(), hhds::Graph::CONST_NODE},
+  };
+  assert(collect_gid_nids(top->backward_flat()) == expected);
+}
+
+void test_backward_hier_exact_order_and_shared_body_per_instance() {
+  hhds::GraphLibrary lib;
+
+  auto leaf_io = lib.create_io("leaf");
+  auto leaf    = leaf_io->create_graph();
+  auto leaf_n1 = leaf->create_node();
+  auto leaf_n2 = leaf->create_node();
+  leaf_n1.create_driver_pin().connect_sink(leaf_n2.create_sink_pin());
+
+  auto top_io = lib.create_io("top");
+  auto top    = top_io->create_graph();
+  auto inst1  = top->create_node();
+  auto inst2  = top->create_node();
+  inst1.set_subnode(leaf_io);
+  inst2.set_subnode(leaf_io);
+
+  const std::vector<std::pair<hhds::Gid, hhds::Nid>> expected{
+      {top->get_gid(), inst2.get_debug_nid()},
+      {leaf->get_gid(), leaf_n2.get_debug_nid()},
+      {leaf->get_gid(), leaf_n1.get_debug_nid()},
+      {leaf->get_gid(), hhds::Graph::CONST_NODE},
+      {top->get_gid(), inst1.get_debug_nid()},
+      {leaf->get_gid(), leaf_n2.get_debug_nid()},
+      {leaf->get_gid(), leaf_n1.get_debug_nid()},
+      {leaf->get_gid(), hhds::Graph::CONST_NODE},
+      {top->get_gid(), hhds::Graph::CONST_NODE},
+  };
+  assert(collect_gid_nids(top->backward_hier()) == expected);
+}
+
+void test_backward_hier_descends_into_nested_subnodes() {
+  // 3-level nesting: top -> mid -> leaf. backward_hier from top must yield
+  // each instance node first, then recurse into its body in backward order,
+  // popping back to the parent's CONST. Mirrors the forward
+  // test_hier_range_descends_into_nested_subnodes shape.
+  hhds::GraphLibrary lib;
+
+  auto leaf_gio = lib.create_io("leaf");
+  auto leaf     = leaf_gio->create_graph();
+
+  auto mid_gio          = lib.create_io("mid");
+  auto mid              = mid_gio->create_graph();
+  auto mid_inst_of_leaf = mid->create_node();
+  mid_inst_of_leaf.set_subnode(leaf_gio);
+
+  auto top_gio         = lib.create_io("top");
+  auto top             = top_gio->create_graph();
+  auto top_inst_of_mid = top->create_node();
+  top_inst_of_mid.set_subnode(mid_gio);
+
+  const std::vector<std::pair<hhds::Gid, hhds::Nid>> expected{
+      {top->get_gid(), top_inst_of_mid.get_debug_nid()},
+      {mid->get_gid(), mid_inst_of_leaf.get_debug_nid()},
+      {leaf->get_gid(), hhds::Graph::CONST_NODE},
+      {mid->get_gid(), hhds::Graph::CONST_NODE},
+      {top->get_gid(), hhds::Graph::CONST_NODE},
+  };
+  assert(collect_gid_nids(top->backward_hier()) == expected);
 }
 
 void test_subnode_with_loop_last_pin_marks_node() {
@@ -226,10 +550,10 @@ void test_hier_range_flat_graph_is_empty() {
   // A graph with no subnodes should produce an empty hier_range — even when
   // it has plain (non-subnode) graph nodes and IO pins.
   hhds::GraphLibrary lib;
-  auto               gio   = lib.create_io("flat");
+  auto               gio = lib.create_io("flat");
   gio->add_input("in", 0);
   gio->add_output("out", 0);
-  auto               graph = gio->create_graph();
+  auto graph = gio->create_graph();
   (void)graph->create_node();
   (void)graph->create_node();
 
@@ -289,13 +613,13 @@ void test_hier_range_descends_into_nested_subnodes() {
   auto leaf_gio = lib.create_io("leaf");
   (void)leaf_gio->create_graph();
 
-  auto mid_gio = lib.create_io("mid");
-  auto mid     = mid_gio->create_graph();
+  auto mid_gio          = lib.create_io("mid");
+  auto mid              = mid_gio->create_graph();
   auto mid_inst_of_leaf = mid->create_node();
   mid_inst_of_leaf.set_subnode(leaf_gio);
 
-  auto top_gio = lib.create_io("top");
-  auto top     = top_gio->create_graph();
+  auto top_gio         = lib.create_io("top");
+  auto top             = top_gio->create_graph();
   auto top_inst_of_mid = top->create_node();
   top_inst_of_mid.set_subnode(mid_gio);
 
@@ -360,13 +684,13 @@ void test_set_subnode_linear_deep_chain_ok() {
   // Linear chain a -> b -> c -> d. No cycle, so set_subnode must succeed
   // at every level. Walking a's hier_range yields 3 instances.
   hhds::GraphLibrary lib;
-  auto a_gio = lib.create_io("a");
-  auto a     = a_gio->create_graph();
-  auto b_gio = lib.create_io("b");
-  auto b     = b_gio->create_graph();
-  auto c_gio = lib.create_io("c");
-  auto c     = c_gio->create_graph();
-  auto d_gio = lib.create_io("d");
+  auto               a_gio = lib.create_io("a");
+  auto               a     = a_gio->create_graph();
+  auto               b_gio = lib.create_io("b");
+  auto               b     = b_gio->create_graph();
+  auto               c_gio = lib.create_io("c");
+  auto               c     = c_gio->create_graph();
+  auto               d_gio = lib.create_io("d");
   (void)d_gio->create_graph();
 
   a->create_node().set_subnode(b_gio);
@@ -386,13 +710,13 @@ void test_set_subnode_diamond_ok() {
   // leaf. This is a DAG (leaf is reached two ways), not a cycle —
   // would_create_cycle must return false for every set_subnode call here.
   hhds::GraphLibrary lib;
-  auto top_gio  = lib.create_io("top");
-  auto top      = top_gio->create_graph();
-  auto b1_gio   = lib.create_io("b1");
-  auto b1       = b1_gio->create_graph();
-  auto b2_gio   = lib.create_io("b2");
-  auto b2       = b2_gio->create_graph();
-  auto leaf_gio = lib.create_io("leaf");
+  auto               top_gio  = lib.create_io("top");
+  auto               top      = top_gio->create_graph();
+  auto               b1_gio   = lib.create_io("b1");
+  auto               b1       = b1_gio->create_graph();
+  auto               b2_gio   = lib.create_io("b2");
+  auto               b2       = b2_gio->create_graph();
+  auto               leaf_gio = lib.create_io("leaf");
   (void)leaf_gio->create_graph();
 
   top->create_node().set_subnode(b1_gio);
@@ -468,9 +792,9 @@ void test_set_subnode_retarget_ok() {
   // structure tree retains a single child for this subnode, retargeted
   // to the new gid.
   hhds::GraphLibrary lib;
-  auto a_gio = lib.create_io("a");
-  auto a     = a_gio->create_graph();
-  auto b_gio = lib.create_io("b");
+  auto               a_gio = lib.create_io("a");
+  auto               a     = a_gio->create_graph();
+  auto               b_gio = lib.create_io("b");
   (void)b_gio->create_graph();
   auto c_gio = lib.create_io("c");
   (void)c_gio->create_graph();
@@ -479,7 +803,7 @@ void test_set_subnode_retarget_ok() {
   inst.set_subnode(b_gio);
   inst.set_subnode(c_gio);
 
-  size_t   count       = 0;
+  size_t    count       = 0;
   hhds::Gid last_target = hhds::Gid_invalid;
   for (auto h : a->hier_range()) {
     last_target = h.get_target_gid();
@@ -495,9 +819,21 @@ int main() {
   test_declaration_api();
   test_wrapper_pin_connect_api();
   test_forward_class_returns_wrappers();
+  test_backward_class_returns_wrappers();
   test_traversal_contexts_use_one_node_type();
   test_forward_loop_last_is_source();
+  test_backward_loop_last_is_sink();
   test_forward_out_of_order_uses_pending_list();
+  test_backward_out_of_order_uses_pending_list();
+  test_backward_cache_invalidates_after_set_type();
+  test_backward_cache_invalidates_after_edge_mutation();
+  test_backward_diamond_fan_in();
+  test_backward_named_pin_and_declared_io_edges();
+  test_backward_skips_tombstones_after_delete();
+  test_backward_cycle_tail_without_loop_last();
+  test_backward_flat_exact_order_and_shared_body_dedup();
+  test_backward_hier_exact_order_and_shared_body_per_instance();
+  test_backward_hier_descends_into_nested_subnodes();
   test_subnode_with_loop_last_pin_marks_node();
   test_hier_range_flat_graph_is_empty();
   test_hier_range_yields_one_per_subnode();

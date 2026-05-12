@@ -75,6 +75,31 @@ TEST(GraphTraversalApi, ForwardClassUsesNodeWrappers) {
   EXPECT_EQ(order[3], n3.get_debug_nid());
 }
 
+TEST(GraphTraversalApi, BackwardClassUsesNodeWrappers) {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+  n2.create_driver_pin().connect_sink(n3.create_sink_pin());
+
+  std::vector<hhds::Nid> order;
+  for (auto node : graph->backward_class()) {
+    EXPECT_EQ(node.get_graph(), graph.get());
+    order.push_back(node.get_debug_nid());
+  }
+
+  ASSERT_EQ(order.size(), 4);
+  EXPECT_EQ(order[0], n3.get_debug_nid());
+  EXPECT_EQ(order[1], n2.get_debug_nid());
+  EXPECT_EQ(order[2], n1.get_debug_nid());
+  EXPECT_EQ(order[3], hhds::Graph::CONST_NODE);
+}
+
 TEST(TreeDeclarationApi, CreateFindAndNavigate) {
   auto forest = hhds::Forest::create();
   auto tio    = forest->create_io("tree");

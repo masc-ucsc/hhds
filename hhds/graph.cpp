@@ -703,6 +703,9 @@ void Graph::invalidate_from_library() noexcept {
   forward_pass2_cache_.clear();
   forward_remaining_in_cache_.clear();
   forward_caches_valid_ = false;
+  backward_pass2_cache_.clear();
+  backward_remaining_out_cache_.clear();
+  backward_caches_valid_ = false;
   if (tree_) {
     tree_->clear();
   }
@@ -801,6 +804,7 @@ void Graph::bind_library(const GraphLibrary* owner, Gid self_gid) noexcept {
 void Graph::invalidate_traversal_caches() noexcept {
   dirty_                = true;
   forward_caches_valid_ = false;
+  backward_caches_valid_ = false;
   if (owner_lib_ != nullptr) {
     owner_lib_->note_graph_mutation();
   }
@@ -945,6 +949,136 @@ void Graph::ensure_forward_caches() const {
   // Tail (cycle survivors) is not cached — the streaming iterator re-derives
   // it by scanning for alive-but-unemitted entries after Pass 2 completes.
   forward_caches_valid_ = true;
+}
+
+bool Graph::backward_is_sink(size_t idx) const noexcept {
+  if (idx == 2) {
+    return true;
+  }
+  if (idx < kForwardFirstIdx) {
+    return false;
+  }
+  if (idx >= node_table.size()) {
+    return false;
+  }
+  return node_table[idx].is_loop_last();
+}
+
+void Graph::ensure_backward_caches() const {
+  if (backward_caches_valid_) {
+    return;
+  }
+  const size_t node_count = node_table.size();
+
+  backward_pass2_cache_.clear();
+  backward_remaining_out_cache_.assign(node_count, 0);
+
+  if (node_count <= kForwardFirstIdx) {
+    backward_caches_valid_ = true;
+    return;
+  }
+
+  // Resolve a driver Vid back to its owning node index.
+  auto driver_idx_of = [&](Vid vid) -> size_t {
+    Nid driver_nid;
+    if (vid & static_cast<Vid>(1)) {
+      const Pid driver_pid = (static_cast<Pid>(vid) & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+      driver_nid           = ref_pin(driver_pid)->get_master_nid();
+    } else {
+      driver_nid = static_cast<Nid>(vid);
+    }
+    driver_nid = driver_nid & ~static_cast<Nid>(3);
+    return static_cast<size_t>(driver_nid >> 2);
+  };
+
+  // Enumerate every upstream driver idx reachable from sink_idx
+  auto for_each_in_driver = [&](size_t sink_idx, auto&& f) {
+    const Nid sink_nid = static_cast<Nid>(sink_idx) << 2;
+    auto      node_edges = node_table[sink_idx].get_edges(sink_nid, overflow_sets_);
+    for (auto vid : node_edges) {
+      if (!(vid & static_cast<Vid>(2))) {
+        continue;
+      }
+      const size_t driver_idx = driver_idx_of(vid);
+      if (driver_idx >= kForwardFirstIdx && driver_idx < node_count) {
+        f(driver_idx);
+      }
+    }
+    for (Pid pin_vid = node_table[sink_idx].get_next_pin_id(); pin_vid != 0;) {
+      const Pid canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+      auto      pin_edges     = ref_pin(canonical_pin)->get_edges(canonical_pin, overflow_sets_);
+      for (auto edge_vid : pin_edges) {
+        if (!(edge_vid & static_cast<Vid>(2))) {
+          continue;
+        }
+        const size_t driver_idx = driver_idx_of(edge_vid);
+        if (driver_idx >= kForwardFirstIdx && driver_idx < node_count) {
+          f(driver_idx);
+        }
+      }
+      pin_vid = ref_pin(canonical_pin)->get_next_pin_id();
+    }
+  };
+
+  // Pre-pass: initial out-edge counts.
+  auto& remaining_out = backward_remaining_out_cache_;
+  for (size_t sink_idx = kForwardFirstIdx; sink_idx < node_count; ++sink_idx) {
+    if (!node_table[sink_idx].is_alive() || backward_is_sink(sink_idx)) {
+      continue;
+    }
+    for_each_in_driver(sink_idx, [&](size_t driver_idx) {
+      if (!backward_is_sink(driver_idx)) {
+        ++remaining_out[driver_idx];
+      }
+    });
+  }
+
+  // Full Pass 1 + Pass 2 dry run to populate backward_pass2_cache_. Uses a
+  // working copy so `remaining_out` (the cache) keeps its initial values.
+  std::vector<uint32_t> working = remaining_out;
+  std::vector<uint64_t> emitted_bits((node_count + 63) / 64, 0);
+  auto                  mark_emit = [&](size_t idx) { emitted_bits[idx >> 6] |= (1ULL << (idx & 63)); };
+  auto                  is_emit   = [&](size_t idx) { return (emitted_bits[idx >> 6] >> (idx & 63)) & 1ULL; };
+
+  auto propagate = [&](size_t sink_idx, size_t cursor) {
+    if (backward_is_sink(sink_idx)) {
+      return;
+    }
+    for_each_in_driver(sink_idx, [&](size_t driver_idx) {
+      if (is_emit(driver_idx) || backward_is_sink(driver_idx)) {
+        return;
+      }
+      if (working[driver_idx] == 0) {
+        return;
+      }
+      --working[driver_idx];
+      if (working[driver_idx] == 0 && driver_idx >= cursor) {
+        backward_pass2_cache_.push_back(static_cast<Nid>(driver_idx) << 2);
+      }
+    });
+  };
+
+  for (size_t idx = node_count; idx > kForwardFirstIdx;) {
+    --idx;
+    if (!node_table[idx].is_alive() || is_emit(idx)) {
+      continue;
+    }
+    if (backward_is_sink(idx) || working[idx] == 0) {
+      mark_emit(idx);
+      propagate(idx, idx);
+    }
+  }
+
+  for (size_t head = 0; head < backward_pass2_cache_.size(); ++head) {
+    const size_t idx = static_cast<size_t>(backward_pass2_cache_[head] >> 2);
+    if (is_emit(idx)) {
+      continue;
+    }
+    mark_emit(idx);
+    propagate(idx, 0); // Propagate backwards with cursor=0 so all deferrals are added
+  }
+
+  backward_caches_valid_ = true;
 }
 
 auto Graph::create_node() -> Node {
@@ -1433,6 +1567,7 @@ void Node_class::set_subnode(const std::shared_ptr<GraphIO>& graphio) const {
 void Node_class::set_type(Type type) const {
   assert(graph_ != nullptr && "set_type: node is not attached to a graph");
   graph_->ref_node(raw_nid)->set_type(type);
+  graph_->invalidate_traversal_caches();
 }
 
 Type Node_class::get_type() const {
@@ -1673,6 +1808,11 @@ ForwardClassRange Graph::forward_class() const noexcept {
   return ForwardClassRange(const_cast<Graph*>(this));
 }
 
+BackwardClassRange Graph::backward_class() const noexcept {
+  assert_accessible();
+  return BackwardClassRange(const_cast<Graph*>(this));
+}
+
 FastFlatRange Graph::fast_flat() const noexcept { return FastFlatRange(const_cast<Graph*>(this)); }
 
 FastHierRange Graph::fast_hier() const noexcept { return FastHierRange(const_cast<Graph*>(this)); }
@@ -1849,6 +1989,16 @@ ForwardFlatRange Graph::forward_flat() const noexcept {
 ForwardHierRange Graph::forward_hier() const noexcept {
   assert_accessible();
   return ForwardHierRange(const_cast<Graph*>(this));
+}
+
+BackwardFlatRange Graph::backward_flat() const noexcept {
+  assert_accessible();
+  return BackwardFlatRange(const_cast<Graph*>(this));
+}
+
+BackwardHierRange Graph::backward_hier() const noexcept {
+  assert_accessible();
+  return BackwardHierRange(const_cast<Graph*>(this));
 }
 
 // --- ForwardClassIterator ---
@@ -2133,6 +2283,280 @@ ForwardHierIterator& ForwardHierIterator::operator++() {
 }
 
 ForwardHierIterator ForwardHierRange::begin() const { return ForwardHierIterator(graph_); }
+
+// --- BackwardClassIterator ---
+//
+// Replays the reverse topological emission order using backward_pass2_cache_ and
+// initial out-edge counts.
+
+BackwardClassIterator::BackwardClassIterator(Graph* graph) : graph_(graph) {
+  if (graph_ == nullptr) {
+    phase_ = Phase::End;
+    return;
+  }
+  graph_->ensure_backward_caches();
+  node_count_ = graph_->node_table.size();
+  if (node_count_ <= kForwardFirstIdx) {
+    phase_ = Phase::End;
+    return;
+  }
+  working_remaining_out_ = graph_->backward_remaining_out_cache_;
+  emitted_bits_.assign((node_count_ + 63) / 64, 0);
+  phase_ = Phase::Pass1;
+  idx_   = node_count_;
+  advance();
+}
+
+BackwardClassIterator::BackwardClassIterator(BackwardClassIterator&& o) noexcept = default;
+BackwardClassIterator& BackwardClassIterator::operator=(BackwardClassIterator&& o) noexcept = default;
+
+bool BackwardClassIterator::is_sink(size_t idx) const noexcept { return graph_->backward_is_sink(idx); }
+
+bool BackwardClassIterator::is_emitted(size_t idx) const noexcept {
+  return (emitted_bits_[idx >> 6] >> (idx & 63)) & 1ULL;
+}
+
+void BackwardClassIterator::mark_emitted(size_t idx) noexcept { emitted_bits_[idx >> 6] |= (1ULL << (idx & 63)); }
+
+void BackwardClassIterator::propagate(size_t sink_idx, size_t /*cursor*/) {
+  if (is_sink(sink_idx)) {
+    return;
+  }
+
+  auto driver_idx_of = [&](Vid vid) -> size_t {
+    Nid driver_nid;
+    if (vid & static_cast<Vid>(1)) {
+      const Pid driver_pid = (static_cast<Pid>(vid) & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+      driver_nid           = graph_->ref_pin(driver_pid)->get_master_nid();
+    } else {
+      driver_nid = static_cast<Nid>(vid);
+    }
+    driver_nid = driver_nid & ~static_cast<Nid>(3);
+    return static_cast<size_t>(driver_nid >> 2);
+  };
+
+  auto try_dec = [&](size_t driver_idx) {
+    if (driver_idx < kForwardFirstIdx || driver_idx >= node_count_) {
+      return;
+    }
+    if (is_emitted(driver_idx) || is_sink(driver_idx)) {
+      return;
+    }
+    if (working_remaining_out_[driver_idx] == 0) {
+      return;
+    }
+    --working_remaining_out_[driver_idx];
+  };
+
+  const Nid sink_nid = static_cast<Nid>(sink_idx) << 2;
+  auto      node_edges = graph_->node_table[sink_idx].get_edges(sink_nid, graph_->overflow_sets_);
+  for (auto vid : node_edges) {
+    if (!(vid & static_cast<Vid>(2))) {
+      continue;
+    }
+    try_dec(driver_idx_of(vid));
+  }
+  for (Pid pin_vid = graph_->node_table[sink_idx].get_next_pin_id(); pin_vid != 0;) {
+    const Pid canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    auto      pin_edges     = graph_->ref_pin(canonical_pin)->get_edges(canonical_pin, graph_->overflow_sets_);
+    for (auto edge_vid : pin_edges) {
+      if (!(edge_vid & static_cast<Vid>(2))) {
+        continue;
+      }
+      try_dec(driver_idx_of(edge_vid));
+    }
+    pin_vid = graph_->ref_pin(canonical_pin)->get_next_pin_id();
+  }
+}
+
+void BackwardClassIterator::advance() {
+  while (true) {
+    if (phase_ == Phase::Pass1) {
+      while (idx_ > kForwardFirstIdx) {
+        const size_t i = --idx_;
+        if (!graph_->node_table[i].is_alive() || is_emitted(i)) {
+          continue;
+        }
+        if (is_sink(i) || working_remaining_out_[i] == 0) {
+          mark_emitted(i);
+          propagate(i, i);
+          current_idx_ = i;
+          return;
+        }
+      }
+      phase_      = Phase::Pass2;
+      pass2_head_ = 0;
+      continue;
+    }
+    if (phase_ == Phase::Pass2) {
+      const auto& cache = graph_->backward_pass2_cache_;
+      while (pass2_head_ < cache.size()) {
+        const size_t i = static_cast<size_t>(cache[pass2_head_++] >> 2);
+        if (i >= node_count_ || is_emitted(i) || !graph_->node_table[i].is_alive()) {
+          continue;
+        }
+        mark_emitted(i);
+        current_idx_ = i;
+        return;
+      }
+      phase_ = Phase::Tail;
+      idx_   = node_count_;
+      continue;
+    }
+    if (phase_ == Phase::Tail) {
+      while (idx_ > kForwardFirstIdx) {
+        const size_t i = --idx_;
+        if (!graph_->node_table[i].is_alive() || is_emitted(i)) {
+          continue;
+        }
+        mark_emitted(i);
+        current_idx_ = i;
+        return;
+      }
+      phase_       = Phase::End;
+      current_idx_ = 0;
+      return;
+    }
+    return;  // End
+  }
+}
+
+Node_class BackwardClassIterator::operator*() const {
+  return Node_class(graph_, static_cast<Nid>(current_idx_) << 2);
+}
+
+BackwardClassIterator& BackwardClassIterator::operator++() {
+  advance();
+  return *this;
+}
+
+BackwardClassIterator BackwardClassRange::begin() const { return BackwardClassIterator(graph_); }
+
+size_t BackwardClassRange::size() const {
+  size_t n = 0;
+  for (auto it = begin(); it != end(); ++it) {
+    ++n;
+  }
+  return n;
+}
+
+Node_class BackwardClassRange::front() const {
+  auto it = begin();
+  assert(it != end() && "BackwardClassRange::front() on empty range");
+  return *it;
+}
+
+bool BackwardClassRange::empty() const { return begin() == end(); }
+
+// --- BackwardFlatIterator ---
+
+BackwardFlatIterator::BackwardFlatIterator(Graph* root_graph) {
+  if (root_graph == nullptr) {
+    return;
+  }
+  root_graph->assert_accessible();
+  top_graph_ = root_graph->self_gid_;
+  if (top_graph_ != Gid_invalid) {
+    active_graphs_.insert(top_graph_);
+  }
+  stack_.push_back(Frame{root_graph, BackwardClassIterator(root_graph)});
+  advance();
+}
+
+void BackwardFlatIterator::advance() {
+  while (!stack_.empty()) {
+    auto& frame = stack_.back();
+    if (frame.it == BackwardClassIterator{}) {
+      stack_.pop_back();
+      continue;
+    }
+    return;  // positioned
+  }
+}
+
+Node_class BackwardFlatIterator::operator*() const {
+  const auto& frame   = stack_.back();
+  const Nid   raw_nid = (*frame.it).get_debug_nid();
+  return Node_class(frame.graph, top_graph_, raw_nid);
+}
+
+BackwardFlatIterator& BackwardFlatIterator::operator++() {
+  auto&       frame      = stack_.back();
+  const Nid   cur_nid    = (*frame.it).get_debug_nid();
+  const auto& entry      = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
+  const auto* lib        = frame.graph->owner_lib_;
+  ++frame.it;
+  if (entry.has_subnode() && lib != nullptr) {
+    const Gid sub = entry.get_subnode();
+    if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
+      Graph* child = const_cast<Graph*>(lib->get_graph(sub).get());
+      active_graphs_.insert(sub);
+      stack_.push_back(Frame{child, BackwardClassIterator(child)});
+    }
+  }
+  advance();
+  return *this;
+}
+
+BackwardFlatIterator BackwardFlatRange::begin() const { return BackwardFlatIterator(graph_); }
+
+// --- BackwardHierIterator ---
+
+BackwardHierIterator::BackwardHierIterator(Graph* root_graph) {
+  if (root_graph == nullptr) {
+    return;
+  }
+  root_graph->assert_accessible();
+  root_gid_ = root_graph->self_gid_;
+  if (root_gid_ != Gid_invalid) {
+    active_graphs_.insert(root_gid_);
+  }
+  stack_.push_back(Frame{root_graph, BackwardClassIterator(root_graph), static_cast<Tree_pos>(ROOT)});
+  advance();
+}
+
+void BackwardHierIterator::advance() {
+  while (!stack_.empty()) {
+    auto& frame = stack_.back();
+    if (frame.it == BackwardClassIterator{}) {
+      const Gid popped = frame.graph->self_gid_;
+      stack_.pop_back();
+      if (popped != Gid_invalid) {
+        active_graphs_.erase(popped);
+      }
+      continue;
+    }
+    return;
+  }
+}
+
+Node_class BackwardHierIterator::operator*() const {
+  const auto& frame   = stack_.back();
+  const Nid   raw_nid = (*frame.it).get_debug_nid();
+  return Node_class(frame.graph, root_gid_, frame.hier_pos, raw_nid);
+}
+
+BackwardHierIterator& BackwardHierIterator::operator++() {
+  auto&     frame     = stack_.back();
+  const Nid cur_nid   = (*frame.it).get_debug_nid();
+  const auto& entry   = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
+  const auto* lib     = frame.graph->owner_lib_;
+  ++frame.it;
+  if (entry.has_subnode() && lib != nullptr) {
+    const Gid sub = entry.get_subnode();
+    if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
+      Graph*         child     = const_cast<Graph*>(lib->get_graph(sub).get());
+      auto           it        = frame.graph->subnode_tree_pos_.find(cur_nid);
+      const Tree_pos child_pos = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
+      active_graphs_.insert(sub);
+      stack_.push_back(Frame{child, BackwardClassIterator(child), child_pos});
+    }
+  }
+  advance();
+  return *this;
+}
+
+BackwardHierIterator BackwardHierRange::begin() const { return BackwardHierIterator(graph_); }
 
 // --- Hier_instance members ---
 
