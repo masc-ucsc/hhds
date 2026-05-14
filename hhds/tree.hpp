@@ -177,9 +177,6 @@ static constexpr int16_t  CHUNK_MASK  = CHUNK_SIZE - 1;    // Mask for chunk off
 static constexpr Tree_pos INVALID     = 0;                 // This is invalid for all pointers other than parent
 static constexpr Tree_pos ROOT        = 1 << CHUNK_SHIFT;  // ROOT ID
 
-// Now using full 64-bit addressing - much simpler!
-static constexpr uint64_t MAX_TREE_SIZE = UINT64_MAX;  // Maximum number of chunks in the tree
-
 class Forest;
 class TreeIO;
 class TreeCursor;

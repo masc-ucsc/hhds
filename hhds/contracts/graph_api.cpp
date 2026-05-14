@@ -161,7 +161,12 @@ TEST(GraphApiContract, FastTraversalVariants) {
   EXPECT_EQ(fast_hier_leaf_visits, 2u);
 }
 
-TEST(GraphApiContract, DefaultTraversalsStartAtConstAndSkipIo) {
+// class/flat/hier traversals (fast + forward + backward) visit only user
+// nodes — the three built-in singletons (INPUT / OUTPUT / CONST) are reached
+// directly via Graph::get_input_node() / get_output_node() / get_constant_node()
+// instead. CONST is recognized purely by node identity: any driver pin on
+// CONST_NODE is a constant, no attribute check required.
+TEST(GraphApiContract, DefaultTraversalsSkipBuiltinNodes) {
   hhds::GraphLibrary glib;
 
   auto gio = glib.create_io("default_order");
@@ -175,19 +180,52 @@ TEST(GraphApiContract, DefaultTraversalsStartAtConstAndSkipIo) {
   n1.create_driver_pin().connect_sink(n2.create_sink_pin());
   n2.create_driver_pin().connect_sink(g->get_output_pin("out"));
 
+  // A constant feeding n1: created on CONST_NODE, identifiable as constant
+  // by master-node identity alone.
+  auto k = g->create_constant();
+  EXPECT_EQ(k.get_master_node().get_debug_nid(), hhds::Graph::CONST_NODE);
+  k.connect_sink(n1.create_sink_pin());
+
   const auto forward = class_order(g->forward_class());
   const auto fast    = class_order(g->fast_class());
 
-  ASSERT_GE(forward.size(), 1u);
-  ASSERT_GE(fast.size(), 1u);
-  EXPECT_EQ(forward.front(), hhds::Graph::CONST_NODE);
-  EXPECT_EQ(fast.front(), hhds::Graph::CONST_NODE);
+  ASSERT_EQ(forward.size(), 2u);
+  ASSERT_EQ(fast.size(), 2u);
   EXPECT_EQ(forward, fast);
+  EXPECT_EQ(forward.front(), n1.get_debug_nid());
 
   for (auto nid : forward) {
     EXPECT_NE(nid, hhds::Graph::INPUT_NODE);
     EXPECT_NE(nid, hhds::Graph::OUTPUT_NODE);
+    EXPECT_NE(nid, hhds::Graph::CONST_NODE);
   }
+}
+
+// Built-in node accessors: direct singletons, no flat/hier/class variants.
+// To inspect their connectivity, use the standard out_edges() / inp_edges()
+// from the returned Node_class.
+TEST(GraphApiContract, BuiltinNodeAccessors) {
+  hhds::GraphLibrary glib;
+
+  auto gio = glib.create_io("builtins");
+  gio->add_input("in", 0);
+  gio->add_output("out", 0);
+  auto g = gio->create_graph();
+
+  EXPECT_EQ(g->get_input_node().get_debug_nid(), hhds::Graph::INPUT_NODE);
+  EXPECT_EQ(g->get_output_node().get_debug_nid(), hhds::Graph::OUTPUT_NODE);
+  EXPECT_EQ(g->get_constant_node().get_debug_nid(), hhds::Graph::CONST_NODE);
+
+  auto n = g->create_node();
+  g->get_input_pin("in").connect_sink(n.create_sink_pin());
+  n.create_driver_pin().connect_sink(g->get_output_pin("out"));
+  auto k = g->create_constant();
+  k.connect_sink(n.create_sink_pin());
+
+  // Connectivity is inspectable through the standard edge API.
+  EXPECT_EQ(g->get_input_node().out_edges().size(), 1u);
+  EXPECT_EQ(g->get_output_node().inp_edges().size(), 1u);
+  EXPECT_EQ(g->get_constant_node().out_edges().size(), 1u);
 }
 
 TEST(GraphApiContract, FastHierTouchesForwardHierNodesInForwardOrder) {

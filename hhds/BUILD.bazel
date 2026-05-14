@@ -75,6 +75,7 @@ cc_library(
         "graph_sizing.hpp",
         "hash_set3.hpp",
         "index.hpp",
+        "stl.h",
         "tree.hpp",
         "tree_print.hpp",
         "unordered_dense.hpp",

@@ -27,11 +27,51 @@
 
 namespace hhds {
 
-constexpr int NUM_NODES         = 10;
-constexpr int NUM_TYPES         = 3;
-constexpr int MAX_PINS_PER_NODE = 10;
-
 using OverflowVec = std::vector<ankerl::unordered_dense::set<Vid>>;
+using OverflowSet = ankerl::unordered_dense::set<Vid>;
+
+// Forward iterator over the edges of a node or pin. Two modes:
+//   - Inline: walks a contiguous buffer owned by the EdgeRange (decoded sedges + ledges).
+//   - Overflow: walks the OverflowSet (unordered_dense::set<Vid>) in-place, no copy.
+class EdgeIterator {
+public:
+  using iterator_category = std::forward_iterator_tag;
+  using value_type        = Vid;
+  using reference         = Vid;
+  using pointer           = const Vid*;
+  using difference_type   = std::ptrdiff_t;
+  using OverflowIter      = OverflowSet::const_iterator;
+
+  EdgeIterator() = default;
+  explicit EdgeIterator(const Vid* p) noexcept : inline_ptr_(p) {}
+  explicit EdgeIterator(OverflowIter it) noexcept : over_it_(it), overflow_(true) {}
+
+  Vid operator*() const noexcept { return overflow_ ? *over_it_ : *inline_ptr_; }
+
+  EdgeIterator& operator++() noexcept {
+    if (overflow_) {
+      ++over_it_;
+    } else {
+      ++inline_ptr_;
+    }
+    return *this;
+  }
+  EdgeIterator operator++(int) noexcept {
+    EdgeIterator tmp = *this;
+    ++*this;
+    return tmp;
+  }
+
+  bool operator==(const EdgeIterator& o) const noexcept {
+    return overflow_ ? (over_it_ == o.over_it_) : (inline_ptr_ == o.inline_ptr_);
+  }
+  bool operator!=(const EdgeIterator& o) const noexcept { return !(*this == o); }
+
+private:
+  OverflowIter over_it_{};
+  const Vid*   inline_ptr_ = nullptr;
+  bool         overflow_   = false;
+};
 
 struct OverflowPool {
   OverflowVec&           sets;
@@ -317,18 +357,19 @@ class GraphLibrary;
 class Graph : public Attr_host {
   class __attribute__((packed)) PinEntry {
     friend class Graph;
+    friend class ForwardClassIterator;
 
   public:
     PinEntry();
     PinEntry(Nid master_nid_value, Port_id port_id_value);
 
-    [[nodiscard]] Nid      get_master_nid() const;
-    [[nodiscard]] Port_id  get_port_id() const;
+    [[nodiscard]] Nid      get_master_nid() const { return master_nid; }
+    [[nodiscard]] Port_id  get_port_id() const { return port_id; }
     auto                   add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
     auto                   delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
     [[nodiscard]] bool     has_edges() const;
-    [[nodiscard]] Pid      get_next_pin_id() const;
-    void                   set_next_pin_id(Pid id);
+    [[nodiscard]] Pid      get_next_pin_id() const { return next_pin_id; }
+    void                   set_next_pin_id(Pid id) { next_pin_id = id; }
     [[nodiscard]] bool     check_overflow() const { return use_overflow; }
     [[nodiscard]] uint32_t get_overflow_idx() const { return sedges_.overflow_idx; }
 
@@ -336,25 +377,23 @@ class Graph : public Attr_host {
 
     class EdgeRange {
     public:
-      using iterator = typename ankerl::unordered_dense::set<Vid>::const_iterator;
+      // Inline capacity: 4 packed sedge slots + ledge0 + ledge1.
+      static constexpr size_t kInlineMax = 6;
+      using iterator                     = EdgeIterator;
+
       EdgeRange(const PinEntry* pin, Pid pid, const OverflowVec& overflow) noexcept;
-      EdgeRange(EdgeRange&& o) noexcept;
-      ~EdgeRange() noexcept;
 
-      EdgeRange(const EdgeRange&)            = delete;
-      EdgeRange& operator=(const EdgeRange&) = delete;
-
-      iterator begin() const noexcept { return set_->begin(); }
-      iterator end() const noexcept { return set_->end(); }
+      iterator begin() const noexcept {
+        return overflow_set_ ? iterator(overflow_set_->begin()) : iterator(inline_buf_.data());
+      }
+      iterator end() const noexcept {
+        return overflow_set_ ? iterator(overflow_set_->end()) : iterator(inline_buf_.data() + inline_count_);
+      }
 
     private:
-      const PinEntry*                    pin_;
-      ankerl::unordered_dense::set<Vid>* set_;
-      bool                               own_;
-
-      static ankerl::unordered_dense::set<Vid>* acquire_set() noexcept;
-      static void                               release_set(ankerl::unordered_dense::set<Vid>*) noexcept;
-      static void                               populate_set(const PinEntry*, ankerl::unordered_dense::set<Vid>&, Pid) noexcept;
+      std::array<Vid, kInlineMax> inline_buf_{};
+      const OverflowSet*          overflow_set_ = nullptr;
+      uint8_t                     inline_count_ = 0;
     };
     [[nodiscard]] auto get_edges(Pid pid, const OverflowVec& overflow) const noexcept -> EdgeRange;
 
@@ -378,17 +417,18 @@ class Graph : public Attr_host {
 
   class __attribute__((packed)) NodeEntry {
     friend class Graph;
+    friend class ForwardClassIterator;
 
   public:
     NodeEntry();
     explicit NodeEntry(bool alive_value);
 
     [[nodiscard]] bool     is_alive() const noexcept { return alive != 0; }
-    [[nodiscard]] Type     get_type() const;
-    void                   set_type(Type t);
-    [[nodiscard]] bool     is_loop_last() const noexcept;
-    [[nodiscard]] Pid      get_next_pin_id() const;
-    void                   set_next_pin_id(Pid id);
+    [[nodiscard]] Type     get_type() const { return static_cast<Type>(type); }
+    void                   set_type(Type t) { type = t; }
+    [[nodiscard]] bool     is_loop_last() const noexcept { return (type & 1u) != 0u; }
+    [[nodiscard]] Pid      get_next_pin_id() const { return next_pin_id; }
+    void                   set_next_pin_id(Pid id) { next_pin_id = id; }
     [[nodiscard]] bool     has_edges(const OverflowVec& overflow) const;
     auto                   add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
     auto                   delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
@@ -403,24 +443,23 @@ class Graph : public Attr_host {
 
     class EdgeRange {
     public:
-      using iterator = typename ankerl::unordered_dense::set<Vid>::const_iterator;
+      // Inline capacity: 4 packed sedge slots + 3 extra slots in sedges_extra + ledge0 + ledge1.
+      static constexpr size_t kInlineMax = 9;
+      using iterator                     = EdgeIterator;
+
       EdgeRange(const NodeEntry* node, Nid nid, const OverflowVec& overflow) noexcept;
-      EdgeRange(EdgeRange&& o) noexcept;
-      ~EdgeRange() noexcept;
 
-      EdgeRange(const EdgeRange&)            = delete;
-      EdgeRange& operator=(const EdgeRange&) = delete;
-
-      iterator begin() const noexcept { return set_->begin(); }
-      iterator end() const noexcept { return set_->end(); }
+      iterator begin() const noexcept {
+        return overflow_set_ ? iterator(overflow_set_->begin()) : iterator(inline_buf_.data());
+      }
+      iterator end() const noexcept {
+        return overflow_set_ ? iterator(overflow_set_->end()) : iterator(inline_buf_.data() + inline_count_);
+      }
 
     private:
-      const NodeEntry*                          node_;
-      ankerl::unordered_dense::set<Vid>*        set_;
-      bool                                      own_;
-      static ankerl::unordered_dense::set<Vid>* acquire_set() noexcept;
-      static void                               release_set(ankerl::unordered_dense::set<Vid>*) noexcept;
-      static void                               populate_set(const NodeEntry*, ankerl::unordered_dense::set<Vid>&, Nid) noexcept;
+      std::array<Vid, kInlineMax> inline_buf_{};
+      const OverflowSet*          overflow_set_ = nullptr;
+      uint8_t                     inline_count_ = 0;
     };
 
     [[nodiscard]] auto get_edges(Nid nid, const OverflowVec& overflow) const noexcept -> EdgeRange;
@@ -505,10 +544,31 @@ public:
     return pin;
   }
 
-  // Built-in nodes reserved by graph storage initialization.
+  // Built-in nodes reserved by graph storage initialization. These three
+  // singletons are never emitted by class/flat/hier traversals — reach them
+  // via the accessors below. INPUT/OUTPUT host the declared IO pins; CONST
+  // hosts driver pins for constant values (any pin whose master node is
+  // CONST_NODE is a constant, no further check required).
   static constexpr Nid INPUT_NODE  = (static_cast<Nid>(1) << 2);
   static constexpr Nid OUTPUT_NODE = (static_cast<Nid>(2) << 2);
   static constexpr Nid CONST_NODE  = (static_cast<Nid>(3) << 2);
+
+  [[nodiscard]] Node_class get_input_node() const noexcept {
+    return Node_class(const_cast<Graph*>(this), INPUT_NODE);
+  }
+  [[nodiscard]] Node_class get_output_node() const noexcept {
+    return Node_class(const_cast<Graph*>(this), OUTPUT_NODE);
+  }
+  [[nodiscard]] Node_class get_constant_node() const noexcept {
+    return Node_class(const_cast<Graph*>(this), CONST_NODE);
+  }
+  // Fresh driver pin on CONST_NODE. The caller attaches whatever value
+  // representation it wants via the standard pin attr() API; the iterator
+  // skips CONST_NODE itself, so this pin is only seen as a driver on its
+  // sink's inp_edges().
+  [[nodiscard]] Pin_class create_constant() {
+    return get_constant_node().create_driver_pin();
+  }
 
   [[nodiscard]] FastClassRange    fast_class() const noexcept;
   [[nodiscard]] ForwardClassRange forward_class() const noexcept;
@@ -535,13 +595,23 @@ public:
 private:
   void                       attr_note_modified() noexcept override { dirty_ = true; }
   [[nodiscard]] OverflowPool get_overflow_pool() { return {overflow_sets_, overflow_free_}; }
-  void                       assert_accessible() const noexcept;
+  void                       assert_accessible() const noexcept { assert(!deleted_ && "graph is no longer valid"); }
   void                       assert_node_exists(const Node_class& node) const noexcept;
   void                       assert_pin_exists(const Pin_class& pin) const noexcept;
   [[nodiscard]] bool         is_node_valid(Nid nid) const noexcept;
   [[nodiscard]] bool         is_pin_valid(Pid pid) const noexcept;
-  [[nodiscard]] auto         ref_node(Nid id) const -> NodeEntry*;
-  [[nodiscard]] auto         ref_pin(Pid id) const -> PinEntry*;
+  [[nodiscard]] NodeEntry*   ref_node(Nid id) const {
+    assert_accessible();
+    const Nid actual_id = id >> 2;
+    assert(actual_id < node_table.size());
+    return const_cast<NodeEntry*>(&node_table[actual_id]);
+  }
+  [[nodiscard]] PinEntry*    ref_pin(Pid id) const {
+    assert_accessible();
+    const Pid actual_id = id >> 2;
+    assert(actual_id < pin_table.size());
+    return const_cast<PinEntry*>(&pin_table[actual_id]);
+  }
   void                       invalidate_from_library() noexcept;
   void                       release_storage() noexcept;
   void                       clear_graph();
@@ -585,7 +655,7 @@ private:
   [[nodiscard]] Pin_class                 make_pin_class(Pid pin_pid) const;
   void                                    bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
   void                                    set_name(std::string_view name) { name_ = name; }
-  void invalidate_traversal_caches() noexcept;
+  void invalidate_traversal_caches() noexcept;  // defined inline at end of header
   // Build (or refresh) the Pass-2 deferred list and the initial in-edge counts
   // used by the forward_class streaming iterator. The full emission ordering
   // is never materialized — only these two small caches persist.
@@ -1564,8 +1634,7 @@ private:
       return;
     }
 
-    const auto it = graph_name_to_id_.find(std::string(name));
-    assert(it == graph_name_to_id_.end() && "create_graph: graph name already exists");
+    assert(graph_name_to_id_.find(std::string(name)) == graph_name_to_id_.end() && "create_graph: graph name already exists");
   }
 
   void note_graph_mutation() const noexcept { mutation_epoch_.fetch_add(1, std::memory_order_acq_rel); }
@@ -1763,6 +1832,15 @@ inline Port_id GraphIO::get_output_port_id(std::string_view name) const {
     return 0;
   }
   return output_pin_decls_[it->second.index].port_id;
+}
+
+inline void Graph::invalidate_traversal_caches() noexcept {
+  dirty_                 = true;
+  forward_caches_valid_  = false;
+  backward_caches_valid_ = false;
+  if (owner_lib_ != nullptr) {
+    owner_lib_->note_graph_mutation();
+  }
 }
 
 }  // namespace hhds

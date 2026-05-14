@@ -80,10 +80,6 @@ Graph::PinEntry::PinEntry()
 Graph::PinEntry::PinEntry(Nid mn, Port_id pid)
     : master_nid(mn), port_id(pid), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.sedges = 0} {}
 
-Nid     Graph::PinEntry::get_master_nid() const { return master_nid; }
-Port_id Graph::PinEntry::get_port_id() const { return port_id; }
-Pid     Graph::PinEntry::get_next_pin_id() const { return next_pin_id; }
-void    Graph::PinEntry::set_next_pin_id(Pid id) { next_pin_id = id; }
 
 auto Graph::PinEntry::overflow_handling(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
@@ -188,114 +184,76 @@ auto Graph::PinEntry::delete_edge(Pid self_id, Vid other_id, OverflowPool& pool)
     return pool.sets[sedges_.overflow_idx].erase(other_id) != 0;
   }
 
-  std::vector<Vid> keep;
-  bool             removed = false;
-  for (auto edge : get_edges(self_id, pool.sets)) {
-    if (edge == other_id) {
-      removed = true;
+  // Fast in-place delete for inline edges. We iterate slots, decode each, and
+  // zero out the first matching one. Slots can be left with gaps (zeros);
+  // populate_vec and add_edge both already handle holes.
+  if (ledge0 == other_id) {
+    ledge0 = 0;
+    return true;
+  }
+  if (ledge1 == other_id) {
+    ledge1 = 0;
+    return true;
+  }
+  constexpr uint64_t SLOT_MASK  = (1ULL << 16) - 1;
+  constexpr uint64_t SIGN_BIT   = 1ULL << 15;
+  constexpr uint64_t DRIVER_BIT = 1ULL << 1;
+  constexpr uint64_t PIN_BIT    = 1ULL << 0;
+  constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;
+  const uint64_t     self_num   = static_cast<uint64_t>(self_id) >> 2;
+  for (int i = 0; i < 4; ++i) {
+    const uint64_t raw = (sedges_.sedges >> (i * 16)) & SLOT_MASK;
+    if (raw == 0) {
       continue;
     }
-    keep.push_back(edge);
-  }
-  if (!removed) {
-    return false;
-  }
-
-  sedges_.sedges = 0;
-  ledge0         = 0;
-  ledge1         = 0;
-  for (auto edge : keep) {
-    (void)add_edge(self_id, edge, pool);
-  }
-  return true;
-}
-
-Graph::PinEntry::EdgeRange::EdgeRange(const Graph::PinEntry* pin, Pid pid, const OverflowVec& overflow) noexcept
-    : pin_(pin), set_(nullptr), own_(false) {
-  if (pin->use_overflow) {
-    set_ = acquire_set();
-    set_->clear();
-    for (auto raw : overflow[pin->sedges_.overflow_idx]) {
-      set_->insert(raw);
+    const bool     neg        = (raw & SIGN_BIT) != 0;
+    const bool     driver     = (raw & DRIVER_BIT) != 0;
+    const bool     pin        = (raw & PIN_BIT) != 0;
+    const uint64_t mag        = (raw >> 2) & MAG_MASK;
+    const int64_t  delta      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+    const uint64_t target_num = self_num - delta;
+    const Vid      v          = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin ? PIN_BIT : 0));
+    if (v == other_id) {
+      sedges_.sedges &= ~(SLOT_MASK << (i * 16));
+      return true;
     }
-  } else {
-    set_ = acquire_set();
-    own_ = true;
-    set_->clear();
-    populate_set(pin, *set_, pid);
   }
+  return false;
 }
 
-Graph::PinEntry::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : pin_(o.pin_), set_(o.set_), own_(o.own_) {
-  o.pin_ = nullptr;
-  o.set_ = nullptr;
-}
-
-Graph::PinEntry::EdgeRange::~EdgeRange() noexcept {
-  if (own_) {
-    release_set(set_);
+Graph::PinEntry::EdgeRange::EdgeRange(const Graph::PinEntry* pin, Pid pid, const OverflowVec& overflow) noexcept {
+  if (pin->use_overflow) {
+    overflow_set_ = &overflow[pin->sedges_.overflow_idx];
+    return;
   }
-}
-
-ankerl::unordered_dense::set<Vid>* Graph::PinEntry::EdgeRange::acquire_set() noexcept {
-  static thread_local std::vector<ankerl::unordered_dense::set<Vid>*> pool;
-  if (!pool.empty()) {
-    ankerl::unordered_dense::set<Vid>* set = pool.back();
-    pool.pop_back();
-    return set;
-  } else {
-    auto* set = new ankerl::unordered_dense::set<Vid>();
-    set->reserve(MAX_EDGES);
-    return set;
-  }
-}
-
-void Graph::PinEntry::EdgeRange::release_set(ankerl::unordered_dense::set<Vid>* set) noexcept {
-  static thread_local std::vector<ankerl::unordered_dense::set<Vid>*> pool;
-  pool.push_back(set);
-}
-
-void Graph::PinEntry::EdgeRange::populate_set(const Graph::PinEntry* pin, ankerl::unordered_dense::set<Vid>& set,
-                                              Pid pid) noexcept {
+  // Inline: decode the 4 packed sedge slots + ledge0/ledge1 directly into inline_buf_.
   constexpr uint64_t SLOT_MASK  = (1ULL << 16) - 1;  // grab 16 bits
   constexpr uint64_t SIGN_BIT   = 1ULL << 15;
   constexpr uint64_t DRIVER_BIT = 1ULL << 1;
   constexpr uint64_t PIN_BIT    = 1ULL << 0;
   constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;  // bits 14–2
 
-  // our caller passed us vid_self = (numeric_id << 1) | pin_flag
-  // strip off the low two bits to get the pure numeric node index:
-  uint64_t self_num = static_cast<uint64_t>(pid) >> 2;
-
-  uint64_t packed = pin->sedges_.sedges;
+  const uint64_t self_num = static_cast<uint64_t>(pid) >> 2;
+  const uint64_t packed   = pin->sedges_.sedges;
   for (int slot = 0; slot < 4; ++slot) {
-    uint64_t raw = (packed >> (slot * 16)) & SLOT_MASK;
+    const uint64_t raw = (packed >> (slot * 16)) & SLOT_MASK;
     if (raw == 0) {
       continue;
     }
-
-    bool neg    = (raw & SIGN_BIT) != 0;
-    bool driver = (raw & DRIVER_BIT) != 0;
-    bool pin    = (raw & PIN_BIT) != 0;
-
-    // grab only the magnitude bits
-    uint64_t mag = (raw >> 2) & MAG_MASK;
-
-    // reconstruct numeric target
-    int64_t  delta      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
-    uint64_t target_num = self_num - delta;
-
-    // repack into a Vid: shift left 2, OR back the driver+pin bits
-    Vid v = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin ? PIN_BIT : 0));
-    set.insert(v);
+    const bool     neg        = (raw & SIGN_BIT) != 0;
+    const bool     driver     = (raw & DRIVER_BIT) != 0;
+    const bool     pin_bit    = (raw & PIN_BIT) != 0;
+    const uint64_t mag        = (raw >> 2) & MAG_MASK;
+    const int64_t  delta      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+    const uint64_t target_num = self_num - delta;
+    inline_buf_[inline_count_++]
+        = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin_bit ? PIN_BIT : 0));
   }
-
-  // also remember any “overflow” residues
   if (pin->ledge0) {
-    set.insert(pin->ledge0);
+    inline_buf_[inline_count_++] = pin->ledge0;
   }
   if (pin->ledge1) {
-    set.insert(pin->ledge1);
+    inline_buf_[inline_count_++] = pin->ledge1;
   }
 }
 
@@ -327,11 +285,6 @@ Graph::NodeEntry::NodeEntry(bool alive_val) {
 
 void Graph::NodeEntry::clear_node() { bzero(this, sizeof(NodeEntry)); }
 
-void Graph::NodeEntry::set_type(Type t) { type = t; }
-Type Graph::NodeEntry::get_type() const { return type; }
-bool Graph::NodeEntry::is_loop_last() const noexcept { return (type & 1u) != 0u; }
-Pid  Graph::NodeEntry::get_next_pin_id() const { return next_pin_id; }
-void Graph::NodeEntry::set_next_pin_id(Pid id) { next_pin_id = id; }
 
 auto Graph::NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
@@ -465,27 +418,53 @@ auto Graph::NodeEntry::delete_edge(Nid self_id, Vid other_id, OverflowPool& pool
     return pool.sets[sedges_.overflow_idx].erase(other_id) != 0;
   }
 
-  std::vector<Vid> keep;
-  bool             removed = false;
-  for (auto edge : get_edges(self_id, pool.sets)) {
-    if (edge == other_id) {
-      removed = true;
-      continue;
-    }
-    keep.push_back(edge);
+  // Fast in-place delete for inline edges (4 sedges + 3 sedges_extra + 2 ledges).
+  // Zero out the matching slot; gaps are fine (add_edge and populate_vec both
+  // handle them).
+  if (ledge0 == other_id) {
+    ledge0 = 0;
+    return true;
   }
-  if (!removed) {
-    return false;
+  if (ledge1 == other_id) {
+    ledge1 = 0;
+    return true;
   }
+  constexpr uint64_t SLOT_MASK  = (1ULL << 16) - 1;
+  constexpr uint64_t SIGN_BIT   = 1ULL << 15;
+  constexpr uint64_t DRIVER_BIT = 1ULL << 1;
+  constexpr uint64_t PIN_BIT    = 1ULL << 0;
+  constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;
+  const uint64_t     self_num   = static_cast<uint64_t>(self_id) >> 2;
 
-  sedges_.sedges = 0;
-  sedges_extra   = 0;
-  ledge0         = 0;
-  ledge1         = 0;
-  for (auto edge : keep) {
-    (void)add_edge(self_id, edge, pool);
+  auto try_zero_slot = [&](uint64_t packed, int slot) -> bool {
+    const uint64_t raw = (packed >> (slot * 16)) & SLOT_MASK;
+    if (raw == 0) {
+      return false;
+    }
+    const bool     neg        = (raw & SIGN_BIT) != 0;
+    const bool     driver     = (raw & DRIVER_BIT) != 0;
+    const bool     pin        = (raw & PIN_BIT) != 0;
+    const uint64_t mag        = (raw >> 2) & MAG_MASK;
+    const int64_t  delta      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+    const uint64_t target_num = self_num - delta;
+    const Vid      v          = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin ? PIN_BIT : 0));
+    return v == other_id;
+  };
+
+  for (int i = 0; i < 4; ++i) {
+    if (try_zero_slot(sedges_.sedges, i)) {
+      sedges_.sedges &= ~(SLOT_MASK << (i * 16));
+      return true;
+    }
   }
-  return true;
+  for (int i = 0; i < 3; ++i) {
+    if (try_zero_slot(sedges_extra, i)) {
+      const uint64_t mask = SLOT_MASK << (i * 16);
+      sedges_extra        = sedges_extra & ~mask;
+      return true;
+    }
+  }
+  return false;
 }
 
 bool Graph::NodeEntry::has_edges(const OverflowVec& overflow) const {
@@ -533,85 +512,35 @@ Gid Graph::NodeEntry::get_subnode() const noexcept {
 
 bool Graph::NodeEntry::has_subnode() const noexcept { return use_overflow && ledge0 != 0; }
 
-Graph::NodeEntry::EdgeRange::EdgeRange(const Graph::NodeEntry* node, Nid nid, const OverflowVec& overflow) noexcept
-    : node_(node), set_(nullptr), own_(false) {
+Graph::NodeEntry::EdgeRange::EdgeRange(const Graph::NodeEntry* node, Nid nid, const OverflowVec& overflow) noexcept {
   if (node->use_overflow) {
-    set_ = acquire_set();
-    set_->clear();
-    for (auto raw : overflow[node->sedges_.overflow_idx]) {
-      set_->insert(raw);
-    }
-  } else {
-    set_ = acquire_set();
-    own_ = true;
-    set_->clear();
-    populate_set(node, *set_, nid);
+    overflow_set_ = &overflow[node->sedges_.overflow_idx];
+    return;
   }
-}
-
-Graph::NodeEntry::EdgeRange::EdgeRange(EdgeRange&& o) noexcept : node_(o.node_), /* nid_(o.nid_), */ set_(o.set_), own_(o.own_) {
-  o.node_ = nullptr;
-  o.set_  = nullptr;
-}
-
-Graph::NodeEntry::EdgeRange::~EdgeRange() noexcept {
-  if (own_) {
-    release_set(set_);
-  }
-}
-
-ankerl::unordered_dense::set<Nid>* Graph::NodeEntry::EdgeRange::acquire_set() noexcept {
-  static thread_local std::vector<ankerl::unordered_dense::set<Nid>*> pool;
-  if (!pool.empty()) {
-    ankerl::unordered_dense::set<Nid>* set = pool.back();
-    pool.pop_back();
-    return set;
-  } else {
-    auto* set = new ankerl::unordered_dense::set<Nid>();
-    set->reserve(MAX_EDGES);
-    return set;
-  }
-}
-
-void Graph::NodeEntry::EdgeRange::release_set(ankerl::unordered_dense::set<Nid>* set) noexcept {
-  static thread_local std::vector<ankerl::unordered_dense::set<Nid>*> pool;
-  pool.push_back(set);
-}
-
-void Graph::NodeEntry::EdgeRange::populate_set(const Graph::NodeEntry* node, ankerl::unordered_dense::set<Nid>& set,
-                                               Nid nid) noexcept {
+  // Inline: decode 4 packed sedge slots + 3 extra slots + ledge0/ledge1 into inline_buf_.
   constexpr uint64_t SLOT_MASK  = (1ULL << 16) - 1;  // grab 16 bits
   constexpr uint64_t SIGN_BIT   = 1ULL << 15;
   constexpr uint64_t DRIVER_BIT = 1ULL << 1;
   constexpr uint64_t PIN_BIT    = 1ULL << 0;
   constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;  // bits 14–2
 
-  // our caller passed us vid_self = (numeric_id << 1) | pin_flag
-  // strip off the low two bits to get the pure numeric node index:
-  uint64_t self_num = static_cast<uint64_t>(nid) >> 2;
+  const uint64_t self_num = static_cast<uint64_t>(nid) >> 2;
 
   auto decode_slot = [&](uint64_t raw) {
     if (raw == 0) {
       return;
     }
-
-    bool neg    = (raw & SIGN_BIT) != 0;
-    bool driver = (raw & DRIVER_BIT) != 0;
-    bool pin    = (raw & PIN_BIT) != 0;
-
-    // grab only the magnitude bits
-    uint64_t mag = (raw >> 2) & MAG_MASK;
-
-    // reconstruct numeric target
-    int64_t  delta      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
-    uint64_t target_num = self_num - delta;
-
-    // repack into a Vid: shift left 2, OR back the driver+pin bits
-    Vid v = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin ? PIN_BIT : 0));
-    set.insert(v);
+    const bool     neg        = (raw & SIGN_BIT) != 0;
+    const bool     driver     = (raw & DRIVER_BIT) != 0;
+    const bool     pin_bit    = (raw & PIN_BIT) != 0;
+    const uint64_t mag        = (raw >> 2) & MAG_MASK;
+    const int64_t  delta      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+    const uint64_t target_num = self_num - delta;
+    inline_buf_[inline_count_++]
+        = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin_bit ? PIN_BIT : 0));
   };
 
-  uint64_t packed = node->sedges_.sedges;
+  const uint64_t packed = node->sedges_.sedges;
   for (int slot = 0; slot < 4; ++slot) {
     decode_slot((packed >> (slot * 16)) & SLOT_MASK);
   }
@@ -619,13 +548,11 @@ void Graph::NodeEntry::EdgeRange::populate_set(const Graph::NodeEntry* node, ank
   for (int slot = 0; slot < 3; ++slot) {
     decode_slot((extra >> (slot * 16)) & SLOT_MASK);
   }
-
-  // also remember any “overflow” residues
   if (node->ledge0) {
-    set.insert(node->ledge0);
+    inline_buf_[inline_count_++] = node->ledge0;
   }
   if (node->ledge1) {
-    set.insert(node->ledge1);
+    inline_buf_[inline_count_++] = node->ledge1;
   }
 }
 
@@ -637,8 +564,6 @@ Graph::Graph() {
   register_attr_tag<attrs::name_t>("hhds::attrs::name");
   clear_graph();
 }
-
-void Graph::assert_accessible() const noexcept { assert(!deleted_ && "graph is no longer valid"); }
 
 bool Graph::is_node_valid(Nid nid) const noexcept {
   if (deleted_) {
@@ -801,19 +726,11 @@ void Graph::bind_library(const GraphLibrary* owner, Gid self_gid) noexcept {
   deleted_   = false;
 }
 
-void Graph::invalidate_traversal_caches() noexcept {
-  dirty_                = true;
-  forward_caches_valid_ = false;
-  backward_caches_valid_ = false;
-  if (owner_lib_ != nullptr) {
-    owner_lib_->note_graph_mutation();
-  }
-}
-
-// Shared forward-traversal constant: where topological iteration begins in
-// node_table. 0:invalid, 1:INPUT, 2:OUTPUT, 3:CONST — CONST is a source so we
-// start scanning at idx=3 and let is_source() decide.
-static constexpr size_t kForwardFirstIdx = 3;
+// Shared traversal constant: where iteration over user nodes begins in
+// node_table. 0:invalid, 1:INPUT, 2:OUTPUT, 3:CONST are built-in singletons
+// reached via Graph::get_input_node/get_output_node/get_constant_node — never
+// emitted by class/flat/hier traversals. User nodes start at idx 4.
+static constexpr size_t kFirstUserNodeIdx = 4;
 
 // Source classification used by both the cache builder and the streaming
 // iterator. INPUT (idx=1) and CONST (idx=3) are implicit sources; any live
@@ -823,7 +740,7 @@ bool Graph::forward_is_source(size_t idx) const noexcept {
   if (idx == 1 || idx == 3) {
     return true;
   }
-  if (idx < kForwardFirstIdx) {
+  if (idx < kFirstUserNodeIdx) {
     return false;  // OUTPUT (idx=2) is a forward sink.
   }
   if (idx >= node_table.size()) {
@@ -841,7 +758,7 @@ void Graph::ensure_forward_caches() const {
   forward_pass2_cache_.clear();
   forward_remaining_in_cache_.assign(node_count, 0);
 
-  if (node_count <= kForwardFirstIdx) {
+  if (node_count <= kFirstUserNodeIdx) {
     forward_caches_valid_ = true;
     return;
   }
@@ -869,7 +786,7 @@ void Graph::ensure_forward_caches() const {
         continue;
       }
       const size_t sink_idx = sink_idx_of(vid);
-      if (sink_idx >= kForwardFirstIdx && sink_idx < node_count) {
+      if (sink_idx >= kFirstUserNodeIdx && sink_idx < node_count) {
         f(sink_idx);
       }
     }
@@ -881,7 +798,7 @@ void Graph::ensure_forward_caches() const {
           continue;
         }
         const size_t sink_idx = sink_idx_of(edge_vid);
-        if (sink_idx >= kForwardFirstIdx && sink_idx < node_count) {
+        if (sink_idx >= kFirstUserNodeIdx && sink_idx < node_count) {
           f(sink_idx);
         }
       }
@@ -891,7 +808,7 @@ void Graph::ensure_forward_caches() const {
 
   // Pre-pass: initial in-edge counts (ignoring source-origin edges).
   auto& remaining_in = forward_remaining_in_cache_;
-  for (size_t driver_idx = kForwardFirstIdx; driver_idx < node_count; ++driver_idx) {
+  for (size_t driver_idx = kFirstUserNodeIdx; driver_idx < node_count; ++driver_idx) {
     if (!node_table[driver_idx].is_alive() || forward_is_source(driver_idx)) {
       continue;
     }
@@ -927,7 +844,7 @@ void Graph::ensure_forward_caches() const {
     });
   };
 
-  for (size_t idx = kForwardFirstIdx; idx < node_count; ++idx) {
+  for (size_t idx = kFirstUserNodeIdx; idx < node_count; ++idx) {
     if (!node_table[idx].is_alive() || is_emit(idx)) {
       continue;
     }
@@ -955,7 +872,7 @@ bool Graph::backward_is_sink(size_t idx) const noexcept {
   if (idx == 2) {
     return true;
   }
-  if (idx < kForwardFirstIdx) {
+  if (idx < kFirstUserNodeIdx) {
     return false;
   }
   if (idx >= node_table.size()) {
@@ -973,7 +890,7 @@ void Graph::ensure_backward_caches() const {
   backward_pass2_cache_.clear();
   backward_remaining_out_cache_.assign(node_count, 0);
 
-  if (node_count <= kForwardFirstIdx) {
+  if (node_count <= kFirstUserNodeIdx) {
     backward_caches_valid_ = true;
     return;
   }
@@ -1000,7 +917,7 @@ void Graph::ensure_backward_caches() const {
         continue;
       }
       const size_t driver_idx = driver_idx_of(vid);
-      if (driver_idx >= kForwardFirstIdx && driver_idx < node_count) {
+      if (driver_idx >= kFirstUserNodeIdx && driver_idx < node_count) {
         f(driver_idx);
       }
     }
@@ -1012,7 +929,7 @@ void Graph::ensure_backward_caches() const {
           continue;
         }
         const size_t driver_idx = driver_idx_of(edge_vid);
-        if (driver_idx >= kForwardFirstIdx && driver_idx < node_count) {
+        if (driver_idx >= kFirstUserNodeIdx && driver_idx < node_count) {
           f(driver_idx);
         }
       }
@@ -1022,7 +939,7 @@ void Graph::ensure_backward_caches() const {
 
   // Pre-pass: initial out-edge counts.
   auto& remaining_out = backward_remaining_out_cache_;
-  for (size_t sink_idx = kForwardFirstIdx; sink_idx < node_count; ++sink_idx) {
+  for (size_t sink_idx = kFirstUserNodeIdx; sink_idx < node_count; ++sink_idx) {
     if (!node_table[sink_idx].is_alive() || backward_is_sink(sink_idx)) {
       continue;
     }
@@ -1058,7 +975,7 @@ void Graph::ensure_backward_caches() const {
     });
   };
 
-  for (size_t idx = node_count; idx > kForwardFirstIdx;) {
+  for (size_t idx = node_count; idx > kFirstUserNodeIdx;) {
     --idx;
     if (!node_table[idx].is_alive() || is_emit(idx)) {
       continue;
@@ -1132,10 +1049,14 @@ auto Graph::find_pin(Node_class node, Port_id port_id, bool driver) const -> Pin
   const Nid self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
   auto*     self     = ref_node(self_nid);
   for (Pid cur_pin = self->get_next_pin_id(); cur_pin != 0;) {
-    const Pid canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-    auto*     pin           = ref_pin(canonical_pin);
-    if (pin->get_port_id() == port_id) {
+    const Pid  canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    auto*      pin           = ref_pin(canonical_pin);
+    const auto cur_port      = pin->get_port_id();
+    if (cur_port == port_id) {
       return make_pin_class(canonical_pin);
+    }
+    if (cur_port > port_id) {
+      break;  // sorted list: target port_id cannot appear later
     }
     cur_pin = pin->get_next_pin_id();
   }
@@ -1146,17 +1067,41 @@ auto Graph::find_pin(Node_class node, Port_id port_id, bool driver) const -> Pin
 auto Graph::find_or_create_pin(Node_class node, Port_id port_id) -> Pin_class {
   assert_node_exists(node);
   assert(port_id != 0 && "find_or_create_pin: port_id 0 is the node itself");
-  const Nid self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
-  auto*     self     = ref_node(self_nid);
-  for (Pid cur_pin = self->get_next_pin_id(); cur_pin != 0;) {
-    const Pid canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-    auto*     pin           = ref_pin(canonical_pin);
-    if (pin->get_port_id() == port_id) {
+  const Nid self_nid    = node.get_debug_nid() & ~static_cast<Nid>(2);
+  auto*     self        = ref_node(self_nid);
+  // The pin linked list is kept sorted by ascending port_id. Find the predecessor whose
+  // port_id is just below `port_id`, and stop early if a greater-or-equal port_id is found.
+  Pid prev_pin_id = 0;  // canonical Pid of predecessor (0 = insert at head)
+  Pid cur_pin    = self->get_next_pin_id();
+  while (cur_pin != 0) {
+    const Pid  canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    auto*      pin           = ref_pin(canonical_pin);
+    const auto cur_port      = pin->get_port_id();
+    if (cur_port == port_id) {
       return make_pin_class(canonical_pin);
     }
-    cur_pin = pin->get_next_pin_id();
+    if (cur_port > port_id) {
+      break;  // insertion point: new pin goes before cur_pin
+    }
+    prev_pin_id = canonical_pin;
+    cur_pin     = pin->get_next_pin_id();
   }
-  return create_pin(node, port_id);
+  // Pin not found: insert before cur_pin (which is 0 when appending at the tail).
+  assert_accessible();
+  const Pid new_pid_raw = static_cast<Pid>(pin_table.size());
+  assert(new_pid_raw);
+  pin_table.emplace_back(self_nid, port_id);
+  // After emplace_back, pin pointers (e.g. via ref_pin) may have been invalidated,
+  // so we look up by index.
+  const Pid new_pid_canonical = (new_pid_raw << 2) | static_cast<Pid>(1);
+  pin_table[new_pid_raw].set_next_pin_id(cur_pin);
+  if (prev_pin_id == 0) {
+    node_table[self_nid >> 2].set_next_pin_id(new_pid_canonical);
+  } else {
+    pin_table[prev_pin_id >> 2].set_next_pin_id(new_pid_canonical);
+  }
+  invalidate_traversal_caches();
+  return Pin_class(this, new_pid_canonical);
 }
 
 auto Graph::resolve_driver_port(Node_class node, std::string_view name) const -> Port_id {
@@ -1841,7 +1786,7 @@ FastClassIterator FastClassRange::begin() const noexcept {
   if (graph_ == nullptr) {
     return FastClassIterator{};
   }
-  return FastClassIterator(graph_, 3, graph_->node_table.size());
+  return FastClassIterator(graph_, kFirstUserNodeIdx, graph_->node_table.size());
 }
 
 FastClassIterator FastClassRange::end() const noexcept {
@@ -1863,7 +1808,7 @@ FastFlatIterator::FastFlatIterator(Graph* root_graph) {
   if (top_graph_ != Gid_invalid) {
     active_graphs_.insert(top_graph_);
   }
-  stack_.push_back(Frame{root_graph, 3, root_graph->node_table.size()});
+  stack_.push_back(Frame{root_graph, kFirstUserNodeIdx, root_graph->node_table.size()});
   advance();
 }
 
@@ -1899,7 +1844,7 @@ auto FastFlatIterator::operator++() -> FastFlatIterator& {
       Graph* child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
       ++frame.node_idx;  // parent resumes past this subnode on pop
       active_graphs_.insert(sub);
-      stack_.push_back(Frame{child_graph, 3, child_graph->node_table.size()});
+      stack_.push_back(Frame{child_graph, kFirstUserNodeIdx, child_graph->node_table.size()});
       advance();
       return *this;
     }
@@ -1925,7 +1870,7 @@ FastHierIterator::FastHierIterator(Graph* root_graph) {
   }
   // Root frame: top-level nodes share hier_pos = ROOT (the root graph's own
   // structure-tree root).
-  stack_.push_back(Frame{root_graph, 3, root_graph->node_table.size(), static_cast<Tree_pos>(ROOT)});
+  stack_.push_back(Frame{root_graph, kFirstUserNodeIdx, root_graph->node_table.size(), static_cast<Tree_pos>(ROOT)});
   advance();
 }
 
@@ -1969,7 +1914,7 @@ auto FastHierIterator::operator++() -> FastHierIterator& {
       const Tree_pos child_pos = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
       ++frame.node_idx;
       active_graphs_.insert(sub);
-      stack_.push_back(Frame{child_graph, 3, child_graph->node_table.size(), child_pos});
+      stack_.push_back(Frame{child_graph, kFirstUserNodeIdx, child_graph->node_table.size(), child_pos});
       advance();
       return *this;
     }
@@ -2016,14 +1961,14 @@ ForwardClassIterator::ForwardClassIterator(Graph* graph) : graph_(graph) {
   }
   graph_->ensure_forward_caches();
   node_count_ = graph_->node_table.size();
-  if (node_count_ <= kForwardFirstIdx) {
+  if (node_count_ <= kFirstUserNodeIdx) {
     phase_ = Phase::End;
     return;
   }
   working_remaining_in_ = graph_->forward_remaining_in_cache_;
   emitted_bits_.assign((node_count_ + 63) / 64, 0);
   phase_ = Phase::Pass1;
-  idx_   = kForwardFirstIdx;
+  idx_   = kFirstUserNodeIdx;
   advance();
 }
 
@@ -2061,7 +2006,7 @@ void ForwardClassIterator::propagate(size_t driver_idx, size_t /*cursor*/) {
   };
 
   auto try_dec = [&](size_t sink_idx) {
-    if (sink_idx < kForwardFirstIdx || sink_idx >= node_count_) {
+    if (sink_idx < kFirstUserNodeIdx || sink_idx >= node_count_) {
       return;
     }
     if (is_emitted(sink_idx) || is_source(sink_idx)) {
@@ -2073,23 +2018,89 @@ void ForwardClassIterator::propagate(size_t driver_idx, size_t /*cursor*/) {
     --working_remaining_in_[sink_idx];
   };
 
-  auto node_edges = node_table[driver_idx].get_edges(driver_nid, overflow);
-  for (auto vid : node_edges) {
-    if (vid & static_cast<Vid>(2)) {
-      continue;
+  // Inline edge iteration: avoid building an EdgeRange (which allocates a
+  // scratch vector) for every node/pin we walk. For forward propagation we
+  // only care about outgoing edges (bit 2 == 0), so we can decode slots
+  // directly and skip incoming edges without ever materializing them.
+  constexpr uint64_t SLOT_MASK  = (1ULL << 16) - 1;
+  constexpr uint64_t SIGN_BIT   = 1ULL << 15;
+  constexpr uint64_t DRIVER_BIT = 1ULL << 1;
+  constexpr uint64_t PIN_BIT    = 1ULL << 0;
+  constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;
+
+  auto decode_inline_slot = [&](uint64_t raw, uint64_t self_num) -> Vid {
+    const bool     neg        = (raw & SIGN_BIT) != 0;
+    const bool     driver     = (raw & DRIVER_BIT) != 0;
+    const bool     pin        = (raw & PIN_BIT) != 0;
+    const uint64_t mag        = (raw >> 2) & MAG_MASK;
+    const int64_t  delta      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+    const uint64_t target_num = self_num - delta;
+    return static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin ? PIN_BIT : 0));
+  };
+
+  {
+    const auto&    node     = node_table[driver_idx];
+    const uint64_t self_num = static_cast<uint64_t>(driver_nid) >> 2;
+    if (node.use_overflow) {
+      for (auto vid : overflow[node.sedges_.overflow_idx]) {
+        if (vid & static_cast<Vid>(2)) {
+          continue;
+        }
+        try_dec(sink_idx_of(vid));
+      }
+    } else {
+      const uint64_t packed = node.sedges_.sedges;
+      for (int slot = 0; slot < 4; ++slot) {
+        const uint64_t raw = (packed >> (slot * 16)) & SLOT_MASK;
+        if (raw == 0 || (raw & DRIVER_BIT) != 0) {
+          continue;
+        }
+        try_dec(sink_idx_of(decode_inline_slot(raw, self_num)));
+      }
+      const uint64_t extra = node.sedges_extra;
+      for (int slot = 0; slot < 3; ++slot) {
+        const uint64_t raw = (extra >> (slot * 16)) & SLOT_MASK;
+        if (raw == 0 || (raw & DRIVER_BIT) != 0) {
+          continue;
+        }
+        try_dec(sink_idx_of(decode_inline_slot(raw, self_num)));
+      }
+      if (node.ledge0 && !(node.ledge0 & 2)) {
+        try_dec(sink_idx_of(node.ledge0));
+      }
+      if (node.ledge1 && !(node.ledge1 & 2)) {
+        try_dec(sink_idx_of(node.ledge1));
+      }
     }
-    try_dec(sink_idx_of(vid));
   }
   for (Pid pin_vid = node_table[driver_idx].get_next_pin_id(); pin_vid != 0;) {
-    const Pid canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-    auto      pin_edges     = graph_->ref_pin(canonical_pin)->get_edges(canonical_pin, overflow);
-    for (auto edge_vid : pin_edges) {
-      if (edge_vid & static_cast<Vid>(2)) {
-        continue;
+    const Pid    canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    const auto*  pin           = graph_->ref_pin(canonical_pin);
+    if (pin->use_overflow) {
+      for (auto edge_vid : overflow[pin->sedges_.overflow_idx]) {
+        if (edge_vid & static_cast<Vid>(2)) {
+          continue;
+        }
+        try_dec(sink_idx_of(edge_vid));
       }
-      try_dec(sink_idx_of(edge_vid));
+    } else {
+      const uint64_t self_num = static_cast<uint64_t>(canonical_pin) >> 2;
+      const uint64_t packed   = pin->sedges_.sedges;
+      for (int slot = 0; slot < 4; ++slot) {
+        const uint64_t raw = (packed >> (slot * 16)) & SLOT_MASK;
+        if (raw == 0 || (raw & DRIVER_BIT) != 0) {
+          continue;
+        }
+        try_dec(sink_idx_of(decode_inline_slot(raw, self_num)));
+      }
+      if (pin->ledge0 && !(pin->ledge0 & 2)) {
+        try_dec(sink_idx_of(pin->ledge0));
+      }
+      if (pin->ledge1 && !(pin->ledge1 & 2)) {
+        try_dec(sink_idx_of(pin->ledge1));
+      }
     }
-    pin_vid = graph_->ref_pin(canonical_pin)->get_next_pin_id();
+    pin_vid = pin->get_next_pin_id();
   }
 }
 
@@ -2126,7 +2137,7 @@ void ForwardClassIterator::advance() {
         return;
       }
       phase_ = Phase::Tail;
-      idx_   = kForwardFirstIdx;
+      idx_   = kFirstUserNodeIdx;
       continue;
     }
     if (phase_ == Phase::Tail) {
@@ -2296,7 +2307,7 @@ BackwardClassIterator::BackwardClassIterator(Graph* graph) : graph_(graph) {
   }
   graph_->ensure_backward_caches();
   node_count_ = graph_->node_table.size();
-  if (node_count_ <= kForwardFirstIdx) {
+  if (node_count_ <= kFirstUserNodeIdx) {
     phase_ = Phase::End;
     return;
   }
@@ -2336,7 +2347,7 @@ void BackwardClassIterator::propagate(size_t sink_idx, size_t /*cursor*/) {
   };
 
   auto try_dec = [&](size_t driver_idx) {
-    if (driver_idx < kForwardFirstIdx || driver_idx >= node_count_) {
+    if (driver_idx < kFirstUserNodeIdx || driver_idx >= node_count_) {
       return;
     }
     if (is_emitted(driver_idx) || is_sink(driver_idx)) {
@@ -2372,7 +2383,7 @@ void BackwardClassIterator::propagate(size_t sink_idx, size_t /*cursor*/) {
 void BackwardClassIterator::advance() {
   while (true) {
     if (phase_ == Phase::Pass1) {
-      while (idx_ > kForwardFirstIdx) {
+      while (idx_ > kFirstUserNodeIdx) {
         const size_t i = --idx_;
         if (!graph_->node_table[i].is_alive() || is_emitted(i)) {
           continue;
@@ -2404,7 +2415,7 @@ void BackwardClassIterator::advance() {
       continue;
     }
     if (phase_ == Phase::Tail) {
-      while (idx_ > kForwardFirstIdx) {
+      while (idx_ > kFirstUserNodeIdx) {
         const size_t i = --idx_;
         if (!graph_->node_table[i].is_alive() || is_emitted(i)) {
           continue;
@@ -3095,20 +3106,6 @@ void Graph::delete_node(Nid nid) {
   invalidate_traversal_caches();
 }
 
-auto Graph::ref_node(Nid id) const -> NodeEntry* {
-  assert_accessible();
-  Nid actual_id = id >> 2;
-  assert(actual_id < node_table.size());
-  return (NodeEntry*)&node_table[actual_id];
-}
-
-auto Graph::ref_pin(Pid id) const -> PinEntry* {
-  assert_accessible();
-  Pid actual_id = id >> 2;
-  assert(actual_id < pin_table.size());
-  return (PinEntry*)&pin_table[actual_id];
-}
-
 void Graph::add_edge_int(Vid self_id, Vid other_id) {
   auto pool = get_overflow_pool();
   // detect type of self_id and other_id
@@ -3133,20 +3130,29 @@ void Graph::add_edge_int(Vid self_id, Vid other_id) {
 }
 
 void Graph::set_next_pin(Nid nid, Pid next_pin) {
-  // here next_pin is not << 2 but nid is << 2
-  Nid  actual_nid = nid >> 2;
-  auto node       = &node_table[actual_nid];
-  if (node->get_next_pin_id() == 0) {
-    node->set_next_pin_id(next_pin << 2 | 1);
+  // here next_pin is the raw pin_table index (not << 2), nid is << 2.
+  // The pin linked list is kept sorted by ascending port_id, so we insert at the right slot.
+  Nid        actual_nid        = nid >> 2;
+  auto       node              = &node_table[actual_nid];
+  const Pid  new_pid_canonical = (next_pin << 2) | 1;
+  const auto new_port          = pin_table[next_pin].get_port_id();
+
+  Pid head = node->get_next_pin_id();
+  if (head == 0 || pin_table[head >> 2].get_port_id() > new_port) {
+    pin_table[next_pin].set_next_pin_id(head);
+    node->set_next_pin_id(new_pid_canonical);
     return;
   }
-  Pid cur = node->get_next_pin_id();
-  cur     = cur >> 2;
-  while (pin_table[cur].get_next_pin_id()) {
-    cur = pin_table[cur].get_next_pin_id();
-    cur = cur >> 2;
+  Pid cur = head >> 2;
+  while (true) {
+    Pid nxt = pin_table[cur].get_next_pin_id();
+    if (nxt == 0 || pin_table[nxt >> 2].get_port_id() > new_port) {
+      pin_table[next_pin].set_next_pin_id(nxt);
+      pin_table[cur].set_next_pin_id(new_pid_canonical);
+      return;
+    }
+    cur = nxt >> 2;
   }
-  pin_table[cur].set_next_pin_id(next_pin << 2 | 1);
 }
 
 void Graph::display_graph() const {

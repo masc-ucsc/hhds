@@ -105,10 +105,9 @@ void test_forward_class_returns_wrappers() {
     order.push_back(node.get_debug_nid());
   }
 
-  assert(order.size() == 3);
-  assert(order[0] == hhds::Graph::CONST_NODE);
-  assert(order[1] == n1.get_debug_nid());
-  assert(order[2] == n2.get_debug_nid());
+  assert(order.size() == 2);
+  assert(order[0] == n1.get_debug_nid());
+  assert(order[1] == n2.get_debug_nid());
 }
 
 void test_backward_class_returns_wrappers() {
@@ -127,10 +126,9 @@ void test_backward_class_returns_wrappers() {
     order.push_back(node.get_debug_nid());
   }
 
-  assert(order.size() == 3);
+  assert(order.size() == 2);
   assert(order[0] == n2.get_debug_nid());
   assert(order[1] == n1.get_debug_nid());
-  assert(order[2] == hhds::Graph::CONST_NODE);
 }
 
 void test_traversal_contexts_use_one_node_type() {
@@ -225,11 +223,10 @@ void test_forward_loop_last_is_source() {
   for (auto node : graph->forward_class()) {
     order.push_back(node.get_debug_nid());
   }
-  assert(order.size() == 4);
-  assert(order[0] == hhds::Graph::CONST_NODE);
-  assert(order[1] == n1.get_debug_nid());
-  assert(order[2] == n2.get_debug_nid());
-  assert(order[3] == n3.get_debug_nid());
+  assert(order.size() == 3);
+  assert(order[0] == n1.get_debug_nid());
+  assert(order[1] == n2.get_debug_nid());
+  assert(order[2] == n3.get_debug_nid());
 }
 
 void test_backward_loop_last_is_sink() {
@@ -250,11 +247,10 @@ void test_backward_loop_last_is_sink() {
   for (auto node : graph->backward_class()) {
     order.push_back(node.get_debug_nid());
   }
-  assert(order.size() == 4);
+  assert(order.size() == 3);
   assert(order[0] == n3.get_debug_nid());
   assert(order[1] == n2.get_debug_nid());
   assert(order[2] == n1.get_debug_nid());
-  assert(order[3] == hhds::Graph::CONST_NODE);
 }
 
 void test_forward_out_of_order_uses_pending_list() {
@@ -276,11 +272,10 @@ void test_forward_out_of_order_uses_pending_list() {
   for (auto node : graph->forward_class()) {
     order.push_back(node.get_debug_nid());
   }
-  assert(order.size() == 4);
-  assert(order[0] == hhds::Graph::CONST_NODE);
-  assert(order[1] == n3.get_debug_nid());
-  assert(order[2] == n1.get_debug_nid());
-  assert(order[3] == n2.get_debug_nid());
+  assert(order.size() == 3);
+  assert(order[0] == n3.get_debug_nid());
+  assert(order[1] == n1.get_debug_nid());
+  assert(order[2] == n2.get_debug_nid());
 }
 
 void test_backward_out_of_order_uses_pending_list() {
@@ -299,20 +294,19 @@ void test_backward_out_of_order_uses_pending_list() {
   for (auto node : graph->backward_class()) {
     order.push_back(node.get_debug_nid());
   }
-  assert(order.size() == 4);
+  assert(order.size() == 3);
   assert(order[0] == n2.get_debug_nid());
   assert(order[1] == n1.get_debug_nid());
-  assert(order[2] == hhds::Graph::CONST_NODE);
-  assert(order[3] == n3.get_debug_nid());
+  assert(order[2] == n3.get_debug_nid());
 }
 
 void test_backward_cache_invalidates_after_set_type() {
   // Cycle n1<->n2 with no loop_last: both nodes fall through to the Tail
-  // phase (Pass 1 and Pass 2 can't break the cycle), so order is
-  // [CONST, n2, n1]. After set_type marks n2 as loop_last, n2 becomes a
-  // sink: Pass 1 emits it first and frees n1's count, yielding [n2, n1, CONST].
-  // A stale cache would replay the old Tail-based order, so this test fails
-  // unless set_type invalidates backward_caches_valid_.
+  // phase (Pass 1 and Pass 2 can't break the cycle), so order is [n2, n1].
+  // After set_type marks n2 as loop_last, n2 becomes a sink: Pass 1 emits it
+  // first and frees n1's count, yielding [n2, n1]. The Pass-1 vs Tail
+  // distinction is what we exercise — a stale cache would surface as the
+  // wrong relative ordering when nodes shift between phases.
   hhds::GraphLibrary lib;
   auto               gio   = lib.create_io("top");
   auto               graph = gio->create_graph();
@@ -323,13 +317,13 @@ void test_backward_cache_invalidates_after_set_type() {
   n1.create_driver_pin().connect_sink(n2.create_sink_pin());
   n2.create_driver_pin().connect_sink(n1.create_sink_pin());
 
-  const std::vector<hhds::Nid> before{hhds::Graph::CONST_NODE, n2.get_debug_nid(), n1.get_debug_nid()};
+  const std::vector<hhds::Nid> before{n2.get_debug_nid(), n1.get_debug_nid()};
   assert(collect_nids(graph->backward_class()) == before);
 
   n2.set_type(3);
   assert(n2.is_loop_last());
 
-  const std::vector<hhds::Nid> after{n2.get_debug_nid(), n1.get_debug_nid(), hhds::Graph::CONST_NODE};
+  const std::vector<hhds::Nid> after{n2.get_debug_nid(), n1.get_debug_nid()};
   assert(collect_nids(graph->backward_class()) == after);
 }
 
@@ -342,12 +336,12 @@ void test_backward_cache_invalidates_after_edge_mutation() {
   auto n2 = graph->create_node();
   auto n3 = graph->create_node();
 
-  const std::vector<hhds::Nid> initial{n3.get_debug_nid(), n2.get_debug_nid(), n1.get_debug_nid(), hhds::Graph::CONST_NODE};
+  const std::vector<hhds::Nid> initial{n3.get_debug_nid(), n2.get_debug_nid(), n1.get_debug_nid()};
   assert(collect_nids(graph->backward_class()) == initial);
 
   n3.create_driver_pin().connect_sink(n1.create_sink_pin());
 
-  const std::vector<hhds::Nid> after_edge{n2.get_debug_nid(), n1.get_debug_nid(), hhds::Graph::CONST_NODE, n3.get_debug_nid()};
+  const std::vector<hhds::Nid> after_edge{n2.get_debug_nid(), n1.get_debug_nid(), n3.get_debug_nid()};
   assert(collect_nids(graph->backward_class()) == after_edge);
 }
 
@@ -374,7 +368,6 @@ void test_backward_diamond_fan_in() {
       n3.get_debug_nid(),
       n2.get_debug_nid(),
       n1.get_debug_nid(),
-      hhds::Graph::CONST_NODE,
   };
   assert(collect_nids(graph->backward_class()) == expected);
 }
@@ -393,7 +386,7 @@ void test_backward_named_pin_and_declared_io_edges() {
   n1.create_driver_pin(7).connect_sink(n2.create_sink_pin(8));
   n2.create_driver_pin(9).connect_sink(graph->get_output_pin("out"));
 
-  const std::vector<hhds::Nid> expected{n2.get_debug_nid(), n1.get_debug_nid(), hhds::Graph::CONST_NODE};
+  const std::vector<hhds::Nid> expected{n2.get_debug_nid(), n1.get_debug_nid()};
   assert(collect_nids(graph->backward_class()) == expected);
 }
 
@@ -406,12 +399,12 @@ void test_backward_skips_tombstones_after_delete() {
   auto n2 = graph->create_node();
   auto n3 = graph->create_node();
 
-  const std::vector<hhds::Nid> initial{n3.get_debug_nid(), n2.get_debug_nid(), n1.get_debug_nid(), hhds::Graph::CONST_NODE};
+  const std::vector<hhds::Nid> initial{n3.get_debug_nid(), n2.get_debug_nid(), n1.get_debug_nid()};
   assert(collect_nids(graph->backward_class()) == initial);
 
   n2.del_node();
 
-  const std::vector<hhds::Nid> after_delete{n3.get_debug_nid(), n1.get_debug_nid(), hhds::Graph::CONST_NODE};
+  const std::vector<hhds::Nid> after_delete{n3.get_debug_nid(), n1.get_debug_nid()};
   assert(collect_nids(graph->backward_class()) == after_delete);
 }
 
@@ -426,7 +419,7 @@ void test_backward_cycle_tail_without_loop_last() {
   n1.create_driver_pin().connect_sink(n2.create_sink_pin());
   n2.create_driver_pin().connect_sink(n1.create_sink_pin());
 
-  const std::vector<hhds::Nid> expected{hhds::Graph::CONST_NODE, n2.get_debug_nid(), n1.get_debug_nid()};
+  const std::vector<hhds::Nid> expected{n2.get_debug_nid(), n1.get_debug_nid()};
   assert(collect_nids(graph->backward_class()) == expected);
 }
 
@@ -450,9 +443,7 @@ void test_backward_flat_exact_order_and_shared_body_dedup() {
       {top->get_gid(), inst2.get_debug_nid()},
       {leaf->get_gid(), leaf_n2.get_debug_nid()},
       {leaf->get_gid(), leaf_n1.get_debug_nid()},
-      {leaf->get_gid(), hhds::Graph::CONST_NODE},
       {top->get_gid(), inst1.get_debug_nid()},
-      {top->get_gid(), hhds::Graph::CONST_NODE},
   };
   assert(collect_gid_nids(top->backward_flat()) == expected);
 }
@@ -477,12 +468,9 @@ void test_backward_hier_exact_order_and_shared_body_per_instance() {
       {top->get_gid(), inst2.get_debug_nid()},
       {leaf->get_gid(), leaf_n2.get_debug_nid()},
       {leaf->get_gid(), leaf_n1.get_debug_nid()},
-      {leaf->get_gid(), hhds::Graph::CONST_NODE},
       {top->get_gid(), inst1.get_debug_nid()},
       {leaf->get_gid(), leaf_n2.get_debug_nid()},
       {leaf->get_gid(), leaf_n1.get_debug_nid()},
-      {leaf->get_gid(), hhds::Graph::CONST_NODE},
-      {top->get_gid(), hhds::Graph::CONST_NODE},
   };
   assert(collect_gid_nids(top->backward_hier()) == expected);
 }
@@ -510,9 +498,6 @@ void test_backward_hier_descends_into_nested_subnodes() {
   const std::vector<std::pair<hhds::Gid, hhds::Nid>> expected{
       {top->get_gid(), top_inst_of_mid.get_debug_nid()},
       {mid->get_gid(), mid_inst_of_leaf.get_debug_nid()},
-      {leaf->get_gid(), hhds::Graph::CONST_NODE},
-      {mid->get_gid(), hhds::Graph::CONST_NODE},
-      {top->get_gid(), hhds::Graph::CONST_NODE},
   };
   assert(collect_gid_nids(top->backward_hier()) == expected);
 }

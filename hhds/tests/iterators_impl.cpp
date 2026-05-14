@@ -68,11 +68,10 @@ TEST(GraphTraversalApi, ForwardClassUsesNodeWrappers) {
     order.push_back(node.get_debug_nid());
   }
 
-  ASSERT_EQ(order.size(), 4);
-  EXPECT_EQ(order[0], hhds::Graph::CONST_NODE);
-  EXPECT_EQ(order[1], n1.get_debug_nid());
-  EXPECT_EQ(order[2], n2.get_debug_nid());
-  EXPECT_EQ(order[3], n3.get_debug_nid());
+  ASSERT_EQ(order.size(), 3);
+  EXPECT_EQ(order[0], n1.get_debug_nid());
+  EXPECT_EQ(order[1], n2.get_debug_nid());
+  EXPECT_EQ(order[2], n3.get_debug_nid());
 }
 
 TEST(GraphTraversalApi, BackwardClassUsesNodeWrappers) {
@@ -93,11 +92,10 @@ TEST(GraphTraversalApi, BackwardClassUsesNodeWrappers) {
     order.push_back(node.get_debug_nid());
   }
 
-  ASSERT_EQ(order.size(), 4);
+  ASSERT_EQ(order.size(), 3);
   EXPECT_EQ(order[0], n3.get_debug_nid());
   EXPECT_EQ(order[1], n2.get_debug_nid());
   EXPECT_EQ(order[2], n1.get_debug_nid());
-  EXPECT_EQ(order[3], hhds::Graph::CONST_NODE);
 }
 
 TEST(TreeDeclarationApi, CreateFindAndNavigate) {

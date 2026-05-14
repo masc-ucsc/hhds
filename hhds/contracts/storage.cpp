@@ -170,9 +170,8 @@ TEST(GraphStorage, EdgeAndNodeDeletionTombstones) {
   for (auto node : graph->forward_class()) {
     visited.push_back(node.get_debug_nid());
   }
-  EXPECT_EQ(visited.size(), 2u);
-  EXPECT_EQ(visited[0], hhds::Graph::CONST_NODE);
-  EXPECT_EQ(visited[1], sink.get_debug_nid());
+  EXPECT_EQ(visited.size(), 1u);
+  EXPECT_EQ(visited[0], sink.get_debug_nid());
 }
 
 TEST(GraphStorage, ClearSemantics) {
@@ -186,8 +185,7 @@ TEST(GraphStorage, ClearSemantics) {
   EXPECT_TRUE(node.is_invalid());
   EXPECT_TRUE(gio->has_graph());
   EXPECT_TRUE(graph->get_input_pin("a").is_valid());
-  ASSERT_EQ(graph->forward_class().size(), 1u);
-  EXPECT_EQ(graph->forward_class().front().get_debug_nid(), hhds::Graph::CONST_NODE);
+  EXPECT_TRUE(graph->forward_class().empty());
   auto node_after_clear = graph->create_node();
   EXPECT_TRUE(node.is_invalid());
   EXPECT_TRUE(node_after_clear.is_valid());
