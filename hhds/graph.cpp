@@ -36,9 +36,7 @@ auto Node_class::get_root_gid() const noexcept -> Gid {
   return graph_ != nullptr ? graph_->get_gid() : Gid_invalid;
 }
 
-auto Node_class::get_current_gid() const noexcept -> Gid {
-  return graph_ != nullptr ? graph_->get_gid() : Gid_invalid;
-}
+auto Node_class::get_current_gid() const noexcept -> Gid { return graph_ != nullptr ? graph_->get_gid() : Gid_invalid; }
 
 auto Pin_class::get_debug_nid() const noexcept -> Nid {
   // Port-0 pins (node-as-pin): pin_pid & 1 == 0, and pin_pid encodes the
@@ -70,16 +68,13 @@ auto Pin_class::get_root_gid() const noexcept -> Gid {
   return graph_ != nullptr ? graph_->get_gid() : Gid_invalid;
 }
 
-auto Pin_class::get_current_gid() const noexcept -> Gid {
-  return graph_ != nullptr ? graph_->get_gid() : Gid_invalid;
-}
+auto Pin_class::get_current_gid() const noexcept -> Gid { return graph_ != nullptr ? graph_->get_gid() : Gid_invalid; }
 
 Graph::PinEntry::PinEntry()
     : master_nid(0), port_id(0), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.sedges = 0} {}
 
 Graph::PinEntry::PinEntry(Nid mn, Port_id pid)
     : master_nid(mn), port_id(pid), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0), sedges_{.sedges = 0} {}
-
 
 auto Graph::PinEntry::overflow_handling(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
@@ -240,14 +235,13 @@ Graph::PinEntry::EdgeRange::EdgeRange(const Graph::PinEntry* pin, Pid pid, const
     if (raw == 0) {
       continue;
     }
-    const bool     neg        = (raw & SIGN_BIT) != 0;
-    const bool     driver     = (raw & DRIVER_BIT) != 0;
-    const bool     pin_bit    = (raw & PIN_BIT) != 0;
-    const uint64_t mag        = (raw >> 2) & MAG_MASK;
-    const int64_t  delta      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
-    const uint64_t target_num = self_num - delta;
-    inline_buf_[inline_count_++]
-        = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin_bit ? PIN_BIT : 0));
+    const bool     neg           = (raw & SIGN_BIT) != 0;
+    const bool     driver        = (raw & DRIVER_BIT) != 0;
+    const bool     pin_bit       = (raw & PIN_BIT) != 0;
+    const uint64_t mag           = (raw >> 2) & MAG_MASK;
+    const int64_t  delta         = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+    const uint64_t target_num    = self_num - delta;
+    inline_buf_[inline_count_++] = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin_bit ? PIN_BIT : 0));
   }
   if (pin->ledge0) {
     inline_buf_[inline_count_++] = pin->ledge0;
@@ -284,7 +278,6 @@ Graph::NodeEntry::NodeEntry(bool alive_val) {
 }
 
 void Graph::NodeEntry::clear_node() { bzero(this, sizeof(NodeEntry)); }
-
 
 auto Graph::NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
@@ -530,14 +523,13 @@ Graph::NodeEntry::EdgeRange::EdgeRange(const Graph::NodeEntry* node, Nid nid, co
     if (raw == 0) {
       return;
     }
-    const bool     neg        = (raw & SIGN_BIT) != 0;
-    const bool     driver     = (raw & DRIVER_BIT) != 0;
-    const bool     pin_bit    = (raw & PIN_BIT) != 0;
-    const uint64_t mag        = (raw >> 2) & MAG_MASK;
-    const int64_t  delta      = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
-    const uint64_t target_num = self_num - delta;
-    inline_buf_[inline_count_++]
-        = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin_bit ? PIN_BIT : 0));
+    const bool     neg           = (raw & SIGN_BIT) != 0;
+    const bool     driver        = (raw & DRIVER_BIT) != 0;
+    const bool     pin_bit       = (raw & PIN_BIT) != 0;
+    const uint64_t mag           = (raw >> 2) & MAG_MASK;
+    const int64_t  delta         = neg ? -static_cast<int64_t>(mag) : static_cast<int64_t>(mag);
+    const uint64_t target_num    = self_num - delta;
+    inline_buf_[inline_count_++] = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (pin_bit ? PIN_BIT : 0));
   };
 
   const uint64_t packed = node->sedges_.sedges;
@@ -910,7 +902,7 @@ void Graph::ensure_backward_caches() const {
 
   // Enumerate every upstream driver idx reachable from sink_idx
   auto for_each_in_driver = [&](size_t sink_idx, auto&& f) {
-    const Nid sink_nid = static_cast<Nid>(sink_idx) << 2;
+    const Nid sink_nid   = static_cast<Nid>(sink_idx) << 2;
     auto      node_edges = node_table[sink_idx].get_edges(sink_nid, overflow_sets_);
     for (auto vid : node_edges) {
       if (!(vid & static_cast<Vid>(2))) {
@@ -992,10 +984,72 @@ void Graph::ensure_backward_caches() const {
       continue;
     }
     mark_emit(idx);
-    propagate(idx, 0); // Propagate backwards with cursor=0 so all deferrals are added
+    propagate(idx, 0);  // Propagate backwards with cursor=0 so all deferrals are added
   }
 
   backward_caches_valid_ = true;
+}
+
+void Graph::patch_traversal_caches_for_edge(Vid driver_id, Vid sink_id, int32_t delta) noexcept {
+  if (!forward_caches_valid_ && !backward_caches_valid_) {
+    return;
+  }
+
+  auto master_idx_of = [&](Vid vid) -> size_t {
+    Nid nid;
+    if (vid & static_cast<Vid>(1)) {
+      const Pid pid = (static_cast<Pid>(vid) & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+      nid           = ref_pin(pid)->get_master_nid();
+    } else {
+      nid = static_cast<Nid>(vid);
+    }
+    nid = nid & ~static_cast<Nid>(3);
+    return static_cast<size_t>(nid >> 2);
+  };
+
+  const size_t driver_idx = master_idx_of(driver_id);
+  const size_t sink_idx   = master_idx_of(sink_id);
+
+  if (forward_caches_valid_) {
+    const size_t n = forward_remaining_in_cache_.size();
+    if (driver_idx >= kFirstUserNodeIdx && driver_idx < n && sink_idx >= kFirstUserNodeIdx && sink_idx < n
+        && !forward_is_source(driver_idx) && !forward_is_source(sink_idx)) {
+      auto& slot = forward_remaining_in_cache_[sink_idx];
+      if (delta > 0) {
+        slot += static_cast<uint32_t>(delta);
+      } else {
+        const auto dec = static_cast<uint32_t>(-delta);
+        if (slot >= dec) {
+          slot -= dec;
+        } else {
+          forward_caches_valid_ = false;
+        }
+      }
+    }
+  }
+
+  if (backward_caches_valid_) {
+    const size_t n = backward_remaining_out_cache_.size();
+    if (driver_idx >= kFirstUserNodeIdx && driver_idx < n && sink_idx >= kFirstUserNodeIdx && sink_idx < n
+        && !backward_is_sink(driver_idx) && !backward_is_sink(sink_idx)) {
+      auto& slot = backward_remaining_out_cache_[driver_idx];
+      if (delta > 0) {
+        slot += static_cast<uint32_t>(delta);
+      } else {
+        const auto dec = static_cast<uint32_t>(-delta);
+        if (slot >= dec) {
+          slot -= dec;
+        } else {
+          backward_caches_valid_ = false;
+        }
+      }
+    }
+  }
+
+  dirty_ = true;
+  if (owner_lib_ != nullptr) {
+    owner_lib_->note_graph_mutation();
+  }
 }
 
 auto Graph::create_node() -> Node {
@@ -1067,12 +1121,12 @@ auto Graph::find_pin(Node_class node, Port_id port_id, bool driver) const -> Pin
 auto Graph::find_or_create_pin(Node_class node, Port_id port_id) -> Pin_class {
   assert_node_exists(node);
   assert(port_id != 0 && "find_or_create_pin: port_id 0 is the node itself");
-  const Nid self_nid    = node.get_debug_nid() & ~static_cast<Nid>(2);
-  auto*     self        = ref_node(self_nid);
+  const Nid self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
+  auto*     self     = ref_node(self_nid);
   // The pin linked list is kept sorted by ascending port_id. Find the predecessor whose
   // port_id is just below `port_id`, and stop early if a greater-or-equal port_id is found.
   Pid prev_pin_id = 0;  // canonical Pid of predecessor (0 = insert at head)
-  Pid cur_pin    = self->get_next_pin_id();
+  Pid cur_pin     = self->get_next_pin_id();
   while (cur_pin != 0) {
     const Pid  canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
     auto*      pin           = ref_pin(canonical_pin);
@@ -1432,8 +1486,23 @@ void Graph::delete_pin(Pid pin_pid) {
     overflow_sets_[pin->get_overflow_idx()].clear();
   }
   erase_attr_object(make_pin_attr_key(static_cast<uint64_t>(pin_lookup)));
+
+  // Incremental traversal-cache patches per removed edge. Done before the pin
+  // entry is zeroed so master_nid lookup inside the patch helper still works.
+  for (auto other_vid : edges_to_remove) {
+    Vid driver_vid;
+    Vid sink_vid;
+    if (other_vid & static_cast<Vid>(2)) {
+      driver_vid = other_vid;
+      sink_vid   = pin_lookup;
+    } else {
+      driver_vid = pin_lookup | static_cast<Vid>(2);
+      sink_vid   = other_vid;
+    }
+    patch_traversal_caches_for_edge(driver_vid, sink_vid, -1);
+  }
+
   pin_table[actual_id] = PinEntry();
-  invalidate_traversal_caches();
 }
 
 auto Pin_class::get_master_node() const -> Node_class {
@@ -1728,7 +1797,7 @@ void Graph::add_edge(Vid driver_id, Vid sink_id) {
   sink_id   = sink_id & ~2;
   add_edge_int(driver_id, sink_id);
   add_edge_int(sink_id, driver_id);
-  invalidate_traversal_caches();
+  patch_traversal_caches_for_edge(driver_id, sink_id, +1);
 }
 
 void Edge_class::del_edge() const {
@@ -1742,8 +1811,10 @@ void Graph::del_edge(Pin_class driver_pin, Pin_class sink_pin) {
   assert_accessible();
   assert_pin_exists(driver_pin);
   assert_pin_exists(sink_pin);
+  const Vid driver_vid = static_cast<Vid>(driver_pin.get_debug_pid()) | static_cast<Vid>(2);
+  const Vid sink_vid   = static_cast<Vid>(sink_pin.get_debug_pid()) & ~static_cast<Vid>(2);
   del_edge_int(driver_pin.get_debug_pid(), sink_pin.get_debug_pid());
-  invalidate_traversal_caches();
+  patch_traversal_caches_for_edge(driver_vid, sink_vid, -1);
 }
 
 FastClassRange Graph::fast_class() const noexcept { return FastClassRange(const_cast<Graph*>(this)); }
@@ -1972,14 +2043,12 @@ ForwardClassIterator::ForwardClassIterator(Graph* graph) : graph_(graph) {
   advance();
 }
 
-ForwardClassIterator::ForwardClassIterator(ForwardClassIterator&& o) noexcept = default;
+ForwardClassIterator::ForwardClassIterator(ForwardClassIterator&& o) noexcept            = default;
 ForwardClassIterator& ForwardClassIterator::operator=(ForwardClassIterator&& o) noexcept = default;
 
 bool ForwardClassIterator::is_source(size_t idx) const noexcept { return graph_->forward_is_source(idx); }
 
-bool ForwardClassIterator::is_emitted(size_t idx) const noexcept {
-  return (emitted_bits_[idx >> 6] >> (idx & 63)) & 1ULL;
-}
+bool ForwardClassIterator::is_emitted(size_t idx) const noexcept { return (emitted_bits_[idx >> 6] >> (idx & 63)) & 1ULL; }
 
 void ForwardClassIterator::mark_emitted(size_t idx) noexcept { emitted_bits_[idx >> 6] |= (1ULL << (idx & 63)); }
 
@@ -2074,8 +2143,8 @@ void ForwardClassIterator::propagate(size_t driver_idx, size_t /*cursor*/) {
     }
   }
   for (Pid pin_vid = node_table[driver_idx].get_next_pin_id(); pin_vid != 0;) {
-    const Pid    canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-    const auto*  pin           = graph_->ref_pin(canonical_pin);
+    const Pid   canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    const auto* pin           = graph_->ref_pin(canonical_pin);
     if (pin->use_overflow) {
       for (auto edge_vid : overflow[pin->sedges_.overflow_idx]) {
         if (edge_vid & static_cast<Vid>(2)) {
@@ -2158,9 +2227,7 @@ void ForwardClassIterator::advance() {
   }
 }
 
-Node_class ForwardClassIterator::operator*() const {
-  return Node_class(graph_, static_cast<Nid>(current_idx_) << 2);
-}
+Node_class ForwardClassIterator::operator*() const { return Node_class(graph_, static_cast<Nid>(current_idx_) << 2); }
 
 ForwardClassIterator& ForwardClassIterator::operator++() {
   advance();
@@ -2218,10 +2285,10 @@ Node_class ForwardFlatIterator::operator*() const {
 }
 
 ForwardFlatIterator& ForwardFlatIterator::operator++() {
-  auto&       frame      = stack_.back();
-  const Nid   cur_nid    = (*frame.it).get_debug_nid();
-  const auto& entry      = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
-  const auto* lib        = frame.graph->owner_lib_;
+  auto&       frame   = stack_.back();
+  const Nid   cur_nid = (*frame.it).get_debug_nid();
+  const auto& entry   = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
+  const auto* lib     = frame.graph->owner_lib_;
   ++frame.it;
   if (entry.has_subnode() && lib != nullptr) {
     const Gid sub = entry.get_subnode();
@@ -2274,8 +2341,8 @@ Node_class ForwardHierIterator::operator*() const {
 }
 
 ForwardHierIterator& ForwardHierIterator::operator++() {
-  auto&     frame     = stack_.back();
-  const Nid cur_nid   = (*frame.it).get_debug_nid();
+  auto&       frame   = stack_.back();
+  const Nid   cur_nid = (*frame.it).get_debug_nid();
   const auto& entry   = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
   const auto* lib     = frame.graph->owner_lib_;
   ++frame.it;
@@ -2318,14 +2385,12 @@ BackwardClassIterator::BackwardClassIterator(Graph* graph) : graph_(graph) {
   advance();
 }
 
-BackwardClassIterator::BackwardClassIterator(BackwardClassIterator&& o) noexcept = default;
+BackwardClassIterator::BackwardClassIterator(BackwardClassIterator&& o) noexcept            = default;
 BackwardClassIterator& BackwardClassIterator::operator=(BackwardClassIterator&& o) noexcept = default;
 
 bool BackwardClassIterator::is_sink(size_t idx) const noexcept { return graph_->backward_is_sink(idx); }
 
-bool BackwardClassIterator::is_emitted(size_t idx) const noexcept {
-  return (emitted_bits_[idx >> 6] >> (idx & 63)) & 1ULL;
-}
+bool BackwardClassIterator::is_emitted(size_t idx) const noexcept { return (emitted_bits_[idx >> 6] >> (idx & 63)) & 1ULL; }
 
 void BackwardClassIterator::mark_emitted(size_t idx) noexcept { emitted_bits_[idx >> 6] |= (1ULL << (idx & 63)); }
 
@@ -2359,7 +2424,7 @@ void BackwardClassIterator::propagate(size_t sink_idx, size_t /*cursor*/) {
     --working_remaining_out_[driver_idx];
   };
 
-  const Nid sink_nid = static_cast<Nid>(sink_idx) << 2;
+  const Nid sink_nid   = static_cast<Nid>(sink_idx) << 2;
   auto      node_edges = graph_->node_table[sink_idx].get_edges(sink_nid, graph_->overflow_sets_);
   for (auto vid : node_edges) {
     if (!(vid & static_cast<Vid>(2))) {
@@ -2432,9 +2497,7 @@ void BackwardClassIterator::advance() {
   }
 }
 
-Node_class BackwardClassIterator::operator*() const {
-  return Node_class(graph_, static_cast<Nid>(current_idx_) << 2);
-}
+Node_class BackwardClassIterator::operator*() const { return Node_class(graph_, static_cast<Nid>(current_idx_) << 2); }
 
 BackwardClassIterator& BackwardClassIterator::operator++() {
   advance();
@@ -2492,10 +2555,10 @@ Node_class BackwardFlatIterator::operator*() const {
 }
 
 BackwardFlatIterator& BackwardFlatIterator::operator++() {
-  auto&       frame      = stack_.back();
-  const Nid   cur_nid    = (*frame.it).get_debug_nid();
-  const auto& entry      = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
-  const auto* lib        = frame.graph->owner_lib_;
+  auto&       frame   = stack_.back();
+  const Nid   cur_nid = (*frame.it).get_debug_nid();
+  const auto& entry   = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
+  const auto* lib     = frame.graph->owner_lib_;
   ++frame.it;
   if (entry.has_subnode() && lib != nullptr) {
     const Gid sub = entry.get_subnode();
@@ -2548,8 +2611,8 @@ Node_class BackwardHierIterator::operator*() const {
 }
 
 BackwardHierIterator& BackwardHierIterator::operator++() {
-  auto&     frame     = stack_.back();
-  const Nid cur_nid   = (*frame.it).get_debug_nid();
+  auto&       frame   = stack_.back();
+  const Nid   cur_nid = (*frame.it).get_debug_nid();
   const auto& entry   = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
   const auto* lib     = frame.graph->owner_lib_;
   ++frame.it;
@@ -2700,7 +2763,7 @@ Hier_instance HierIterator::operator*() const {
 }
 
 HierIterator& HierIterator::operator++() {
-  Frame&         frame    = stack_.back();
+  Frame&         frame     = stack_.back();
   const Tree_pos this_pos  = (*frame.cur).get_debug_nid();
   auto           it        = frame.graph->tree_pos_to_nid_.find(this_pos);
   const Nid      owner_nid = (it != frame.graph->tree_pos_to_nid_.end()) ? it->second : static_cast<Nid>(0);
@@ -2754,37 +2817,63 @@ auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
   std::vector<Edge_class> out;
   const Nid               self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
   auto*                   self     = ref_node(self_nid);
-  auto                    edges    = self->get_edges(self_nid, overflow_sets_);
-  Pin_class               self_driver(this, self_nid | static_cast<Pid>(2));
-  inherit_pin_context(self_driver, node);
 
-  for (auto vid : edges) {
-    if (vid & 2) {
+  // Pre-build a "context template" Pin_class — every emitted pin inherits the
+  // node's traversal context, so we set it once and copy.
+  Pin_class self_driver(this, self_nid | static_cast<Pid>(2));
+  self_driver.context_  = node.context_;
+  self_driver.root_gid_ = node.root_gid_;
+  self_driver.hier_pos_ = node.hier_pos_;
+
+  // 1) NodeEntry-level out edges (driver pin == node-as-pin(0))
+  for (auto vid : self->get_edges(self_nid, overflow_sets_)) {
+    if (vid & static_cast<Vid>(2)) {
       continue;
     }
-    if (vid & 1) {
-      const Pid sink_pid = static_cast<Pid>(vid);
-
-      Edge_class e{};
-      e.driver = self_driver;
-      e.sink   = make_pin_class(sink_pid);
-      inherit_pin_context(e.sink, node);
-      out.push_back(e);
-      continue;
+    Edge_class e{};
+    e.driver = self_driver;
+    if (vid & static_cast<Vid>(1)) {
+      e.sink           = Pin_class(this, static_cast<Pid>(vid));
+      e.sink.context_  = node.context_;
+      e.sink.root_gid_ = node.root_gid_;
+      e.sink.hier_pos_ = node.hier_pos_;
     } else {
-      const Nid sink_nid = static_cast<Nid>(vid);
-
-      Edge_class e{};
-      e.driver = self_driver;
-      e.sink   = Pin_class(this, sink_nid & ~static_cast<Nid>(2));
-      out.push_back(e);
+      // node-as-pin sink: original code did not inherit context here
+      e.sink = Pin_class(this, static_cast<Nid>(vid) & ~static_cast<Nid>(2));
     }
+    out.push_back(e);
   }
 
-  for (auto pin : get_pins(node)) {
-    inherit_pin_context(pin, node);
-    auto pin_edges = out_edges(pin);
-    out.insert(out.end(), pin_edges.begin(), pin_edges.end());
+  // 2) Walk pin linked list inline (avoids std::vector<Pin_class> alloc and
+  //    per-pin std::vector<Edge_class> alloc that used to happen via the
+  //    recursive out_edges(Pin_class) path).
+  for (Pid cur_pin = self->get_next_pin_id(); cur_pin != 0;) {
+    const Pid canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    auto*     pin_entry     = ref_pin(canonical_pin);
+
+    Pin_class pin_driver(this, canonical_pin | static_cast<Pid>(2));
+    pin_driver.context_  = node.context_;
+    pin_driver.root_gid_ = node.root_gid_;
+    pin_driver.hier_pos_ = node.hier_pos_;
+
+    for (auto vid : pin_entry->get_edges(canonical_pin, overflow_sets_)) {
+      if (vid & static_cast<Vid>(2)) {
+        continue;  // back edge (inp_edge)
+      }
+      Edge_class e{};
+      e.driver = pin_driver;
+      if (vid & static_cast<Vid>(1)) {
+        e.sink           = Pin_class(this, static_cast<Pid>(vid));
+        e.sink.context_  = node.context_;
+        e.sink.root_gid_ = node.root_gid_;
+        e.sink.hier_pos_ = node.hier_pos_;
+      } else {
+        e.sink = Pin_class(this, static_cast<Nid>(vid) & ~static_cast<Nid>(2));
+      }
+      out.push_back(e);
+    }
+
+    cur_pin = pin_entry->get_next_pin_id();
   }
   return out;
 }
@@ -2795,37 +2884,59 @@ auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
   std::vector<Edge_class> out;
   const Nid               self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
   auto*                   self     = ref_node(self_nid);
-  auto                    edges    = self->get_edges(self_nid, overflow_sets_);
-  Pin_class               self_sink(this, self_nid & ~static_cast<Pid>(2));
-  inherit_pin_context(self_sink, node);
 
-  for (auto vid : edges) {
-    if (!(vid & 2)) {
+  Pin_class self_sink(this, self_nid & ~static_cast<Pid>(2));
+  self_sink.context_  = node.context_;
+  self_sink.root_gid_ = node.root_gid_;
+  self_sink.hier_pos_ = node.hier_pos_;
+
+  // 1) NodeEntry-level inp edges (sink pin == node-as-pin(0))
+  for (auto vid : self->get_edges(self_nid, overflow_sets_)) {
+    if (!(vid & static_cast<Vid>(2))) {
       continue;
     }
-    if (vid & 1) {
-      const Pid driver_pid = static_cast<Pid>(vid);
-
-      Edge_class e{};
-      e.driver = make_pin_class(driver_pid);
-      inherit_pin_context(e.driver, node);
-      e.sink = self_sink;
-      out.push_back(e);
-      continue;
+    Edge_class e{};
+    e.sink = self_sink;
+    if (vid & static_cast<Vid>(1)) {
+      e.driver           = Pin_class(this, static_cast<Pid>(vid));
+      e.driver.context_  = node.context_;
+      e.driver.root_gid_ = node.root_gid_;
+      e.driver.hier_pos_ = node.hier_pos_;
     } else {
-      const Nid driver_nid = static_cast<Nid>(vid);
-
-      Edge_class e{};
-      e.driver = Pin_class(this, driver_nid | static_cast<Nid>(2));
-      e.sink   = self_sink;
-      out.push_back(e);
+      // node-as-pin driver: original code did not inherit context here
+      e.driver = Pin_class(this, static_cast<Nid>(vid) | static_cast<Nid>(2));
     }
+    out.push_back(e);
   }
 
-  for (auto pin : get_pins(node)) {
-    inherit_pin_context(pin, node);
-    auto pin_edges = inp_edges(pin);
-    out.insert(out.end(), pin_edges.begin(), pin_edges.end());
+  // 2) Walk pin linked list inline.
+  for (Pid cur_pin = self->get_next_pin_id(); cur_pin != 0;) {
+    const Pid canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    auto*     pin_entry     = ref_pin(canonical_pin);
+
+    Pin_class pin_sink(this, canonical_pin);
+    pin_sink.context_  = node.context_;
+    pin_sink.root_gid_ = node.root_gid_;
+    pin_sink.hier_pos_ = node.hier_pos_;
+
+    for (auto vid : pin_entry->get_edges(canonical_pin, overflow_sets_)) {
+      if (!(vid & static_cast<Vid>(2))) {
+        continue;  // forward edge (out_edge)
+      }
+      Edge_class e{};
+      e.sink = pin_sink;
+      if (vid & static_cast<Vid>(1)) {
+        e.driver           = Pin_class(this, static_cast<Pid>(vid));
+        e.driver.context_  = node.context_;
+        e.driver.root_gid_ = node.root_gid_;
+        e.driver.hier_pos_ = node.hier_pos_;
+      } else {
+        e.driver = Pin_class(this, static_cast<Nid>(vid) | static_cast<Nid>(2));
+      }
+      out.push_back(e);
+    }
+
+    cur_pin = pin_entry->get_next_pin_id();
   }
   return out;
 }
@@ -2840,9 +2951,9 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
     auto*     self     = ref_node(self_nid);
     auto      edges    = self->get_edges(self_nid, overflow_sets_);
     Pin_class self_driver_pin(this, self_nid | static_cast<Pid>(2));
-    self_driver_pin.context_     = pin.context_;
-    self_driver_pin.root_gid_    = pin.root_gid_;
-    self_driver_pin.hier_pos_    = pin.hier_pos_;
+    self_driver_pin.context_  = pin.context_;
+    self_driver_pin.root_gid_ = pin.root_gid_;
+    self_driver_pin.hier_pos_ = pin.hier_pos_;
 
     std::vector<Edge_class> out;
     for (auto vid : edges) {
@@ -2851,20 +2962,20 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
       }
       if (vid & 1) {
         Edge_class e{};
-        e.driver            = self_driver_pin;
-        e.sink              = make_pin_class(static_cast<Pid>(vid));
-        e.sink.context_     = pin.context_;
-        e.sink.root_gid_    = pin.root_gid_;
-        e.sink.hier_pos_    = pin.hier_pos_;
+        e.driver         = self_driver_pin;
+        e.sink           = make_pin_class(static_cast<Pid>(vid));
+        e.sink.context_  = pin.context_;
+        e.sink.root_gid_ = pin.root_gid_;
+        e.sink.hier_pos_ = pin.hier_pos_;
         out.push_back(e);
       } else {
         const Nid  sink_nid = static_cast<Nid>(vid);
         Edge_class e{};
-        e.driver            = self_driver_pin;
-        e.sink              = Pin_class(this, sink_nid & ~static_cast<Nid>(2));
-        e.sink.context_     = pin.context_;
-        e.sink.root_gid_    = pin.root_gid_;
-        e.sink.hier_pos_    = pin.hier_pos_;
+        e.driver         = self_driver_pin;
+        e.sink           = Pin_class(this, sink_nid & ~static_cast<Nid>(2));
+        e.sink.context_  = pin.context_;
+        e.sink.root_gid_ = pin.root_gid_;
+        e.sink.hier_pos_ = pin.hier_pos_;
         out.push_back(e);
       }
     }
@@ -2890,11 +3001,11 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
       const Pid sink_pid = static_cast<Pid>(vid);
 
       Edge_class e{};
-      e.driver            = context_driver_pin;
-      e.sink              = make_pin_class(sink_pid);
-      e.sink.context_     = pin.context_;
-      e.sink.root_gid_    = pin.root_gid_;
-      e.sink.hier_pos_    = pin.hier_pos_;
+      e.driver         = context_driver_pin;
+      e.sink           = make_pin_class(sink_pid);
+      e.sink.context_  = pin.context_;
+      e.sink.root_gid_ = pin.root_gid_;
+      e.sink.hier_pos_ = pin.hier_pos_;
       out.push_back(e);
       continue;
     }
@@ -2920,9 +3031,9 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
     auto*     self     = ref_node(self_nid);
     auto      edges    = self->get_edges(self_nid, overflow_sets_);
     Pin_class self_sink_pin(this, self_nid);
-    self_sink_pin.context_     = pin.context_;
-    self_sink_pin.root_gid_    = pin.root_gid_;
-    self_sink_pin.hier_pos_    = pin.hier_pos_;
+    self_sink_pin.context_  = pin.context_;
+    self_sink_pin.root_gid_ = pin.root_gid_;
+    self_sink_pin.hier_pos_ = pin.hier_pos_;
 
     std::vector<Edge_class> out;
     for (auto vid : edges) {
@@ -2931,20 +3042,20 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
       }
       if (vid & 1) {
         Edge_class e{};
-        e.driver              = make_pin_class(static_cast<Pid>(vid));
-        e.driver.context_     = pin.context_;
-        e.driver.root_gid_    = pin.root_gid_;
-        e.driver.hier_pos_    = pin.hier_pos_;
-        e.sink                = self_sink_pin;
+        e.driver           = make_pin_class(static_cast<Pid>(vid));
+        e.driver.context_  = pin.context_;
+        e.driver.root_gid_ = pin.root_gid_;
+        e.driver.hier_pos_ = pin.hier_pos_;
+        e.sink             = self_sink_pin;
         out.push_back(e);
       } else {
         const Nid  driver_nid = static_cast<Nid>(vid);
         Edge_class e{};
-        e.driver              = Pin_class(this, driver_nid | static_cast<Nid>(2));
-        e.driver.context_     = pin.context_;
-        e.driver.root_gid_    = pin.root_gid_;
-        e.driver.hier_pos_    = pin.hier_pos_;
-        e.sink                = self_sink_pin;
+        e.driver           = Pin_class(this, driver_nid | static_cast<Nid>(2));
+        e.driver.context_  = pin.context_;
+        e.driver.root_gid_ = pin.root_gid_;
+        e.driver.hier_pos_ = pin.hier_pos_;
+        e.sink             = self_sink_pin;
         out.push_back(e);
       }
     }
@@ -2970,11 +3081,11 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
       const Pid driver_pid = static_cast<Pid>(vid);
 
       Edge_class e{};
-      e.driver              = make_pin_class(driver_pid);
-      e.driver.context_     = pin.context_;
-      e.driver.root_gid_    = pin.root_gid_;
-      e.driver.hier_pos_    = pin.hier_pos_;
-      e.sink                = context_sink_pin;
+      e.driver           = make_pin_class(driver_pid);
+      e.driver.context_  = pin.context_;
+      e.driver.root_gid_ = pin.root_gid_;
+      e.driver.hier_pos_ = pin.hier_pos_;
+      e.sink             = context_sink_pin;
       out.push_back(e);
       continue;
     }

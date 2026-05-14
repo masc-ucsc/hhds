@@ -30,7 +30,7 @@ static std::shared_ptr<hhds::Tree> create_balanced_tree(size_t target_nodes) {
   root.set_type(1);
 
   std::vector<hhds::Tree::Node_class> current_level = {root};
-  size_t                              total_nodes    = 1;
+  size_t                              total_nodes   = 1;
 
   while (total_nodes < target_nodes && !current_level.empty()) {
     std::vector<hhds::Tree::Node_class> next_level;
@@ -99,16 +99,15 @@ static std::shared_ptr<hhds::Tree> create_wide_tree(size_t width) {
 // ============================================================================
 // Helper: clone a tree and relabel the first `modify_count` nodes
 // ============================================================================
-static std::shared_ptr<hhds::Tree> create_relabeled_variant(const std::shared_ptr<hhds::Tree>& original,
-                                                              int                                modify_count) {
+static std::shared_ptr<hhds::Tree> create_relabeled_variant(const std::shared_ptr<hhds::Tree>& original, int modify_count) {
   auto tree = hhds::Tree::create();
 
   std::function<void(hhds::Tree::Node_class, hhds::Tree::Node_class, int&)> clone
       = [&](hhds::Tree::Node_class src, hhds::Tree::Node_class dst, int& count) {
           auto child = src.first_child();
           while (child.is_valid()) {
-            auto dst_child = dst.add_child();
-            hhds::Type t   = child.get_type();
+            auto       dst_child = dst.add_child();
+            hhds::Type t         = child.get_type();
             dst_child.set_type(count++ < modify_count ? static_cast<hhds::Type>(t + 1) : t);
             clone(child, dst_child, count);
             child = child.next_sibling();
@@ -253,7 +252,7 @@ BENCHMARK(BM_Wide_5K)->Unit(benchmark::kMillisecond);
 // ============================================================================
 
 static void BM_Scaling_Balanced(benchmark::State& state) {
-  const size_t n = static_cast<size_t>(state.range(0));
+  const size_t n  = static_cast<size_t>(state.range(0));
   auto         t1 = create_balanced_tree(n);
   auto         t2 = create_balanced_tree(n);
   for (auto _ : state) {

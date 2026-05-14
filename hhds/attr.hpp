@@ -156,16 +156,16 @@ class Attr_store_base {
 public:
   virtual ~Attr_store_base() = default;
 
-  [[nodiscard]] virtual Attr_storage_kind                 storage_kind() const noexcept                  = 0;
-  [[nodiscard]] virtual std::type_index                   type_key() const noexcept                      = 0;
-  [[nodiscard]] virtual std::string_view                  persistent_id() const noexcept                 = 0;
-  [[nodiscard]] virtual bool                              empty() const noexcept                         = 0;
-  [[nodiscard]] virtual uint64_t                          size() const noexcept                          = 0;
-  virtual void                                            clear_entries() noexcept                       = 0;
-  virtual void                                            erase_object(Attr_key key) noexcept            = 0;
-  virtual void                                            save_entries(std::ostream& os) const           = 0;
-  virtual void                                            load_entries(std::istream& is, uint64_t count) = 0;
-  [[nodiscard]] virtual std::unique_ptr<Attr_store_base>  clone() const                                  = 0;
+  [[nodiscard]] virtual Attr_storage_kind                storage_kind() const noexcept                  = 0;
+  [[nodiscard]] virtual std::type_index                  type_key() const noexcept                      = 0;
+  [[nodiscard]] virtual std::string_view                 persistent_id() const noexcept                 = 0;
+  [[nodiscard]] virtual bool                             empty() const noexcept                         = 0;
+  [[nodiscard]] virtual uint64_t                         size() const noexcept                          = 0;
+  virtual void                                           clear_entries() noexcept                       = 0;
+  virtual void                                           erase_object(Attr_key key) noexcept            = 0;
+  virtual void                                           save_entries(std::ostream& os) const           = 0;
+  virtual void                                           load_entries(std::istream& is, uint64_t count) = 0;
+  [[nodiscard]] virtual std::unique_ptr<Attr_store_base> clone() const                                  = 0;
 };
 
 template <Attribute Tag>
@@ -237,8 +237,8 @@ public:
   [[nodiscard]] const map_type& map() const noexcept { return map_; }
 
   [[nodiscard]] std::unique_ptr<Attr_store_base> clone() const override {
-    auto copy             = std::make_unique<Attr_store_impl<Tag>>(persistent_id_);
-    copy->map_            = map_;
+    auto copy  = std::make_unique<Attr_store_impl<Tag>>(persistent_id_);
+    copy->map_ = map_;
     return copy;
   }
 
@@ -274,8 +274,8 @@ const Attr_tag_registry_entry& Attr_tag_registry::register_tag(std::string_view 
     return type_it->second;
   }
 
-  const std::string                  id    = persistent_id.empty() ? attr_tag_name<Tag>() : std::string(persistent_id);
-  [[maybe_unused]] const auto        id_it = by_id_.find(id);
+  const std::string           id    = persistent_id.empty() ? attr_tag_name<Tag>() : std::string(persistent_id);
+  [[maybe_unused]] const auto id_it = by_id_.find(id);
   assert(id_it == by_id_.end() && "register_tag: persistent id already registered for another attribute tag");
 
   Attr_tag_registry_entry entry;

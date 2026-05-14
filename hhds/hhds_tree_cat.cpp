@@ -113,10 +113,10 @@ int main(int argc, char** argv) {
   }
 
   // Capture per-node text + attributes recovered by read_dump (NodeData).
-  std::unordered_map<hhds::Tree_pos, std::string>                                            node_texts;
-  std::unordered_map<hhds::Tree_pos, std::vector<std::pair<std::string, std::string>>>      node_attrs;
-  std::vector<std::string>                                                                   attr_keys;
-  std::unordered_map<std::string, bool>                                                      seen_keys;
+  std::unordered_map<hhds::Tree_pos, std::string>                                      node_texts;
+  std::unordered_map<hhds::Tree_pos, std::vector<std::pair<std::string, std::string>>> node_attrs;
+  std::vector<std::string>                                                             attr_keys;
+  std::unordered_map<std::string, bool>                                                seen_keys;
   for (const auto& nd : nodes) {
     node_texts[nd.pos] = nd.node_text;
     if (!nd.attributes.empty()) {

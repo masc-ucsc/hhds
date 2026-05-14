@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <cstdlib>
@@ -9,7 +10,6 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
-#include <atomic>
 #include <memory>
 #include <shared_mutex>
 #include <span>
@@ -131,21 +131,21 @@ public:
   Pin_class(Graph* graph_value, Pid pin_pid_value) : graph_(graph_value), pin_pid(pin_pid_value) {}
   explicit Pin_class(Pid pin_pid_value) : pin_pid(pin_pid_value) {}
 
-  [[nodiscard]] Node_class      get_master_node() const;
-  [[nodiscard]] Nid             get_debug_nid() const noexcept;
-  [[nodiscard]] constexpr Pid   get_debug_pid() const noexcept { return pin_pid; }
-  [[nodiscard]] Port_id         get_port_id() const noexcept;
-  [[nodiscard]] Graph*            get_graph() const noexcept { return graph_; }
-  [[nodiscard]] std::string_view  get_pin_name() const;
-  [[nodiscard]] bool              is_valid() const noexcept;
-  [[nodiscard]] bool              is_invalid() const noexcept { return !is_valid(); }
-  [[nodiscard]] bool              is_class() const noexcept { return context_ == Handle_context::Class; }
-  [[nodiscard]] bool              is_flat() const noexcept { return context_ == Handle_context::Flat; }
-  [[nodiscard]] bool              is_hier() const noexcept { return context_ == Handle_context::Hier; }
-  [[nodiscard]] Handle_context    get_context() const noexcept { return context_; }
-  [[nodiscard]] Gid               get_root_gid() const noexcept;
-  [[nodiscard]] Gid               get_current_gid() const noexcept;
-  [[nodiscard]] Tree_pos          get_hier_pos() const noexcept { return hier_pos_; }
+  [[nodiscard]] Node_class       get_master_node() const;
+  [[nodiscard]] Nid              get_debug_nid() const noexcept;
+  [[nodiscard]] constexpr Pid    get_debug_pid() const noexcept { return pin_pid; }
+  [[nodiscard]] Port_id          get_port_id() const noexcept;
+  [[nodiscard]] Graph*           get_graph() const noexcept { return graph_; }
+  [[nodiscard]] std::string_view get_pin_name() const;
+  [[nodiscard]] bool             is_valid() const noexcept;
+  [[nodiscard]] bool             is_invalid() const noexcept { return !is_valid(); }
+  [[nodiscard]] bool             is_class() const noexcept { return context_ == Handle_context::Class; }
+  [[nodiscard]] bool             is_flat() const noexcept { return context_ == Handle_context::Flat; }
+  [[nodiscard]] bool             is_hier() const noexcept { return context_ == Handle_context::Hier; }
+  [[nodiscard]] Handle_context   get_context() const noexcept { return context_; }
+  [[nodiscard]] Gid              get_root_gid() const noexcept;
+  [[nodiscard]] Gid              get_current_gid() const noexcept;
+  [[nodiscard]] Tree_pos         get_hier_pos() const noexcept { return hier_pos_; }
 
   // Opaque, hashable keys for use in user-owned maps. See hhds/index.hpp for
   // semantics. Prefer these over using Pin_class directly as a map key.
@@ -311,11 +311,7 @@ class Hier_instance {
 public:
   Hier_instance() = default;
   Hier_instance(Graph* parent_graph, Gid root_gid, Tree_pos hier_pos, Tree_pos tree_pos, Nid parent_nid)
-      : parent_graph_(parent_graph)
-      , root_gid_(root_gid)
-      , hier_pos_(hier_pos)
-      , tree_pos_(tree_pos)
-      , parent_nid_(parent_nid) {}
+      : parent_graph_(parent_graph), root_gid_(root_gid), hier_pos_(hier_pos), tree_pos_(tree_pos), parent_nid_(parent_nid) {}
 
   [[nodiscard]] Graph*                 get_parent_graph() const noexcept { return parent_graph_; }
   [[nodiscard]] Gid                    get_root_gid() const noexcept { return root_gid_; }
@@ -383,9 +379,7 @@ class Graph : public Attr_host {
 
       EdgeRange(const PinEntry* pin, Pid pid, const OverflowVec& overflow) noexcept;
 
-      iterator begin() const noexcept {
-        return overflow_set_ ? iterator(overflow_set_->begin()) : iterator(inline_buf_.data());
-      }
+      iterator begin() const noexcept { return overflow_set_ ? iterator(overflow_set_->begin()) : iterator(inline_buf_.data()); }
       iterator end() const noexcept {
         return overflow_set_ ? iterator(overflow_set_->end()) : iterator(inline_buf_.data() + inline_count_);
       }
@@ -449,9 +443,7 @@ class Graph : public Attr_host {
 
       EdgeRange(const NodeEntry* node, Nid nid, const OverflowVec& overflow) noexcept;
 
-      iterator begin() const noexcept {
-        return overflow_set_ ? iterator(overflow_set_->begin()) : iterator(inline_buf_.data());
-      }
+      iterator begin() const noexcept { return overflow_set_ ? iterator(overflow_set_->begin()) : iterator(inline_buf_.data()); }
       iterator end() const noexcept {
         return overflow_set_ ? iterator(overflow_set_->end()) : iterator(inline_buf_.data() + inline_count_);
       }
@@ -553,29 +545,21 @@ public:
   static constexpr Nid OUTPUT_NODE = (static_cast<Nid>(2) << 2);
   static constexpr Nid CONST_NODE  = (static_cast<Nid>(3) << 2);
 
-  [[nodiscard]] Node_class get_input_node() const noexcept {
-    return Node_class(const_cast<Graph*>(this), INPUT_NODE);
-  }
-  [[nodiscard]] Node_class get_output_node() const noexcept {
-    return Node_class(const_cast<Graph*>(this), OUTPUT_NODE);
-  }
-  [[nodiscard]] Node_class get_constant_node() const noexcept {
-    return Node_class(const_cast<Graph*>(this), CONST_NODE);
-  }
+  [[nodiscard]] Node_class get_input_node() const noexcept { return Node_class(const_cast<Graph*>(this), INPUT_NODE); }
+  [[nodiscard]] Node_class get_output_node() const noexcept { return Node_class(const_cast<Graph*>(this), OUTPUT_NODE); }
+  [[nodiscard]] Node_class get_constant_node() const noexcept { return Node_class(const_cast<Graph*>(this), CONST_NODE); }
   // Fresh driver pin on CONST_NODE. The caller attaches whatever value
   // representation it wants via the standard pin attr() API; the iterator
   // skips CONST_NODE itself, so this pin is only seen as a driver on its
   // sink's inp_edges().
-  [[nodiscard]] Pin_class create_constant() {
-    return get_constant_node().create_driver_pin();
-  }
+  [[nodiscard]] Pin_class create_constant() { return get_constant_node().create_driver_pin(); }
 
-  [[nodiscard]] FastClassRange    fast_class() const noexcept;
-  [[nodiscard]] ForwardClassRange forward_class() const noexcept;
-  [[nodiscard]] FastFlatRange     fast_flat() const noexcept;
-  [[nodiscard]] ForwardFlatRange  forward_flat() const noexcept;
-  [[nodiscard]] FastHierRange     fast_hier() const noexcept;
-  [[nodiscard]] ForwardHierRange  forward_hier() const noexcept;
+  [[nodiscard]] FastClassRange     fast_class() const noexcept;
+  [[nodiscard]] ForwardClassRange  forward_class() const noexcept;
+  [[nodiscard]] FastFlatRange      fast_flat() const noexcept;
+  [[nodiscard]] ForwardFlatRange   forward_flat() const noexcept;
+  [[nodiscard]] FastHierRange      fast_hier() const noexcept;
+  [[nodiscard]] ForwardHierRange   forward_hier() const noexcept;
   [[nodiscard]] BackwardClassRange backward_class() const noexcept;
   [[nodiscard]] BackwardFlatRange  backward_flat() const noexcept;
   [[nodiscard]] BackwardHierRange  backward_hier() const noexcept;
@@ -585,9 +569,9 @@ public:
   // node_table, so cost is proportional to the hierarchy size (≪ number
   // of graph nodes). Use this for instance counts, module-tree walks, and
   // path resolution rather than fast_hier (which visits every graph node).
-  [[nodiscard]] HierRange         hier_range() const noexcept;
-  void               display_graph() const;
-  void               display_next_pin_of_node() const;
+  [[nodiscard]] HierRange hier_range() const noexcept;
+  void                    display_graph() const;
+  void                    display_next_pin_of_node() const;
 
   void                      print(std::ostream& os) const;
   [[nodiscard]] std::string print() const;
@@ -606,15 +590,15 @@ private:
     assert(actual_id < node_table.size());
     return const_cast<NodeEntry*>(&node_table[actual_id]);
   }
-  [[nodiscard]] PinEntry*    ref_pin(Pid id) const {
+  [[nodiscard]] PinEntry* ref_pin(Pid id) const {
     assert_accessible();
     const Pid actual_id = id >> 2;
     assert(actual_id < pin_table.size());
     return const_cast<PinEntry*>(&pin_table[actual_id]);
   }
-  void                       invalidate_from_library() noexcept;
-  void                       release_storage() noexcept;
-  void                       clear_graph();
+  void invalidate_from_library() noexcept;
+  void release_storage() noexcept;
+  void clear_graph();
   // Binary persistence — saves/loads body data (node_table, pin_table, overflow sets).
   // dir_path is the graph-specific directory (e.g., "db/graph_1/").
   void              save_body(const std::string& dir_path) const;
@@ -638,24 +622,31 @@ private:
   // structure-tree cycle (target_gid transitively contains self_gid_).
   // BFS over subnode_tree_pos_ entries, so cost scales with hierarchy size,
   // not graph size. Compiled out under NDEBUG via the call site.
-  [[nodiscard]] bool             would_create_cycle(Gid target_gid) const noexcept;
-  void                           add_edge(Pid driver_id, Pid sink_id);
+  [[nodiscard]] bool would_create_cycle(Gid target_gid) const noexcept;
+  void               add_edge(Pid driver_id, Pid sink_id);
   void add_edge(Pin_class driver_pin, Pin_class sink_pin) { add_edge(driver_pin.get_debug_pid(), sink_pin.get_debug_pid()); }
   void del_edge(Pin_class driver_pin, Pin_class sink_pin);
-  [[nodiscard]] std::vector<Edge_class>   out_edges(Node_class node);
-  [[nodiscard]] std::vector<Edge_class>   inp_edges(Node_class node);
-  [[nodiscard]] std::vector<Edge_class>   out_edges(Pin_class pin);
-  [[nodiscard]] std::vector<Edge_class>   inp_edges(Pin_class pin);
-  [[nodiscard]] std::vector<Pin_class>    get_pins(Node_class node);
-  [[nodiscard]] std::vector<Pin_class>    get_driver_pins(Node_class node);
-  [[nodiscard]] std::vector<Pin_class>    get_sink_pins(Node_class node);
-  void                                    del_edge_int(Vid driver_id, Vid sink_id);
-  void                                    add_edge_int(Pid self_id, Pid other_id);
-  void                                    set_next_pin(Nid nid, Pid next_pin);
-  [[nodiscard]] Pin_class                 make_pin_class(Pid pin_pid) const;
-  void                                    bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
-  void                                    set_name(std::string_view name) { name_ = name; }
-  void invalidate_traversal_caches() noexcept;  // defined inline at end of header
+  [[nodiscard]] std::vector<Edge_class> out_edges(Node_class node);
+  [[nodiscard]] std::vector<Edge_class> inp_edges(Node_class node);
+  [[nodiscard]] std::vector<Edge_class> out_edges(Pin_class pin);
+  [[nodiscard]] std::vector<Edge_class> inp_edges(Pin_class pin);
+  [[nodiscard]] std::vector<Pin_class>  get_pins(Node_class node);
+  [[nodiscard]] std::vector<Pin_class>  get_driver_pins(Node_class node);
+  [[nodiscard]] std::vector<Pin_class>  get_sink_pins(Node_class node);
+  void                                  del_edge_int(Vid driver_id, Vid sink_id);
+  void                                  add_edge_int(Pid self_id, Pid other_id);
+  void                                  set_next_pin(Nid nid, Pid next_pin);
+  [[nodiscard]] Pin_class               make_pin_class(Pid pin_pid) const;
+  void                                  bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
+  void                                  set_name(std::string_view name) { name_ = name; }
+  void                                  invalidate_traversal_caches() noexcept;  // defined inline at end of header
+  // Incremental patch for a single edge add/delete. delta = +1 for add, -1 for
+  // delete. Bumps forward_remaining_in_cache_[sink_idx] and
+  // backward_remaining_out_cache_[driver_idx] using the same filters the cache
+  // builder applies. Pass-2 caches are left intact — stale entries are already
+  // filtered by is_emitted() during replay. Falls back to full invalidation on
+  // unexpected underflow.
+  void patch_traversal_caches_for_edge(Vid driver_id, Vid sink_id, int32_t delta) noexcept;
   // Build (or refresh) the Pass-2 deferred list and the initial in-edge counts
   // used by the forward_class streaming iterator. The full emission ordering
   // is never materialized — only these two small caches persist.
@@ -667,22 +658,22 @@ private:
   // Exposed to the Backward iterator classes (which are friends).
   [[nodiscard]] bool backward_is_sink(size_t idx) const noexcept;
 
-  std::vector<NodeEntry>                         node_table;
-  std::vector<PinEntry>                          pin_table;
-  OverflowVec                                    overflow_sets_;
-  std::vector<uint32_t>                          overflow_free_;
+  std::vector<NodeEntry> node_table;
+  std::vector<PinEntry>  pin_table;
+  OverflowVec            overflow_sets_;
+  std::vector<uint32_t>  overflow_free_;
   // Persistent hierarchy: one Tree per Graph, populated by set_subnode and
   // torn down in clear()/load_body rebuild. The tree's children correspond
   // 1:1 with live subnode NodeEntries. `subnode_tree_pos_` maps a subnode
   // Nid back to its Tree_pos so del_node / debug cycle checks can find it.
-  std::shared_ptr<Tree>                          tree_;
-  ankerl::unordered_dense::map<Nid, Tree_pos>    subnode_tree_pos_;
+  std::shared_ptr<Tree>                       tree_;
+  ankerl::unordered_dense::map<Nid, Tree_pos> subnode_tree_pos_;
   // Reverse map so hier_range can resolve a Tree_pos back to its owning Nid
   // in O(1) during tree-pre-order iteration. Kept in lockstep with
   // subnode_tree_pos_ — every set_subnode / load_body insertion updates
   // both, and all three clear sites (release_storage, clear_graph, clear)
   // clear both.
-  ankerl::unordered_dense::map<Tree_pos, Nid>    tree_pos_to_nid_;
+  ankerl::unordered_dense::map<Tree_pos, Nid> tree_pos_to_nid_;
   // Forward-traversal caches, shared across forward_class / forward_flat /
   // forward_hier for this graph body. Only the Pass-2 deferral list and the
   // initial in-edge counts are kept — the Pass-1 emission order is replayed
@@ -784,7 +775,7 @@ public:
   using pointer           = void;
   using reference         = Node_class;
 
-  FastFlatIterator() noexcept = default;
+  FastFlatIterator() noexcept                          = default;
   FastFlatIterator(const FastFlatIterator&)            = default;
   FastFlatIterator(FastFlatIterator&&)                 = default;
   FastFlatIterator& operator=(const FastFlatIterator&) = default;
@@ -847,8 +838,8 @@ public:
 
   [[nodiscard]] Node_class operator*() const;
   FastHierIterator&        operator++();
-  [[nodiscard]] bool operator==(const FastHierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
-  [[nodiscard]] bool operator!=(const FastHierIterator& o) const noexcept { return !(*this == o); }
+  [[nodiscard]] bool       operator==(const FastHierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool       operator!=(const FastHierIterator& o) const noexcept { return !(*this == o); }
 
 private:
   struct Frame {
@@ -892,7 +883,7 @@ public:
   using pointer           = void;
   using reference         = Node_class;
 
-  ForwardClassIterator() noexcept = default;
+  ForwardClassIterator() noexcept                              = default;
   ForwardClassIterator(const ForwardClassIterator&)            = delete;
   ForwardClassIterator& operator=(const ForwardClassIterator&) = delete;
   ForwardClassIterator(ForwardClassIterator&&) noexcept;
@@ -901,7 +892,7 @@ public:
 
   [[nodiscard]] Node_class operator*() const;
   ForwardClassIterator&    operator++();
-  [[nodiscard]] bool operator==(const ForwardClassIterator& o) const noexcept {
+  [[nodiscard]] bool       operator==(const ForwardClassIterator& o) const noexcept {
     // End sentinel: both iterators at Phase::End compare equal regardless of
     // graph_, so a default-constructed end iterator terminates range-for.
     if (phase_ == Phase::End && o.phase_ == Phase::End) {
@@ -915,8 +906,8 @@ private:
   enum class Phase : uint8_t { Pass1, Pass2, Tail, End };
 
   explicit ForwardClassIterator(Graph* graph);
-  void advance();
-  void propagate(size_t driver_idx, size_t cursor);
+  void               advance();
+  void               propagate(size_t driver_idx, size_t cursor);
   [[nodiscard]] bool is_source(size_t idx) const noexcept;
   [[nodiscard]] bool is_emitted(size_t idx) const noexcept;
   void               mark_emitted(size_t idx) noexcept;
@@ -963,17 +954,17 @@ public:
   using pointer           = void;
   using reference         = Node_class;
 
-  ForwardFlatIterator() noexcept = default;
-  ForwardFlatIterator(const ForwardFlatIterator&)            = delete;
-  ForwardFlatIterator& operator=(const ForwardFlatIterator&) = delete;
-  ForwardFlatIterator(ForwardFlatIterator&&) noexcept        = default;
+  ForwardFlatIterator() noexcept                                 = default;
+  ForwardFlatIterator(const ForwardFlatIterator&)                = delete;
+  ForwardFlatIterator& operator=(const ForwardFlatIterator&)     = delete;
+  ForwardFlatIterator(ForwardFlatIterator&&) noexcept            = default;
   ForwardFlatIterator& operator=(ForwardFlatIterator&&) noexcept = default;
   ~ForwardFlatIterator()                                         = default;
 
   [[nodiscard]] Node_class operator*() const;
   ForwardFlatIterator&     operator++();
-  [[nodiscard]] bool operator==(const ForwardFlatIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
-  [[nodiscard]] bool operator!=(const ForwardFlatIterator& o) const noexcept { return !(*this == o); }
+  [[nodiscard]] bool       operator==(const ForwardFlatIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool       operator!=(const ForwardFlatIterator& o) const noexcept { return !(*this == o); }
 
 private:
   struct Frame {
@@ -1012,17 +1003,17 @@ public:
   using pointer           = void;
   using reference         = Node_class;
 
-  ForwardHierIterator() noexcept = default;
-  ForwardHierIterator(const ForwardHierIterator&)            = delete;
-  ForwardHierIterator& operator=(const ForwardHierIterator&) = delete;
-  ForwardHierIterator(ForwardHierIterator&&) noexcept        = default;
+  ForwardHierIterator() noexcept                                 = default;
+  ForwardHierIterator(const ForwardHierIterator&)                = delete;
+  ForwardHierIterator& operator=(const ForwardHierIterator&)     = delete;
+  ForwardHierIterator(ForwardHierIterator&&) noexcept            = default;
   ForwardHierIterator& operator=(ForwardHierIterator&&) noexcept = default;
   ~ForwardHierIterator()                                         = default;
 
   [[nodiscard]] Node_class operator*() const;
   ForwardHierIterator&     operator++();
-  [[nodiscard]] bool operator==(const ForwardHierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
-  [[nodiscard]] bool operator!=(const ForwardHierIterator& o) const noexcept { return !(*this == o); }
+  [[nodiscard]] bool       operator==(const ForwardHierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool       operator!=(const ForwardHierIterator& o) const noexcept { return !(*this == o); }
 
 private:
   struct Frame {
@@ -1063,7 +1054,7 @@ public:
   using pointer           = void;
   using reference         = Node_class;
 
-  BackwardClassIterator() noexcept = default;
+  BackwardClassIterator() noexcept                               = default;
   BackwardClassIterator(const BackwardClassIterator&)            = delete;
   BackwardClassIterator& operator=(const BackwardClassIterator&) = delete;
   BackwardClassIterator(BackwardClassIterator&&) noexcept;
@@ -1072,7 +1063,7 @@ public:
 
   [[nodiscard]] Node_class operator*() const;
   BackwardClassIterator&   operator++();
-  [[nodiscard]] bool operator==(const BackwardClassIterator& o) const noexcept {
+  [[nodiscard]] bool       operator==(const BackwardClassIterator& o) const noexcept {
     if (phase_ == Phase::End && o.phase_ == Phase::End) {
       return true;
     }
@@ -1084,8 +1075,8 @@ private:
   enum class Phase : uint8_t { Pass1, Pass2, Tail, End };
 
   explicit BackwardClassIterator(Graph* graph);
-  void advance();
-  void propagate(size_t sink_idx, size_t cursor);
+  void               advance();
+  void               propagate(size_t sink_idx, size_t cursor);
   [[nodiscard]] bool is_sink(size_t idx) const noexcept;
   [[nodiscard]] bool is_emitted(size_t idx) const noexcept;
   void               mark_emitted(size_t idx) noexcept;
@@ -1127,17 +1118,17 @@ public:
   using pointer           = void;
   using reference         = Node_class;
 
-  BackwardFlatIterator() noexcept = default;
-  BackwardFlatIterator(const BackwardFlatIterator&)            = delete;
-  BackwardFlatIterator& operator=(const BackwardFlatIterator&) = delete;
-  BackwardFlatIterator(BackwardFlatIterator&&) noexcept        = default;
+  BackwardFlatIterator() noexcept                                  = default;
+  BackwardFlatIterator(const BackwardFlatIterator&)                = delete;
+  BackwardFlatIterator& operator=(const BackwardFlatIterator&)     = delete;
+  BackwardFlatIterator(BackwardFlatIterator&&) noexcept            = default;
   BackwardFlatIterator& operator=(BackwardFlatIterator&&) noexcept = default;
   ~BackwardFlatIterator()                                          = default;
 
   [[nodiscard]] Node_class operator*() const;
   BackwardFlatIterator&    operator++();
-  [[nodiscard]] bool operator==(const BackwardFlatIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
-  [[nodiscard]] bool operator!=(const BackwardFlatIterator& o) const noexcept { return !(*this == o); }
+  [[nodiscard]] bool       operator==(const BackwardFlatIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool       operator!=(const BackwardFlatIterator& o) const noexcept { return !(*this == o); }
 
 private:
   struct Frame {
@@ -1173,17 +1164,17 @@ public:
   using pointer           = void;
   using reference         = Node_class;
 
-  BackwardHierIterator() noexcept = default;
-  BackwardHierIterator(const BackwardHierIterator&)            = delete;
-  BackwardHierIterator& operator=(const BackwardHierIterator&) = delete;
-  BackwardHierIterator(BackwardHierIterator&&) noexcept        = default;
+  BackwardHierIterator() noexcept                                  = default;
+  BackwardHierIterator(const BackwardHierIterator&)                = delete;
+  BackwardHierIterator& operator=(const BackwardHierIterator&)     = delete;
+  BackwardHierIterator(BackwardHierIterator&&) noexcept            = default;
   BackwardHierIterator& operator=(BackwardHierIterator&&) noexcept = default;
   ~BackwardHierIterator()                                          = default;
 
   [[nodiscard]] Node_class operator*() const;
   BackwardHierIterator&    operator++();
-  [[nodiscard]] bool operator==(const BackwardHierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
-  [[nodiscard]] bool operator!=(const BackwardHierIterator& o) const noexcept { return !(*this == o); }
+  [[nodiscard]] bool       operator==(const BackwardHierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool       operator!=(const BackwardHierIterator& o) const noexcept { return !(*this == o); }
 
 private:
   struct Frame {
@@ -1226,17 +1217,17 @@ public:
   using pointer           = void;
   using reference         = Hier_instance;
 
-  HierIterator() noexcept                      = default;
-  HierIterator(const HierIterator&)            = delete;
-  HierIterator(HierIterator&&) noexcept        = default;
-  HierIterator& operator=(const HierIterator&) = delete;
+  HierIterator() noexcept                          = default;
+  HierIterator(const HierIterator&)                = delete;
+  HierIterator(HierIterator&&) noexcept            = default;
+  HierIterator& operator=(const HierIterator&)     = delete;
   HierIterator& operator=(HierIterator&&) noexcept = default;
-  ~HierIterator()                              = default;
+  ~HierIterator()                                  = default;
 
   [[nodiscard]] Hier_instance operator*() const;
   HierIterator&               operator++();
-  [[nodiscard]] bool operator==(const HierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
-  [[nodiscard]] bool operator!=(const HierIterator& o) const noexcept { return !(*this == o); }
+  [[nodiscard]] bool          operator==(const HierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool          operator!=(const HierIterator& o) const noexcept { return !(*this == o); }
 
 private:
   struct Frame {

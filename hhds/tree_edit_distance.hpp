@@ -39,10 +39,10 @@ public:
     TreeEditDistance ted(costs, ::std::move(cost_fn));
     return Result{ted._run(root1, root2)};
   }
-// Null or empty trees are treated as empty (zero nodes).
-// distance(empty, empty) = 0
-// distance(empty, T)     = |T| * insert_cost
-// distance(T, empty)     = |T| * delete_cost
+  // Null or empty trees are treated as empty (zero nodes).
+  // distance(empty, empty) = 0
+  // distance(empty, T)     = |T| * insert_cost
+  // distance(T, empty)     = |T| * delete_cost
   [[nodiscard]] static Result compute(const ::std::shared_ptr<Tree>& tree1, const ::std::shared_ptr<Tree>& tree2,
                                       const EditCosts&                                                          costs = EditCosts{},
                                       ::std::function<double(const Tree::Node_class&, const Tree::Node_class&)> cost_fn = nullptr) {

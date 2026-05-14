@@ -4,9 +4,11 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cassert>
 #include <csignal>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -423,6 +425,104 @@ void test_backward_cycle_tail_without_loop_last() {
   assert(collect_nids(graph->backward_class()) == expected);
 }
 
+// Incremental cache patching: deleting an edge after a traversal must keep
+// both forward and backward iterations correct without a full cache rebuild.
+void test_traversal_caches_after_edge_delete() {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+
+  auto n1d = n1.create_driver_pin();
+  auto n2s = n2.create_sink_pin();
+  n1d.connect_sink(n2s);
+  n2.create_driver_pin().connect_sink(n3.create_sink_pin());
+
+  // Prime both caches.
+  const std::vector<hhds::Nid> fwd_chain{n1.get_debug_nid(), n2.get_debug_nid(), n3.get_debug_nid()};
+  const std::vector<hhds::Nid> bwd_chain{n3.get_debug_nid(), n2.get_debug_nid(), n1.get_debug_nid()};
+  assert(collect_nids(graph->forward_class()) == fwd_chain);
+  assert(collect_nids(graph->backward_class()) == bwd_chain);
+
+  // Delete the n1→n2 edge. n1 and {n2,n3} are now disconnected.
+  for (auto e : n1d.out_edges()) {
+    if (e.sink.get_debug_pid() == n2s.get_debug_pid()) {
+      e.del_edge();
+      break;
+    }
+  }
+
+  // All nodes still emit. Forward must list n1 before n2 is unconstrained but
+  // n2 before n3 still holds; backward is symmetric.
+  auto fwd = collect_nids(graph->forward_class());
+  auto bwd = collect_nids(graph->backward_class());
+  assert(fwd.size() == 3 && bwd.size() == 3);
+  auto pos
+      = [](const std::vector<hhds::Nid>& v, hhds::Nid x) { return std::distance(v.begin(), std::find(v.begin(), v.end(), x)); };
+  assert(pos(fwd, n2.get_debug_nid()) < pos(fwd, n3.get_debug_nid()));
+  assert(pos(bwd, n3.get_debug_nid()) < pos(bwd, n2.get_debug_nid()));
+}
+
+// Incremental cache patching: deleting a pin must decrement counts for every
+// edge connected to that pin.
+void test_traversal_caches_after_pin_delete() {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+  auto n2d = n2.create_driver_pin();
+  n2d.connect_sink(n3.create_sink_pin());
+
+  // Prime caches.
+  (void)collect_nids(graph->forward_class());
+  (void)collect_nids(graph->backward_class());
+
+  // Removing n2's driver pin severs n2→n3.
+  n2d.del_pin();
+
+  auto fwd = collect_nids(graph->forward_class());
+  auto bwd = collect_nids(graph->backward_class());
+  assert(fwd.size() == 3 && bwd.size() == 3);
+  auto pos
+      = [](const std::vector<hhds::Nid>& v, hhds::Nid x) { return std::distance(v.begin(), std::find(v.begin(), v.end(), x)); };
+  // n1→n2 still holds.
+  assert(pos(fwd, n1.get_debug_nid()) < pos(fwd, n2.get_debug_nid()));
+  assert(pos(bwd, n2.get_debug_nid()) < pos(bwd, n1.get_debug_nid()));
+}
+
+// Incremental cache patching: adding a back-edge (driver.idx > sink.idx) must
+// still produce a topologically valid emission via the Tail phase.
+void test_traversal_caches_after_back_edge_add() {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+
+  // Prime caches with no edges.
+  (void)collect_nids(graph->forward_class());
+
+  // n3 (later idx) → n1 (earlier idx): driver after sink in cached order.
+  n3.create_driver_pin().connect_sink(n1.create_sink_pin());
+
+  auto fwd = collect_nids(graph->forward_class());
+  assert(fwd.size() == 3);
+  auto pos
+      = [](const std::vector<hhds::Nid>& v, hhds::Nid x) { return std::distance(v.begin(), std::find(v.begin(), v.end(), x)); };
+  // The new n3→n1 edge requires n3 before n1 in forward emission.
+  assert(pos(fwd, n3.get_debug_nid()) < pos(fwd, n1.get_debug_nid()));
+}
+
 void test_backward_flat_exact_order_and_shared_body_dedup() {
   hhds::GraphLibrary lib;
 
@@ -816,6 +916,9 @@ int main() {
   test_backward_named_pin_and_declared_io_edges();
   test_backward_skips_tombstones_after_delete();
   test_backward_cycle_tail_without_loop_last();
+  test_traversal_caches_after_edge_delete();
+  test_traversal_caches_after_pin_delete();
+  test_traversal_caches_after_back_edge_add();
   test_backward_flat_exact_order_and_shared_body_dedup();
   test_backward_hier_exact_order_and_shared_body_per_instance();
   test_backward_hier_descends_into_nested_subnodes();

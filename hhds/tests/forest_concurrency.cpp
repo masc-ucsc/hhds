@@ -20,8 +20,8 @@
 
 namespace {
 
-constexpr int kThreads          = 8;
-constexpr int kIosPerThread     = 32;
+constexpr int kThreads           = 8;
+constexpr int kIosPerThread      = 32;
 constexpr int kFindsPerIteration = 16;
 
 }  // namespace
@@ -29,7 +29,7 @@ constexpr int kFindsPerIteration = 16;
 TEST(ForestConcurrency, ParallelCreateIoOnDistinctNames) {
   auto forest = hhds::Forest::create();
 
-  std::atomic<int> ready{0};
+  std::atomic<int>  ready{0};
   std::atomic<bool> go{false};
 
   std::vector<std::thread> threads;
@@ -112,8 +112,8 @@ TEST(ForestConcurrency, ParallelCreateAndFind) {
       }
       while (!stop.load(std::memory_order_acquire)) {
         for (int j = 0; j < kFindsPerIteration; ++j) {
-          const auto wt = static_cast<int>(rng() % static_cast<unsigned>(kThreads));
-          const auto wi = static_cast<int>(rng() % static_cast<unsigned>(kIosPerThread));
+          const auto wt   = static_cast<int>(rng() % static_cast<unsigned>(kThreads));
+          const auto wi   = static_cast<int>(rng() % static_cast<unsigned>(kIosPerThread));
           const auto name = "seed_" + std::to_string(wt) + "_" + std::to_string(wi);
           auto       tio  = forest->find_io(name);
           if (tio) {

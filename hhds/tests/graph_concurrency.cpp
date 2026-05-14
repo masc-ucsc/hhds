@@ -17,8 +17,8 @@
 
 namespace {
 
-constexpr int kThreads          = 8;
-constexpr int kIosPerThread     = 32;
+constexpr int kThreads           = 8;
+constexpr int kIosPerThread      = 32;
 constexpr int kFindsPerIteration = 16;
 
 }  // namespace
@@ -100,8 +100,8 @@ TEST(GraphConcurrency, ParallelCreateAndFind) {
       }
       while (!stop.load(std::memory_order_acquire)) {
         for (int j = 0; j < kFindsPerIteration; ++j) {
-          const auto wt = static_cast<int>(rng() % static_cast<unsigned>(kThreads));
-          const auto wi = static_cast<int>(rng() % static_cast<unsigned>(kIosPerThread));
+          const auto wt   = static_cast<int>(rng() % static_cast<unsigned>(kThreads));
+          const auto wi   = static_cast<int>(rng() % static_cast<unsigned>(kIosPerThread));
           const auto name = "seed_" + std::to_string(wt) + "_" + std::to_string(wi);
           auto       gio  = lib.find_io(name);
           if (gio) {

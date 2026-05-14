@@ -64,11 +64,11 @@ std::string extract_full_content(const std::string& line) {
 }
 
 struct DumpData {
-  std::shared_ptr<hhds::Tree>                      tree;
-  std::vector<hhds::Tree::NodeData>                 nodes;
-  std::vector<hhds::Type_entry>                     type_table;
-  std::unordered_map<hhds::Tree_pos, std::string>   node_texts;
-  std::unordered_map<hhds::Tree_pos, std::string>   full_labels;
+  std::shared_ptr<hhds::Tree>                     tree;
+  std::vector<hhds::Tree::NodeData>               nodes;
+  std::vector<hhds::Type_entry>                   type_table;
+  std::unordered_map<hhds::Tree_pos, std::string> node_texts;
+  std::unordered_map<hhds::Tree_pos, std::string> full_labels;
 };
 
 std::vector<hhds::Type_entry> build_type_table(const std::string& filename) {
@@ -106,16 +106,16 @@ std::vector<hhds::Type_entry> build_type_table(const std::string& filename) {
   return table;
 }
 
-std::unordered_map<hhds::Tree_pos, std::string> build_full_labels(const std::string&                          filename,
-                                                                   const std::vector<hhds::Tree::NodeData>&    nodes) {
+std::unordered_map<hhds::Tree_pos, std::string> build_full_labels(const std::string&                       filename,
+                                                                  const std::vector<hhds::Tree::NodeData>& nodes) {
   std::vector<std::string> contents;
   {
     std::ifstream ifs(filename);
     if (!ifs.is_open()) {
       return {};
     }
-    std::string   line;
-    bool          first_line = true;
+    std::string line;
+    bool        first_line = true;
     while (std::getline(ifs, line)) {
       if (first_line) {
         first_line = false;
@@ -143,8 +143,8 @@ DumpData load_dump(const std::string& filename) {
   }
 
   auto [tree, nodes] = hhds::Tree::read_dump(filename, data.type_table);
-  data.tree  = std::move(tree);
-  data.nodes = std::move(nodes);
+  data.tree          = std::move(tree);
+  data.nodes         = std::move(nodes);
 
   for (const auto& nd : data.nodes) {
     data.node_texts[nd.pos] = nd.node_text;

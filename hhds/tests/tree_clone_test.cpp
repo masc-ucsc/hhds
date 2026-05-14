@@ -23,10 +23,10 @@ namespace {
 // Walk a tree pre-order and capture (depth, name, loc) for every node so two
 // trees can be structurally compared without relying on a generic operator==.
 struct NodeSnapshot {
-  int                        depth = 0;
-  std::string                name;
-  bool                       has_loc = false;
-  int                        loc     = 0;
+  int         depth = 0;
+  std::string name;
+  bool        has_loc = false;
+  int         loc     = 0;
 };
 
 void collect_pre_order(const hhds::Tree::Node_class& node, int depth, std::vector<NodeSnapshot>& out) {

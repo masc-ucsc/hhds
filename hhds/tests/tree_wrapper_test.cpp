@@ -236,8 +236,7 @@ TEST(TreeWrappers, PrintUsesTypeTableAndAttributes) {
   };
   options.type_table = type_table;
   options.attributes = {
-      {"type_id",
-       [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_type()); }},
+      {"type_id", [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_type()); }},
   };
 
   std::ostringstream os;

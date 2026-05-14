@@ -46,8 +46,7 @@ int main() {
     return it == names.end() ? std::string("node") : it->second;
   };
   print_options.attributes = {
-      {"type_id",
-       [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_type()); }},
+      {"type_id", [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_type()); }},
   };
 
   std::cout << "\nLLVM-like tree print\n";
@@ -71,19 +70,22 @@ int main() {
   std::cout << "\nForest subnode references\n";
   std::cout << "  top tree id=" << top_tid << " root pos=" << top_root.get_debug_nid() << "\n";
   std::cout << "  callsite pos=" << callsite.get_debug_nid() << " subnode=" << callsite.get_subnode_tid() << "\n";
-  std::cout << "  sub tree id=" << sub_tid << " root pos=" << sub_root.get_debug_nid()
-            << " leaf pos=" << sub_leaf.get_debug_nid() << "\n";
+  std::cout << "  sub tree id=" << sub_tid << " root pos=" << sub_root.get_debug_nid() << " leaf pos=" << sub_leaf.get_debug_nid()
+            << "\n";
 
   auto single_cursor = tree->create_cursor(root);
   std::cout << "\nTree cursor example\n";
   std::cout << "  start: pos=" << single_cursor.get_current_node().get_debug_nid() << " depth=" << single_cursor.depth() << "\n";
   single_cursor.goto_first_child();
-  std::cout << "  first child: pos=" << single_cursor.get_current_node().get_debug_nid() << " depth=" << single_cursor.depth() << "\n";
+  std::cout << "  first child: pos=" << single_cursor.get_current_node().get_debug_nid() << " depth=" << single_cursor.depth()
+            << "\n";
   single_cursor.goto_first_child();
-  std::cout << "  nested child: pos=" << single_cursor.get_current_node().get_debug_nid() << " depth=" << single_cursor.depth() << "\n";
+  std::cout << "  nested child: pos=" << single_cursor.get_current_node().get_debug_nid() << " depth=" << single_cursor.depth()
+            << "\n";
   single_cursor.goto_parent();
   single_cursor.goto_next_sibling();
-  std::cout << "  next sibling: pos=" << single_cursor.get_current_node().get_debug_nid() << " depth=" << single_cursor.depth() << "\n";
+  std::cout << "  next sibling: pos=" << single_cursor.get_current_node().get_debug_nid() << " depth=" << single_cursor.depth()
+            << "\n";
 
   auto hier_cursor = forest->create_cursor(top_tid);
   hier_cursor.goto_first_child();

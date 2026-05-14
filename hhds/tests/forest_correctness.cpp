@@ -137,8 +137,7 @@ TEST(ForestCorrectness, CycleTraversal) {
   b_child_ref.set_subnode(a.tio);
 
   int count = 0;
-  for (auto it = a.tree->pre_order_with_subtrees(a_root, true).begin();
-       it != a.tree->pre_order_with_subtrees(a_root, true).end();
+  for (auto it = a.tree->pre_order_with_subtrees(a_root, true).begin(); it != a.tree->pre_order_with_subtrees(a_root, true).end();
        ++it) {
     ++count;
   }
@@ -189,7 +188,7 @@ TEST(ForestCorrectness, ComplexForestOperations) {
   bool deleted = forest->delete_tree(sub_tree3.tio->get_tid());
   EXPECT_FALSE(deleted);
 
-  auto main_root = main_tree.tree->get_root_node();
+  auto main_root  = main_tree.tree->get_root_node();
   int  node_count = 0;
   for (auto it = main_tree.tree->pre_order_with_subtrees(main_root, true).begin();
        it != main_tree.tree->pre_order_with_subtrees(main_root, true).end();

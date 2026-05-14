@@ -49,8 +49,7 @@ int main() {
   with_attrs.attributes = {
       {"pos",
        [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_debug_nid()); }},
-      {"type_id",
-       [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_type()); }},
+      {"type_id", [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_type()); }},
   };
   tree->print(std::cout, with_attrs);
 
@@ -151,7 +150,8 @@ int main() {
     return it == ref_names.end() ? "?" : it->second;
   };
 
-  lnast_custom.format_node = [&](std::ostream& os, const hhds::Tree::Node_class& node, const hhds::Tree::PrintContext& ctx) -> bool {
+  lnast_custom.format_node
+      = [&](std::ostream& os, const hhds::Tree::Node_class& node, const hhds::Tree::PrintContext& ctx) -> bool {
     auto type     = node.get_type();
     auto children = ctx.get_children();
 
