@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/inlined_vector.h"
 #include "attr.hpp"
 #include "attrs/name.hpp"
 #include "graph_sizing.hpp"
@@ -257,8 +258,8 @@ public:
   void                                  del_node() const;
   [[nodiscard]] std::vector<Edge_class> out_edges() const;
   [[nodiscard]] std::vector<Edge_class> inp_edges() const;
-  [[nodiscard]] std::vector<Pin_class>  out_pins() const;
-  [[nodiscard]] std::vector<Pin_class>  inp_pins() const;
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4> out_pins() const;
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4> inp_pins() const;
 
   template <Attribute Tag>
   [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
@@ -630,9 +631,9 @@ private:
   [[nodiscard]] std::vector<Edge_class> inp_edges(Node_class node);
   [[nodiscard]] std::vector<Edge_class> out_edges(Pin_class pin);
   [[nodiscard]] std::vector<Edge_class> inp_edges(Pin_class pin);
-  [[nodiscard]] std::vector<Pin_class>  get_pins(Node_class node);
-  [[nodiscard]] std::vector<Pin_class>  get_driver_pins(Node_class node);
-  [[nodiscard]] std::vector<Pin_class>  get_sink_pins(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_pins(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_driver_pins(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_sink_pins(Node_class node);
   void                                  del_edge_int(Vid driver_id, Vid sink_id);
   void                                  add_edge_int(Pid self_id, Pid other_id);
   void                                  set_next_pin(Nid nid, Pid next_pin);

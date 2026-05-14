@@ -1670,12 +1670,12 @@ auto Node_class::inp_edges() const -> std::vector<Edge_class> {
   return graph_->inp_edges(*this);
 }
 
-auto Node_class::out_pins() const -> std::vector<Pin_class> {
+auto Node_class::out_pins() const -> absl::InlinedVector<Pin_class, 4> {
   assert(graph_ != nullptr && "out_pins: node is not attached to a graph");
   return graph_->get_driver_pins(*this);
 }
 
-auto Node_class::inp_pins() const -> std::vector<Pin_class> {
+auto Node_class::inp_pins() const -> absl::InlinedVector<Pin_class, 4> {
   assert(graph_ != nullptr && "inp_pins: node is not attached to a graph");
   return graph_->get_sink_pins(*this);
 }
@@ -3101,12 +3101,12 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
   return out;
 }
 
-auto Graph::get_pins(Node_class node) -> std::vector<Pin_class> {
+auto Graph::get_pins(Node_class node) -> absl::InlinedVector<Pin_class, 4> {
   assert_accessible();
   assert_node_exists(node);
-  std::vector<Pin_class> out;
-  const Nid              self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
-  auto*                  self     = ref_node(self_nid);
+  absl::InlinedVector<Pin_class, 4> out;
+  const Nid                         self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
+  auto*                             self     = ref_node(self_nid);
 
   Pid cur_pin = self->get_next_pin_id();
   while (cur_pin != 0) {
@@ -3118,10 +3118,10 @@ auto Graph::get_pins(Node_class node) -> std::vector<Pin_class> {
   return out;
 }
 
-auto Graph::get_driver_pins(Node_class node) -> std::vector<Pin_class> {
+auto Graph::get_driver_pins(Node_class node) -> absl::InlinedVector<Pin_class, 4> {
   assert_accessible();
   assert_node_exists(node);
-  std::vector<Pin_class> out;
+  absl::InlinedVector<Pin_class, 4> out;
   for (const auto& pin : get_pins(node)) {
     const Pid pid_lookup = (pin.get_debug_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
     auto*     self       = ref_pin(pid_lookup);
@@ -3138,10 +3138,10 @@ auto Graph::get_driver_pins(Node_class node) -> std::vector<Pin_class> {
   return out;
 }
 
-auto Graph::get_sink_pins(Node_class node) -> std::vector<Pin_class> {
+auto Graph::get_sink_pins(Node_class node) -> absl::InlinedVector<Pin_class, 4> {
   assert_accessible();
   assert_node_exists(node);
-  std::vector<Pin_class> out;
+  absl::InlinedVector<Pin_class, 4> out;
   for (const auto& pin : get_pins(node)) {
     const Pid pid_lookup = (pin.get_debug_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
     auto*     self       = ref_pin(pid_lookup);
