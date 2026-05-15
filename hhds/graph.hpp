@@ -265,6 +265,11 @@ public:
   [[nodiscard]] std::vector<Edge_class> inp_edges() const;
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> out_pins() const;
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> inp_pins() const;
+  // Fast boolean predicates — avoid materializing the full edge vector when
+  // callers only need an "any?" answer (LiveHD's Lgraph::has_outputs /
+  // has_inputs hot paths).
+  [[nodiscard]] bool                              has_out_edges() const;
+  [[nodiscard]] bool                              has_inp_edges() const;
 
   template <Attribute Tag>
   [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {

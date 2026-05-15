@@ -1279,9 +1279,10 @@ void Graph::erase_declared_io_pin(std::string_view name, ankerl::unordered_dense
     return;
   }
 
-  const Pid pin_lookup = (it->second & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-  assert(!ref_pin(pin_lookup)->has_edges() && "erase_declared_io_pin: declared pin still has connected edges");
-
+  // delete_pin below handles edge teardown — declared IO pins are wiped
+  // wholesale by GraphIO::reset_declarations, including any edges they still
+  // carry from the prior build (e.g., when a LiveHD test reuses an Lgraph
+  // across cases and clear_int reruns reset_declarations).
   delete_pin(it->second);
   pins_by_name.erase(it);
 }
@@ -1678,6 +1679,26 @@ auto Node_class::out_pins() const -> absl::InlinedVector<Pin_class, 4> {
 auto Node_class::inp_pins() const -> absl::InlinedVector<Pin_class, 4> {
   assert(graph_ != nullptr && "inp_pins: node is not attached to a graph");
   return graph_->get_sink_pins(*this);
+}
+
+bool Node_class::has_out_edges() const {
+  assert(graph_ != nullptr && "has_out_edges: node is not attached to a graph");
+  for (const auto& pin : graph_->get_driver_pins(*this)) {
+    if (graph_->ref_pin(pin.get_debug_pid())->has_edges()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool Node_class::has_inp_edges() const {
+  assert(graph_ != nullptr && "has_inp_edges: node is not attached to a graph");
+  for (const auto& pin : graph_->get_sink_pins(*this)) {
+    if (graph_->ref_pin(pin.get_debug_pid())->has_edges()) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void Graph::set_subnode(Node_class node, Gid gid) {
