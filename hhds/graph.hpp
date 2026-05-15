@@ -143,6 +143,11 @@ public:
   [[nodiscard]] bool             is_class() const noexcept { return context_ == Handle_context::Class; }
   [[nodiscard]] bool             is_flat() const noexcept { return context_ == Handle_context::Flat; }
   [[nodiscard]] bool             is_hier() const noexcept { return context_ == Handle_context::Hier; }
+  // Pin polarity: bit 1 (mask 2) of pin_pid is set on driver pins, clear on
+  // sink pins. Storage-level invariant maintained by create_driver_pin /
+  // create_sink_pin in graph.cpp.
+  [[nodiscard]] constexpr bool   is_driver() const noexcept { return (pin_pid & static_cast<Pid>(2)) != 0; }
+  [[nodiscard]] constexpr bool   is_sink() const noexcept { return (pin_pid & static_cast<Pid>(2)) == 0; }
   [[nodiscard]] Handle_context   get_context() const noexcept { return context_; }
   [[nodiscard]] Gid              get_root_gid() const noexcept;
   [[nodiscard]] Gid              get_current_gid() const noexcept;
@@ -1308,11 +1313,23 @@ public:
   void                                       delete_input(std::string_view name);
   void                                       delete_output(std::string_view name);
   void                                       clear();
+  // Drop all declared IO pins (and any materialized counterpart pins on the
+  // body) but keep this GraphIO attached to its owning GraphLibrary, with
+  // its Gid and name preserved. Distinct from clear(), which tombstones the
+  // entire GraphIO+Graph entry. Used by callers that want "reset all IO
+  // declarations on this slot" without invalidating the slot itself.
+  void                                       reset_declarations();
   [[nodiscard]] bool                         has_input(std::string_view name) const;
   [[nodiscard]] bool                         has_output(std::string_view name) const;
   [[nodiscard]] bool                         is_loop_last(std::string_view name) const;
   [[nodiscard]] Port_id                      get_input_port_id(std::string_view name) const;
   [[nodiscard]] Port_id                      get_output_port_id(std::string_view name) const;
+  // Reverse lookup: does any declared input/output have this port_id?
+  // O(input_count + output_count) — linear scan, no internal index. Add an
+  // index if a hot path needs frequent calls.
+  [[nodiscard]] bool                         has_pin_with_port_id(Port_id port_id) const;
+  [[nodiscard]] bool                         has_input_with_port_id(Port_id port_id) const;
+  [[nodiscard]] bool                         has_output_with_port_id(Port_id port_id) const;
 
   friend class Graph;
   friend class Node_class;
@@ -1783,6 +1800,25 @@ inline void GraphIO::clear() {
   owner_lib_->delete_graphio(shared_from_this());
 }
 
+inline void GraphIO::reset_declarations() {
+  assert(owner_lib_ != nullptr && "reset_declarations: GraphIO is no longer attached to a library");
+  // Drop body-side counterpart pins first, while we still know the names.
+  if (auto graph = get_graph()) {
+    for (const auto& input : input_pin_decls_) {
+      graph->erase_declared_io_pin(input.name, graph->input_pins_);
+    }
+    for (const auto& output : output_pin_decls_) {
+      graph->erase_declared_io_pin(output.name, graph->output_pins_);
+    }
+  }
+  input_pin_decls_.clear();
+  output_pin_decls_.clear();
+  declared_io_pins_.clear();
+  if (owner_lib_ != nullptr) {
+    owner_lib_->note_graph_mutation();
+  }
+}
+
 inline bool GraphIO::has_input(std::string_view name) const {
   const auto it = declared_io_pins_.find(std::string(name));
   return it != declared_io_pins_.end() && it->second.direction == IoDirection::Input;
@@ -1791,6 +1827,28 @@ inline bool GraphIO::has_input(std::string_view name) const {
 inline bool GraphIO::has_output(std::string_view name) const {
   const auto it = declared_io_pins_.find(std::string(name));
   return it != declared_io_pins_.end() && it->second.direction == IoDirection::Output;
+}
+
+inline bool GraphIO::has_input_with_port_id(Port_id port_id) const {
+  for (const auto& pin : input_pin_decls_) {
+    if (pin.port_id == port_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+inline bool GraphIO::has_output_with_port_id(Port_id port_id) const {
+  for (const auto& pin : output_pin_decls_) {
+    if (pin.port_id == port_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+inline bool GraphIO::has_pin_with_port_id(Port_id port_id) const {
+  return has_input_with_port_id(port_id) || has_output_with_port_id(port_id);
 }
 
 inline bool GraphIO::is_loop_last(std::string_view name) const {
