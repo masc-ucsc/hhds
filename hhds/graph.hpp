@@ -1273,7 +1273,7 @@ private:
 };
 
 class GraphIO : public std::enable_shared_from_this<GraphIO> {
-private:
+public:
   // GraphIO owns declared IO-pin metadata. Concrete Pid values only exist once a Graph body is materialized.
   enum class IoDirection : uint8_t { Input, Output };
 
@@ -1289,6 +1289,8 @@ private:
     // LiveHD's `is_unsign()` predicate on graph IO pins.
     bool        unsign    = false;
   };
+
+private:
 
   struct DeclaredIoPinRef {
     IoDirection direction = IoDirection::Input;
@@ -1352,6 +1354,13 @@ public:
   // `set_unsign(name, false)` marks signed. `is_unsign` reads it back.
   void               set_unsign(std::string_view name, bool unsign_value);
   [[nodiscard]] bool is_unsign(std::string_view name) const;
+
+  // Public iteration over declared inputs / outputs. Returns const refs to
+  // the underlying vectors so callers can range-for without exposing the
+  // DeclaredIoPinRef hash map. Order is declaration order (matches Verilog
+  // positional argument order via DeclaredIoPin::port_id).
+  [[nodiscard]] const std::vector<DeclaredIoPin>& get_input_pin_decls() const { return input_pin_decls_; }
+  [[nodiscard]] const std::vector<DeclaredIoPin>& get_output_pin_decls() const { return output_pin_decls_; }
 
   friend class Graph;
   friend class Node_class;
