@@ -3538,19 +3538,24 @@ void GraphLibrary::save(const std::string& db_path) const {
         continue;
       }
       ofs << "graph_io " << i << " " << gio->get_name() << "\n";
-      for (const auto& pin : gio->input_pin_decls_) {
-        ofs << "  input " << pin.port_id << " " << pin.name;
+      auto emit_pin = [&ofs](const char* direction, const GraphIO::DeclaredIoPin& pin) {
+        ofs << "  " << direction << " " << pin.port_id << " " << pin.name;
         if (pin.loop_last) {
           ofs << " loop_last";
         }
+        if (pin.bits) {
+          ofs << " bits=" << pin.bits;
+        }
+        if (pin.unsign) {
+          ofs << " unsigned";
+        }
         ofs << "\n";
+      };
+      for (const auto& pin : gio->input_pin_decls_) {
+        emit_pin("input", pin);
       }
       for (const auto& pin : gio->output_pin_decls_) {
-        ofs << "  output " << pin.port_id << " " << pin.name;
-        if (pin.loop_last) {
-          ofs << " loop_last";
-        }
-        ofs << "\n";
+        emit_pin("output", pin);
       }
     }
     // Preserve (name, gid) pairs for deleted graphs so that recreating by name
@@ -3637,22 +3642,31 @@ void GraphLibrary::load(const std::string& db_path) {
         Port_id            port_id;
         std::string        name;
         ss >> direction >> port_id >> name;
-        std::string rest;
-        bool        loop_last = false;
-        if (ss >> rest && rest == "loop_last") {
-          loop_last = true;
+        bool     loop_last = false;
+        uint32_t bits      = 0;
+        bool     unsign    = false;
+        std::string token;
+        while (ss >> token) {
+          if (token == "loop_last") {
+            loop_last = true;
+          } else if (token == "unsigned") {
+            unsign = true;
+          } else if (token.rfind("bits=", 0) == 0) {
+            bits = static_cast<uint32_t>(std::stoul(token.substr(5)));
+          }
         }
         // We hold registry_mu_ exclusively here, so we can't reach into
         // GraphIO::add_input/add_output (those call get_graph() which would
         // reacquire the lock as a reader). The body hasn't been materialized
         // yet, so this only needs to populate the GraphIO declaration vectors.
+        GraphIO::DeclaredIoPin decl{name, port_id, loop_last, bits, unsign};
         if (direction == "input") {
-          current_gio->input_pin_decls_.push_back(GraphIO::DeclaredIoPin{name, port_id, loop_last});
+          current_gio->input_pin_decls_.push_back(decl);
           current_gio->declared_io_pins_.emplace(
               current_gio->input_pin_decls_.back().name,
               GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Input, current_gio->input_pin_decls_.size() - 1});
         } else {
-          current_gio->output_pin_decls_.push_back(GraphIO::DeclaredIoPin{name, port_id, loop_last});
+          current_gio->output_pin_decls_.push_back(decl);
           current_gio->declared_io_pins_.emplace(
               current_gio->output_pin_decls_.back().name,
               GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Output, current_gio->output_pin_decls_.size() - 1});
