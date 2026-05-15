@@ -1,0 +1,14 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("//tools:copt_default.bzl", "COPTS")
+
+cc_binary(
+    name = "boost_final_bench",
+    srcs = ["boost_final_bench.cpp"],
+    copts = COPTS + [
+        "-Wno-shadow",
+    ],
+    deps = [
+        "//hhds/benchmarks_final:common",
+        "@boost.graph//:boost.graph",
+    ],
+)

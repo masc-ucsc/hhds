@@ -1,0 +1,13 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("//tools:copt_default.bzl", "COPTS")
+
+cc_binary(
+    name = "hhds_final_bench",
+    srcs = ["hhds_final_bench.cpp"],
+    copts = COPTS,
+    deps = [
+        "//hhds:graph",
+        "//hhds/benchmarks_final:common",
+    ],
+)
+
