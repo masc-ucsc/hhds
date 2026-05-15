@@ -1683,20 +1683,48 @@ auto Node_class::inp_pins() const -> absl::InlinedVector<Pin_class, 4> {
 
 bool Node_class::has_out_edges() const {
   assert(graph_ != nullptr && "has_out_edges: node is not attached to a graph");
-  for (const auto& pin : graph_->get_driver_pins(*this)) {
-    if (graph_->ref_pin(pin.get_debug_pid())->has_edges()) {
+  const Nid self_nid = raw_nid & ~static_cast<Nid>(2);
+  auto*     self     = graph_->ref_node(self_nid);
+  // Node-as-pin (port 0): scan node-entry edges, skip back-edges (bit 1 = sink).
+  for (auto vid : self->get_edges(self_nid, graph_->overflow_sets_)) {
+    if (!(vid & static_cast<Vid>(2))) {
       return true;
     }
+  }
+  // Other pins: walk the pin linked list.
+  for (Pid cur_pin = self->get_next_pin_id(); cur_pin != 0;) {
+    const Pid canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    auto*     pin_entry     = graph_->ref_pin(canonical_pin);
+    for (auto vid : pin_entry->get_edges(canonical_pin, graph_->overflow_sets_)) {
+      if (!(vid & static_cast<Vid>(2))) {
+        return true;
+      }
+    }
+    cur_pin = pin_entry->get_next_pin_id();
   }
   return false;
 }
 
 bool Node_class::has_inp_edges() const {
   assert(graph_ != nullptr && "has_inp_edges: node is not attached to a graph");
-  for (const auto& pin : graph_->get_sink_pins(*this)) {
-    if (graph_->ref_pin(pin.get_debug_pid())->has_edges()) {
+  const Nid self_nid = raw_nid & ~static_cast<Nid>(2);
+  auto*     self     = graph_->ref_node(self_nid);
+  // Node-as-pin (port 0): scan node-entry edges, keep back-edges (bit 1 = sink).
+  for (auto vid : self->get_edges(self_nid, graph_->overflow_sets_)) {
+    if (vid & static_cast<Vid>(2)) {
       return true;
     }
+  }
+  // Other pins.
+  for (Pid cur_pin = self->get_next_pin_id(); cur_pin != 0;) {
+    const Pid canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    auto*     pin_entry     = graph_->ref_pin(canonical_pin);
+    for (auto vid : pin_entry->get_edges(canonical_pin, graph_->overflow_sets_)) {
+      if (vid & static_cast<Vid>(2)) {
+        return true;
+      }
+    }
+    cur_pin = pin_entry->get_next_pin_id();
   }
   return false;
 }
