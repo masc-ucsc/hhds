@@ -1,0 +1,8 @@
+# Generated outputs from this benchmark suite only.
+# Keep source/scripts in git; regenerate CSVs and plots locally.
+hhds/results.csv
+boost/results.csv
+livehd/results.csv
+comparisons/comparison.csv
+comparisons/plot/*
+!comparisons/plot/.gitkeep
