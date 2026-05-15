@@ -1281,6 +1281,13 @@ private:
     std::string name;
     Port_id     port_id   = 0;
     bool        loop_last = false;
+    // Per-declared-pin bitwidth. 0 means unspecified (defaulted by the
+    // consumer). Stored on GraphIO rather than PinEntry so that declared
+    // IO bits survive even when the body has not been materialized.
+    uint32_t    bits      = 0;
+    // Sign hint: true == unsigned, false == signed/unspecified. Mirrors
+    // LiveHD's `is_unsign()` predicate on graph IO pins.
+    bool        unsign    = false;
   };
 
   struct DeclaredIoPinRef {
@@ -1335,6 +1342,16 @@ public:
   [[nodiscard]] bool                         has_pin_with_port_id(Port_id port_id) const;
   [[nodiscard]] bool                         has_input_with_port_id(Port_id port_id) const;
   [[nodiscard]] bool                         has_output_with_port_id(Port_id port_id) const;
+
+  // Per-declared-pin bitwidth. `set_bits` stamps the value; `get_bits`
+  // returns the stored bits (0 = unspecified). Asserts the pin name exists.
+  void                  set_bits(std::string_view name, uint32_t bits);
+  [[nodiscard]] uint32_t get_bits(std::string_view name) const;
+
+  // Per-declared-pin sign. `set_unsign(name, true)` marks unsigned;
+  // `set_unsign(name, false)` marks signed. `is_unsign` reads it back.
+  void               set_unsign(std::string_view name, bool unsign_value);
+  [[nodiscard]] bool is_unsign(std::string_view name) const;
 
   friend class Graph;
   friend class Node_class;
@@ -1854,6 +1871,34 @@ inline bool GraphIO::has_output_with_port_id(Port_id port_id) const {
 
 inline bool GraphIO::has_pin_with_port_id(Port_id port_id) const {
   return has_input_with_port_id(port_id) || has_output_with_port_id(port_id);
+}
+
+inline void GraphIO::set_bits(std::string_view name, uint32_t bits) {
+  const auto it = declared_io_pins_.find(std::string(name));
+  assert(it != declared_io_pins_.end() && "set_bits: declared pin name not found");
+  auto& pins = it->second.direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
+  pins[it->second.index].bits = bits;
+}
+
+inline uint32_t GraphIO::get_bits(std::string_view name) const {
+  const auto it = declared_io_pins_.find(std::string(name));
+  assert(it != declared_io_pins_.end() && "get_bits: declared pin name not found");
+  const auto& pins = it->second.direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
+  return pins[it->second.index].bits;
+}
+
+inline void GraphIO::set_unsign(std::string_view name, bool unsign_value) {
+  const auto it = declared_io_pins_.find(std::string(name));
+  assert(it != declared_io_pins_.end() && "set_unsign: declared pin name not found");
+  auto& pins = it->second.direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
+  pins[it->second.index].unsign = unsign_value;
+}
+
+inline bool GraphIO::is_unsign(std::string_view name) const {
+  const auto it = declared_io_pins_.find(std::string(name));
+  assert(it != declared_io_pins_.end() && "is_unsign: declared pin name not found");
+  const auto& pins = it->second.direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
+  return pins[it->second.index].unsign;
 }
 
 inline bool GraphIO::is_loop_last(std::string_view name) const {
