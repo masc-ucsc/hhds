@@ -247,6 +247,11 @@ public:
   }
 
   void                                  set_subnode(const std::shared_ptr<GraphIO>& graphio) const;
+  // Inverse accessors for set_subnode. All three return the "no subnode"
+  // sentinel (nullptr / Gid_invalid) when the node has none.
+  [[nodiscard]] Gid                      get_subnode_gid() const;
+  [[nodiscard]] std::shared_ptr<GraphIO> get_subnode_io() const;
+  [[nodiscard]] std::shared_ptr<Graph>   get_subnode_graph() const;
   void                                  set_type(Type type) const;
   [[nodiscard]] Type                    get_type() const;
   [[nodiscard]] bool                    is_loop_last() const;
@@ -1413,6 +1418,17 @@ public:
     return find_io_unlocked(name);
   }
 
+  // Gid-keyed lookup. Returns nullptr for invalid or unknown Gids.
+  [[nodiscard]] std::shared_ptr<GraphIO> find_io(Gid id) {
+    std::shared_lock lock(registry_mu_);
+    return find_io_unlocked(id);
+  }
+
+  [[nodiscard]] std::shared_ptr<const GraphIO> find_io(Gid id) const {
+    std::shared_lock lock(registry_mu_);
+    return find_io_unlocked(id);
+  }
+
   [[nodiscard]] bool has_graph(Gid id) const noexcept {
     std::shared_lock lock(registry_mu_);
     return has_graph_unlocked(id);
@@ -1542,6 +1558,17 @@ public:
   void load(const std::string& db_path);
 
 private:
+  [[nodiscard]] std::shared_ptr<GraphIO> find_io_unlocked(Gid id) const {
+    if (id == Gid_invalid) {
+      return {};
+    }
+    const size_t idx = static_cast<size_t>(id);
+    if (idx >= graph_ios_.size()) {
+      return {};
+    }
+    return graph_ios_[idx];
+  }
+
   [[nodiscard]] std::shared_ptr<GraphIO> find_io_unlocked(std::string_view name) const {
     if (name.empty()) {
       return {};

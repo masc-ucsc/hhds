@@ -1579,6 +1579,36 @@ void Node_class::set_subnode(const std::shared_ptr<GraphIO>& graphio) const {
   graph_->set_subnode(*this, graphio->get_gid());
 }
 
+Gid Node_class::get_subnode_gid() const {
+  assert(graph_ != nullptr && "get_subnode_gid: node is not attached to a graph");
+  const auto* entry = graph_->ref_node(raw_nid);
+  if (entry == nullptr || !entry->has_subnode()) {
+    return Gid_invalid;
+  }
+  return entry->get_subnode();
+}
+
+std::shared_ptr<GraphIO> Node_class::get_subnode_io() const {
+  assert(graph_ != nullptr && "get_subnode_io: node is not attached to a graph");
+  if (graph_->owner_lib_ == nullptr) {
+    return {};
+  }
+  const Gid gid = get_subnode_gid();
+  if (gid == Gid_invalid) {
+    return {};
+  }
+  auto* lib = const_cast<GraphLibrary*>(graph_->owner_lib_);
+  return lib->find_io(gid);
+}
+
+std::shared_ptr<Graph> Node_class::get_subnode_graph() const {
+  auto gio = get_subnode_io();
+  if (!gio) {
+    return {};
+  }
+  return gio->get_graph();
+}
+
 void Node_class::set_type(Type type) const {
   assert(graph_ != nullptr && "set_type: node is not attached to a graph");
   graph_->ref_node(raw_nid)->set_type(type);

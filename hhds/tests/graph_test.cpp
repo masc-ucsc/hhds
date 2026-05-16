@@ -91,6 +91,36 @@ void test_wrapper_pin_connect_api() {
   assert(output_edges.front().sink == z);
 }
 
+void test_subnode_accessors_round_trip_with_set_subnode() {
+  hhds::GraphLibrary lib;
+
+  auto leaf_gio  = lib.create_io("leaf");
+  auto leaf      = leaf_gio->create_graph();
+  auto other_gio = lib.create_io("other");
+  auto other     = other_gio->create_graph();
+
+  auto top_gio = lib.create_io("top");
+  auto top     = top_gio->create_graph();
+
+  // A plain node (no set_subnode) reports "no subnode" via every accessor.
+  auto plain = top->create_node();
+  assert(plain.get_subnode_gid() == hhds::Gid_invalid);
+  assert(plain.get_subnode_io() == nullptr);
+  assert(plain.get_subnode_graph() == nullptr);
+
+  auto inst = top->create_node();
+  inst.set_subnode(leaf_gio);
+  assert(inst.get_subnode_gid() == leaf_gio->get_gid());
+  assert(inst.get_subnode_io() == leaf_gio);
+  assert(inst.get_subnode_graph() == leaf);
+
+  // Retargeting must be observable through every accessor.
+  inst.set_subnode(other_gio);
+  assert(inst.get_subnode_gid() == other_gio->get_gid());
+  assert(inst.get_subnode_io() == other_gio);
+  assert(inst.get_subnode_graph() == other);
+}
+
 void test_forward_class_returns_wrappers() {
   hhds::GraphLibrary lib;
   auto               gio   = lib.create_io("top");
@@ -902,6 +932,7 @@ void test_set_subnode_retarget_ok() {
 
 int main() {
   test_declaration_api();
+  test_subnode_accessors_round_trip_with_set_subnode();
   test_wrapper_pin_connect_api();
   test_forward_class_returns_wrappers();
   test_backward_class_returns_wrappers();
