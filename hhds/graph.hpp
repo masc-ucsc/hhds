@@ -1826,8 +1826,8 @@ inline void GraphIO::delete_input(std::string_view name) {
   if (auto graph = get_graph()) {
     const auto pin_it = graph->input_pins_.find(std::string(name));
     if (pin_it != graph->input_pins_.end()) {
-      Pin_class input_pin = graph->make_pin_class(pin_it->second | static_cast<Pid>(2));
-      assert(graph->out_edges(input_pin).empty() && "delete_input: input pin is still connected — disconnect before delete");
+      assert(graph->out_edges(graph->make_pin_class(pin_it->second | static_cast<Pid>(2))).empty()
+             && "delete_input: input pin is still connected — disconnect before delete");
     }
     graph->erase_declared_io_pin(name, graph->input_pins_);
   } else if (owner_lib_ != nullptr) {
@@ -1850,8 +1850,8 @@ inline void GraphIO::delete_output(std::string_view name) {
   if (auto graph = get_graph()) {
     const auto pin_it = graph->output_pins_.find(std::string(name));
     if (pin_it != graph->output_pins_.end()) {
-      Pin_class output_pin = graph->make_pin_class(pin_it->second);
-      assert(graph->inp_edges(output_pin).empty() && "delete_output: output pin is still connected — disconnect before delete");
+      assert(graph->inp_edges(graph->make_pin_class(pin_it->second)).empty()
+             && "delete_output: output pin is still connected — disconnect before delete");
     }
     graph->erase_declared_io_pin(name, graph->output_pins_);
   } else if (owner_lib_ != nullptr) {
