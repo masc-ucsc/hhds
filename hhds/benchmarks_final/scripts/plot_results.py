@@ -70,7 +70,8 @@ def main():
 
         ax.set_title(f"{operation} / {scenario}")
         ax.set_xlabel(x_axis.replace("_", " "))
-        ax.set_ylabel("median wall time (ms)")
+        time_unit = rows[0].get("time_unit", "ns/op")
+        ax.set_ylabel(f"median time ({time_unit})")
         ax.grid(True, which="both", linestyle="--", alpha=0.35)
         ax.legend()
         if all(int(row["x_value"]) > 0 for row in rows):

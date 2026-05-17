@@ -7,9 +7,11 @@ Layout:
 
 - `hhds/`: HHDS benchmark binary and raw `results.csv`.
 - `boost/`: Boost.Graph benchmark binary and raw `results.csv`.
-- `livehd/`: reserved LiveHD slot. It is `N/A` until LiveHD source is available.
+- `livehd/`: LiveHD result slot. `run_all.sh` fills it when a sibling LiveHD
+  checkout with `//lgraph:livehd_final_bench` is available.
 - `comparisons/comparison.csv`: wide table with `operation`, `hhds`, `livehd`,
-  and `boost` columns. Times are median wall time in milliseconds.
+  and `boost` columns. Times are median nanoseconds per operation (`ns/op`),
+  computed as `wall_ns / items` for each raw run.
 - `comparisons/plot/`: one PNG per operation/scenario.
 - `scripts/run_all.sh`: builds, runs, aggregates, and plots.
 
@@ -24,3 +26,10 @@ a DAG version of the same forward-K shape so Boost topological traversal remains
 valid. The edge creation/deletion and `traverse_fast_class` scenarios use the
 ring shape to make every node land in the intended storage tier.
 
+LiveHD notes:
+
+- Set `LIVEHD_ROOT=/path/to/livehd` if LiveHD is not checked out next to this
+  HHDS repo.
+- LiveHD backward traversal rows are `N/A` because LiveHD's `backward()`
+  implementation currently contains a FIXME/assert rather than a working
+  iterator.
