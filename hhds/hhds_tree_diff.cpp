@@ -64,55 +64,72 @@ std::string extract_full_content(const std::string& line) {
 }
 
 struct DumpData {
+  DumpData() = default;
+  DumpData(DumpData&&) = default;
+  DumpData& operator=(DumpData&&) = default;
+  DumpData(const DumpData&) = delete;
+  DumpData& operator=(const DumpData&) = delete;
+  
   std::shared_ptr<hhds::Tree>                     tree;
   std::vector<hhds::Tree::NodeData>               nodes;
+  std::vector<std::string>                        type_names;
   std::vector<hhds::Type_entry>                   type_table;
   std::unordered_map<hhds::Tree_pos, std::string> node_texts;
   std::unordered_map<hhds::Tree_pos, std::string> full_labels;
 };
 
-std::vector<hhds::Type_entry> build_type_table(const std::string& filename) {
-  std::vector<std::string>                type_names;
-  std::unordered_map<std::string, size_t> type_idx;
+DumpData load_dump(const std::string& filename) {
+  DumpData data;
 
-  std::ifstream ifs(filename);
-  if (!ifs.is_open()) {
-    std::cerr << "hhds_tree_diff: cannot open " << filename << "\n";
-    return {};
-  }
-
-  std::string line;
-  bool        first_line = true;
-  while (std::getline(ifs, line)) {
-    if (first_line) {
-      first_line = false;
-      continue;
-    }
-    auto name = extract_type_name(line);
-    if (name.empty()) {
-      continue;
-    }
-    if (type_idx.find(name) == type_idx.end()) {
-      type_idx[name] = type_names.size();
-      type_names.push_back(std::move(name));
-    }
-  }
-
-  std::vector<hhds::Type_entry> table;
-  table.reserve(type_names.size());
-  for (const auto& n : type_names) {
-    table.push_back({n, hhds::Statement_class::Node});
-  }
-  return table;
-}
-
-std::unordered_map<hhds::Tree_pos, std::string> build_full_labels(const std::string&                       filename,
-                                                                  const std::vector<hhds::Tree::NodeData>& nodes) {
-  std::vector<std::string> contents;
   {
-    std::ifstream ifs(filename);
+    std::unordered_map<std::string, size_t> type_idx;
+    std::ifstream                           ifs(filename);
     if (!ifs.is_open()) {
-      return {};
+      std::cerr << "hhds_tree_diff: cannot open " << filename << "\n";
+      return data;
+    }
+    std::string line;
+    bool        first_line = true;
+    while (std::getline(ifs, line)) {
+      if (first_line) {
+        first_line = false;
+        continue;
+      }
+      auto name = extract_type_name(line);
+      if (name.empty()) {
+        continue;
+      }
+      if (type_idx.find(name) == type_idx.end()) {
+        type_idx[name] = data.type_names.size();
+        data.type_names.push_back(std::move(name));
+      }
+    }
+  }
+
+  data.type_table.reserve(data.type_names.size());
+  for (const auto& n : data.type_names) {
+    data.type_table.push_back({n, hhds::Statement_class::Node});
+  }
+
+  auto [tree, nodes] = hhds::Tree::read_dump(filename, data.type_table);
+  if (!tree) {
+    std::cerr << "hhds_tree_diff: failed to parse " << filename << "\n";
+    return data;
+  }
+  data.tree  = std::move(tree);
+  data.nodes = std::move(nodes);
+
+  for (const auto& nd : data.nodes) {
+    data.node_texts[nd.pos] = nd.node_text;
+  }
+
+  {
+    std::vector<std::string> contents;
+    std::ifstream            ifs(filename);
+    if (!ifs.is_open()) {
+      std::cerr << "hhds_tree_diff: cannot reopen " << filename << " for label extraction\n";
+      data.tree.reset();
+      return data;
     }
     std::string line;
     bool        first_line = true;
@@ -126,42 +143,57 @@ std::unordered_map<hhds::Tree_pos, std::string> build_full_labels(const std::str
         contents.push_back(std::move(c));
       }
     }
+    for (size_t i = 0; i < data.nodes.size() && i < contents.size(); ++i) {
+      data.full_labels[data.nodes[i].pos] = contents[i];
+    }
+    if (contents.size() != data.nodes.size()) {
+      std::cerr << "hhds_tree_diff: label count mismatch in " << filename
+                << " (expected " << data.nodes.size() << ", got " << contents.size() << ")\n";
+      data.tree.reset();
+      return data;
+    }
   }
-
-  std::unordered_map<hhds::Tree_pos, std::string> labels;
-  for (size_t i = 0; i < nodes.size() && i < contents.size(); ++i) {
-    labels[nodes[i].pos] = contents[i];
-  }
-  return labels;
-}
-
-DumpData load_dump(const std::string& filename) {
-  DumpData data;
-  data.type_table = build_type_table(filename);
-  if (data.type_table.empty()) {
-    return data;
-  }
-
-  auto [tree, nodes] = hhds::Tree::read_dump(filename, data.type_table);
-  data.tree          = std::move(tree);
-  data.nodes         = std::move(nodes);
-
-  for (const auto& nd : data.nodes) {
-    data.node_texts[nd.pos] = nd.node_text;
-  }
-
-  data.full_labels = build_full_labels(filename, data.nodes);
 
   return data;
 }
 
 void print_tree(const DumpData& data, const std::string& filename) {
+  std::unordered_map<hhds::Tree_pos, std::vector<std::pair<std::string, std::string>>> node_attrs;
+  std::vector<std::string>                                                             attr_keys;
+  std::unordered_map<std::string, bool>                                                seen_keys;
+  for (const auto& nd : data.nodes) {
+    if (!nd.attributes.empty()) {
+      node_attrs[nd.pos] = nd.attributes;
+      for (const auto& [k, _] : nd.attributes) {
+        if (!seen_keys[k]) {
+          seen_keys[k] = true;
+          attr_keys.push_back(k);
+        }
+      }
+    }
+  }
+
   hhds::Tree::PrintOptions opts;
   opts.type_table = data.type_table;
   opts.node_text  = [&data](const hhds::Tree::Node_class& node) {
     auto it = data.node_texts.find(node.get_debug_nid());
     return it == data.node_texts.end() ? std::string() : it->second;
   };
+  for (const auto& key : attr_keys) {
+    opts.attributes.emplace_back(key, [&node_attrs, key](const hhds::Tree::Node_class& node) -> std::optional<std::string> {
+      auto it = node_attrs.find(node.get_debug_nid());
+      if (it == node_attrs.end()) {
+        return std::nullopt;
+      }
+      for (const auto& [k, v] : it->second) {
+        if (k == key) {
+          return v;
+        }
+      }
+      return std::nullopt;
+    });
+  }
+
   std::cout << "=== " << filename << " ===\n";
   data.tree->dump(std::cout, opts);
   std::cout << "\n";
