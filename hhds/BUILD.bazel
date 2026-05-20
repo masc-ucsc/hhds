@@ -462,6 +462,17 @@ cc_binary(
     ],
 )
 
+cc_test(
+    name = "hhds_tree_diff_test",
+    srcs = ["tests/hhds_tree_diff_test.cpp"],
+    size = "small",
+    deps = [
+        ":core",
+        ":tree_edit_distance",
+        "@googletest//:gtest_main",
+    ],
+)
+
 # cc_binary(
 #     name = "graph_bin",
 #     srcs = ["graph_main.cpp"],
