@@ -7,6 +7,8 @@ BENCH_DIR="$REPO_ROOT/hhds/benchmarks_final"
 
 HHDS_BIN="$REPO_ROOT/bazel-bin/hhds/benchmarks_final/hhds/hhds_final_bench"
 BOOST_BIN="$REPO_ROOT/bazel-bin/hhds/benchmarks_final/boost/boost_final_bench"
+LIVEHD_ROOT="${LIVEHD_ROOT:-$(cd "$REPO_ROOT/.." && pwd)/livehd}"
+LIVEHD_BIN="$LIVEHD_ROOT/bazel-bin/lgraph/livehd_final_bench"
 
 HHDS_CSV="$BENCH_DIR/hhds/results.csv"
 BOOST_CSV="$BENCH_DIR/boost/results.csv"
@@ -31,6 +33,13 @@ fi
 
 cd "$REPO_ROOT"
 bazel build //hhds/benchmarks_final/hhds:hhds_final_bench //hhds/benchmarks_final/boost:boost_final_bench
+
+LIVEHD_AVAILABLE=0
+if [[ -f "$LIVEHD_ROOT/lgraph/tests/livehd_final_bench.cpp" ]]; then
+  echo "Building LiveHD benchmark..."
+  (cd "$LIVEHD_ROOT" && bazel build //lgraph:livehd_final_bench)
+  LIVEHD_AVAILABLE=1
+fi
 
 mkdir -p "$BENCH_DIR/hhds" "$BENCH_DIR/boost" "$BENCH_DIR/livehd" "$BENCH_DIR/comparisons" "$PLOT_DIR"
 HEADER="library,operation,scenario,x_axis,x_value,nodes,pins_per_node,hier_size,k,run_idx,wall_ns,items"
@@ -118,7 +127,47 @@ for scenario in sedges_inline ledge_inline overflow; do
   done
 done
 
-echo "LiveHD source is not present in this checkout; livehd/results.csv is intentionally header-only."
+if [[ "$LIVEHD_AVAILABLE" == "1" ]]; then
+  echo "Running LiveHD benchmarks..."
+  for nodes in $NODE_SIZES; do
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" add_nodes default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" add_nodes_with_pins default nodes "$nodes" 8 "$FIXED_HIER_SIZE" 0
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" lookup_nodes default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" delete_nodes_with_edges_and_pins default nodes "$nodes" 8 "$FIXED_HIER_SIZE" 0
+  done
+
+  for pins in $PIN_SIZES; do
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" add_pins default pins "$PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" delete_pins default pins "$PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" delete_pins_with_edges default pins "$PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" lookup_pins default pins "$PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
+  done
+
+  for scenario in sedges_inline ledge_inline overflow; do
+    for nodes in $NODE_SIZES; do
+      run_one "$LIVEHD_BIN" "$LIVEHD_CSV" add_edges "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
+      run_one "$LIVEHD_BIN" "$LIVEHD_CSV" delete_edges "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
+      run_one "$LIVEHD_BIN" "$LIVEHD_CSV" lookup_edges "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
+      run_one "$LIVEHD_BIN" "$LIVEHD_CSV" traverse_fast_class "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
+      run_one "$LIVEHD_BIN" "$LIVEHD_CSV" traverse_forward_class "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
+      # LiveHD currently declares backward(), but its implementation still
+      # contains a FIXME/assert. Leave backward LiveHD rows absent => N/A.
+    done
+  done
+
+  for nodes in $HIER_NODE_SIZES; do
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" traverse_fast_flat default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" traverse_forward_flat default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" traverse_fast_hier default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" traverse_forward_hier default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
+  done
+
+  for hier in $HIER_SIZES; do
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" traverse_hier_range default hier "$HIER_RANGE_NODE_COUNT" 1 "$hier" 0
+  done
+else
+  echo "LiveHD benchmark source not found at $LIVEHD_ROOT; livehd/results.csv is header-only."
+fi
 
 "$PYTHON" "$BENCH_DIR/scripts/make_comparison.py" \
   --hhds "$HHDS_CSV" \
@@ -136,4 +185,3 @@ echo "Raw Boost CSV:     $BOOST_CSV"
 echo "Raw LiveHD CSV:    $LIVEHD_CSV"
 echo "Comparison CSV:    $COMPARISON_CSV"
 echo "Plots folder:      $PLOT_DIR"
-

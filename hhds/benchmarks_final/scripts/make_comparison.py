@@ -43,6 +43,14 @@ SCENARIO_ORDER = {
 }
 
 
+def ns_per_op(row):
+    wall_ns = int(row["wall_ns"])
+    items = int(row["items"])
+    if items <= 0:
+        return None
+    return wall_ns / items
+
+
 def read_rows(path, rows_by_key):
     csv_path = Path(path)
     if not csv_path.exists():
@@ -60,7 +68,9 @@ def read_rows(path, rows_by_key):
                 int(row["x_value"]),
             )
             library = row["library"]
-            rows_by_key[key][library].append(int(row["wall_ns"]))
+            value = ns_per_op(row)
+            if value is not None:
+                rows_by_key[key][library].append(value)
 
 
 def sort_key(item):
@@ -68,10 +78,10 @@ def sort_key(item):
     return (OP_ORDER.get(operation, 1000), operation, SCENARIO_ORDER.get(scenario, 100), scenario, x_axis, x_value)
 
 
-def fmt_ms(values):
+def fmt_ns_per_op(values):
     if not values:
         return "N/A"
-    return f"{statistics.median(values) / 1_000_000.0:.6f}"
+    return f"{statistics.median(values):.3f}"
 
 
 def main():
@@ -93,8 +103,8 @@ def main():
       writer = csv.writer(handle)
       writer.writerow(["operation", "scenario", "x_axis", "x_value", "time_unit", "hhds", "livehd", "boost"])
       for key in sorted(rows_by_key, key=sort_key):
-          row = [key[0], key[1], key[2], key[3], "ms"]
-          row.extend(fmt_ms(rows_by_key[key].get(library, [])) for library in LIBRARIES)
+          row = [key[0], key[1], key[2], key[3], "ns/op"]
+          row.extend(fmt_ns_per_op(rows_by_key[key].get(library, [])) for library in LIBRARIES)
           writer.writerow(row)
 
 
