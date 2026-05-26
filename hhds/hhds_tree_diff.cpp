@@ -1,3 +1,6 @@
+#include <unistd.h>
+
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -6,7 +9,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include <unistd.h>
 
 #include "tree.hpp"
 #include "tree_edit_distance.hpp"
@@ -69,19 +71,17 @@ std::string extract_full_content(const std::string& line) {
 // so that semantically equivalent programs produce identical trees.
 
 int compute_depth(const std::string& line) {
-  int    depth = 0;
-  size_t pos   = 0;
-  const size_t len = line.size();
+  int          depth = 0;
+  size_t       pos   = 0;
+  const size_t len   = line.size();
   while (pos < len) {
-    if (pos + 5 < len && static_cast<unsigned char>(line[pos]) == 0xe2
-        && static_cast<unsigned char>(line[pos + 1]) == 0x94
+    if (pos + 5 < len && static_cast<unsigned char>(line[pos]) == 0xe2 && static_cast<unsigned char>(line[pos + 1]) == 0x94
         && static_cast<unsigned char>(line[pos + 2]) == 0x82) {
       ++depth;
       pos += 6;
       continue;
     }
-    if (pos + 3 < len && line[pos] == ' ' && line[pos + 1] == ' '
-        && line[pos + 2] == ' ' && line[pos + 3] == ' ') {
+    if (pos + 3 < len && line[pos] == ' ' && line[pos + 1] == ' ' && line[pos + 2] == ' ' && line[pos + 3] == ' ') {
       ++depth;
       pos += 4;
       continue;
@@ -93,28 +93,33 @@ int compute_depth(const std::string& line) {
 
 std::string extract_ref_name(const std::string& content) {
   auto pos = content.find('\'');
-  if (pos == std::string::npos) return {};
+  if (pos == std::string::npos) {
+    return {};
+  }
   auto end = content.find('\'', pos + 1);
-  if (end == std::string::npos) return {};
+  if (end == std::string::npos) {
+    return {};
+  }
   return content.substr(pos + 1, end - pos - 1);
 }
 
 struct StmtGroup {
-  std::vector<int>       line_indices;
-  std::string            write_var;
-  std::set<std::string>  read_vars;
-  std::string            sort_key;
+  std::vector<int>      line_indices;
+  std::string           write_var;
+  std::set<std::string> read_vars;
+  std::string           sort_key;
 };
 
-
-void extract_refs(const std::vector<std::string>& lines, const std::vector<int>& indices,
-                  std::string& write_var, std::set<std::string>& read_vars) {
+void extract_refs(const std::vector<std::string>& lines, const std::vector<int>& indices, std::string& write_var,
+                  std::set<std::string>& read_vars) {
   bool first_ref = true;
   for (int idx : indices) {
     auto type = extract_type_name(lines[idx]);
     if (type == "ref") {
       auto name = extract_ref_name(extract_full_content(lines[idx]));
-      if (name.empty()) continue;
+      if (name.empty()) {
+        continue;
+      }
       if (first_ref) {
         write_var = name;
         first_ref = false;
@@ -125,11 +130,84 @@ void extract_refs(const std::vector<std::string>& lines, const std::vector<int>&
   }
 }
 
+bool is_commutative(const std::string& type_name) {
+  return type_name == "plus" || type_name == "mult" || type_name == "bit_and" || type_name == "bit_or" || type_name == "bit_xor"
+         || type_name == "log_and" || type_name == "log_or" || type_name == "eq" || type_name == "ne";
+}
+
+void canonicalize_commutative(std::vector<std::string>& lines) {
+  for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
+    auto type = extract_type_name(lines[i]);
+    if (!is_commutative(type)) {
+      continue;
+    }
+
+    int parent_depth = compute_depth(lines[i]);
+    int child_depth  = parent_depth + 1;
+
+    // Find children subtrees
+    struct Subtree {
+      int start;
+      int end;
+    };
+    std::vector<Subtree> children;
+    for (int j = i + 1; j < static_cast<int>(lines.size()); ++j) {
+      int d = compute_depth(lines[j]);
+      if (d < child_depth) {
+        break;
+      }
+      if (d == child_depth) {
+        if (!children.empty()) {
+          children.back().end = j;
+        }
+        children.push_back({j, static_cast<int>(lines.size())});
+      }
+    }
+    if (!children.empty()) {
+      for (int j = children.back().start + 1; j < static_cast<int>(lines.size()); ++j) {
+        if (compute_depth(lines[j]) <= parent_depth) {
+          children.back().end = j;
+          break;
+        }
+      }
+    }
+
+    if (children.size() < 3) {
+      continue;
+    }
+
+    struct OperandData {
+      std::vector<std::string> subtree_lines;
+      std::string              sort_key;
+    };
+    std::vector<OperandData> operands;
+    for (size_t c = 1; c < children.size(); ++c) {
+      OperandData op;
+      for (int li = children[c].start; li < children[c].end; ++li) {
+        op.subtree_lines.push_back(lines[li]);
+      }
+      op.sort_key = extract_full_content(lines[children[c].start]);
+      operands.push_back(std::move(op));
+    }
+
+    std::sort(operands.begin(), operands.end(), [](const OperandData& a, const OperandData& b) { return a.sort_key < b.sort_key; });
+
+    int write_pos = children[1].start;
+    for (const auto& op : operands) {
+      for (const auto& ol : op.subtree_lines) {
+        lines[write_pos++] = ol;
+      }
+    }
+  }
+}
+
 std::string canonicalize_dump(const std::string& filename) {
   std::ifstream ifs(filename);
-  if (!ifs.is_open()) return filename;
+  if (!ifs.is_open()) {
+    return filename;
+  }
   std::vector<std::string> lines;
-  std::string line;
+  std::string              line;
   while (std::getline(ifs, line)) {
     lines.push_back(line);
   }
@@ -144,18 +222,27 @@ std::string canonicalize_dump(const std::string& filename) {
       break;
     }
   }
-  if (stmts_idx < 0) return filename;
+  if (stmts_idx < 0) {
+    return filename;
+  }
 
   int child_depth = stmts_depth + 1;
 
-  struct Subtree { int start; int end; };
+  struct Subtree {
+    int start;
+    int end;
+  };
   std::vector<Subtree> subtrees;
 
   for (int i = stmts_idx + 1; i < static_cast<int>(lines.size()); ++i) {
     int d = compute_depth(lines[i]);
-    if (d < child_depth) break;
+    if (d < child_depth) {
+      break;
+    }
     if (d == child_depth) {
-      if (!subtrees.empty()) subtrees.back().end = i;
+      if (!subtrees.empty()) {
+        subtrees.back().end = i;
+      }
       subtrees.push_back({i, static_cast<int>(lines.size())});
     }
   }
@@ -167,10 +254,12 @@ std::string canonicalize_dump(const std::string& filename) {
       }
     }
   }
-  if (subtrees.empty()) return filename;
+  if (subtrees.empty()) {
+    return filename;
+  }
 
   std::vector<StmtGroup> groups;
-  int si = 0;
+  int                    si = 0;
   while (si < static_cast<int>(subtrees.size())) {
     auto type_si = extract_type_name(lines[subtrees[si].start]);
 
@@ -188,7 +277,7 @@ std::string canonicalize_dump(const std::string& filename) {
     }
 
     if (type_si == "attr_set" && si + 1 < static_cast<int>(subtrees.size())) {
-      auto type_next = extract_type_name(lines[subtrees[si + 1].start]);
+      auto        type_next = extract_type_name(lines[subtrees[si + 1].start]);
       std::string ref_next;
       for (int li = subtrees[si + 1].start + 1; li < subtrees[si + 1].end; ++li) {
         if (extract_type_name(lines[li]) == "ref") {
@@ -199,10 +288,12 @@ std::string canonicalize_dump(const std::string& filename) {
 
       if (type_next == "assign" && ref_si == ref_next) {
         StmtGroup g;
-        for (int li = subtrees[si].start; li < subtrees[si].end; ++li)
+        for (int li = subtrees[si].start; li < subtrees[si].end; ++li) {
           g.line_indices.push_back(li);
-        for (int li = subtrees[si + 1].start; li < subtrees[si + 1].end; ++li)
+        }
+        for (int li = subtrees[si + 1].start; li < subtrees[si + 1].end; ++li) {
           g.line_indices.push_back(li);
+        }
 
         extract_refs(lines, g.line_indices, g.write_var, g.read_vars);
         g.sort_key = g.write_var.empty() ? ref_si : g.write_var;
@@ -220,16 +311,22 @@ std::string canonicalize_dump(const std::string& filename) {
     ++si;
   }
 
-  int ng = static_cast<int>(groups.size());
+  int                           ng = static_cast<int>(groups.size());
   std::vector<std::vector<int>> adj(ng);
   std::vector<int>              in_degree(ng, 0);
 
   for (int a = 0; a < ng; ++a) {
     for (int b = a + 1; b < ng; ++b) {
       bool dep = false;
-      if (!groups[a].write_var.empty() && groups[b].read_vars.count(groups[a].write_var)) dep = true;
-      if (!groups[b].write_var.empty() && groups[a].read_vars.count(groups[b].write_var)) dep = true;
-      if (!groups[a].write_var.empty() && groups[a].write_var == groups[b].write_var) dep = true;
+      if (!groups[a].write_var.empty() && groups[b].read_vars.count(groups[a].write_var)) {
+        dep = true;
+      }
+      if (!groups[b].write_var.empty() && groups[a].read_vars.count(groups[b].write_var)) {
+        dep = true;
+      }
+      if (!groups[a].write_var.empty() && groups[a].write_var == groups[b].write_var) {
+        dep = true;
+      }
 
       if (dep) {
         adj[a].push_back(b);
@@ -239,13 +336,16 @@ std::string canonicalize_dump(const std::string& filename) {
   }
 
   auto cmp = [&groups](int a, int b) {
-    if (groups[a].sort_key != groups[b].sort_key)
+    if (groups[a].sort_key != groups[b].sort_key) {
       return groups[a].sort_key < groups[b].sort_key;
+    }
     return a < b;
   };
   std::set<int, decltype(cmp)> ready(cmp);
   for (int i = 0; i < ng; ++i) {
-    if (in_degree[i] == 0) ready.insert(i);
+    if (in_degree[i] == 0) {
+      ready.insert(i);
+    }
   }
 
   std::vector<int> sorted_order;
@@ -255,33 +355,44 @@ std::string canonicalize_dump(const std::string& filename) {
     ready.erase(ready.begin());
     sorted_order.push_back(u);
     for (int v : adj[u]) {
-      if (--in_degree[v] == 0) ready.insert(v);
+      if (--in_degree[v] == 0) {
+        ready.insert(v);
+      }
     }
   }
 
-  std::string result;
+  std::vector<std::string> reordered;
   for (int i = 0; i <= stmts_idx; ++i) {
-    result += lines[i];
-    result += '\n';
+    reordered.push_back(lines[i]);
   }
   for (int gi : sorted_order) {
     for (int li : groups[gi].line_indices) {
-      result += lines[li];
-      result += '\n';
+      reordered.push_back(lines[li]);
     }
   }
   int after_stmts = subtrees.back().end;
   for (int i = after_stmts; i < static_cast<int>(lines.size()); ++i) {
-    result += lines[i];
+    reordered.push_back(lines[i]);
+  }
+
+  canonicalize_commutative(reordered);
+
+  std::string result;
+  for (const auto& l : reordered) {
+    result += l;
     result += '\n';
   }
 
   std::string tmpl = "/tmp/hhds_semantic_XXXXXX";
-  int fd = mkstemp(tmpl.data());
-  if (fd == -1) return filename;
+  int         fd   = mkstemp(tmpl.data());
+  if (fd == -1) {
+    return filename;
+  }
   close(fd);
   std::ofstream ofs(tmpl);
-  if (!ofs.is_open()) return filename;
+  if (!ofs.is_open()) {
+    return filename;
+  }
   ofs << result;
   ofs.close();
 
@@ -289,12 +400,12 @@ std::string canonicalize_dump(const std::string& filename) {
 }
 
 struct DumpData {
-  DumpData() = default;
-  DumpData(DumpData&&) = default;
-  DumpData& operator=(DumpData&&) = default;
-  DumpData(const DumpData&) = delete;
+  DumpData()                           = default;
+  DumpData(DumpData&&)                 = default;
+  DumpData& operator=(DumpData&&)      = default;
+  DumpData(const DumpData&)            = delete;
   DumpData& operator=(const DumpData&) = delete;
-  
+
   std::shared_ptr<hhds::Tree>                     tree;
   std::vector<hhds::Tree::NodeData>               nodes;
   std::vector<std::string>                        type_names;
@@ -372,8 +483,8 @@ DumpData load_dump(const std::string& filename) {
       data.full_labels[data.nodes[i].pos] = contents[i];
     }
     if (contents.size() != data.nodes.size()) {
-      std::cerr << "hhds_tree_diff: label count mismatch in " << filename
-                << " (expected " << data.nodes.size() << ", got " << contents.size() << ")\n";
+      std::cerr << "hhds_tree_diff: label count mismatch in " << filename << " (expected " << data.nodes.size() << ", got "
+                << contents.size() << ")\n";
       data.tree.reset();
       return data;
     }
@@ -432,9 +543,9 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  const std::string file1 = argv[1];
-  const std::string file2 = argv[2];
-  const bool semantic = (argc == 4 && std::string(argv[3]) == "--semantic");
+  const std::string file1    = argv[1];
+  const std::string file2    = argv[2];
+  const bool        semantic = (argc == 4 && std::string(argv[3]) == "--semantic");
 
   std::string load_file1 = file1;
   std::string load_file2 = file2;
@@ -483,8 +594,12 @@ int main(int argc, char** argv) {
   std::cout << "Distance: " << result.distance << "\n";
 
   if (semantic) {
-    if (load_file1 != file1) std::remove(load_file1.c_str());
-    if (load_file2 != file2) std::remove(load_file2.c_str());
+    if (load_file1 != file1) {
+      std::remove(load_file1.c_str());
+    }
+    if (load_file2 != file2) {
+      std::remove(load_file2.c_str());
+    }
   }
 
   return 0;
