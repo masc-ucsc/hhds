@@ -283,6 +283,10 @@ private:
   std::string                  name_       = "tree";
   uint64_t                     generation_ = 1;
   mutable bool                 dirty_      = true;
+  // Set by commit(). When true, the writer asked to publish the tree; any
+  // further mutation through the writable handle iasserts. Single-threaded —
+  // the writer is the only one with a writable handle at this point.
+  bool                         frozen_     = false;
 
   void _ensure_subnode_ref_capacity(Tree_pos required_pos) {
     if (required_pos < static_cast<Tree_pos>(subnode_refs.size())) {
@@ -592,6 +596,24 @@ public:
   [[nodiscard]] std::string_view        get_name() const { return name_; }
   [[nodiscard]] Tid                     get_tid() const noexcept { return self_tid_; }
   [[nodiscard]] std::shared_ptr<TreeIO> get_io() const { return treeio_owner_.lock(); }
+
+  // Publish a writable tree (create_tree or find_tree_rw) ahead of the
+  // writable handle going out of scope. Transitions the owning Forest slot
+  // from Writing -> Public so that find_tree(name) starts returning a
+  // read-only handle. After commit, mutations through the writable handle
+  // iassert: commit is the writer's "I'm done" signal.
+  // No-op if the tree has no Forest slot (e.g., create_tree_temp) or if
+  // already committed/aborted.
+  void                                  commit();
+
+  // Mark the writable handle as aborted. The slot will revert to Empty when
+  // the last writable handle is released (the partially built tree is
+  // discarded). Useful in error/unwind paths. No-op for find_tree_rw or
+  // detached trees.
+  void                                  abort();
+
+  // True iff commit() has been invoked on this body. Read-only inspection.
+  [[nodiscard]] bool                    is_frozen() const noexcept { return frozen_; }
 
   void print(std::ostream& os) const { print(os, get_root(), PrintOptions{}); }
   void print(std::ostream& os, const PrintOptions& options) const { print(os, get_root(), options); }
@@ -1606,6 +1628,34 @@ private:
   std::unordered_map<std::string, Tid> tree_name_to_tid_;
   std::unordered_map<std::string, Tid> deleted_name_to_tid_;
 
+  // Per-slot state machine for the body in trees[idx]:
+  //   Empty   -> no body; create_tree may CAS to Writing
+  //   Writing -> a writable handle is alive; find_tree returns nullptr
+  //              and concurrent create_tree / find_tree_rw get nullptr
+  //   Public  -> body is publicly findable
+  enum class SlotState : uint8_t { Empty = 0, Writing = 1, Public = 2 };
+
+  // Heap-allocated atomics so the vector can grow under unique_lock without
+  // invalidating addresses observed by concurrent readers/writers.
+  std::vector<std::unique_ptr<std::atomic<uint8_t>>> tree_slot_states_;
+  // Latched by Tree::abort(); read by the WriterCleanup deleter on
+  // last-release of the writable handle. Parallel-indexed with tree_ios_.
+  std::vector<std::unique_ptr<std::atomic<bool>>>    tree_slot_abort_pending_;
+
+  // Cleanup payload that lives on the control block of every writable Tree
+  // handle returned by create_tree / find_tree_rw. When the last copy of the
+  // aliased writable shared_ptr drops, ~TreeWriterCleanup runs and performs
+  // the slot transition (Writing -> Public, or Writing -> Empty for an
+  // aborted create_tree).
+  struct TreeWriterCleanup {
+    std::weak_ptr<Forest> forest_weak;
+    Tid                   tid;
+    bool                  from_create;       // true: tio->create_tree; false: find_tree_rw
+    std::shared_ptr<Tree> tree_keepalive;    // keeps Tree alive past delete_tree
+    ~TreeWriterCleanup();
+  };
+  friend struct TreeWriterCleanup;
+
 public:
   [[nodiscard]] static std::shared_ptr<Forest> create() { return std::shared_ptr<Forest>(new Forest()); }
 
@@ -1671,19 +1721,11 @@ public:
     return trees[tree_idx];
   }
 
-  [[nodiscard]] std::shared_ptr<Tree> find_tree(std::string_view name) {
-    std::shared_lock lock(registry_mu_);
-    auto             tio = find_io_unlocked(name);
-    if (!tio) {
-      return nullptr;
-    }
-    const auto tree_idx = static_cast<size_t>(-tio->get_tid() - 1);
-    if (tree_idx >= trees.size()) {
-      return nullptr;
-    }
-    return trees[tree_idx];
-  }
-
+  // Read-only handle lookup. Returns nullptr unless the slot is Public —
+  // i.e., the tree has been created and the writable handle has been
+  // committed or released. While a writer (from create_tree or
+  // find_tree_rw) is alive, this returns nullptr as if the tree did not
+  // exist, isolating in-flight construction from concurrent readers.
   [[nodiscard]] std::shared_ptr<const Tree> find_tree(std::string_view name) const {
     std::shared_lock lock(registry_mu_);
     auto             tio = find_io_unlocked(name);
@@ -1691,10 +1733,55 @@ public:
       return nullptr;
     }
     const auto tree_idx = static_cast<size_t>(-tio->get_tid() - 1);
-    if (tree_idx >= trees.size()) {
+    if (tree_idx >= trees.size() || !trees[tree_idx]) {
+      return nullptr;
+    }
+    if (tree_idx >= tree_slot_states_.size() || !tree_slot_states_[tree_idx]
+        || tree_slot_states_[tree_idx]->load(std::memory_order_acquire) != static_cast<uint8_t>(SlotState::Public)) {
       return nullptr;
     }
     return trees[tree_idx];
+  }
+
+  // Acquire a writable handle on an existing public tree. CAS-transitions
+  // the slot Public -> Writing only when no outstanding read-only handles
+  // exist; otherwise returns nullptr (caller retries). While the returned
+  // handle is alive, find_tree(name) returns nullptr to all callers; on
+  // last-release the slot transitions back to Public. Mutations happen
+  // in place — there is no abort semantic for find_tree_rw.
+  [[nodiscard]] std::shared_ptr<Tree> find_tree_rw(std::string_view name) {
+    std::shared_lock lock(registry_mu_);
+    auto             tio = find_io_unlocked(name);
+    if (!tio) {
+      return nullptr;
+    }
+    const auto tree_idx = static_cast<size_t>(-tio->get_tid() - 1);
+    if (tree_idx >= trees.size() || !trees[tree_idx]) {
+      return nullptr;
+    }
+    if (tree_idx >= tree_slot_states_.size() || !tree_slot_states_[tree_idx]) {
+      return nullptr;
+    }
+    auto&   state    = *tree_slot_states_[tree_idx];
+    uint8_t expected = static_cast<uint8_t>(SlotState::Public);
+    if (!state.compare_exchange_strong(expected,
+                                       static_cast<uint8_t>(SlotState::Writing),
+                                       std::memory_order_acquire,
+                                       std::memory_order_relaxed)) {
+      return nullptr;
+    }
+    // We won the CAS. Check for outstanding readers — trees[tree_idx]
+    // contributes use_count 1; any reader copy contributes another. If a
+    // reader is mid-flight, undo the CAS so they can finish first.
+    if (trees[tree_idx].use_count() > 1) {
+      state.store(static_cast<uint8_t>(SlotState::Public), std::memory_order_release);
+      return nullptr;
+    }
+    // Clear any stale abort flag (find_tree_rw never aborts).
+    if (tree_idx < tree_slot_abort_pending_.size() && tree_slot_abort_pending_[tree_idx]) {
+      tree_slot_abort_pending_[tree_idx]->store(false, std::memory_order_relaxed);
+    }
+    return make_writer_handle_unlocked(tree_idx, /*from_create=*/false);
   }
 
   // Forest-wide reverse lookup for an opaque Tree_flat_index key. Returns a
@@ -1790,12 +1877,45 @@ private:
       trees.resize(tree_idx + 1);
       reference_counts.resize(tree_idx + 1, 0);
     }
+    ensure_slot_state_vectors_unlocked(tree_idx + 1);
 
     auto tio            = std::shared_ptr<TreeIO>(new TreeIO(this->weak_from_this(), tree_tid, std::string(name)));
     tree_ios_[tree_idx] = tio;
     tree_name_to_tid_.emplace(std::string(name), tree_tid);
     reference_counts[tree_idx] = 0;
+    // Fresh slot starts Empty regardless of whether it's a reused tombstone.
+    tree_slot_states_[tree_idx]->store(static_cast<uint8_t>(SlotState::Empty), std::memory_order_release);
+    tree_slot_abort_pending_[tree_idx]->store(false, std::memory_order_relaxed);
     return tio;
+  }
+
+  void ensure_slot_state_vectors_unlocked(size_t needed) {
+    if (tree_slot_states_.size() < needed) {
+      tree_slot_states_.reserve(needed);
+      while (tree_slot_states_.size() < needed) {
+        tree_slot_states_.emplace_back(std::make_unique<std::atomic<uint8_t>>(static_cast<uint8_t>(SlotState::Empty)));
+      }
+    }
+    if (tree_slot_abort_pending_.size() < needed) {
+      tree_slot_abort_pending_.reserve(needed);
+      while (tree_slot_abort_pending_.size() < needed) {
+        tree_slot_abort_pending_.emplace_back(std::make_unique<std::atomic<bool>>(false));
+      }
+    }
+  }
+
+  // Build the writable shared_ptr<Tree> handed back from create_tree /
+  // find_tree_rw. Caller must already hold registry_mu_ (shared or unique)
+  // and have transitioned the slot to Writing. The returned handle aliases
+  // into a TreeWriterCleanup whose destructor performs the slot release.
+  std::shared_ptr<Tree> make_writer_handle_unlocked(size_t tree_idx, bool from_create) {
+    I(tree_idx < trees.size() && trees[tree_idx], "make_writer_handle: empty slot");
+    auto cleanup            = std::make_shared<TreeWriterCleanup>();
+    cleanup->forest_weak    = this->weak_from_this();
+    cleanup->tid            = static_cast<Tid>(-static_cast<Tid>(tree_idx) - 1);
+    cleanup->from_create    = from_create;
+    cleanup->tree_keepalive = trees[tree_idx];
+    return std::shared_ptr<Tree>(cleanup, cleanup->tree_keepalive.get());
   }
 
   [[nodiscard]] std::shared_ptr<Tree> create_tree_body(const std::shared_ptr<TreeIO>& tio) {
@@ -1803,6 +1923,11 @@ private:
     return create_tree_body_unlocked(tio);
   }
 
+  // Populating entry point. CAS the slot Empty -> Writing; if the slot is
+  // not Empty (already being written, already public), returns nullptr.
+  // The returned handle aliases a TreeWriterCleanup whose destructor
+  // publishes the slot on last-release (or tears it back to Empty if the
+  // writer called Tree::abort()).
   [[nodiscard]] std::shared_ptr<Tree> create_tree_body_unlocked(const std::shared_ptr<TreeIO>& tio) {
     I(tio != nullptr, "create_tree_body: null TreeIO");
 
@@ -1810,16 +1935,52 @@ private:
     I(tree_idx < tree_ios_.size(), "create_tree_body: tree declaration index out of range");
     I(tree_ios_[tree_idx] == tio, "create_tree_body: TreeIO is not owned by this forest");
 
-    if (trees[tree_idx]) {
-      return trees[tree_idx];
+    ensure_slot_state_vectors_unlocked(tree_idx + 1);
+    auto&   state    = *tree_slot_states_[tree_idx];
+    uint8_t expected = static_cast<uint8_t>(SlotState::Empty);
+    if (!state.compare_exchange_strong(expected,
+                                       static_cast<uint8_t>(SlotState::Writing),
+                                       std::memory_order_acquire,
+                                       std::memory_order_relaxed)) {
+      // Slot already Writing (another create_tree in flight) or already
+      // Public (committed body already published). Caller must use
+      // find_tree / find_tree_rw to access the existing body.
+      return nullptr;
     }
+    tree_slot_abort_pending_[tree_idx]->store(false, std::memory_order_relaxed);
 
-    auto tree = Tree::create(this);
-    tree->bind_forest_owner(this->weak_from_this());
-    tree->bind_treeio_owner(tio, tio->get_tid(), tio->get_name());
+    if (!trees[tree_idx]) {
+      auto tree = Tree::create(this);
+      tree->bind_forest_owner(this->weak_from_this());
+      tree->bind_treeio_owner(tio, tio->get_tid(), tio->get_name());
+      trees[tree_idx] = tree;
+    } else {
+      // Slot is Empty but a body lingers — happens after replace() or
+      // load(). Re-attach in case ownership shifted.
+      trees[tree_idx]->frozen_ = false;
+    }
+    return make_writer_handle_unlocked(tree_idx, /*from_create=*/true);
+  }
 
-    trees[tree_idx] = tree;
-    return tree;
+  // Internal load path: directly publish a freshly deserialized body to
+  // the Public state, bypassing the Writing window. Caller must hold
+  // unique_lock(registry_mu_).
+  [[nodiscard]] std::shared_ptr<Tree> create_tree_body_loaded_unlocked(const std::shared_ptr<TreeIO>& tio) {
+    I(tio != nullptr, "create_tree_body_loaded: null TreeIO");
+    const auto tree_idx = static_cast<size_t>(-tio->get_tid() - 1);
+    I(tree_idx < tree_ios_.size(), "create_tree_body_loaded: tree declaration index out of range");
+    I(tree_ios_[tree_idx] == tio, "create_tree_body_loaded: TreeIO is not owned by this forest");
+    ensure_slot_state_vectors_unlocked(tree_idx + 1);
+
+    if (!trees[tree_idx]) {
+      auto tree = Tree::create(this);
+      tree->bind_forest_owner(this->weak_from_this());
+      tree->bind_treeio_owner(tio, tio->get_tid(), tio->get_name());
+      trees[tree_idx] = tree;
+    }
+    tree_slot_states_[tree_idx]->store(static_cast<uint8_t>(SlotState::Public), std::memory_order_release);
+    tree_slot_abort_pending_[tree_idx]->store(false, std::memory_order_relaxed);
+    return trees[tree_idx];
   }
 
   bool delete_tree_unlocked(Tree_pos tree_tid) {
@@ -1845,6 +2006,12 @@ private:
 
     if (trees[tree_idx]) {
       trees[tree_idx].reset();
+      if (tree_idx < tree_slot_states_.size() && tree_slot_states_[tree_idx]) {
+        tree_slot_states_[tree_idx]->store(static_cast<uint8_t>(SlotState::Empty), std::memory_order_release);
+      }
+      if (tree_idx < tree_slot_abort_pending_.size() && tree_slot_abort_pending_[tree_idx]) {
+        tree_slot_abort_pending_[tree_idx]->store(false, std::memory_order_relaxed);
+      }
       return true;
     }
     return false;
@@ -1876,6 +2043,12 @@ private:
     }
     if (tree_idx < reference_counts.size()) {
       reference_counts[tree_idx] = 0;
+    }
+    if (tree_idx < tree_slot_states_.size() && tree_slot_states_[tree_idx]) {
+      tree_slot_states_[tree_idx]->store(static_cast<uint8_t>(SlotState::Empty), std::memory_order_release);
+    }
+    if (tree_idx < tree_slot_abort_pending_.size() && tree_slot_abort_pending_[tree_idx]) {
+      tree_slot_abort_pending_[tree_idx]->store(false, std::memory_order_relaxed);
     }
   }
 
@@ -1958,15 +2131,108 @@ inline void TreeIO::replace(std::shared_ptr<Tree> new_tree, bool keep_previous) 
 
   const auto tree_idx = static_cast<size_t>(-tid_ - 1);
   I(tree_idx < forest->trees.size(), "replace: tree slot out of range");
+  I(tree_idx < forest->tree_slot_states_.size() && forest->tree_slot_states_[tree_idx],
+    "replace: slot state vector is out of sync");
+  // Replace can only happen when no writer is mid-construction. A Writing
+  // slot means the caller still holds a writable handle; that would alias
+  // freed memory after the swap.
+  I(forest->tree_slot_states_[tree_idx]->load(std::memory_order_acquire)
+        != static_cast<uint8_t>(Forest::SlotState::Writing),
+    "replace: slot is currently being written (outstanding writable handle)");
 
   new_tree->forest_ptr = forest.get();
   new_tree->bind_forest_owner(forest->weak_from_this());
   new_tree->bind_treeio_owner(weak_from_this(), tid_, name_);
+  new_tree->frozen_ = false;
 
   if (keep_previous) {
     previous_ = std::move(forest->trees[tree_idx]);
   }
   forest->trees[tree_idx] = std::move(new_tree);
+  // The replaced body is publicly visible immediately.
+  forest->tree_slot_states_[tree_idx]->store(static_cast<uint8_t>(Forest::SlotState::Public),
+                                             std::memory_order_release);
+  if (tree_idx < forest->tree_slot_abort_pending_.size() && forest->tree_slot_abort_pending_[tree_idx]) {
+    forest->tree_slot_abort_pending_[tree_idx]->store(false, std::memory_order_relaxed);
+  }
+}
+
+inline Forest::TreeWriterCleanup::~TreeWriterCleanup() {
+  auto forest = forest_weak.lock();
+  if (!forest) {
+    return;  // Forest is gone; nothing to publish.
+  }
+  std::unique_lock lock(forest->registry_mu_);
+  const auto       tree_idx = static_cast<size_t>(-tid - 1);
+  if (tree_idx >= forest->tree_slot_states_.size() || !forest->tree_slot_states_[tree_idx]) {
+    return;
+  }
+  auto& state = *forest->tree_slot_states_[tree_idx];
+  if (state.load(std::memory_order_acquire) != static_cast<uint8_t>(Forest::SlotState::Writing)) {
+    // commit() already flipped to Public, or the slot was deleted out
+    // from under us. Either way the cleanup has nothing to do.
+    return;
+  }
+  const bool aborted = from_create
+                       && tree_idx < forest->tree_slot_abort_pending_.size()
+                       && forest->tree_slot_abort_pending_[tree_idx]
+                       && forest->tree_slot_abort_pending_[tree_idx]->load(std::memory_order_acquire);
+  if (aborted) {
+    // Tear the slot down to Empty so the name (and slot index) can be
+    // recreated. The tree_keepalive in this cleanup is the last strong
+    // ref to the Tree (we just released trees[idx]); it dies at function
+    // exit.
+    if (tree_idx < forest->trees.size() && forest->trees[tree_idx]) {
+      forest->trees[tree_idx].reset();
+    }
+    forest->tree_slot_abort_pending_[tree_idx]->store(false, std::memory_order_relaxed);
+    state.store(static_cast<uint8_t>(Forest::SlotState::Empty), std::memory_order_release);
+    return;
+  }
+  state.store(static_cast<uint8_t>(Forest::SlotState::Public), std::memory_order_release);
+}
+
+inline void Tree::commit() {
+  if (frozen_) {
+    return;
+  }
+  auto forest = forest_owner_.lock();
+  if (!forest || self_tid_ == INVALID) {
+    // Detached / temp tree — commit is a no-op (no slot to publish).
+    frozen_ = true;
+    return;
+  }
+  std::unique_lock lock(forest->registry_mu_);
+  const auto       tree_idx = static_cast<size_t>(-self_tid_ - 1);
+  if (tree_idx >= forest->tree_slot_states_.size() || !forest->tree_slot_states_[tree_idx]) {
+    frozen_ = true;
+    return;
+  }
+  auto&   state    = *forest->tree_slot_states_[tree_idx];
+  uint8_t expected = static_cast<uint8_t>(Forest::SlotState::Writing);
+  if (state.compare_exchange_strong(expected,
+                                    static_cast<uint8_t>(Forest::SlotState::Public),
+                                    std::memory_order_release,
+                                    std::memory_order_relaxed)) {
+    frozen_ = true;
+  } else {
+    // Already Public (double-commit or load) — still mark frozen so a
+    // post-commit mutation through this handle would iassert.
+    frozen_ = true;
+  }
+}
+
+inline void Tree::abort() {
+  auto forest = forest_owner_.lock();
+  if (!forest || self_tid_ == INVALID) {
+    return;  // detached / temp — nothing to abort
+  }
+  std::unique_lock lock(forest->registry_mu_);
+  const auto       tree_idx = static_cast<size_t>(-self_tid_ - 1);
+  if (tree_idx >= forest->tree_slot_abort_pending_.size() || !forest->tree_slot_abort_pending_[tree_idx]) {
+    return;
+  }
+  forest->tree_slot_abort_pending_[tree_idx]->store(true, std::memory_order_release);
 }
 
 inline std::shared_ptr<Tree> TreeIO::get_previous() const { return previous_; }

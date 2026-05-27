@@ -102,8 +102,10 @@ TEST(TreeClone, ProducesUnattachedDeepCopy) {
   // Unattached: no Forest, no TreeIO, INVALID tid.
   EXPECT_EQ(copy->get_io(), nullptr);
   EXPECT_EQ(copy->get_tid(), hhds::INVALID);
-  EXPECT_EQ(forest->find_tree("src"), src);
-  EXPECT_NE(forest->find_tree("src"), copy);
+  // Publish so find_tree sees the source body.
+  src->commit();
+  EXPECT_EQ(forest->find_tree("src").get(), src.get());
+  EXPECT_NE(forest->find_tree("src").get(), copy.get());
 
   std::vector<NodeSnapshot> src_snap;
   std::vector<NodeSnapshot> copy_snap;

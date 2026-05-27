@@ -513,6 +513,22 @@ public:
   [[nodiscard]] Gid                      get_gid() const noexcept { return self_gid_; }
   [[nodiscard]] std::string_view         get_name() const noexcept { return name_; }
   [[nodiscard]] std::shared_ptr<GraphIO> get_io() const { return graphio_owner_.lock(); }
+
+  // Publish a writable graph (create_graph or find_graph_rw) ahead of the
+  // writable handle going out of scope. Transitions the owning library slot
+  // from Writing -> Public so that find_graph(name) starts returning a
+  // read-only handle. After commit, mutations through the writable handle
+  // iassert (best-effort: only flagged via is_frozen()). No-op if the graph
+  // has no library slot or is already committed/aborted.
+  void                                   commit();
+
+  // Mark the writable handle as aborted. The slot reverts to Empty when the
+  // last writable handle is released (partially built graph is discarded).
+  // Useful in error/unwind paths. No-op for find_graph_rw or detached
+  // graphs.
+  void                                   abort();
+
+  [[nodiscard]] bool                     is_frozen() const noexcept { return frozen_; }
   [[nodiscard]] Pin_class                get_input_pin(std::string_view name) const;
   [[nodiscard]] Pin_class                get_output_pin(std::string_view name) const;
 
@@ -709,6 +725,9 @@ private:
   Gid                                            self_gid_ = Gid_invalid;
   bool                                           deleted_  = false;
   mutable bool                                   dirty_    = true;
+  // Set by commit(). When true, the writer asked to publish the graph;
+  // single-threaded — only the writer has a writable handle.
+  bool                                           frozen_   = false;
   std::string                                    name_;
 
   friend class Node_class;
@@ -1446,19 +1465,11 @@ public:
     return graphs_[static_cast<size_t>(id)];
   }
 
-  [[nodiscard]] std::shared_ptr<Graph> find_graph(std::string_view name) {
-    std::shared_lock lock(registry_mu_);
-    auto             gio = find_io_unlocked(name);
-    if (!gio) {
-      return {};
-    }
-    const size_t idx = static_cast<size_t>(gio->get_gid());
-    if (idx >= graphs_.size() || !graphs_[idx] || graphs_[idx]->deleted_) {
-      return {};
-    }
-    return graphs_[idx];
-  }
-
+  // Read-only handle lookup. Returns nullptr unless the slot is Public —
+  // i.e., the graph has been created and the writable handle has been
+  // committed or released. While a writer (from create_graph or
+  // find_graph_rw) is alive, this returns nullptr as if the graph did not
+  // exist.
   [[nodiscard]] std::shared_ptr<const Graph> find_graph(std::string_view name) const {
     std::shared_lock lock(registry_mu_);
     auto             gio = find_io_unlocked(name);
@@ -1469,7 +1480,48 @@ public:
     if (idx >= graphs_.size() || !graphs_[idx] || graphs_[idx]->deleted_) {
       return {};
     }
+    if (idx >= graph_slot_states_.size() || !graph_slot_states_[idx]
+        || graph_slot_states_[idx]->load(std::memory_order_acquire) != static_cast<uint8_t>(SlotState::Public)) {
+      return {};
+    }
     return graphs_[idx];
+  }
+
+  // Acquire a writable handle on an existing public graph. CAS-transitions
+  // the slot Public -> Writing only when no outstanding read-only handles
+  // exist; otherwise returns nullptr (caller retries). While the returned
+  // handle is alive, find_graph(name) returns nullptr to all callers; on
+  // last-release the slot transitions back to Public. Mutations happen in
+  // place — there is no abort semantic for find_graph_rw.
+  [[nodiscard]] std::shared_ptr<Graph> find_graph_rw(std::string_view name) {
+    std::shared_lock lock(registry_mu_);
+    auto             gio = find_io_unlocked(name);
+    if (!gio) {
+      return {};
+    }
+    const size_t idx = static_cast<size_t>(gio->get_gid());
+    if (idx >= graphs_.size() || !graphs_[idx] || graphs_[idx]->deleted_) {
+      return {};
+    }
+    if (idx >= graph_slot_states_.size() || !graph_slot_states_[idx]) {
+      return {};
+    }
+    auto&   state    = *graph_slot_states_[idx];
+    uint8_t expected = static_cast<uint8_t>(SlotState::Public);
+    if (!state.compare_exchange_strong(expected,
+                                       static_cast<uint8_t>(SlotState::Writing),
+                                       std::memory_order_acquire,
+                                       std::memory_order_relaxed)) {
+      return {};
+    }
+    if (graphs_[idx].use_count() > 1) {
+      state.store(static_cast<uint8_t>(SlotState::Public), std::memory_order_release);
+      return {};
+    }
+    if (idx < graph_slot_abort_pending_.size() && graph_slot_abort_pending_[idx]) {
+      graph_slot_abort_pending_[idx]->store(false, std::memory_order_relaxed);
+    }
+    return make_writer_handle_unlocked(idx, /*from_create=*/false);
   }
 
   // Library-wide reverse lookup for an opaque Flat_index key. The gid selects
@@ -1619,6 +1671,9 @@ private:
       graph_ios_[idx] = graphio;
       graphs_.resize(idx + 1);
     }
+    ensure_slot_state_vectors_unlocked(idx + 1);
+    graph_slot_states_[idx]->store(static_cast<uint8_t>(SlotState::Empty), std::memory_order_release);
+    graph_slot_abort_pending_[idx]->store(false, std::memory_order_relaxed);
 
     graph_name_to_id_.emplace(std::string(name), id);
     note_graph_mutation();
@@ -1630,35 +1685,84 @@ private:
     return create_graph_body_unlocked(graphio);
   }
 
+  // Populating entry point. CAS the slot Empty -> Writing; if not Empty
+  // (already being written, already public), returns nullptr. The returned
+  // handle aliases a GraphWriterCleanup whose destructor publishes the slot
+  // on last-release (or tears it back to Empty if Graph::abort() was
+  // called).
   [[nodiscard]] std::shared_ptr<Graph> create_graph_body_unlocked(const std::shared_ptr<GraphIO>& graphio) {
     assert(graphio != nullptr && "create_graph_body: null GraphIO");
 
     const size_t idx = static_cast<size_t>(graphio->get_gid());
     assert(idx < graph_ios_.size() && graph_ios_[idx] == graphio && "create_graph_body: GraphIO is not owned by this library");
 
-    if (idx < graphs_.size() && graphs_[idx] != nullptr && !graphs_[idx]->deleted_) {
-      return graphs_[idx];
+    ensure_slot_state_vectors_unlocked(idx + 1);
+    auto&   state    = *graph_slot_states_[idx];
+    uint8_t expected = static_cast<uint8_t>(SlotState::Empty);
+    if (!state.compare_exchange_strong(expected,
+                                       static_cast<uint8_t>(SlotState::Writing),
+                                       std::memory_order_acquire,
+                                       std::memory_order_relaxed)) {
+      // Slot is already Writing or Public — caller must use find_graph /
+      // find_graph_rw.
+      return {};
     }
+    graph_slot_abort_pending_[idx]->store(false, std::memory_order_relaxed);
 
-    std::shared_ptr<Graph> graph = std::make_shared<Graph>();
-    graph->bind_library(this, graphio->get_gid());
-    graph->set_name(graphio->get_name());
-    graph->graphio_owner_ = graphio;
-    for (const auto& input : graphio->input_pin_decls_) {
-      (void)graph->materialize_declared_io_pin(input.name, input.port_id, Graph::INPUT_NODE, graph->input_pins_);
-    }
-    for (const auto& output : graphio->output_pin_decls_) {
-      (void)graph->materialize_declared_io_pin(output.name, output.port_id, Graph::OUTPUT_NODE, graph->output_pins_);
-    }
+    if (!(idx < graphs_.size() && graphs_[idx] != nullptr && !graphs_[idx]->deleted_)) {
+      std::shared_ptr<Graph> graph = std::make_shared<Graph>();
+      graph->bind_library(this, graphio->get_gid());
+      graph->set_name(graphio->get_name());
+      graph->graphio_owner_ = graphio;
+      for (const auto& input : graphio->input_pin_decls_) {
+        (void)graph->materialize_declared_io_pin(input.name, input.port_id, Graph::INPUT_NODE, graph->input_pins_);
+      }
+      for (const auto& output : graphio->output_pin_decls_) {
+        (void)graph->materialize_declared_io_pin(output.name, output.port_id, Graph::OUTPUT_NODE, graph->output_pins_);
+      }
 
-    if (idx >= graphs_.size()) {
-      graphs_.resize(idx + 1);
+      if (idx >= graphs_.size()) {
+        graphs_.resize(idx + 1);
+      }
+      graphs_[idx] = graph;
+      ++live_count_;
+    } else {
+      graphs_[idx]->frozen_ = false;
     }
-    graphs_[idx] = graph;
-
-    ++live_count_;
     note_graph_mutation();
-    return graph;
+    return make_writer_handle_unlocked(idx, /*from_create=*/true);
+  }
+
+  // Internal load path: directly publish a freshly deserialized body to
+  // the Public state, bypassing the Writing window. Caller must hold
+  // unique_lock(registry_mu_).
+  [[nodiscard]] std::shared_ptr<Graph> create_graph_body_loaded_unlocked(const std::shared_ptr<GraphIO>& graphio) {
+    assert(graphio != nullptr && "create_graph_body_loaded: null GraphIO");
+    const size_t idx = static_cast<size_t>(graphio->get_gid());
+    assert(idx < graph_ios_.size() && graph_ios_[idx] == graphio && "create_graph_body_loaded: GraphIO is not owned by this library");
+    ensure_slot_state_vectors_unlocked(idx + 1);
+
+    if (!(idx < graphs_.size() && graphs_[idx] != nullptr && !graphs_[idx]->deleted_)) {
+      std::shared_ptr<Graph> graph = std::make_shared<Graph>();
+      graph->bind_library(this, graphio->get_gid());
+      graph->set_name(graphio->get_name());
+      graph->graphio_owner_ = graphio;
+      for (const auto& input : graphio->input_pin_decls_) {
+        (void)graph->materialize_declared_io_pin(input.name, input.port_id, Graph::INPUT_NODE, graph->input_pins_);
+      }
+      for (const auto& output : graphio->output_pin_decls_) {
+        (void)graph->materialize_declared_io_pin(output.name, output.port_id, Graph::OUTPUT_NODE, graph->output_pins_);
+      }
+      if (idx >= graphs_.size()) {
+        graphs_.resize(idx + 1);
+      }
+      graphs_[idx] = graph;
+      ++live_count_;
+    }
+    graph_slot_states_[idx]->store(static_cast<uint8_t>(SlotState::Public), std::memory_order_release);
+    graph_slot_abort_pending_[idx]->store(false, std::memory_order_relaxed);
+    note_graph_mutation();
+    return graphs_[idx];
   }
 
   void delete_graph_unlocked(Gid id) noexcept {
@@ -1671,6 +1775,13 @@ private:
       slot.reset();
       --live_count_;
       note_graph_mutation();
+    }
+    const size_t idx = static_cast<size_t>(id);
+    if (idx < graph_slot_states_.size() && graph_slot_states_[idx]) {
+      graph_slot_states_[idx]->store(static_cast<uint8_t>(SlotState::Empty), std::memory_order_release);
+    }
+    if (idx < graph_slot_abort_pending_.size() && graph_slot_abort_pending_[idx]) {
+      graph_slot_abort_pending_[idx]->store(false, std::memory_order_relaxed);
     }
   }
 
@@ -1718,6 +1829,58 @@ private:
   // count of live graphs
   Gid                           live_count_     = 0;
   mutable std::atomic<uint64_t> mutation_epoch_ = 1;
+
+  // Per-slot state machine for the body in graphs_[idx]:
+  //   Empty   -> no body; create_graph may CAS to Writing
+  //   Writing -> a writable handle is alive; find_graph returns nullptr
+  //   Public  -> body is publicly findable
+  enum class SlotState : uint8_t { Empty = 0, Writing = 1, Public = 2 };
+
+  // Heap-allocated atomics so the vector can grow under unique_lock without
+  // invalidating addresses observed by concurrent readers/writers.
+  std::vector<std::unique_ptr<std::atomic<uint8_t>>> graph_slot_states_;
+  // Latched by Graph::abort(); read by the WriterCleanup deleter on
+  // last-release of the writable handle.
+  std::vector<std::unique_ptr<std::atomic<bool>>>    graph_slot_abort_pending_;
+
+  // Cleanup payload that lives on the control block of every writable Graph
+  // handle returned by create_graph / find_graph_rw. When the last copy of
+  // the aliased writable shared_ptr drops, ~GraphWriterCleanup runs and
+  // performs the slot transition (Writing -> Public, or Writing -> Empty
+  // for an aborted create_graph).
+  struct GraphWriterCleanup {
+    GraphLibrary*           library;
+    Gid                     gid;
+    bool                    from_create;
+    std::shared_ptr<Graph>  graph_keepalive;
+    ~GraphWriterCleanup();
+  };
+  friend struct GraphWriterCleanup;
+
+  void ensure_slot_state_vectors_unlocked(size_t needed) {
+    if (graph_slot_states_.size() < needed) {
+      graph_slot_states_.reserve(needed);
+      while (graph_slot_states_.size() < needed) {
+        graph_slot_states_.emplace_back(std::make_unique<std::atomic<uint8_t>>(static_cast<uint8_t>(SlotState::Empty)));
+      }
+    }
+    if (graph_slot_abort_pending_.size() < needed) {
+      graph_slot_abort_pending_.reserve(needed);
+      while (graph_slot_abort_pending_.size() < needed) {
+        graph_slot_abort_pending_.emplace_back(std::make_unique<std::atomic<bool>>(false));
+      }
+    }
+  }
+
+  std::shared_ptr<Graph> make_writer_handle_unlocked(size_t idx, bool from_create) {
+    assert(idx < graphs_.size() && graphs_[idx] && "make_writer_handle: empty slot");
+    auto cleanup             = std::make_shared<GraphWriterCleanup>();
+    cleanup->library         = this;
+    cleanup->gid             = static_cast<Gid>(idx);
+    cleanup->from_create     = from_create;
+    cleanup->graph_keepalive = graphs_[idx];
+    return std::shared_ptr<Graph>(cleanup, cleanup->graph_keepalive.get());
+  }
 
   friend class Graph;
   friend class GraphIO;
@@ -1781,6 +1944,84 @@ inline void GraphIO::invalidate_from_library() noexcept {
   input_pin_decls_.clear();
   output_pin_decls_.clear();
   declared_io_pins_.clear();
+}
+
+inline GraphLibrary::GraphWriterCleanup::~GraphWriterCleanup() {
+  // graph_keepalive->deleted_ is set by GraphLibrary's destructor (and by
+  // delete_graph). If the graph is gone, the library may be too — bail
+  // without touching the library pointer.
+  if (!graph_keepalive || graph_keepalive->deleted_) {
+    return;
+  }
+  if (library == nullptr) {
+    return;
+  }
+  std::unique_lock lock(library->registry_mu_);
+  const size_t     idx = static_cast<size_t>(gid);
+  if (idx >= library->graph_slot_states_.size() || !library->graph_slot_states_[idx]) {
+    return;
+  }
+  auto& state = *library->graph_slot_states_[idx];
+  if (state.load(std::memory_order_acquire) != static_cast<uint8_t>(GraphLibrary::SlotState::Writing)) {
+    // commit() already flipped to Public, or the slot was deleted.
+    return;
+  }
+  const bool aborted = from_create
+                       && idx < library->graph_slot_abort_pending_.size()
+                       && library->graph_slot_abort_pending_[idx]
+                       && library->graph_slot_abort_pending_[idx]->load(std::memory_order_acquire);
+  if (aborted) {
+    if (idx < library->graphs_.size() && library->graphs_[idx]) {
+      library->graphs_[idx]->invalidate_from_library();
+      library->graphs_[idx].reset();
+      --library->live_count_;
+    }
+    library->graph_slot_abort_pending_[idx]->store(false, std::memory_order_relaxed);
+    state.store(static_cast<uint8_t>(GraphLibrary::SlotState::Empty), std::memory_order_release);
+    library->note_graph_mutation();
+    return;
+  }
+  state.store(static_cast<uint8_t>(GraphLibrary::SlotState::Public), std::memory_order_release);
+}
+
+inline void Graph::commit() {
+  if (frozen_) {
+    return;
+  }
+  if (owner_lib_ == nullptr || self_gid_ == Gid_invalid) {
+    frozen_ = true;
+    return;
+  }
+  // const-cast: owner_lib_ is intentionally const within Graph, but commit
+  // must mutate the library's slot state. The writer holds the only
+  // writable handle here so the library is alive.
+  auto* lib = const_cast<GraphLibrary*>(owner_lib_);
+  std::unique_lock lock(lib->registry_mu_);
+  const size_t     idx = static_cast<size_t>(self_gid_);
+  if (idx >= lib->graph_slot_states_.size() || !lib->graph_slot_states_[idx]) {
+    frozen_ = true;
+    return;
+  }
+  auto&   state    = *lib->graph_slot_states_[idx];
+  uint8_t expected = static_cast<uint8_t>(GraphLibrary::SlotState::Writing);
+  state.compare_exchange_strong(expected,
+                                static_cast<uint8_t>(GraphLibrary::SlotState::Public),
+                                std::memory_order_release,
+                                std::memory_order_relaxed);
+  frozen_ = true;
+}
+
+inline void Graph::abort() {
+  if (owner_lib_ == nullptr || self_gid_ == Gid_invalid) {
+    return;
+  }
+  auto* lib = const_cast<GraphLibrary*>(owner_lib_);
+  std::unique_lock lock(lib->registry_mu_);
+  const size_t     idx = static_cast<size_t>(self_gid_);
+  if (idx >= lib->graph_slot_abort_pending_.size() || !lib->graph_slot_abort_pending_[idx]) {
+    return;
+  }
+  lib->graph_slot_abort_pending_[idx]->store(true, std::memory_order_release);
 }
 
 inline void GraphIO::add_input(std::string_view name, Port_id port_id, bool loop_last) {

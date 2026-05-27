@@ -3714,7 +3714,7 @@ void GraphLibrary::load(const std::string& db_path) {
     }
     const auto dir = fs::path(db_path) / ("graph_" + std::to_string(i));
     if (fs::exists(dir / "body.bin")) {
-      auto graph = create_graph_body_unlocked(gio);
+      auto graph = create_graph_body_loaded_unlocked(gio);
       graph->load_body(dir.string());
     }
   }

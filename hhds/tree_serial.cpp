@@ -507,7 +507,7 @@ void Forest::load(const std::string& db_path) {
     }
     const auto dir = fs::path(db_path) / ("tree_" + std::to_string(i));
     if (fs::exists(dir / "body.bin")) {
-      auto tree = create_tree_body_unlocked(tio);
+      auto tree = create_tree_body_loaded_unlocked(tio);
       tree->load_body(dir.string());
     }
   }

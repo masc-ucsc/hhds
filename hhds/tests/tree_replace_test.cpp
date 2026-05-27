@@ -30,6 +30,9 @@ TEST(TreeIOReplace, SwapsBodyKeepsTidAndName) {
   auto orig = tio->create_tree();
   (void)orig->add_root_node().add_child();
   const auto tid_before = tio->get_tid();
+  // Drop the writer so the slot publishes; replace asserts the slot is
+  // not in the Writing state.
+  orig.reset();
 
   auto staged = make_staged_tree(forest, "v2");
 
@@ -75,7 +78,12 @@ TEST(TreeIOReplace, KeepPreviousMakesOldBodyReachable) {
   auto orig   = tio->create_tree();
   orig->add_root_node().attr(hhds::attrs::name).set("v1_root");
 
-  std::weak_ptr<hhds::Tree> orig_weak = orig;
+  // The writer's handle from create_tree has its own control block (used to
+  // signal slot transition on drop), so a weak_ptr taken from it would
+  // observe that control block instead of the Tree's lifetime. Take the
+  // weak_ptr from the slot's own shared_ptr (tio->get_tree()) so the
+  // expiration check tracks the Tree itself.
+  std::weak_ptr<hhds::Tree> orig_weak = tio->get_tree();
   orig.reset();
 
   auto staged_v2 = make_staged_tree(forest, "v2");
@@ -161,8 +169,12 @@ TEST(TreeIOReplace, ExternalRefToOldBodyStaysAlive) {
   auto orig   = tio->create_tree();
   orig->add_root_node().attr(hhds::attrs::name).set("v1_root");
 
-  // External code holds a strong ref to the old body.
-  std::shared_ptr<hhds::Tree> external = orig;
+  // External code holds a strong ref to the old body via the slot's own
+  // shared_ptr (not the writer's aliased handle, which uses a separate
+  // control block).
+  std::shared_ptr<hhds::Tree> external = tio->get_tree();
+  // Drop the writer so the slot publishes; replace asserts not-Writing.
+  orig.reset();
 
   auto staged = make_staged_tree(forest, "v2");
   tio->replace(staged);  // keep_previous=false drops slot's strong ref

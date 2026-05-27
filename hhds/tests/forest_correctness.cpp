@@ -19,6 +19,9 @@ DeclaredTree create_rooted_tree(const std::shared_ptr<hhds::Forest>& forest, std
   auto tio  = forest->create_io(name);
   auto tree = tio->create_tree();
   (void)tree->add_root_node();
+  // Publish so find_tree(name) starts returning the body while this test
+  // helper still hands back a usable writable handle for further mutation.
+  tree->commit();
   return {std::move(tio), std::move(tree)};
 }
 
@@ -56,7 +59,11 @@ TEST(ForestCorrectness, TreeIOCanExistWithoutBody) {
   EXPECT_EQ(tio->get_tree(), tree);
   EXPECT_EQ(tree->get_io(), tio);
   EXPECT_EQ(tree->get_tid(), tio->get_tid());
-  EXPECT_EQ(forest->find_tree("parser"), tree);
+  // Writable handle still alive — the slot is in Writing state so
+  // find_tree returns nullptr (write-intent exclusion).
+  EXPECT_EQ(forest->find_tree("parser"), nullptr);
+  tree->commit();
+  EXPECT_EQ(forest->find_tree("parser").get(), tree.get());
 }
 
 TEST(ForestCorrectness, SubtreeReferences) {
@@ -225,6 +232,7 @@ TEST(ForestCorrectness, CreateAndFindByName) {
 
   auto parser_tio = forest->create_io("parser");
   auto parser     = parser_tio->create_tree();
+  parser->commit();
 
   ASSERT_NE(parser_tio, nullptr);
   ASSERT_NE(parser, nullptr);
@@ -232,7 +240,7 @@ TEST(ForestCorrectness, CreateAndFindByName) {
   EXPECT_EQ(parser_tio->get_name(), "parser");
   EXPECT_EQ(parser->get_name(), "parser");
   EXPECT_EQ(forest->find_io("parser"), parser_tio);
-  EXPECT_EQ(forest->find_tree("parser"), parser);
+  EXPECT_EQ(forest->find_tree("parser").get(), parser.get());
   EXPECT_EQ(forest->find_tree("missing"), nullptr);
 }
 

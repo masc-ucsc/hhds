@@ -301,6 +301,16 @@ cc_test(
 )
 
 cc_test(
+    name = "forest_slot_state_test",
+    srcs = ["tests/forest_slot_state_test.cpp"],
+    deps = [
+        ":core",
+        ":graph",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "graph_concurrency",
     srcs = ["tests/graph_concurrency.cpp"],
     deps = [
