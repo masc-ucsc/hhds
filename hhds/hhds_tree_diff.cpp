@@ -201,61 +201,33 @@ void canonicalize_commutative(std::vector<std::string>& lines) {
   }
 }
 
-std::string canonicalize_dump(const std::string& filename) {
-  std::ifstream ifs(filename);
-  if (!ifs.is_open()) {
-    return filename;
-  }
-  std::vector<std::string> lines;
-  std::string              line;
-  while (std::getline(ifs, line)) {
-    lines.push_back(line);
-  }
-  ifs.close();
+void canonicalize_one_stmts(std::vector<std::string>& lines, int stmts_idx) {
+  int stmts_depth = compute_depth(lines[stmts_idx]);
+  int child_depth = stmts_depth + 1;
 
-  int stmts_idx   = -1;
-  int stmts_depth = -1;
-  for (int i = 1; i < static_cast<int>(lines.size()); ++i) {
-    if (extract_type_name(lines[i]) == "stmts") {
-      stmts_idx   = i;
-      stmts_depth = compute_depth(lines[i]);
+  int scope_end = static_cast<int>(lines.size());
+  for (int i = stmts_idx + 1; i < static_cast<int>(lines.size()); ++i) {
+    if (compute_depth(lines[i]) <= stmts_depth) {
+      scope_end = i;
       break;
     }
   }
-  if (stmts_idx < 0) {
-    return filename;
-  }
-
-  int child_depth = stmts_depth + 1;
 
   struct Subtree {
     int start;
     int end;
   };
   std::vector<Subtree> subtrees;
-
-  for (int i = stmts_idx + 1; i < static_cast<int>(lines.size()); ++i) {
-    int d = compute_depth(lines[i]);
-    if (d < child_depth) {
-      break;
-    }
-    if (d == child_depth) {
+  for (int i = stmts_idx + 1; i < scope_end; ++i) {
+    if (compute_depth(lines[i]) == child_depth) {
       if (!subtrees.empty()) {
         subtrees.back().end = i;
       }
-      subtrees.push_back({i, static_cast<int>(lines.size())});
+      subtrees.push_back({i, scope_end});
     }
   }
-  if (!subtrees.empty()) {
-    for (int i = subtrees.back().start + 1; i < static_cast<int>(lines.size()); ++i) {
-      if (compute_depth(lines[i]) <= stmts_depth) {
-        subtrees.back().end = i;
-        break;
-      }
-    }
-  }
-  if (subtrees.empty()) {
-    return filename;
+  if (subtrees.size() < 2) {
+    return;
   }
 
   std::vector<StmtGroup> groups;
@@ -311,6 +283,10 @@ std::string canonicalize_dump(const std::string& filename) {
     ++si;
   }
 
+  if (groups.size() < 2) {
+    return;
+  }
+
   int                           ng = static_cast<int>(groups.size());
   std::vector<std::vector<int>> adj(ng);
   std::vector<int>              in_degree(ng, 0);
@@ -361,24 +337,50 @@ std::string canonicalize_dump(const std::string& filename) {
     }
   }
 
-  std::vector<std::string> reordered;
-  for (int i = 0; i <= stmts_idx; ++i) {
-    reordered.push_back(lines[i]);
-  }
+  int                      children_start = subtrees.front().start;
+  std::vector<std::string> sorted_lines;
   for (int gi : sorted_order) {
     for (int li : groups[gi].line_indices) {
-      reordered.push_back(lines[li]);
+      sorted_lines.push_back(lines[li]);
     }
   }
-  int after_stmts = subtrees.back().end;
-  for (int i = after_stmts; i < static_cast<int>(lines.size()); ++i) {
-    reordered.push_back(lines[i]);
+  for (size_t i = 0; i < sorted_lines.size(); ++i) {
+    lines[children_start + i] = sorted_lines[i];
+  }
+}
+
+std::string canonicalize_dump(const std::string& filename) {
+  std::ifstream ifs(filename);
+  if (!ifs.is_open()) {
+    return filename;
+  }
+  std::vector<std::string> lines;
+  std::string              line;
+  while (std::getline(ifs, line)) {
+    lines.push_back(line);
+  }
+  ifs.close();
+
+  std::vector<std::pair<int, int>> stmts_nodes;  // (depth, line_index)
+  for (int i = 1; i < static_cast<int>(lines.size()); ++i) {
+    if (extract_type_name(lines[i]) == "stmts") {
+      stmts_nodes.push_back({compute_depth(lines[i]), i});
+    }
+  }
+  if (stmts_nodes.empty()) {
+    return filename;
   }
 
-  canonicalize_commutative(reordered);
+  std::sort(stmts_nodes.begin(), stmts_nodes.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+
+  for (const auto& [depth, idx] : stmts_nodes) {
+    canonicalize_one_stmts(lines, idx);
+  }
+
+  canonicalize_commutative(lines);
 
   std::string result;
-  for (const auto& l : reordered) {
+  for (const auto& l : lines) {
     result += l;
     result += '\n';
   }
