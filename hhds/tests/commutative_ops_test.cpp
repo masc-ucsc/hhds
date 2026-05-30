@@ -148,7 +148,6 @@ const std::string combined_swapped
 
 }  // namespace
 
-
 class CommutativeOpsTest : public ::testing::Test {
 protected:
   std::vector<std::string> temp_files;

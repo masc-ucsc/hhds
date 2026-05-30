@@ -455,10 +455,10 @@ public:
       if (bucketsi == 0) {
         continue;
       }
-      sumb += bucketsi;
-      sumn += bucketsi * i;
+      sumb      += bucketsi;
+      sumn      += bucketsi * i;
       collision += bucketsi * (i - 1);
-      finds += bucketsi * i * (i + 1) / 2;
+      finds     += bucketsi * i * (i + 1) / 2;
       printf("  %2u  %8u  %.2lf  %.2lf\n", i, bucketsi, bucketsi * 100.0 * i / _num_colls, sumn * 100.0 / _num_colls);
     }
 
@@ -508,16 +508,28 @@ public:
     {
       if (bucket_size == INACTIVE) {
         new_key(key, main_bucket, main_bucket);
-        return {{this, main_bucket}, true};
+        return {
+            {this, main_bucket},
+            true
+        };
       } else if (_eq(key, EMH_KEY(_pairs, main_bucket)) && bucket_size % 2 > 0) {
-        return {{this, main_bucket}, false};
+        return {
+            {this, main_bucket},
+            false
+        };
       } else if (bucket_size % 2 == 0) {
         auto next_bucket = find_colls_bucket(key);
         if (next_bucket == _total_buckets) {
           new_key(key, main_bucket, main_bucket);
-          return {{this, main_bucket}, true};
+          return {
+              {this, main_bucket},
+              true
+          };
         } else {
-          return {{this, next_bucket}, false};
+          return {
+              {this, next_bucket},
+              false
+          };
         }
       }
     }
@@ -526,9 +538,15 @@ public:
     auto       next_bucket = EMH_BUCKET(_pairs, bucket);
     if (next_bucket == INACTIVE) {
       new_key(key, bucket, main_bucket);
-      return {{this, bucket}, true};
+      return {
+          {this, bucket},
+          true
+      };
     } else {
-      return {{this, bucket}, false};
+      return {
+          {this, bucket},
+          false
+      };
     }
   }
 
@@ -551,7 +569,7 @@ public:
     // assert(bucket_size != INACTIVE);
 
     bucket_size -= 2;
-    _num_colls -= 1;
+    _num_colls  -= 1;
 
     if (bucket_size == 0) {
       bucket_size = INACTIVE;
@@ -564,7 +582,7 @@ public:
     // assert (bucket_size % 2 > 0 && bucket_size != INACTIVE);
     // assert (main_bucket < _mains_buckets);
     bucket_size -= 1;
-    _num_mains -= 1;
+    _num_mains  -= 1;
 
     if (bucket_size == 0) {
       bucket_size = INACTIVE;
@@ -750,8 +768,8 @@ public:
       auto& next_bucket = EMH_BUCKET(_pairs, bucket);
       if (next_bucket != INACTIVE) {
         _pairs[bucket].~PairT();
-        _num_colls -= 1;
-        next_bucket = INACTIVE;
+        _num_colls  -= 1;
+        next_bucket  = INACTIVE;
       }
     }
 
@@ -759,8 +777,8 @@ public:
       auto& next_bucket = EMH_BUCKET(_pairs, bucket);
       if (next_bucket != INACTIVE && next_bucket % 2 > 0) {
         _pairs[bucket].~PairT();
-        _num_mains -= 1;
-        next_bucket = INACTIVE;
+        _num_mains  -= 1;
+        next_bucket  = INACTIVE;
       }
     }
     assert(_num_colls == 0 && _num_mains == 0);
@@ -855,9 +873,9 @@ public:
                 old_pair.~PairT();
             }
 #else
-      const auto main_bucket = hash_main_bucket(key);
-      auto&      next_bucket = EMH_BUCKET(_pairs, main_bucket);
-      next_bucket += 2;
+      const auto main_bucket  = hash_main_bucket(key);
+      auto&      next_bucket  = EMH_BUCKET(_pairs, main_bucket);
+      next_bucket            += 2;
 
       if (next_bucket == 1) {
         new (_pairs + main_bucket) PairT(std::move(key), next_bucket);
@@ -1200,9 +1218,9 @@ private:
 
   static inline uint64_t hash64(uint64_t key) {
 #if __SIZEOF_INT128__
-    constexpr uint64_t k = UINT64_C(11400714819323198485);
-    __uint128_t        r = key;
-    r *= k;
+    constexpr uint64_t k  = UINT64_C(11400714819323198485);
+    __uint128_t        r  = key;
+    r                    *= k;
     return (uint32_t)(r >> 64) + (uint32_t)r;
 #elif _WIN64
     uint64_t           high;
@@ -1213,12 +1231,12 @@ private:
     return (r >> 32) + r;
 #elif 1
     // MurmurHash3Mixer
-    uint64_t h = key;
-    h ^= h >> 33;
-    h *= 0xff51afd7ed558ccd;
-    h ^= h >> 33;
-    h *= 0xc4ceb9fe1a85ec53;
-    h ^= h >> 33;
+    uint64_t h  = key;
+    h          ^= h >> 33;
+    h          *= 0xff51afd7ed558ccd;
+    h          ^= h >> 33;
+    h          *= 0xc4ceb9fe1a85ec53;
+    h          ^= h >> 33;
     return h;
 #elif 1
     uint64_t x = key;

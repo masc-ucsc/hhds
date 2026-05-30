@@ -231,7 +231,7 @@ TEST(TreeWrappers, PrintUsesTypeTableAndAttributes) {
   hhds::Tree::PrintOptions options;
   const hhds::Type_entry   type_table[] = {
       {"invalid", hhds::Statement_class::Node},
-      {"add", hhds::Statement_class::Node},
+      {    "add", hhds::Statement_class::Node},
       {"literal", hhds::Statement_class::Node},
   };
   options.type_table = type_table;
@@ -276,7 +276,7 @@ TEST(TreeWrappers, PrintScopeTypes) {
   leaf.set_type(0);
 
   const hhds::Type_entry type_table[] = {
-      {"node", hhds::Statement_class::Node},
+      {    "node",      hhds::Statement_class::Node},
       {"if_taken", hhds::Statement_class::Open_call},
   };
 
@@ -307,7 +307,7 @@ TEST(TreeWrappers, PrintUsesBuiltinNameAttribute) {
 
   const hhds::Type_entry type_table[] = {
       {"invalid", hhds::Statement_class::Node},
-      {"module", hhds::Statement_class::Node},
+      { "module", hhds::Statement_class::Node},
       {"literal", hhds::Statement_class::Node},
   };
 

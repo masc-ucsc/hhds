@@ -1070,8 +1070,8 @@ auto Graph::create_pin(Node_class node, Port_id port_id) -> Pin_class {
 
 auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
   assert_accessible();
-  nid &= ~static_cast<Nid>(2);  // PinEntry ownership is by node identity, independent of edge role bit.
-  const Nid actual_nid = nid >> 2;
+  nid                  &= ~static_cast<Nid>(2);  // PinEntry ownership is by node identity, independent of edge role bit.
+  const Nid actual_nid  = nid >> 2;
   assert(actual_nid > 0 && actual_nid < node_table.size() && "create_pin: node handle is invalid for this graph");
   Pid id = pin_table.size();
   assert(id);
@@ -1121,12 +1121,12 @@ auto Graph::find_pin(Node_class node, Port_id port_id, bool driver) const -> Pin
 auto Graph::find_or_create_pin(Node_class node, Port_id port_id) -> Pin_class {
   assert_node_exists(node);
   assert(port_id != 0 && "find_or_create_pin: port_id 0 is the node itself");
-  const Nid self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
-  auto*     self     = ref_node(self_nid);
+  const Nid self_nid    = node.get_debug_nid() & ~static_cast<Nid>(2);
+  auto*     self        = ref_node(self_nid);
   // The pin linked list is kept sorted by ascending port_id. Find the predecessor whose
   // port_id is just below `port_id`, and stop early if a greater-or-equal port_id is found.
-  Pid prev_pin_id = 0;  // canonical Pid of predecessor (0 = insert at head)
-  Pid cur_pin     = self->get_next_pin_id();
+  Pid       prev_pin_id = 0;  // canonical Pid of predecessor (0 = insert at head)
+  Pid       cur_pin     = self->get_next_pin_id();
   while (cur_pin != 0) {
     const Pid  canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
     auto*      pin           = ref_pin(canonical_pin);
@@ -1635,7 +1635,7 @@ auto Node_class::create_driver_pin(Port_id port_id) const -> Pin_class {
     inherit_pin_context(pin, *this);
     return pin;
   }
-  auto pin = graph_->find_or_create_pin(*this, port_id);
+  auto pin     = graph_->find_or_create_pin(*this, port_id);
   pin.pin_pid |= static_cast<Pid>(2);
   inherit_pin_context(pin, *this);
   return pin;
@@ -1654,7 +1654,7 @@ auto Node_class::create_sink_pin(Port_id port_id) const -> Pin_class {
     inherit_pin_context(pin, *this);
     return pin;
   }
-  auto pin = graph_->find_or_create_pin(*this, port_id);
+  auto pin     = graph_->find_or_create_pin(*this, port_id);
   pin.pin_pid &= ~static_cast<Pid>(2);
   inherit_pin_context(pin, *this);
   return pin;
@@ -1666,7 +1666,7 @@ auto Node_class::create_sink_pin(std::string_view name) const -> Pin_class {
 
 auto Node_class::get_driver_pin(Port_id port_id) const -> Pin_class {
   assert(graph_ != nullptr && "get_driver_pin: node is not attached to a graph");
-  auto pin = graph_->find_pin(*this, port_id, true);
+  auto pin     = graph_->find_pin(*this, port_id, true);
   pin.pin_pid |= static_cast<Pid>(2);
   inherit_pin_context(pin, *this);
   return pin;
@@ -1787,8 +1787,8 @@ void Graph::set_subnode(Nid nid, Gid gid) {
   // an infinite loop deep inside an iterator. Compiled out under NDEBUG.
   assert(!would_create_cycle(gid) && "set_subnode: structure-tree cycle detected");
 
-  nid &= ~static_cast<Nid>(3);
-  auto pool = get_overflow_pool();
+  nid       &= ~static_cast<Nid>(3);
+  auto pool  = get_overflow_pool();
   ref_node(nid)->set_subnode(nid, gid, pool);
 
   // Persistent hierarchy: add a child to this graph's tree representing
@@ -2057,11 +2057,11 @@ auto FastHierIterator::operator++() -> FastHierIterator& {
     const Gid   sub = entry.get_subnode();
     const auto* lib = frame.graph->owner_lib_;
     if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
-      Graph*    child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
-      const Nid subnode_nid = static_cast<Nid>(frame.node_idx) << 2;
+      Graph*         child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
+      const Nid      subnode_nid = static_cast<Nid>(frame.node_idx) << 2;
       // Stable Tree_pos from the structure tree that set_subnode built.
-      auto           it        = frame.graph->subnode_tree_pos_.find(subnode_nid);
-      const Tree_pos child_pos = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
+      auto           it          = frame.graph->subnode_tree_pos_.find(subnode_nid);
+      const Tree_pos child_pos   = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
       ++frame.node_idx;
       active_graphs_.insert(sub);
       stack_.push_back(Frame{child_graph, kFirstUserNodeIdx, child_graph->node_table.size(), child_pos});
@@ -2776,7 +2776,7 @@ HierIterator::HierIterator(Graph* root_graph) {
   if (root_graph == nullptr || root_graph->tree_ == nullptr) {
     return;
   }
-  root_gid_ = root_graph->self_gid_;
+  root_gid_  = root_graph->self_gid_;
   // Seed the top frame with pre_order over the root graph's tree, plus a
   // hier_pos of ROOT so the yielded instances match the top-level naming that
   // fast_hier and forward_hier produce (their root frame also uses ROOT).
@@ -3239,8 +3239,8 @@ auto Graph::get_sink_pins(Node_class node) -> absl::InlinedVector<Pin_class, 4> 
 
 void Graph::delete_node(Nid nid) {
   assert_accessible();
-  nid &= ~static_cast<Nid>(3);
-  const Nid actual_id = nid >> 2;
+  nid                 &= ~static_cast<Nid>(3);
+  const Nid actual_id  = nid >> 2;
   assert(actual_id >= 4 && "delete_node: built-in graph IO nodes cannot be deleted through node handles");
   assert(actual_id < node_table.size() && node_table[actual_id].is_alive() && "delete_node: node handle is invalid");
 
@@ -3297,7 +3297,7 @@ void Graph::delete_node(Nid nid) {
 }
 
 void Graph::add_edge_int(Vid self_id, Vid other_id) {
-  auto pool = get_overflow_pool();
+  auto pool      = get_overflow_pool();
   // detect type of self_id and other_id
   bool self_type = false;
   if (self_id & 1) {
@@ -3672,9 +3672,9 @@ void GraphLibrary::load(const std::string& db_path) {
         Port_id            port_id;
         std::string        name;
         ss >> direction >> port_id >> name;
-        bool     loop_last = false;
-        uint32_t bits      = 0;
-        bool     unsign    = false;
+        bool        loop_last = false;
+        uint32_t    bits      = 0;
+        bool        unsign    = false;
         std::string token;
         while (ss >> token) {
           if (token == "loop_last") {

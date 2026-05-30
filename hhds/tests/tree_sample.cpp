@@ -37,7 +37,7 @@ int main() {
   hhds::Tree::PrintOptions print_options;
   const hhds::Type_entry   type_table[] = {
       {"unknown", hhds::Statement_class::Node},
-      {"add", hhds::Statement_class::Node},
+      {    "add", hhds::Statement_class::Node},
       {"literal", hhds::Statement_class::Node},
   };
   print_options.type_table = type_table;

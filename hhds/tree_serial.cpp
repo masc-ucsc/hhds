@@ -190,8 +190,8 @@ ParsedLine parse_dump_line(const std::string& line) {
 
   // Check for @(...)
   if (pos + 1 < len && content[pos] == '@' && content[pos + 1] == '(') {
-    pos += 2;
-    size_t attrs_start = pos;
+    pos                += 2;
+    size_t attrs_start  = pos;
     while (pos < len && content[pos] != ')') {
       ++pos;
     }

@@ -34,7 +34,7 @@ size_t Tree::node_body_width(Tree_pos c, size_t name_width, const PrintOptions& 
   switch (te.sclass) {
     case Statement_class::Attr:
     case Statement_class::Use:
-    case Statement_class::End: return 0;
+    case Statement_class::End : return 0;
 
     case Statement_class::Assign: return 7 + te.name.size();
 
@@ -244,7 +244,7 @@ void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const P
   size_t body_w = 0;
   switch (te.sclass) {
     case Statement_class::Attr: os << "attr " << te.name; break;
-    case Statement_class::Use: os << "use"; break;
+    case Statement_class::Use : os << "use"; break;
     case Statement_class::Assign:
       emit_pos(node_pos);
       os << " = assign " << te.name;
@@ -273,7 +273,7 @@ void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const P
       break;
     }
     case Statement_class::End: os << "end"; break;
-    default: {  // Node
+    default                  : {  // Node
       emit_pos(node_pos);
       os << " = ";
       if (auto nt = node_text_override(node_pos, options); nt.has_value()) {

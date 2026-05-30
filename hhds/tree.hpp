@@ -605,16 +605,16 @@ public:
   // iassert: commit is the writer's "I'm done" signal.
   // No-op if the tree has no Forest slot (e.g., create_tree_temp) or if
   // already committed/aborted.
-  void                                  commit();
+  void commit();
 
   // Mark the writable handle as aborted. The slot will revert to Empty when
   // the last writable handle is released (the partially built tree is
   // discarded). Useful in error/unwind paths. No-op for find_tree_rw or
   // detached trees.
-  void                                  abort();
+  void abort();
 
   // True iff commit() has been invoked on this body. Read-only inspection.
-  [[nodiscard]] bool                    is_frozen() const noexcept { return frozen_; }
+  [[nodiscard]] bool is_frozen() const noexcept { return frozen_; }
 
   void print(std::ostream& os) const { print(os, get_root(), PrintOptions{}); }
   void print(std::ostream& os, const PrintOptions& options) const { print(os, get_root(), options); }
@@ -1651,8 +1651,8 @@ private:
   struct TreeWriterCleanup {
     std::weak_ptr<Forest> forest_weak;
     Tid                   tid;
-    bool                  from_create;       // true: tio->create_tree; false: find_tree_rw
-    std::shared_ptr<Tree> tree_keepalive;    // keeps Tree alive past delete_tree
+    bool                  from_create;     // true: tio->create_tree; false: find_tree_rw
+    std::shared_ptr<Tree> tree_keepalive;  // keeps Tree alive past delete_tree
     ~TreeWriterCleanup();
   };
   friend struct TreeWriterCleanup;
@@ -2137,8 +2137,7 @@ inline void TreeIO::replace(std::shared_ptr<Tree> new_tree, bool keep_previous) 
   // Replace can only happen when no writer is mid-construction. A Writing
   // slot means the caller still holds a writable handle; that would alias
   // freed memory after the swap.
-  I(forest->tree_slot_states_[tree_idx]->load(std::memory_order_acquire)
-        != static_cast<uint8_t>(Forest::SlotState::Writing),
+  I(forest->tree_slot_states_[tree_idx]->load(std::memory_order_acquire) != static_cast<uint8_t>(Forest::SlotState::Writing),
     "replace: slot is currently being written (outstanding writable handle)");
 
   new_tree->forest_ptr = forest.get();
@@ -2151,8 +2150,7 @@ inline void TreeIO::replace(std::shared_ptr<Tree> new_tree, bool keep_previous) 
   }
   forest->trees[tree_idx] = std::move(new_tree);
   // The replaced body is publicly visible immediately.
-  forest->tree_slot_states_[tree_idx]->store(static_cast<uint8_t>(Forest::SlotState::Public),
-                                             std::memory_order_release);
+  forest->tree_slot_states_[tree_idx]->store(static_cast<uint8_t>(Forest::SlotState::Public), std::memory_order_release);
   if (tree_idx < forest->tree_slot_abort_pending_.size() && forest->tree_slot_abort_pending_[tree_idx]) {
     forest->tree_slot_abort_pending_[tree_idx]->store(false, std::memory_order_relaxed);
   }
@@ -2174,8 +2172,7 @@ inline Forest::TreeWriterCleanup::~TreeWriterCleanup() {
     // from under us. Either way the cleanup has nothing to do.
     return;
   }
-  const bool aborted = from_create
-                       && tree_idx < forest->tree_slot_abort_pending_.size()
+  const bool aborted = from_create && tree_idx < forest->tree_slot_abort_pending_.size()
                        && forest->tree_slot_abort_pending_[tree_idx]
                        && forest->tree_slot_abort_pending_[tree_idx]->load(std::memory_order_acquire);
   if (aborted) {

@@ -24,17 +24,17 @@
 namespace {
 
 struct CliArgs {
-  std::string         op           = "build_node";
-  std::string         topology     = "chain";
-  std::string         axis         = "nodes";
-  int                 nodes        = 1000;
-  int                 pins         = 1;
-  int                 hier         = 1;
-  int                 fanout_max   = 4;
-  uint64_t            seed         = 0xC0FFEEULL;
-  int                 runs         = 5;
-  bool                emit_header  = true;  // false to append to a master CSV
-  bool                verify       = false; // print visited count to stderr per run
+  std::string op          = "build_node";
+  std::string topology    = "chain";
+  std::string axis        = "nodes";
+  int         nodes       = 1000;
+  int         pins        = 1;
+  int         hier        = 1;
+  int         fanout_max  = 4;
+  uint64_t    seed        = 0xC0FFEEULL;
+  int         runs        = 5;
+  bool        emit_header = true;   // false to append to a master CSV
+  bool        verify      = false;  // print visited count to stderr per run
 };
 
 // Global: set once by CLI parsing, read by each op AFTER its timer stops.
@@ -49,8 +49,8 @@ struct OpResult {
 CliArgs parse_args(int argc, char** argv) {
   CliArgs a;
   for (int i = 1; i < argc; ++i) {
-    std::string_view s = argv[i];
-    auto eat = [&](std::string_view prefix, std::string& dst) -> bool {
+    std::string_view s   = argv[i];
+    auto             eat = [&](std::string_view prefix, std::string& dst) -> bool {
       if (s.rfind(prefix, 0) == 0) {
         dst = std::string(s.substr(prefix.size()));
         return true;
@@ -73,15 +73,33 @@ CliArgs parse_args(int argc, char** argv) {
       dst = std::strtoull(buf.c_str(), nullptr, 0);
       return true;
     };
-    if (eat("--op=", a.op)) continue;
-    if (eat("--topology=", a.topology)) continue;
-    if (eat("--axis=", a.axis)) continue;
-    if (eat_int("--nodes=", a.nodes)) continue;
-    if (eat_int("--pins=", a.pins)) continue;
-    if (eat_int("--hier=", a.hier)) continue;
-    if (eat_int("--fanout=", a.fanout_max)) continue;
-    if (eat_u64("--seed=", a.seed)) continue;
-    if (eat_int("--runs=", a.runs)) continue;
+    if (eat("--op=", a.op)) {
+      continue;
+    }
+    if (eat("--topology=", a.topology)) {
+      continue;
+    }
+    if (eat("--axis=", a.axis)) {
+      continue;
+    }
+    if (eat_int("--nodes=", a.nodes)) {
+      continue;
+    }
+    if (eat_int("--pins=", a.pins)) {
+      continue;
+    }
+    if (eat_int("--hier=", a.hier)) {
+      continue;
+    }
+    if (eat_int("--fanout=", a.fanout_max)) {
+      continue;
+    }
+    if (eat_u64("--seed=", a.seed)) {
+      continue;
+    }
+    if (eat_int("--runs=", a.runs)) {
+      continue;
+    }
     if (s == "--no-header") {
       a.emit_header = false;
       continue;
@@ -161,10 +179,10 @@ inline int64_t ns_between(std::chrono::steady_clock::time_point t0, std::chrono:
 }
 
 OpResult op_build_node(const hhds_bench::GraphSpec& spec) {
-  auto t0 = std::chrono::steady_clock::now();
+  auto               t0 = std::chrono::steady_clock::now();
   hhds::GraphLibrary lib;
-  auto               gio = lib.create_io("top");
-  auto               g   = gio->create_graph();
+  auto               gio   = lib.create_io("top");
+  auto               g     = gio->create_graph();
   int64_t            built = 0;
   for (int i = 0; i < spec.nodes; ++i) {
     auto n = g->create_node();
@@ -192,8 +210,8 @@ OpResult op_build_edges(const hhds_bench::GraphSpec& spec) {
     bg.graph->get_input_pin("in").connect_sink(bg.nodes[0].create_sink_pin());
   }
 
-  auto    t0      = std::chrono::steady_clock::now();
-  int64_t added   = 0;
+  auto    t0    = std::chrono::steady_clock::now();
+  int64_t added = 0;
   for (size_t i = 0; i < edges.edges.size(); ++i) {
     const auto [src, dst] = edges.edges[i];
     if (pins.driver_ports.empty()) {
@@ -253,7 +271,7 @@ std::shared_ptr<hhds::Graph> materialize_hier(hhds::GraphLibrary& lib, const hhd
   auto sub_gio = lib.create_io("sub");
   sub_gio->add_input("i", 0);
   sub_gio->add_output("o", 0);
-  auto sub = sub_gio->create_graph();
+  auto                    sub = sub_gio->create_graph();
   std::vector<hhds::Node> inner;
   inner.reserve(static_cast<size_t>(spec.nodes));
   for (int i = 0; i < spec.nodes; ++i) {
@@ -270,7 +288,7 @@ std::shared_ptr<hhds::Graph> materialize_hier(hhds::GraphLibrary& lib, const hhd
   auto top_gio = lib.create_io("top");
   top_gio->add_input("in", 0);
   top_gio->add_output("out", 0);
-  auto top = top_gio->create_graph();
+  auto                    top = top_gio->create_graph();
   std::vector<hhds::Node> inst;
   inst.reserve(static_cast<size_t>(spec.hier_size));
   for (int i = 0; i < spec.hier_size; ++i) {
@@ -324,9 +342,9 @@ OpResult op_traverse_fast_flat(const hhds_bench::GraphSpec& spec) {
 // hhds's three storage regimes (inline -> overflow array -> emhash8 set)
 // as the count crosses the 16/64 thresholds documented in graph.hpp:74.
 OpResult op_add_pin(const hhds_bench::GraphSpec& spec) {
-  hhds::GraphLibrary lib;
-  auto               gio = lib.create_io("top");
-  auto               g   = gio->create_graph();
+  hhds::GraphLibrary      lib;
+  auto                    gio = lib.create_io("top");
+  auto                    g   = gio->create_graph();
   std::vector<hhds::Node> nodes;
   nodes.reserve(static_cast<size_t>(spec.nodes));
   for (int i = 0; i < spec.nodes; ++i) {
@@ -412,11 +430,11 @@ OpResult op_mutate(const hhds_bench::GraphSpec& spec) {
   // shuffle). hhds asserts on double-delete, so the bench must not draw
   // the same victim twice. Skip the first/last node so the
   // connect-to-graph-IO anchors stay valid.
-  const int       sample = std::max(1, spec.nodes / 10);
-  const int       lo     = 1;
-  const int       hi     = std::max(lo + 1, spec.nodes - 1);
-  const int       pool   = hi - lo;
-  std::mt19937_64 rng(spec.seed ^ 0xDEADBEEFULL);
+  const int        sample = std::max(1, spec.nodes / 10);
+  const int        lo     = 1;
+  const int        hi     = std::max(lo + 1, spec.nodes - 1);
+  const int        pool   = hi - lo;
+  std::mt19937_64  rng(spec.seed ^ 0xDEADBEEFULL);
   std::vector<int> indices;
   indices.reserve(static_cast<size_t>(pool));
   for (int i = 0; i < pool; ++i) {
@@ -468,22 +486,46 @@ OpResult op_lookup(const hhds_bench::GraphSpec& spec) {
 }
 
 OpResult dispatch(const std::string& op, const hhds_bench::GraphSpec& spec) {
-  if (op == "build_node")             return op_build_node(spec);
-  if (op == "build_edges")            return op_build_edges(spec);
-  if (op == "add_pin")                return op_add_pin(spec);
-  if (op == "mutate")                 return op_mutate(spec);
-  if (op == "lookup")                 return op_lookup(spec);
+  if (op == "build_node") {
+    return op_build_node(spec);
+  }
+  if (op == "build_edges") {
+    return op_build_edges(spec);
+  }
+  if (op == "add_pin") {
+    return op_add_pin(spec);
+  }
+  if (op == "mutate") {
+    return op_mutate(spec);
+  }
+  if (op == "lookup") {
+    return op_lookup(spec);
+  }
   // Single-graph traversals.
-  if (op == "traverse_forward_class") return op_traverse_forward_class(spec);
-  if (op == "traverse_fast_class")    return op_traverse_fast_class(spec);
+  if (op == "traverse_forward_class") {
+    return op_traverse_forward_class(spec);
+  }
+  if (op == "traverse_fast_class") {
+    return op_traverse_fast_class(spec);
+  }
   // Hierarchy-flattening traversals (visit every node across all instances).
-  if (op == "traverse_forward_flat")  return op_traverse_forward_flat(spec);
-  if (op == "traverse_fast_flat")     return op_traverse_fast_flat(spec);
+  if (op == "traverse_forward_flat") {
+    return op_traverse_forward_flat(spec);
+  }
+  if (op == "traverse_fast_flat") {
+    return op_traverse_fast_flat(spec);
+  }
   // Hierarchy-aware traversals (per-instance node visit).
-  if (op == "traverse_forward_hier")  return op_traverse_forward_hier(spec);
-  if (op == "traverse_fast_hier")     return op_traverse_fast_hier(spec);
+  if (op == "traverse_forward_hier") {
+    return op_traverse_forward_hier(spec);
+  }
+  if (op == "traverse_fast_hier") {
+    return op_traverse_fast_hier(spec);
+  }
   // Instance-only walk (one yield per submodule, no inner-node visit).
-  if (op == "traverse_hier_range")    return op_traverse_hier_range(spec);
+  if (op == "traverse_hier_range") {
+    return op_traverse_hier_range(spec);
+  }
   std::cerr << "hhds_bench: unknown op: " << op << "\n";
   std::exit(3);
 }
@@ -491,9 +533,9 @@ OpResult dispatch(const std::string& op, const hhds_bench::GraphSpec& spec) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  const CliArgs a    = parse_args(argc, argv);
-  g_verify           = a.verify;
-  const auto    spec = spec_from(a);
+  const CliArgs a = parse_args(argc, argv);
+  g_verify        = a.verify;
+  const auto spec = spec_from(a);
 
   if (a.emit_header) {
     std::cout << "library,op,topology,axis,size,pins_per_node,hier_size,seed,run_idx,"
@@ -502,18 +544,19 @@ int main(int argc, char** argv) {
 
   for (int run = 0; run < a.runs; ++run) {
     const OpResult r = dispatch(a.op, spec);
-    std::cout << "hhds," << a.op << "," << a.topology << "," << a.axis << ","
-              << a.nodes << "," << a.pins << "," << a.hier << "," << a.seed << ","
-              << run << ","
-              << r.wall_ns
-              << ",0,0,0,0,0,0,0\n";  // wrapper rewrites these
+    std::cout << "hhds," << a.op << "," << a.topology << "," << a.axis << "," << a.nodes << "," << a.pins << "," << a.hier << ","
+              << a.seed << "," << run << "," << r.wall_ns << ",0,0,0,0,0,0,0\n";  // wrapper rewrites these
     if (g_verify) {
       // Print to stderr so the CSV on stdout is unaffected. Run-by-run
       // counts let you confirm flat/hier traversals actually descend
       // into subnodes (visited >> top-graph-only would mean class).
       std::fprintf(stderr,
                    "verify: op=%s nodes=%d pins=%d hier=%d run=%d visited=%lld\n",
-                   a.op.c_str(), a.nodes, a.pins, a.hier, run,
+                   a.op.c_str(),
+                   a.nodes,
+                   a.pins,
+                   a.hier,
+                   run,
                    static_cast<long long>(r.visited));
     }
   }

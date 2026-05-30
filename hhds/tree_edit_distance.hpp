@@ -61,7 +61,7 @@ private:
     // keyroots: sorted list of post-order indices that are keyroots.
     // A keyroot is the largest post-order index among all nodes sharing
     // the same leftmost-leaf value.
-    ::std::vector<int> keyroots;
+    ::std::vector<int>              keyroots;
   };
 
   explicit TreeEditDistance(const EditCosts&                                                          costs,

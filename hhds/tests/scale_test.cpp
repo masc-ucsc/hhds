@@ -53,7 +53,7 @@ void test_deep_tree(int nodes) {
   // int                        num_nodes = 10'000'000;  // Use a smaller number for testing
   // int                        num_nodes = 10'000'000;  // Use a smaller number for testing
   // int                        num_nodes = 100;  // Use a smaller number for testing
-  int num_nodes = nodes;
+  int                        num_nodes = nodes;
 
   auto             hhds_tree = hhds::Tree::create();
   std::vector<int> hhds_values;

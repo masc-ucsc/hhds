@@ -13,7 +13,7 @@
 namespace hhds_final_bench {
 
 using Clock = std::chrono::steady_clock;
-using Edge = std::pair<int, int>;
+using Edge  = std::pair<int, int>;
 
 struct Args {
   std::string library  = "unknown";
@@ -42,9 +42,7 @@ inline int64_t ns_between(Clock::time_point begin, Clock::time_point end) {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
 }
 
-inline int parse_int(std::string_view text) {
-  return std::atoi(std::string(text).c_str());
-}
+inline int parse_int(std::string_view text) { return std::atoi(std::string(text).c_str()); }
 
 inline bool eat(std::string_view arg, std::string_view prefix, std::string& out) {
   if (arg.rfind(prefix, 0) != 0) {
@@ -68,14 +66,30 @@ inline Args parse_args(int argc, char** argv, std::string library) {
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg(argv[i]);
-    if (eat(arg, "--op=", args.op)) continue;
-    if (eat(arg, "--scenario=", args.scenario)) continue;
-    if (eat(arg, "--x-axis=", args.x_axis)) continue;
-    if (eat_int(arg, "--nodes=", args.nodes)) continue;
-    if (eat_int(arg, "--pins=", args.pins)) continue;
-    if (eat_int(arg, "--hier=", args.hier)) continue;
-    if (eat_int(arg, "--k=", args.k)) continue;
-    if (eat_int(arg, "--runs=", args.runs)) continue;
+    if (eat(arg, "--op=", args.op)) {
+      continue;
+    }
+    if (eat(arg, "--scenario=", args.scenario)) {
+      continue;
+    }
+    if (eat(arg, "--x-axis=", args.x_axis)) {
+      continue;
+    }
+    if (eat_int(arg, "--nodes=", args.nodes)) {
+      continue;
+    }
+    if (eat_int(arg, "--pins=", args.pins)) {
+      continue;
+    }
+    if (eat_int(arg, "--hier=", args.hier)) {
+      continue;
+    }
+    if (eat_int(arg, "--k=", args.k)) {
+      continue;
+    }
+    if (eat_int(arg, "--runs=", args.runs)) {
+      continue;
+    }
     if (arg == "--no-header") {
       args.header = false;
       continue;
@@ -118,9 +132,9 @@ inline void print_header() {
 }
 
 inline void print_row(const Args& args, int run_idx, const Result& result) {
-  std::cout << args.library << "," << args.op << "," << args.scenario << "," << args.x_axis << "," << x_value(args)
-            << "," << args.nodes << "," << args.pins << "," << args.hier << "," << scenario_k(args.scenario, args.k)
-            << "," << run_idx << "," << result.wall_ns << "," << result.items << "\n";
+  std::cout << args.library << "," << args.op << "," << args.scenario << "," << args.x_axis << "," << x_value(args) << ","
+            << args.nodes << "," << args.pins << "," << args.hier << "," << scenario_k(args.scenario, args.k) << "," << run_idx
+            << "," << result.wall_ns << "," << result.items << "\n";
 }
 
 inline std::vector<Edge> make_ring_forward_edges(int nodes, int k) {
@@ -161,9 +175,6 @@ inline std::vector<Edge> make_edges_for_op(const Args& args, bool require_dag) {
   return require_dag ? make_dag_forward_edges(args.nodes, k) : make_ring_forward_edges(args.nodes, k);
 }
 
-inline int64_t half_count(size_t count) {
-  return static_cast<int64_t>(count / 2U);
-}
+inline int64_t half_count(size_t count) { return static_cast<int64_t>(count / 2U); }
 
 }  // namespace hhds_final_bench
-

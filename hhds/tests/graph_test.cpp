@@ -570,10 +570,10 @@ void test_backward_flat_exact_order_and_shared_body_dedup() {
   inst2.set_subnode(leaf_io);
 
   const std::vector<std::pair<hhds::Gid, hhds::Nid>> expected{
-      {top->get_gid(), inst2.get_debug_nid()},
+      { top->get_gid(),   inst2.get_debug_nid()},
       {leaf->get_gid(), leaf_n2.get_debug_nid()},
       {leaf->get_gid(), leaf_n1.get_debug_nid()},
-      {top->get_gid(), inst1.get_debug_nid()},
+      { top->get_gid(),   inst1.get_debug_nid()},
   };
   assert(collect_gid_nids(top->backward_flat()) == expected);
 }
@@ -595,10 +595,10 @@ void test_backward_hier_exact_order_and_shared_body_per_instance() {
   inst2.set_subnode(leaf_io);
 
   const std::vector<std::pair<hhds::Gid, hhds::Nid>> expected{
-      {top->get_gid(), inst2.get_debug_nid()},
+      { top->get_gid(),   inst2.get_debug_nid()},
       {leaf->get_gid(), leaf_n2.get_debug_nid()},
       {leaf->get_gid(), leaf_n1.get_debug_nid()},
-      {top->get_gid(), inst1.get_debug_nid()},
+      { top->get_gid(),   inst1.get_debug_nid()},
       {leaf->get_gid(), leaf_n2.get_debug_nid()},
       {leaf->get_gid(), leaf_n1.get_debug_nid()},
   };
@@ -626,7 +626,7 @@ void test_backward_hier_descends_into_nested_subnodes() {
   top_inst_of_mid.set_subnode(mid_gio);
 
   const std::vector<std::pair<hhds::Gid, hhds::Nid>> expected{
-      {top->get_gid(), top_inst_of_mid.get_debug_nid()},
+      {top->get_gid(),  top_inst_of_mid.get_debug_nid()},
       {mid->get_gid(), mid_inst_of_leaf.get_debug_nid()},
   };
   assert(collect_gid_nids(top->backward_hier()) == expected);

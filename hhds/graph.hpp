@@ -246,28 +246,28 @@ public:
     return Hier_index{get_current_gid(), hier_pos_, raw_nid};
   }
 
-  void                                  set_subnode(const std::shared_ptr<GraphIO>& graphio) const;
+  void                                            set_subnode(const std::shared_ptr<GraphIO>& graphio) const;
   // Inverse accessors for set_subnode. All three return the "no subnode"
   // sentinel (nullptr / Gid_invalid) when the node has none.
-  [[nodiscard]] Gid                      get_subnode_gid() const;
-  [[nodiscard]] std::shared_ptr<GraphIO> get_subnode_io() const;
-  [[nodiscard]] std::shared_ptr<Graph>   get_subnode_graph() const;
-  void                                  set_type(Type type) const;
-  [[nodiscard]] Type                    get_type() const;
-  [[nodiscard]] bool                    is_loop_last() const;
-  [[nodiscard]] Pin_class               create_driver_pin() const;
-  [[nodiscard]] Pin_class               create_driver_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class               create_driver_pin(std::string_view name) const;
-  [[nodiscard]] Pin_class               create_sink_pin() const;
-  [[nodiscard]] Pin_class               create_sink_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class               create_sink_pin(std::string_view name) const;
-  [[nodiscard]] Pin_class               get_driver_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class               get_driver_pin(std::string_view name) const;
-  [[nodiscard]] Pin_class               get_sink_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class               get_sink_pin(std::string_view name) const;
-  void                                  del_node() const;
-  [[nodiscard]] std::vector<Edge_class> out_edges() const;
-  [[nodiscard]] std::vector<Edge_class> inp_edges() const;
+  [[nodiscard]] Gid                               get_subnode_gid() const;
+  [[nodiscard]] std::shared_ptr<GraphIO>          get_subnode_io() const;
+  [[nodiscard]] std::shared_ptr<Graph>            get_subnode_graph() const;
+  void                                            set_type(Type type) const;
+  [[nodiscard]] Type                              get_type() const;
+  [[nodiscard]] bool                              is_loop_last() const;
+  [[nodiscard]] Pin_class                         create_driver_pin() const;
+  [[nodiscard]] Pin_class                         create_driver_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class                         create_driver_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class                         create_sink_pin() const;
+  [[nodiscard]] Pin_class                         create_sink_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class                         create_sink_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class                         get_driver_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class                         get_driver_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class                         get_sink_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class                         get_sink_pin(std::string_view name) const;
+  void                                            del_node() const;
+  [[nodiscard]] std::vector<Edge_class>           out_edges() const;
+  [[nodiscard]] std::vector<Edge_class>           inp_edges() const;
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> out_pins() const;
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> inp_pins() const;
   // Fast boolean predicates — avoid materializing the full edge vector when
@@ -410,12 +410,12 @@ class Graph : public Attr_host {
   private:
     auto overflow_handling(Pid self_id, Vid other_id, OverflowPool& pool) -> bool;
 
-    Nid     master_nid : Nid_bits;   // 42 bits
-    Port_id port_id : Port_bits;     // 22 bits    => 64 bits (8 bytes)
-    Pid     next_pin_id : Nid_bits;  // 42 bits
-    Nid     ledge0 : Nid_bits;       // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
-    Nid     ledge1 : Nid_bits;       // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
-    uint8_t use_overflow : 1;        // 1 bit      => 64 bits (8 bytes)
+    Nid     master_nid   : Nid_bits;   // 42 bits
+    Port_id port_id      : Port_bits;  // 22 bits    => 64 bits (8 bytes)
+    Pid     next_pin_id  : Nid_bits;   // 42 bits
+    Nid     ledge0       : Nid_bits;   // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
+    Nid     ledge1       : Nid_bits;   // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
+    uint8_t use_overflow : 1;          // 1 bit      => 64 bits (8 bytes)
 
     union {
       int64_t  sedges;        // 4 × 16-bit packed slots (when use_overflow == 0)
@@ -485,12 +485,12 @@ class Graph : public Attr_host {
     //   alive           :  1 bit   (tombstone = 0)
     //   sedges_extra    : 48 bits  (3 extra 16-bit slots, exact fit)
     // -> 192 bits = 24 bytes; sedges_ begins at byte 24 (8-byte aligned).
-    Type     type : 16;
-    Pid      next_pin_id : Nid_bits;
-    Nid      ledge0 : Nid_bits;
-    Nid      ledge1 : Nid_bits;
+    Type     type         : 16;
+    Pid      next_pin_id  : Nid_bits;
+    Nid      ledge0       : Nid_bits;
+    Nid      ledge1       : Nid_bits;
     uint8_t  use_overflow : 1;
-    uint8_t  alive : 1;
+    uint8_t  alive        : 1;
     uint64_t sedges_extra : 48;
     union {
       int64_t  sedges;        // low-4 slots of 16 bits (fills 64 bits exactly)
@@ -520,17 +520,17 @@ public:
   // read-only handle. After commit, mutations through the writable handle
   // iassert (best-effort: only flagged via is_frozen()). No-op if the graph
   // has no library slot or is already committed/aborted.
-  void                                   commit();
+  void commit();
 
   // Mark the writable handle as aborted. The slot reverts to Empty when the
   // last writable handle is released (partially built graph is discarded).
   // Useful in error/unwind paths. No-op for find_graph_rw or detached
   // graphs.
-  void                                   abort();
+  void abort();
 
-  [[nodiscard]] bool                     is_frozen() const noexcept { return frozen_; }
-  [[nodiscard]] Pin_class                get_input_pin(std::string_view name) const;
-  [[nodiscard]] Pin_class                get_output_pin(std::string_view name) const;
+  [[nodiscard]] bool      is_frozen() const noexcept { return frozen_; }
+  [[nodiscard]] Pin_class get_input_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class get_output_pin(std::string_view name) const;
 
   // Reverse lookup from an opaque index key to a Node_class / Pin_class,
   // mirroring Tree::get_node(index). Class_index is scoped to this graph
@@ -584,7 +584,7 @@ public:
   // representation it wants via the standard pin attr() API; the iterator
   // skips CONST_NODE itself, so this pin is only seen as a driver on its
   // sink's inp_edges().
-  [[nodiscard]] Pin_class create_constant() { return get_constant_node().create_driver_pin(); }
+  [[nodiscard]] Pin_class  create_constant() { return get_constant_node().create_driver_pin(); }
 
   [[nodiscard]] FastClassRange     fast_class() const noexcept;
   [[nodiscard]] ForwardClassRange  forward_class() const noexcept;
@@ -601,9 +601,9 @@ public:
   // node_table, so cost is proportional to the hierarchy size (≪ number
   // of graph nodes). Use this for instance counts, module-tree walks, and
   // path resolution rather than fast_hier (which visits every graph node).
-  [[nodiscard]] HierRange hier_range() const noexcept;
-  void                    display_graph() const;
-  void                    display_next_pin_of_node() const;
+  [[nodiscard]] HierRange          hier_range() const noexcept;
+  void                             display_graph() const;
+  void                             display_next_pin_of_node() const;
 
   void                      print(std::ostream& os) const;
   [[nodiscard]] std::string print() const;
@@ -628,9 +628,9 @@ private:
     assert(actual_id < pin_table.size());
     return const_cast<PinEntry*>(&pin_table[actual_id]);
   }
-  void invalidate_from_library() noexcept;
-  void release_storage() noexcept;
-  void clear_graph();
+  void              invalidate_from_library() noexcept;
+  void              release_storage() noexcept;
+  void              clear_graph();
   // Binary persistence — saves/loads body data (node_table, pin_table, overflow sets).
   // dir_path is the graph-specific directory (e.g., "db/graph_1/").
   void              save_body(const std::string& dir_path) const;
@@ -654,58 +654,58 @@ private:
   // structure-tree cycle (target_gid transitively contains self_gid_).
   // BFS over subnode_tree_pos_ entries, so cost scales with hierarchy size,
   // not graph size. Compiled out under NDEBUG via the call site.
-  [[nodiscard]] bool would_create_cycle(Gid target_gid) const noexcept;
-  void               add_edge(Pid driver_id, Pid sink_id);
+  [[nodiscard]] bool             would_create_cycle(Gid target_gid) const noexcept;
+  void                           add_edge(Pid driver_id, Pid sink_id);
   void add_edge(Pin_class driver_pin, Pin_class sink_pin) { add_edge(driver_pin.get_debug_pid(), sink_pin.get_debug_pid()); }
   void del_edge(Pin_class driver_pin, Pin_class sink_pin);
-  [[nodiscard]] std::vector<Edge_class> out_edges(Node_class node);
-  [[nodiscard]] std::vector<Edge_class> inp_edges(Node_class node);
-  [[nodiscard]] std::vector<Edge_class> out_edges(Pin_class pin);
-  [[nodiscard]] std::vector<Edge_class> inp_edges(Pin_class pin);
+  [[nodiscard]] std::vector<Edge_class>           out_edges(Node_class node);
+  [[nodiscard]] std::vector<Edge_class>           inp_edges(Node_class node);
+  [[nodiscard]] std::vector<Edge_class>           out_edges(Pin_class pin);
+  [[nodiscard]] std::vector<Edge_class>           inp_edges(Pin_class pin);
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_pins(Node_class node);
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_driver_pins(Node_class node);
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_sink_pins(Node_class node);
-  void                                  del_edge_int(Vid driver_id, Vid sink_id);
-  void                                  add_edge_int(Pid self_id, Pid other_id);
-  void                                  set_next_pin(Nid nid, Pid next_pin);
-  [[nodiscard]] Pin_class               make_pin_class(Pid pin_pid) const;
-  void                                  bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
-  void                                  set_name(std::string_view name) { name_ = name; }
-  void                                  invalidate_traversal_caches() noexcept;  // defined inline at end of header
+  void                                            del_edge_int(Vid driver_id, Vid sink_id);
+  void                                            add_edge_int(Pid self_id, Pid other_id);
+  void                                            set_next_pin(Nid nid, Pid next_pin);
+  [[nodiscard]] Pin_class                         make_pin_class(Pid pin_pid) const;
+  void                                            bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
+  void                                            set_name(std::string_view name) { name_ = name; }
+  void                                            invalidate_traversal_caches() noexcept;  // defined inline at end of header
   // Incremental patch for a single edge add/delete. delta = +1 for add, -1 for
   // delete. Bumps forward_remaining_in_cache_[sink_idx] and
   // backward_remaining_out_cache_[driver_idx] using the same filters the cache
   // builder applies. Pass-2 caches are left intact — stale entries are already
   // filtered by is_emitted() during replay. Falls back to full invalidation on
   // unexpected underflow.
-  void patch_traversal_caches_for_edge(Vid driver_id, Vid sink_id, int32_t delta) noexcept;
+  void               patch_traversal_caches_for_edge(Vid driver_id, Vid sink_id, int32_t delta) noexcept;
   // Build (or refresh) the Pass-2 deferred list and the initial in-edge counts
   // used by the forward_class streaming iterator. The full emission ordering
   // is never materialized — only these two small caches persist.
-  void ensure_forward_caches() const;
+  void               ensure_forward_caches() const;
   // Exposed to the Forward iterator classes (which are friends).
   [[nodiscard]] bool forward_is_source(size_t idx) const noexcept;
 
-  void ensure_backward_caches() const;
+  void               ensure_backward_caches() const;
   // Exposed to the Backward iterator classes (which are friends).
   [[nodiscard]] bool backward_is_sink(size_t idx) const noexcept;
 
-  std::vector<NodeEntry> node_table;
-  std::vector<PinEntry>  pin_table;
-  OverflowVec            overflow_sets_;
-  std::vector<uint32_t>  overflow_free_;
+  std::vector<NodeEntry>                         node_table;
+  std::vector<PinEntry>                          pin_table;
+  OverflowVec                                    overflow_sets_;
+  std::vector<uint32_t>                          overflow_free_;
   // Persistent hierarchy: one Tree per Graph, populated by set_subnode and
   // torn down in clear()/load_body rebuild. The tree's children correspond
   // 1:1 with live subnode NodeEntries. `subnode_tree_pos_` maps a subnode
   // Nid back to its Tree_pos so del_node / debug cycle checks can find it.
-  std::shared_ptr<Tree>                       tree_;
-  ankerl::unordered_dense::map<Nid, Tree_pos> subnode_tree_pos_;
+  std::shared_ptr<Tree>                          tree_;
+  ankerl::unordered_dense::map<Nid, Tree_pos>    subnode_tree_pos_;
   // Reverse map so hier_range can resolve a Tree_pos back to its owning Nid
   // in O(1) during tree-pre-order iteration. Kept in lockstep with
   // subnode_tree_pos_ — every set_subnode / load_body insertion updates
   // both, and all three clear sites (release_storage, clear_graph, clear)
   // clear both.
-  ankerl::unordered_dense::map<Tree_pos, Nid> tree_pos_to_nid_;
+  ankerl::unordered_dense::map<Tree_pos, Nid>    tree_pos_to_nid_;
   // Forward-traversal caches, shared across forward_class / forward_flat /
   // forward_hier for this graph body. Only the Pass-2 deferral list and the
   // initial in-edge counts are kept — the Pass-1 emission order is replayed
@@ -1315,7 +1315,6 @@ public:
   };
 
 private:
-
   struct DeclaredIoPinRef {
     IoDirection direction = IoDirection::Input;
     size_t      index     = 0;
@@ -1371,7 +1370,7 @@ public:
 
   // Per-declared-pin bitwidth. `set_bits` stamps the value; `get_bits`
   // returns the stored bits (0 = unspecified). Asserts the pin name exists.
-  void                  set_bits(std::string_view name, uint32_t bits);
+  void                   set_bits(std::string_view name, uint32_t bits);
   [[nodiscard]] uint32_t get_bits(std::string_view name) const;
 
   // Per-declared-pin sign. `set_unsign(name, true)` marks unsigned;
@@ -1739,7 +1738,8 @@ private:
   [[nodiscard]] std::shared_ptr<Graph> create_graph_body_loaded_unlocked(const std::shared_ptr<GraphIO>& graphio) {
     assert(graphio != nullptr && "create_graph_body_loaded: null GraphIO");
     const size_t idx = static_cast<size_t>(graphio->get_gid());
-    assert(idx < graph_ios_.size() && graph_ios_[idx] == graphio && "create_graph_body_loaded: GraphIO is not owned by this library");
+    assert(idx < graph_ios_.size() && graph_ios_[idx] == graphio
+           && "create_graph_body_loaded: GraphIO is not owned by this library");
     ensure_slot_state_vectors_unlocked(idx + 1);
 
     if (!(idx < graphs_.size() && graphs_[idx] != nullptr && !graphs_[idx]->deleted_)) {
@@ -1827,8 +1827,8 @@ private:
   ankerl::unordered_dense::map<std::string, Gid> graph_name_to_id_;
   ankerl::unordered_dense::map<std::string, Gid> deleted_name_to_id_;
   // count of live graphs
-  Gid                           live_count_     = 0;
-  mutable std::atomic<uint64_t> mutation_epoch_ = 1;
+  Gid                                            live_count_     = 0;
+  mutable std::atomic<uint64_t>                  mutation_epoch_ = 1;
 
   // Per-slot state machine for the body in graphs_[idx]:
   //   Empty   -> no body; create_graph may CAS to Writing
@@ -1849,10 +1849,10 @@ private:
   // performs the slot transition (Writing -> Public, or Writing -> Empty
   // for an aborted create_graph).
   struct GraphWriterCleanup {
-    GraphLibrary*           library;
-    Gid                     gid;
-    bool                    from_create;
-    std::shared_ptr<Graph>  graph_keepalive;
+    GraphLibrary*          library;
+    Gid                    gid;
+    bool                   from_create;
+    std::shared_ptr<Graph> graph_keepalive;
     ~GraphWriterCleanup();
   };
   friend struct GraphWriterCleanup;
@@ -1966,9 +1966,7 @@ inline GraphLibrary::GraphWriterCleanup::~GraphWriterCleanup() {
     // commit() already flipped to Public, or the slot was deleted.
     return;
   }
-  const bool aborted = from_create
-                       && idx < library->graph_slot_abort_pending_.size()
-                       && library->graph_slot_abort_pending_[idx]
+  const bool aborted = from_create && idx < library->graph_slot_abort_pending_.size() && library->graph_slot_abort_pending_[idx]
                        && library->graph_slot_abort_pending_[idx]->load(std::memory_order_acquire);
   if (aborted) {
     if (idx < library->graphs_.size() && library->graphs_[idx]) {
@@ -1995,7 +1993,7 @@ inline void Graph::commit() {
   // const-cast: owner_lib_ is intentionally const within Graph, but commit
   // must mutate the library's slot state. The writer holds the only
   // writable handle here so the library is alive.
-  auto* lib = const_cast<GraphLibrary*>(owner_lib_);
+  auto*            lib = const_cast<GraphLibrary*>(owner_lib_);
   std::unique_lock lock(lib->registry_mu_);
   const size_t     idx = static_cast<size_t>(self_gid_);
   if (idx >= lib->graph_slot_states_.size() || !lib->graph_slot_states_[idx]) {
@@ -2015,7 +2013,7 @@ inline void Graph::abort() {
   if (owner_lib_ == nullptr || self_gid_ == Gid_invalid) {
     return;
   }
-  auto* lib = const_cast<GraphLibrary*>(owner_lib_);
+  auto*            lib = const_cast<GraphLibrary*>(owner_lib_);
   std::unique_lock lock(lib->registry_mu_);
   const size_t     idx = static_cast<size_t>(self_gid_);
   if (idx >= lib->graph_slot_abort_pending_.size() || !lib->graph_slot_abort_pending_[idx]) {
@@ -2163,7 +2161,7 @@ inline bool GraphIO::has_pin_with_port_id(Port_id port_id) const {
 inline void GraphIO::set_bits(std::string_view name, uint32_t bits) {
   const auto it = declared_io_pins_.find(std::string(name));
   assert(it != declared_io_pins_.end() && "set_bits: declared pin name not found");
-  auto& pins = it->second.direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
+  auto& pins                  = it->second.direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
   pins[it->second.index].bits = bits;
 }
 
@@ -2177,7 +2175,7 @@ inline uint32_t GraphIO::get_bits(std::string_view name) const {
 inline void GraphIO::set_unsign(std::string_view name, bool unsign_value) {
   const auto it = declared_io_pins_.find(std::string(name));
   assert(it != declared_io_pins_.end() && "set_unsign: declared pin name not found");
-  auto& pins = it->second.direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
+  auto& pins                    = it->second.direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
   pins[it->second.index].unsign = unsign_value;
 }
 

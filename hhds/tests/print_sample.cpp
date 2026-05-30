@@ -23,9 +23,9 @@ int main() {
 
   const hhds::Type_entry type_table[] = {
       {"unknown", hhds::Statement_class::Node},
-      {"add", hhds::Statement_class::Node},
+      {    "add", hhds::Statement_class::Node},
       {"literal", hhds::Statement_class::Node},
-      {"value", hhds::Statement_class::Node},
+      {  "value", hhds::Statement_class::Node},
   };
 
   std::cout << "Print with type table only\n";
@@ -47,8 +47,8 @@ int main() {
     return it == names.end() ? std::string("node") : it->second;
   };
   with_attrs.attributes = {
-      {"pos",
-       [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_debug_nid()); }},
+      {    "pos",
+       [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_debug_nid()); }      },
       {"type_id", [](const hhds::Tree::Node_class& node) -> std::optional<std::string> { return std::to_string(node.get_type()); }},
   };
   tree->print(std::cout, with_attrs);
@@ -71,10 +71,10 @@ int main() {
   g2.set_type(3);
 
   const hhds::Type_entry scope_types[] = {
-      {"unknown", hhds::Statement_class::Node},
-      {"add", hhds::Statement_class::Node},
+      { "unknown",      hhds::Statement_class::Node},
+      {     "add",      hhds::Statement_class::Node},
       {"if_taken", hhds::Statement_class::Open_call},
-      {"sub", hhds::Statement_class::Node},
+      {     "sub",      hhds::Statement_class::Node},
   };
 
   std::cout << "\nPrint with scope types\n";
@@ -118,9 +118,9 @@ int main() {
 
   const hhds::Type_entry lnast_types[] = {
       {"stmts", hhds::Statement_class::Node},
-      {"plus", hhds::Statement_class::Node},
-      {"if", hhds::Statement_class::Node},
-      {"ref", hhds::Statement_class::Node},
+      { "plus", hhds::Statement_class::Node},
+      {   "if", hhds::Statement_class::Node},
+      {  "ref", hhds::Statement_class::Node},
   };
 
   absl::flat_hash_map<hhds::Tree::Node_class, std::string> ref_names;
@@ -219,29 +219,29 @@ int main() {
     }
   }
   loaded_opts.attributes = {
-      {"pos",
+      {    "pos",
        [&loaded_attrs](const hhds::Tree::Node_class& node) -> std::optional<std::string> {
-         auto it = loaded_attrs.find(node.get_debug_nid());
-         if (it != loaded_attrs.end()) {
-           for (const auto& [k, v] : it->second) {
-             if (k == "pos") {
-               return v;
-             }
-           }
-         }
-         return std::nullopt;
+       auto it = loaded_attrs.find(node.get_debug_nid());
+       if (it != loaded_attrs.end()) {
+       for (const auto& [k, v] : it->second) {
+       if (k == "pos") {
+       return v;
+       }
+       }
+       }
+       return std::nullopt;
        }},
       {"type_id",
        [&loaded_attrs](const hhds::Tree::Node_class& node) -> std::optional<std::string> {
-         auto it = loaded_attrs.find(node.get_debug_nid());
-         if (it != loaded_attrs.end()) {
-           for (const auto& [k, v] : it->second) {
-             if (k == "type_id") {
-               return v;
-             }
-           }
-         }
-         return std::nullopt;
+       auto it = loaded_attrs.find(node.get_debug_nid());
+       if (it != loaded_attrs.end()) {
+       for (const auto& [k, v] : it->second) {
+       if (k == "type_id") {
+       return v;
+       }
+       }
+       }
+       return std::nullopt;
        }},
   };
   loaded_tree->dump(std::cout, loaded_opts);

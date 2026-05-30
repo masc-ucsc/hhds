@@ -39,7 +39,7 @@
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define ANKERL_UNORDERED_DENSE_VERSION_CONCAT1(major, minor, patch) v##major##_##minor##_##patch
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
-#define ANKERL_UNORDERED_DENSE_VERSION_CONCAT(major, minor, patch) ANKERL_UNORDERED_DENSE_VERSION_CONCAT1(major, minor, patch)
+#define ANKERL_UNORDERED_DENSE_VERSION_CONCAT(major, minor, patch)  ANKERL_UNORDERED_DENSE_VERSION_CONCAT1(major, minor, patch)
 #define ANKERL_UNORDERED_DENSE_NAMESPACE                                      \
   ANKERL_UNORDERED_DENSE_VERSION_CONCAT(ANKERL_UNORDERED_DENSE_VERSION_MAJOR, \
                                         ANKERL_UNORDERED_DENSE_VERSION_MINOR, \
@@ -151,10 +151,10 @@ namespace detail::wyhash {
 
 inline void mum(std::uint64_t* a, std::uint64_t* b) {
 #if defined(__SIZEOF_INT128__)
-  __uint128_t r = *a;
-  r *= *b;
-  *a = static_cast<std::uint64_t>(r);
-  *b = static_cast<std::uint64_t>(r >> 64U);
+  __uint128_t r  = *a;
+  r             *= *b;
+  *a             = static_cast<std::uint64_t>(r);
+  *b             = static_cast<std::uint64_t>(r >> 64U);
 #elif defined(_MSC_VER) && defined(_M_X64)
   *a = _umul128(*a, *b, b);
 #else
@@ -164,17 +164,17 @@ inline void mum(std::uint64_t* a, std::uint64_t* b) {
   std::uint64_t lb = static_cast<std::uint32_t>(*b);
   std::uint64_t hi{};
   std::uint64_t lo{};
-  std::uint64_t rh  = ha * hb;
-  std::uint64_t rm0 = ha * lb;
-  std::uint64_t rm1 = hb * la;
-  std::uint64_t rl  = la * lb;
-  std::uint64_t t   = rl + (rm0 << 32U);
-  auto          c   = static_cast<std::uint64_t>(t < rl);
-  lo                = t + (rm1 << 32U);
-  c += static_cast<std::uint64_t>(lo < t);
-  hi = rh + (rm0 >> 32U) + (rm1 >> 32U) + c;
-  *a = lo;
-  *b = hi;
+  std::uint64_t rh   = ha * hb;
+  std::uint64_t rm0  = ha * lb;
+  std::uint64_t rm1  = hb * la;
+  std::uint64_t rl   = la * lb;
+  std::uint64_t t    = rl + (rm0 << 32U);
+  auto          c    = static_cast<std::uint64_t>(t < rl);
+  lo                 = t + (rm1 << 32U);
+  c                 += static_cast<std::uint64_t>(lo < t);
+  hi                 = rh + (rm0 >> 32U) + (rm1 >> 32U) + c;
+  *a                 = lo;
+  *b                 = hi;
 #endif
 }
 
@@ -236,20 +236,20 @@ inline void mum(std::uint64_t* a, std::uint64_t* b) {
         std::uint64_t see1 = seed;
         std::uint64_t see2 = seed;
         do {
-          seed = mix(r8(p) ^ secret[1], r8(p + 8) ^ seed);
-          see1 = mix(r8(p + 16) ^ secret[2], r8(p + 24) ^ see1);
-          see2 = mix(r8(p + 32) ^ secret[3], r8(p + 40) ^ see2);
-          p += 48;
-          i -= 48;
+          seed  = mix(r8(p) ^ secret[1], r8(p + 8) ^ seed);
+          see1  = mix(r8(p + 16) ^ secret[2], r8(p + 24) ^ see1);
+          see2  = mix(r8(p + 32) ^ secret[3], r8(p + 40) ^ see2);
+          p    += 48;
+          i    -= 48;
         } while (ANKERL_UNORDERED_DENSE_LIKELY(i > 48));
         seed ^= see1 ^ see2;
       }
     }
     while (ANKERL_UNORDERED_DENSE_UNLIKELY(i > 16)) {
       ANKERL_UNORDERED_DENSE_UNLIKELY_ATTR {
-        seed = mix(r8(p) ^ secret[1], r8(p + 8) ^ seed);
-        i -= 16;
-        p += 16;
+        seed  = mix(r8(p) ^ secret[1], r8(p + 8) ^ seed);
+        i    -= 16;
+        p    += 16;
       }
     }
     a = r8(p + i - 16);
@@ -1577,18 +1577,16 @@ public:
     return do_try_emplace(std::move(key), std::forward<Args>(args)...).first;
   }
 
-  template <
-      typename K, typename... Args, typename Q = T, typename H = Hash, typename KE = KeyEqual,
-      std::enable_if_t<is_map_v<Q> && is_transparent_v<H, KE> && is_neither_convertible_v<K&&, iterator, const_iterator>, bool>
-      = true>
+  template <typename K, typename... Args, typename Q = T, typename H = Hash, typename KE = KeyEqual,
+            std::enable_if_t<is_map_v<Q> && is_transparent_v<H, KE> && is_neither_convertible_v<K&&, iterator, const_iterator>,
+                             bool> = true>
   auto try_emplace(K&& key, Args&&... args) -> std::pair<iterator, bool> {
     return do_try_emplace(std::forward<K>(key), std::forward<Args>(args)...);
   }
 
-  template <
-      typename K, typename... Args, typename Q = T, typename H = Hash, typename KE = KeyEqual,
-      std::enable_if_t<is_map_v<Q> && is_transparent_v<H, KE> && is_neither_convertible_v<K&&, iterator, const_iterator>, bool>
-      = true>
+  template <typename K, typename... Args, typename Q = T, typename H = Hash, typename KE = KeyEqual,
+            std::enable_if_t<is_map_v<Q> && is_transparent_v<H, KE> && is_neither_convertible_v<K&&, iterator, const_iterator>,
+                             bool> = true>
   auto try_emplace(const_iterator /*hint*/, K&& key, Args&&... args) -> iterator {
     return do_try_emplace(std::forward<K>(key), std::forward<Args>(args)...).first;
   }
