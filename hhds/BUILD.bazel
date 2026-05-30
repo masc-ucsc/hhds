@@ -495,6 +495,16 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "commutative_ops_test",
+    size = "small",
+    srcs = ["tests/commutative_ops_test.cpp"],
+    data = [":hhds_tree_diff"],
+    deps = [
+        "@googletest//:gtest_main",
+    ],
+)
+
 # cc_binary(
 #     name = "graph_bin",
 #     srcs = ["graph_main.cpp"],
