@@ -5,13 +5,12 @@ EDA and compiler workloads. The focus is on memory efficiency, stable identity,
 and a clean hierarchy model that can support translation between tree and graph
 representations.
 
-The repository is being simplified toward a clean standalone API. The current
-implementation already contains the core structural containers, but the public
-surface is being cleaned up around a declaration-centric model.
+The public surface is organized around a declaration-centric model: named
+declarations own optional implementation bodies, on both the tree and graph
+sides.
 
-- [`sample.md`](/Users/renau/projs/hhds/sample.md) — target API examples
-- [`todo_first.md`](/Users/renau/projs/hhds/todo_first.md) — structural cleanup roadmap
-- [`todo_attr.md`](/Users/renau/projs/hhds/todo_attr.md) — attribute system roadmap
+- [`docs/storage_internals.md`](docs/storage_internals.md) — in-memory layout
+  and how storage grows as elements are added.
 
 ## Design goals
 
@@ -54,8 +53,7 @@ node.attr(livehd::attrs::bits).set(32);
 ```
 
 Downstream projects add new attributes by declaring tag structs in their own
-namespace — no HHDS edits needed. See [`todo_attr.md`](/Users/renau/projs/hhds/todo_attr.md)
-for the design.
+namespace — no HHDS edits needed.
 
 ## Structural properties
 
@@ -78,9 +76,9 @@ for the design.
 - Three natural traversal modes: pre-order, post-order, and sibling-order.
 - Inline `Type` field for structure-relevant semantics.
 
-## Planned public direction
+## Public API
 
-The intended public model is declaration-first:
+The public model is declaration-first:
 
 ```cpp
 auto glib = std::make_shared<hhds::GraphLibrary>();
@@ -92,16 +90,17 @@ auto tio    = forest->create_io("parser");
 auto t      = tio->create_tree();
 ```
 
-Key behavior targets:
+Key behaviors:
 
 - Names are required and immutable.
 - `Tree` / `Graph` bodies are created only through `TreeIO` / `GraphIO`.
-- Deleting a body clears only the implementation.
-- Deleting a declaration removes declaration plus body, while tombstone identity
-  stays internal.
+- Deleting a body (`delete_tree` / `delete_graph`) clears only the
+  implementation.
+- Deleting a declaration (`delete_treeio` / `delete_graphio`) removes
+  declaration plus body, while tombstone identity stays internal.
 - Normal `find_*` APIs ignore tombstones and return `nullptr`.
-- `GraphIO` owns graph IO declarations and should be the only public API for
-  graph IO mutation.
+- `GraphIO` owns graph IO declarations and is the only public API for graph IO
+  mutation.
 
 ## Build
 
@@ -125,11 +124,13 @@ bazel run //hhds:forest_correctness
 bazel test //hhds:graph_test
 ```
 
-## Notes
+## Persistence
 
-- Binary persistence is the intended normal format.
-- Text read/write is useful for debugging and manual intervention, but does not
-  need a stable long-term format.
-- Declaration and body persistence should be separate.
-- Large bodies should support automatic unload/reload based on `shared_ptr`
-  lifetime.
+- Declarations and bodies persist separately. Declarations are written as text
+  (`forest.txt` / `library.txt`); bodies are written as binary (`body.bin`, plus
+  `overflow_<idx>.bin` for graph overflow sets) with a magic / version / endian
+  header.
+- The text declaration format is meant for debugging and manual intervention; it
+  is not a stable long-term format.
+- Planned (not yet implemented): automatic unload/reload of large bodies based
+  on `shared_ptr` lifetime.
