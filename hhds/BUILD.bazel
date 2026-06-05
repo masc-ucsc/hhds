@@ -440,6 +440,7 @@ cc_binary(
 cc_library(
     name = "tree_edit_distance",
     hdrs = ["tree_edit_distance.hpp"],
+    visibility = ["//visibility:public"],
     deps = [":core"],
 )
 
