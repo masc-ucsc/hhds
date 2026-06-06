@@ -17,13 +17,30 @@ COMPARISON_CSV="$BENCH_DIR/comparisons/comparison.csv"
 PLOT_DIR="$BENCH_DIR/comparisons/plot"
 
 RUNS="${RUNS:-5}"
-NODE_SIZES="${NODE_SIZES:-100 1000 10000}"
-PIN_SIZES="${PIN_SIZES:-2 4 8 16 32}"
-HIER_NODE_SIZES="${HIER_NODE_SIZES:-100 1000}"
-HIER_SIZES="${HIER_SIZES:-10 100 1000}"
-PIN_NODE_COUNT="${PIN_NODE_COUNT:-10000}"
+
+# Revision 4: sizes bumped per professor feedback so each cell exceeds 1 s of
+# wall time wherever possible. Override any of these on the command line.
+NODE_SIZES="${NODE_SIZES:-10000 100000 1000000 10000000}"
+PIN_SIZES="${PIN_SIZES:-8 32 128 512 2048}"
+HIER_NODE_SIZES="${HIER_NODE_SIZES:-10000 100000}"
+HIER_SIZES="${HIER_SIZES:-1000 10000}"
+PIN_NODE_COUNT="${PIN_NODE_COUNT:-100000}"
 FIXED_HIER_SIZE="${FIXED_HIER_SIZE:-100}"
-HIER_RANGE_NODE_COUNT="${HIER_RANGE_NODE_COUNT:-1000}"
+HIER_RANGE_NODE_COUNT="${HIER_RANGE_NODE_COUNT:-10000}"
+
+# Per-library overrides — set these to cap a library that runs out of memory
+# at the largest sizes (LiveHD especially). Default to the common values above.
+HHDS_NODE_SIZES="${HHDS_NODE_SIZES:-$NODE_SIZES}"
+BOOST_NODE_SIZES="${BOOST_NODE_SIZES:-$NODE_SIZES}"
+LIVEHD_NODE_SIZES="${LIVEHD_NODE_SIZES:-$NODE_SIZES}"
+HHDS_PIN_SIZES="${HHDS_PIN_SIZES:-$PIN_SIZES}"
+LIVEHD_PIN_SIZES="${LIVEHD_PIN_SIZES:-$PIN_SIZES}"
+HHDS_HIER_NODE_SIZES="${HHDS_HIER_NODE_SIZES:-$HIER_NODE_SIZES}"
+LIVEHD_HIER_NODE_SIZES="${LIVEHD_HIER_NODE_SIZES:-$HIER_NODE_SIZES}"
+HHDS_HIER_SIZES="${HHDS_HIER_SIZES:-$HIER_SIZES}"
+LIVEHD_HIER_SIZES="${LIVEHD_HIER_SIZES:-$HIER_SIZES}"
+HHDS_PIN_NODE_COUNT="${HHDS_PIN_NODE_COUNT:-$PIN_NODE_COUNT}"
+LIVEHD_PIN_NODE_COUNT="${LIVEHD_PIN_NODE_COUNT:-$PIN_NODE_COUNT}"
 
 if [[ -x "$REPO_ROOT/hhds/bench/.venv/bin/python" ]]; then
   PYTHON="${PYTHON:-$REPO_ROOT/hhds/bench/.venv/bin/python}"
@@ -39,6 +56,55 @@ if [[ -f "$LIVEHD_ROOT/lgraph/tests/livehd_final_bench.cpp" ]]; then
   echo "Building LiveHD benchmark..."
   (cd "$LIVEHD_ROOT" && bazel build //lgraph:livehd_final_bench)
   LIVEHD_AVAILABLE=1
+fi
+
+# SMOKE_ONLY=1 runs the heaviest cells once each, prints OK/FAILED per cell,
+# and exits without touching the CSVs. Use this to catch OOMs before kicking
+# off the full multi-hour sweep. Cells are timed-out after 10 minutes.
+if [[ "${SMOKE_ONLY:-0}" == "1" ]]; then
+  echo ""
+  echo "==> SMOKE TEST (max sizes, single run, no CSV output)"
+  # macOS doesn't ship GNU `timeout`; use `gtimeout` from coreutils if present,
+  # otherwise run without a wall-clock cap.
+  if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_CMD=(timeout 600)
+  elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_CMD=(gtimeout 600)
+  else
+    TIMEOUT_CMD=()
+    echo "    (no timeout/gtimeout available -- cells will run to completion)"
+  fi
+  smoke() {
+    local name="$1"; local bin="$2"; local op="$3"; local scenario="$4"; local n="$5"
+    printf "  %-7s n=%-9s %-12s:%-15s ... " "$name" "$n" "$op" "$scenario"
+    local start=$SECONDS
+    local stderr_log
+    stderr_log=$(mktemp)
+    if ${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"} "$bin" --op="$op" --scenario="$scenario" \
+         --nodes="$n" --pins=1 --hier="$FIXED_HIER_SIZE" --k=0 --runs=1 --no-header \
+         > /dev/null 2> "$stderr_log"; then
+      echo "OK ($((SECONDS - start)) s)"
+    else
+      echo "FAILED after $((SECONDS - start)) s -- stderr:"
+      sed 's/^/      /' "$stderr_log" | head -5
+    fi
+    rm -f "$stderr_log"
+  }
+  for size in $NODE_SIZES; do
+    smoke "HHDS"   "$HHDS_BIN"   add_nodes default  "$size"
+    smoke "HHDS"   "$HHDS_BIN"   add_edges overflow "$size"
+    smoke "Boost"  "$BOOST_BIN"  add_nodes default  "$size"
+    smoke "Boost"  "$BOOST_BIN"  add_edges overflow "$size"
+    if [[ "$LIVEHD_AVAILABLE" == "1" ]]; then
+      smoke "LiveHD" "$LIVEHD_BIN" add_nodes default  "$size"
+      smoke "LiveHD" "$LIVEHD_BIN" add_edges overflow "$size"
+    fi
+    echo ""
+  done
+  echo "==> Smoke test complete. If any cell FAILED, cap that library via"
+  echo "    LIVEHD_NODE_SIZES / BOOST_NODE_SIZES / HHDS_NODE_SIZES before"
+  echo "    rerunning without SMOKE_ONLY."
+  exit 0
 fi
 
 mkdir -p "$BENCH_DIR/hhds" "$BENCH_DIR/boost" "$BENCH_DIR/livehd" "$BENCH_DIR/comparisons" "$PLOT_DIR"
@@ -58,35 +124,48 @@ run_one() {
   local hier="$8"
   local k="$9"
 
-  "$bin" \
-    --op="$op" \
-    --scenario="$scenario" \
-    --x-axis="$x_axis" \
-    --nodes="$nodes" \
-    --pins="$pins" \
-    --hier="$hier" \
-    --k="$k" \
-    --runs="$RUNS" \
-    --no-header >> "$out"
+  local label
+  label="$(basename "$bin")"
+  printf "  %-25s op=%-32s scenario=%-15s nodes=%-10s pins=%-5s hier=%-5s ... " \
+    "$label" "$op" "$scenario" "$nodes" "$pins" "$hier"
+  local start=$SECONDS
+
+  # A failed cell (e.g. a library that can't handle a given size) just leaves
+  # no rows in the CSV -- the comparison stage renders that as N/A -- instead
+  # of aborting the whole multi-hour sweep.
+  if "$bin" \
+       --op="$op" \
+       --scenario="$scenario" \
+       --x-axis="$x_axis" \
+       --nodes="$nodes" \
+       --pins="$pins" \
+       --hier="$hier" \
+       --k="$k" \
+       --runs="$RUNS" \
+       --no-header >> "$out" 2>/dev/null; then
+    echo "OK ($((SECONDS - start)) s)"
+  else
+    echo "FAILED ($((SECONDS - start)) s) -- skipping cell"
+  fi
 }
 
 echo "Running HHDS benchmarks..."
-for nodes in $NODE_SIZES; do
+for nodes in $HHDS_NODE_SIZES; do
   run_one "$HHDS_BIN" "$HHDS_CSV" add_nodes default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
   run_one "$HHDS_BIN" "$HHDS_CSV" add_nodes_with_pins default nodes "$nodes" 8 "$FIXED_HIER_SIZE" 0
   run_one "$HHDS_BIN" "$HHDS_CSV" lookup_nodes default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
   run_one "$HHDS_BIN" "$HHDS_CSV" delete_nodes_with_edges_and_pins default nodes "$nodes" 8 "$FIXED_HIER_SIZE" 0
 done
 
-for pins in $PIN_SIZES; do
-  run_one "$HHDS_BIN" "$HHDS_CSV" add_pins default pins "$PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
-  run_one "$HHDS_BIN" "$HHDS_CSV" delete_pins default pins "$PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
-  run_one "$HHDS_BIN" "$HHDS_CSV" delete_pins_with_edges default pins "$PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
-  run_one "$HHDS_BIN" "$HHDS_CSV" lookup_pins default pins "$PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
+for pins in $HHDS_PIN_SIZES; do
+  run_one "$HHDS_BIN" "$HHDS_CSV" add_pins default pins "$HHDS_PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
+  run_one "$HHDS_BIN" "$HHDS_CSV" delete_pins default pins "$HHDS_PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
+  run_one "$HHDS_BIN" "$HHDS_CSV" delete_pins_with_edges default pins "$HHDS_PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
+  run_one "$HHDS_BIN" "$HHDS_CSV" lookup_pins default pins "$HHDS_PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
 done
 
 for scenario in sedges_inline ledge_inline overflow; do
-  for nodes in $NODE_SIZES; do
+  for nodes in $HHDS_NODE_SIZES; do
     run_one "$HHDS_BIN" "$HHDS_CSV" add_edges "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
     run_one "$HHDS_BIN" "$HHDS_CSV" delete_edges "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
     run_one "$HHDS_BIN" "$HHDS_CSV" lookup_edges "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
@@ -96,7 +175,7 @@ for scenario in sedges_inline ledge_inline overflow; do
   done
 done
 
-for nodes in $HIER_NODE_SIZES; do
+for nodes in $HHDS_HIER_NODE_SIZES; do
   run_one "$HHDS_BIN" "$HHDS_CSV" traverse_fast_flat default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
   run_one "$HHDS_BIN" "$HHDS_CSV" traverse_forward_flat default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
   run_one "$HHDS_BIN" "$HHDS_CSV" traverse_backward_flat default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
@@ -105,19 +184,19 @@ for nodes in $HIER_NODE_SIZES; do
   run_one "$HHDS_BIN" "$HHDS_CSV" traverse_backward_hier default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
 done
 
-for hier in $HIER_SIZES; do
+for hier in $HHDS_HIER_SIZES; do
   run_one "$HHDS_BIN" "$HHDS_CSV" traverse_hier_range default hier "$HIER_RANGE_NODE_COUNT" 1 "$hier" 0
 done
 
 echo "Running Boost benchmarks..."
-for nodes in $NODE_SIZES; do
+for nodes in $BOOST_NODE_SIZES; do
   run_one "$BOOST_BIN" "$BOOST_CSV" add_nodes default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
   run_one "$BOOST_BIN" "$BOOST_CSV" lookup_nodes default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
   run_one "$BOOST_BIN" "$BOOST_CSV" delete_nodes_with_edges_and_pins default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
 done
 
 for scenario in sedges_inline ledge_inline overflow; do
-  for nodes in $NODE_SIZES; do
+  for nodes in $BOOST_NODE_SIZES; do
     run_one "$BOOST_BIN" "$BOOST_CSV" add_edges "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
     run_one "$BOOST_BIN" "$BOOST_CSV" delete_edges "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
     run_one "$BOOST_BIN" "$BOOST_CSV" lookup_edges "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
@@ -129,22 +208,22 @@ done
 
 if [[ "$LIVEHD_AVAILABLE" == "1" ]]; then
   echo "Running LiveHD benchmarks..."
-  for nodes in $NODE_SIZES; do
+  for nodes in $LIVEHD_NODE_SIZES; do
     run_one "$LIVEHD_BIN" "$LIVEHD_CSV" add_nodes default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
     run_one "$LIVEHD_BIN" "$LIVEHD_CSV" add_nodes_with_pins default nodes "$nodes" 8 "$FIXED_HIER_SIZE" 0
     run_one "$LIVEHD_BIN" "$LIVEHD_CSV" lookup_nodes default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
     run_one "$LIVEHD_BIN" "$LIVEHD_CSV" delete_nodes_with_edges_and_pins default nodes "$nodes" 8 "$FIXED_HIER_SIZE" 0
   done
 
-  for pins in $PIN_SIZES; do
-    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" add_pins default pins "$PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
-    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" delete_pins default pins "$PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
-    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" delete_pins_with_edges default pins "$PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
-    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" lookup_pins default pins "$PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
+  for pins in $LIVEHD_PIN_SIZES; do
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" add_pins default pins "$LIVEHD_PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" delete_pins default pins "$LIVEHD_PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" delete_pins_with_edges default pins "$LIVEHD_PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
+    run_one "$LIVEHD_BIN" "$LIVEHD_CSV" lookup_pins default pins "$LIVEHD_PIN_NODE_COUNT" "$pins" "$FIXED_HIER_SIZE" 0
   done
 
   for scenario in sedges_inline ledge_inline overflow; do
-    for nodes in $NODE_SIZES; do
+    for nodes in $LIVEHD_NODE_SIZES; do
       run_one "$LIVEHD_BIN" "$LIVEHD_CSV" add_edges "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
       run_one "$LIVEHD_BIN" "$LIVEHD_CSV" delete_edges "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
       run_one "$LIVEHD_BIN" "$LIVEHD_CSV" lookup_edges "$scenario" nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
@@ -155,14 +234,14 @@ if [[ "$LIVEHD_AVAILABLE" == "1" ]]; then
     done
   done
 
-  for nodes in $HIER_NODE_SIZES; do
+  for nodes in $LIVEHD_HIER_NODE_SIZES; do
     run_one "$LIVEHD_BIN" "$LIVEHD_CSV" traverse_fast_flat default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
     run_one "$LIVEHD_BIN" "$LIVEHD_CSV" traverse_forward_flat default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
     run_one "$LIVEHD_BIN" "$LIVEHD_CSV" traverse_fast_hier default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
     run_one "$LIVEHD_BIN" "$LIVEHD_CSV" traverse_forward_hier default nodes "$nodes" 1 "$FIXED_HIER_SIZE" 0
   done
 
-  for hier in $HIER_SIZES; do
+  for hier in $LIVEHD_HIER_SIZES; do
     run_one "$LIVEHD_BIN" "$LIVEHD_CSV" traverse_hier_range default hier "$HIER_RANGE_NODE_COUNT" 1 "$hier" 0
   done
 else

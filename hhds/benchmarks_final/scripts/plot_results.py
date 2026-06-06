@@ -13,6 +13,22 @@ os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "hhds_be
 
 import matplotlib.pyplot as plt
 
+# Roughly 2x matplotlib defaults for everything near the axes -- title, axis
+# labels, tick labels -- so the plots are readable in the thesis PDF without
+# zooming (reviewer request). The legend is intentionally kept small (it is
+# not a label and the figure caption already names the libraries).
+plt.rcParams.update({
+    "font.size":        20,
+    "axes.titlesize":   24,
+    "axes.titlepad":    14,  # extra breathing room between title and axes
+    "axes.labelsize":   22,
+    "xtick.labelsize":  20,
+    "ytick.labelsize":  20,
+    "legend.fontsize":  18,  # color key for the libraries, sits below the plot
+    "lines.linewidth":  2.5,
+    "lines.markersize": 9,
+})
+
 
 LIBRARIES = ("hhds", "livehd", "boost")
 COLORS = {
@@ -48,7 +64,12 @@ def main():
 
     for (operation, scenario, x_axis), rows in sorted(groups.items()):
         rows.sort(key=lambda row: int(row["x_value"]))
-        fig, ax = plt.subplots(figsize=(8, 5))
+        # constrained_layout is the only layout engine that properly accounts
+        # for the out-of-axes legend (set via bbox_to_anchor below). The
+        # earlier combination of tight_layout() + bbox_inches="tight" left
+        # the title visibly hugging the top because tight_layout doesn't see
+        # the legend at all.
+        fig, ax = plt.subplots(figsize=(8, 6.5), constrained_layout=True)
 
         plotted = False
         for library in LIBRARIES:
@@ -73,14 +94,24 @@ def main():
         time_unit = rows[0].get("time_unit", "ns/op")
         ax.set_ylabel(f"median time ({time_unit})")
         ax.grid(True, which="both", linestyle="--", alpha=0.35)
-        ax.legend()
+        # Place the legend OUTSIDE the axes, below the x-axis, as a single
+        # horizontal row. Guarantees zero overlap with any data line and
+        # stays in the same place across all panels.
+        ax.legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.18),
+            ncol=3,
+            frameon=False,
+        )
         if all(int(row["x_value"]) > 0 for row in rows):
             ax.set_xscale("log")
         ax.set_yscale("log")
-        fig.tight_layout()
+        # No fig.tight_layout(); constrained_layout already handles spacing.
 
-        name = safe_name(f"{operation}_{scenario}_{x_axis}.png")
-        fig.savefig(out_dir / name, dpi=160)
+        # Vector PDF output: crisp at any zoom, selectable text, print-quality.
+        # dpi is irrelevant for a vector format.
+        name = safe_name(f"{operation}_{scenario}_{x_axis}.pdf")
+        fig.savefig(out_dir / name)
         plt.close(fig)
 
 
