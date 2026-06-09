@@ -3831,6 +3831,9 @@ void GraphLibrary::load_merge(const std::string& db_path) {
     auto gio   = io_at_unlocked(dst_gid);
     auto graph = create_graph_body_loaded_unlocked(gio);
     graph->load_body(dir.string());
+    // Mark dirty so a subsequent save() writes this absorbed body into the
+    // merged library (loaded bodies are otherwise clean and save() skips them).
+    graph->dirty_ = true;
     // Rewrite each Sub's subnode gid through the remap (identity → no-op, which
     // is the all-name-hash case). A subnode gid absent from the remap is an
     // external reference satisfied by another input at the same canonical gid.
