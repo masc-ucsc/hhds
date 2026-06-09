@@ -433,7 +433,8 @@ TEST(GraphApiContract, PersistenceAndClearSemantics) {
   // Save the graph library, including graph bodies and attribute maps.
   glib.save(test_dir);
   EXPECT_TRUE(fs::exists(fs::path(test_dir) / "library.txt"));
-  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "graph_1" / "body.bin"));
+  // gids are name-hashes now, not sequential — derive the body dir from the gid.
+  EXPECT_TRUE(fs::exists(fs::path(test_dir) / ("graph_" + std::to_string(gio->get_gid())) / "body.bin"));
 
   // Load into a fresh library.
   hhds::GraphLibrary loaded_glib;

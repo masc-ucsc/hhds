@@ -502,7 +502,8 @@ TEST(GraphPersistence, SaveLoadRoundTrip) {
 
   // Verify files exist.
   EXPECT_TRUE(fs::exists(fs::path(test_dir) / "library.txt"));
-  EXPECT_TRUE(fs::exists(fs::path(test_dir) / "graph_1" / "body.bin"));
+  // gids are name-hashes now, not sequential — derive the body dir from the gid.
+  EXPECT_TRUE(fs::exists(fs::path(test_dir) / ("graph_" + std::to_string(top_gio->get_gid())) / "body.bin"));
 
   // Create a fresh library, load into it.
   hhds::GraphLibrary lib2;

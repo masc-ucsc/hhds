@@ -1163,7 +1163,7 @@ auto Graph::resolve_driver_port(Node_class node, std::string_view name) const ->
   const auto* entry = ref_node(node.get_debug_nid());
   assert(entry->has_subnode() && "create_driver_pin: string form requires a subnode GraphIO");
   assert(owner_lib_ != nullptr && "create_driver_pin: graph has no GraphLibrary");
-  auto gio = owner_lib_->graph_ios_[static_cast<size_t>(entry->get_subnode())];
+  auto gio = owner_lib_->io_at_unlocked(entry->get_subnode());
   assert(gio != nullptr && gio->has_output(name) && "create_driver_pin: output name not found in subnode GraphIO");
   return gio->get_output_port_id(name);
 }
@@ -1173,7 +1173,7 @@ auto Graph::resolve_sink_port(Node_class node, std::string_view name) const -> P
   const auto* entry = ref_node(node.get_debug_nid());
   assert(entry->has_subnode() && "create_sink_pin: string form requires a subnode GraphIO");
   assert(owner_lib_ != nullptr && "create_sink_pin: graph has no GraphLibrary");
-  auto gio = owner_lib_->graph_ios_[static_cast<size_t>(entry->get_subnode())];
+  auto gio = owner_lib_->io_at_unlocked(entry->get_subnode());
   assert(gio != nullptr && gio->has_input(name) && "create_sink_pin: input name not found in subnode GraphIO");
   return gio->get_input_port_id(name);
 }
@@ -1214,7 +1214,7 @@ auto Graph::pin_name(Pin_class pin) const -> std::string_view {
 
   const auto* owner = ref_node(owner_nid);
   if (owner->has_subnode() && owner_lib_ != nullptr) {
-    auto gio = owner_lib_->graph_ios_[static_cast<size_t>(owner->get_subnode())];
+    auto gio = owner_lib_->io_at_unlocked(owner->get_subnode());
     if (gio) {
       if (raw_pid & static_cast<Pid>(2)) {
         for (const auto& decl : gio->output_pin_decls_) {
@@ -1772,12 +1772,12 @@ void Graph::set_subnode(Nid nid, Gid gid) {
 
   const GraphIO* subnode_gio = nullptr;
   if (owner_lib_ != nullptr) {
-    const size_t idx = static_cast<size_t>(gid);
-    assert(idx < owner_lib_->graph_ios_.size() && owner_lib_->graph_ios_[idx] != nullptr);
-    if (idx >= owner_lib_->graph_ios_.size() || owner_lib_->graph_ios_[idx] == nullptr) {
+    auto gio = owner_lib_->io_at_unlocked(gid);
+    assert(gio != nullptr);
+    if (gio == nullptr) {
       return;
     }
-    subnode_gio = owner_lib_->graph_ios_[idx].get();
+    subnode_gio = gio.get();
   }
 
   // Debug-only structural cycle check. Cycles are explicitly disallowed —
@@ -3390,7 +3390,7 @@ void Graph::print(std::ostream& os) const {
 
     const auto* entry = ref_node(raw_nid);
     if (entry->has_subnode() && owner_lib_ != nullptr) {
-      const auto gio = owner_lib_->graph_ios_[static_cast<size_t>(entry->get_subnode())];
+      const auto gio = owner_lib_->io_at_unlocked(entry->get_subnode());
       if (gio != nullptr) {
         os << " : " << gio->get_name();
       }
@@ -3557,17 +3557,24 @@ void GraphLibrary::save(const std::string& db_path) const {
 
   std::shared_lock lock(registry_mu_);
 
+  // Deterministic gid order (the map iterates in arbitrary order).
+  std::vector<Gid> io_gids;
+  io_gids.reserve(graph_ios_.size());
+  for (const auto& [gid, gio] : graph_ios_) {
+    if (gio) {
+      io_gids.push_back(gid);
+    }
+  }
+  std::sort(io_gids.begin(), io_gids.end());
+
   // --- library.txt (declarations, text format) ---
   {
     std::ofstream ofs(fs::path(db_path) / "library.txt");
     assert(ofs.good() && "GraphLibrary::save: cannot open library.txt");
     ofs << "hhds_graphlib 1\n";
-    for (size_t i = 1; i < graph_ios_.size(); ++i) {
-      const auto& gio = graph_ios_[i];
-      if (!gio) {
-        continue;
-      }
-      ofs << "graph_io " << i << " " << gio->get_name() << "\n";
+    for (const Gid gid : io_gids) {
+      const auto& gio = graph_ios_.at(gid);
+      ofs << "graph_io " << gid << " " << gio->get_name() << "\n";
       auto emit_pin = [&ofs](const char* direction, const GraphIO::DeclaredIoPin& pin) {
         ofs << "  " << direction << " " << pin.port_id << " " << pin.name;
         if (pin.loop_last) {
@@ -3592,21 +3599,27 @@ void GraphLibrary::save(const std::string& db_path) const {
     // reuses the original gid. Parent graphs store subnode gids in their
     // binary bodies; this lets those references survive delete + recreate
     // across save/load.
-    for (const auto& [name, gid] : deleted_name_to_id_) {
+    std::vector<std::pair<Gid, std::string>> deleted(deleted_name_to_id_.size());
+    {
+      size_t k = 0;
+      for (const auto& [name, gid] : deleted_name_to_id_) {
+        deleted[k++] = {gid, name};
+      }
+    }
+    std::sort(deleted.begin(), deleted.end());
+    for (const auto& [gid, name] : deleted) {
       ofs << "graph_io_deleted " << gid << " " << name << "\n";
     }
   }
 
   // --- graph body directories ---
-  for (size_t i = 1; i < graphs_.size(); ++i) {
-    if (!graphs_[i] || graphs_[i]->deleted_) {
+  for (const Gid gid : io_gids) {
+    const auto it = graphs_.find(gid);
+    if (it == graphs_.end() || !it->second || it->second->deleted_ || !it->second->dirty_) {
       continue;
     }
-    if (!graphs_[i]->dirty_) {
-      continue;
-    }
-    const auto dir = fs::path(db_path) / ("graph_" + std::to_string(i));
-    graphs_[i]->save_body(dir.string());
+    const auto dir = fs::path(db_path) / ("graph_" + std::to_string(gid));
+    it->second->save_body(dir.string());
   }
 }
 
@@ -3616,21 +3629,20 @@ void GraphLibrary::load(const std::string& db_path) {
   std::unique_lock lock(registry_mu_);
 
   // Clear current state.
-  for (auto& g : graphs_) {
+  for (auto& [gid, g] : graphs_) {
     if (g) {
       g->invalidate_from_library();
     }
   }
   graph_ios_.clear();
   graphs_.clear();
+  graph_slot_states_.clear();
+  graph_slot_abort_pending_.clear();
   graph_name_to_id_.clear();
   deleted_name_to_id_.clear();
   live_count_ = 0;
   mutation_epoch_.store(1, std::memory_order_release);
-
-  // Reserve slot 0.
-  graph_ios_.push_back(nullptr);
-  graphs_.push_back(nullptr);
+  // (gid-keyed maps need no slot-0 reservation)
 
   // --- Parse library.txt ---
   {
@@ -3650,12 +3662,8 @@ void GraphLibrary::load(const std::string& db_path) {
         Gid                gid;
         std::string        name;
         ss >> gid >> name;
-        // Reserve the slot so fresh allocations don't reuse this gid.
-        const size_t idx = static_cast<size_t>(gid);
-        if (idx >= graph_ios_.size()) {
-          graph_ios_.resize(idx + 1);
-          graphs_.resize(idx + 1);
-        }
+        // Record so recreating by this name reuses the original gid (gid-keyed
+        // map: no slot to reserve).
         deleted_name_to_id_[name] = gid;
         current_gio.reset();
       } else if (line.substr(0, 9) == "graph_io ") {
@@ -3706,13 +3714,18 @@ void GraphLibrary::load(const std::string& db_path) {
     }
   }
 
-  // --- Load graph bodies ---
-  for (size_t i = 1; i < graph_ios_.size(); ++i) {
-    const auto& gio = graph_ios_[i];
-    if (!gio) {
-      continue;
+  // --- Load graph bodies (deterministic gid order) ---
+  std::vector<Gid> io_gids;
+  io_gids.reserve(graph_ios_.size());
+  for (const auto& [gid, gio] : graph_ios_) {
+    if (gio) {
+      io_gids.push_back(gid);
     }
-    const auto dir = fs::path(db_path) / ("graph_" + std::to_string(i));
+  }
+  std::sort(io_gids.begin(), io_gids.end());
+  for (const Gid gid : io_gids) {
+    const auto& gio = graph_ios_.at(gid);
+    const auto  dir = fs::path(db_path) / ("graph_" + std::to_string(gid));
     if (fs::exists(dir / "body.bin")) {
       auto graph = create_graph_body_loaded_unlocked(gio);
       graph->load_body(dir.string());
