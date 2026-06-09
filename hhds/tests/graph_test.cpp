@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cassert>
 #include <csignal>
+#include <filesystem>
 #include <iostream>
 #include <iterator>
 #include <string>
@@ -928,6 +929,57 @@ void test_set_subnode_retarget_ok() {
   assert(last_target == c_gio->get_gid());
 }
 
+// Task 1m-C: GraphLibrary::load_merge — assemble several saved libraries into
+// one. With name-hash gids a name keeps the same gid across libraries, so the
+// merge is conflict-free and dedups by name.
+void test_load_merge() {
+  namespace fs = std::filesystem;
+  const auto base = fs::temp_directory_path() / "hhds_load_merge_test";
+  fs::remove_all(base);
+  const auto dirA = (base / "A").string();
+  const auto dirB = (base / "B").string();
+
+  hhds::Gid foo_gid = hhds::Gid_invalid;
+  hhds::Gid bar_gid = hhds::Gid_invalid;
+  {
+    hhds::GraphLibrary a;
+    auto               foo_gio = a.create_io("foo");
+    foo_gio->add_input("x", 0);
+    foo_gio->add_output("y", 0);
+    { auto g = foo_gio->create_graph(); g->create_node(); }  // publish on scope-exit
+    foo_gid = foo_gio->get_gid();
+    a.save(dirA);
+  }
+  {
+    hhds::GraphLibrary b;
+    auto               bar_gio = b.create_io("bar");
+    bar_gio->add_input("p", 0);
+    bar_gio->add_output("q", 0);
+    { auto g = bar_gio->create_graph(); g->create_node(); }
+    bar_gid = bar_gio->get_gid();
+    b.save(dirB);
+  }
+
+  hhds::GraphLibrary c;
+  c.load_merge(dirA);
+  c.load_merge(dirB);
+
+  auto cfoo = c.find_io("foo");
+  auto cbar = c.find_io("bar");
+  assert(cfoo && cbar);
+  assert(cfoo->get_gid() == foo_gid && "name-hash gid preserved across merge");
+  assert(cbar->get_gid() == bar_gid);
+  assert(c.has_graph(cfoo->get_gid()) && c.has_graph(cbar->get_gid()));
+  assert(c.all_gids().size() == 2);
+
+  // Dedup: re-merging A keeps one `foo` (no duplicate, same GraphIO).
+  c.load_merge(dirA);
+  assert(c.find_io("foo") == cfoo);
+  assert(c.all_gids().size() == 2);
+
+  fs::remove_all(base);
+}
+
 }  // namespace
 
 int main() {
@@ -972,6 +1024,7 @@ int main() {
   test_set_subnode_self_cycle_aborts();
   test_set_subnode_indirect_cycle_aborts();
 #endif
+  test_load_merge();
   std::cout << "graph_test passed\n";
   return 0;
 }

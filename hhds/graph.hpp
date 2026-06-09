@@ -1644,6 +1644,18 @@ public:
   void save(const std::string& db_path) const;
   void load(const std::string& db_path);
 
+  // Merge another saved library at db_path INTO this one (no clear) — the
+  // graph-library linker primitive (task 1m-C). Conflict policy:
+  //   - name already present here  → keep ours (dedup); load the incoming body
+  //     only if ours is an IO-only stub. (Same name with a different body is a
+  //     genuine ambiguity; not deduped away silently — see assert.)
+  //   - name new                   → assign its canonical gid (hash of the name,
+  //     probed on collision). When both libraries use name-hash gids the gid is
+  //     identical, so the merge is conflict-free; otherwise an incoming gid is
+  //     remapped and every Sub (subnode) reference in the loaded bodies is
+  //     rewritten through the remap table.
+  void load_merge(const std::string& db_path);
+
 private:
   [[nodiscard]] std::shared_ptr<GraphIO> find_io_unlocked(Gid id) const {
     if (id == Gid_invalid) {

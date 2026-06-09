@@ -3733,4 +3733,117 @@ void GraphLibrary::load(const std::string& db_path) {
   }
 }
 
+void GraphLibrary::load_merge(const std::string& db_path) {
+  namespace fs = std::filesystem;
+
+  std::unique_lock lock(registry_mu_);
+
+  // --- Parse the incoming library.txt into entries (no mutation yet) ---
+  struct Entry {
+    Gid                                 src_gid = Gid_invalid;
+    std::string                         name;
+    std::vector<GraphIO::DeclaredIoPin> inputs;
+    std::vector<GraphIO::DeclaredIoPin> outputs;
+  };
+  std::vector<Entry> entries;
+  {
+    std::ifstream ifs(fs::path(db_path) / "library.txt");
+    assert(ifs.good() && "GraphLibrary::load_merge: cannot open library.txt");
+    std::string line;
+    std::getline(ifs, line);  // header: "hhds_graphlib 1"
+    size_t cur = static_cast<size_t>(-1);
+    while (std::getline(ifs, line)) {
+      if (line.empty()) {
+        continue;
+      }
+      if (line.substr(0, 17) == "graph_io_deleted ") {
+        cur = static_cast<size_t>(-1);  // deleted graphs are not merged
+      } else if (line.substr(0, 9) == "graph_io ") {
+        std::istringstream ss(line.substr(9));
+        Gid                gid;
+        std::string        name;
+        ss >> gid >> name;
+        entries.push_back(Entry{gid, name, {}, {}});
+        cur = entries.size() - 1;
+      } else if (line.size() > 2 && line[0] == ' ' && line[1] == ' ' && cur != static_cast<size_t>(-1)) {
+        std::istringstream ss(line.substr(2));
+        std::string        direction;
+        Port_id            port_id;
+        std::string        name;
+        ss >> direction >> port_id >> name;
+        bool        loop_last = false;
+        uint32_t    bits      = 0;
+        bool        unsign    = false;
+        std::string token;
+        while (ss >> token) {
+          if (token == "loop_last") {
+            loop_last = true;
+          } else if (token == "unsigned") {
+            unsign = true;
+          } else if (token.rfind("bits=", 0) == 0) {
+            bits = static_cast<uint32_t>(std::stoul(token.substr(5)));
+          }
+        }
+        GraphIO::DeclaredIoPin decl{name, port_id, loop_last, bits, unsign};
+        (direction == "input" ? entries[cur].inputs : entries[cur].outputs).push_back(decl);
+      }
+    }
+  }
+
+  // --- Assign each incoming graph a gid in THIS library + build the remap ---
+  absl::flat_hash_map<Gid, Gid>     remap;           // src_gid -> dst_gid in this
+  std::vector<std::pair<Gid, Gid>>  bodies_to_load;  // (src_gid, dst_gid)
+  for (const auto& e : entries) {
+    if (auto existing = find_io_unlocked(e.name)) {
+      // Dedup by name. Load the incoming body only if ours is an IO-only stub.
+      const Gid dst = existing->get_gid();
+      remap[e.src_gid] = dst;
+      if (!has_graph_unlocked(dst)) {
+        bodies_to_load.emplace_back(e.src_gid, dst);
+      }
+      continue;
+    }
+    // New name → its canonical (name-hash) gid, probed on collision. Identical
+    // to e.src_gid when the source also used name-hash gids (the common case).
+    const Gid dst = pick_gid_for_name_unlocked(e.name);
+    auto      gio = create_io_impl_unlocked(dst, e.name);
+    for (const auto& d : e.inputs) {
+      gio->input_pin_decls_.push_back(d);
+      gio->declared_io_pins_.emplace(gio->input_pin_decls_.back().name,
+                                     GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Input, gio->input_pin_decls_.size() - 1});
+    }
+    for (const auto& d : e.outputs) {
+      gio->output_pin_decls_.push_back(d);
+      gio->declared_io_pins_.emplace(gio->output_pin_decls_.back().name,
+                                     GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Output, gio->output_pin_decls_.size() - 1});
+    }
+    remap[e.src_gid] = dst;
+    bodies_to_load.emplace_back(e.src_gid, dst);
+  }
+
+  // --- Load bodies (from their SOURCE gid dir) + remap Sub references ---
+  std::sort(bodies_to_load.begin(), bodies_to_load.end());
+  for (const auto& [src_gid, dst_gid] : bodies_to_load) {
+    const auto dir = fs::path(db_path) / ("graph_" + std::to_string(src_gid));
+    if (!fs::exists(dir / "body.bin")) {
+      continue;
+    }
+    auto gio   = io_at_unlocked(dst_gid);
+    auto graph = create_graph_body_loaded_unlocked(gio);
+    graph->load_body(dir.string());
+    // Rewrite each Sub's subnode gid through the remap (identity → no-op, which
+    // is the all-name-hash case). A subnode gid absent from the remap is an
+    // external reference satisfied by another input at the same canonical gid.
+    for (auto node : graph->fast_class()) {
+      const Gid old = node.get_subnode_gid();
+      if (old == Gid_invalid) {
+        continue;
+      }
+      if (const auto it = remap.find(old); it != remap.end() && it->second != old) {
+        graph->set_subnode(node, it->second);
+      }
+    }
+  }
+}
+
 }  // namespace hhds
