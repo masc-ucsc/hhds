@@ -2037,17 +2037,16 @@ inline void Graph::commit() {
   // writable handle here so the library is alive.
   auto*            lib = const_cast<GraphLibrary*>(owner_lib_);
   std::unique_lock lock(lib->registry_mu_);
-  const size_t     idx = static_cast<size_t>(self_gid_);
-  if (idx >= lib->graph_slot_states_.size() || !lib->graph_slot_states_[idx]) {
+  auto*            state = lib->slot_state_at_unlocked(self_gid_);
+  if (!state) {
     frozen_ = true;
     return;
   }
-  auto&   state    = *lib->graph_slot_states_[idx];
   uint8_t expected = static_cast<uint8_t>(GraphLibrary::SlotState::Writing);
-  state.compare_exchange_strong(expected,
-                                static_cast<uint8_t>(GraphLibrary::SlotState::Public),
-                                std::memory_order_release,
-                                std::memory_order_relaxed);
+  state->compare_exchange_strong(expected,
+                                 static_cast<uint8_t>(GraphLibrary::SlotState::Public),
+                                 std::memory_order_release,
+                                 std::memory_order_relaxed);
   frozen_ = true;
 }
 
@@ -2057,11 +2056,11 @@ inline void Graph::abort() {
   }
   auto*            lib = const_cast<GraphLibrary*>(owner_lib_);
   std::unique_lock lock(lib->registry_mu_);
-  const size_t     idx = static_cast<size_t>(self_gid_);
-  if (idx >= lib->graph_slot_abort_pending_.size() || !lib->graph_slot_abort_pending_[idx]) {
+  auto*            ab = lib->abort_pending_at_unlocked(self_gid_);
+  if (!ab) {
     return;
   }
-  lib->graph_slot_abort_pending_[idx]->store(true, std::memory_order_release);
+  ab->store(true, std::memory_order_release);
 }
 
 inline void GraphIO::add_input(std::string_view name, Port_id port_id, bool loop_last) {
