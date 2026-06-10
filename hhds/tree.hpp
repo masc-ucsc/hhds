@@ -35,6 +35,7 @@
 #include "hhds/attr.hpp"
 #include "hhds/attrs/name.hpp"
 #include "hhds/graph_sizing.hpp"
+#include "hhds/source_locator.hpp"
 #include "hhds/tree_print.hpp"
 #include "iassert.hpp"
 
@@ -1628,6 +1629,12 @@ private:
   std::vector<size_t>                  reference_counts;
   std::unordered_map<std::string, Tid> tree_name_to_tid_;
   std::unordered_map<std::string, Tid> deleted_name_to_tid_;
+  // Forest-level source-provenance table (hhds-srcloc): the loaded read-only
+  // base plus the save-time union destination. Working mints belong to the
+  // artifact wrapper that owns each tree (one Source_locator per single-writer
+  // unit, e.g. livehd's Lnast); the caller unions those into this member while
+  // exporting trees, before save(). Forest::save only writes it.
+  Source_locator                       srcmap_;
 
   // Per-slot state machine for the body in trees[idx]:
   //   Empty   -> no body; create_tree may CAS to Writing
@@ -1659,6 +1666,11 @@ private:
 
 public:
   [[nodiscard]] static std::shared_ptr<Forest> create() { return std::shared_ptr<Forest>(new Forest()); }
+
+  // Forest-level source-provenance table (hhds-srcloc): see the member comment.
+  // Mutate (union per-artifact locators in) only single-threaded, before save().
+  [[nodiscard]] Source_locator&       source_map() noexcept { return srcmap_; }
+  [[nodiscard]] const Source_locator& source_map() const noexcept { return srcmap_; }
 
   Forest(const Forest&)            = delete;
   Forest& operator=(const Forest&) = delete;

@@ -1,0 +1,691 @@
+// This file is distributed under the BSD 3-Clause License. See LICENSE for details.
+#include "hhds/source_locator.hpp"
+
+#include <gtest/gtest.h>
+#include <unistd.h>
+
+#include <array>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+#include "hhds/graph.hpp"
+#include "hhds/tree.hpp"
+
+namespace hhds {
+
+// Test-only seam (friend of Source_locator): narrowing the hash mask makes
+// collision/probe/merge-convergence paths reachable — genuine 64-bit FNV
+// collisions cannot be constructed in a test.
+class Source_locator_tester {
+public:
+  static void set_hash_mask(Source_locator& sl, uint64_t mask) { sl.hash_mask_ = mask; }
+};
+
+}  // namespace hhds
+
+namespace {
+
+namespace fs = std::filesystem;
+
+using hhds::Source_locator;
+using hhds::Source_locator_tester;
+using hhds::SourceId;
+using hhds::SourceId_invalid;
+
+using Kind = Source_locator::Anchor_kind;
+
+SourceId combine2(Source_locator& sl, SourceId a, SourceId b) {
+  const std::array<SourceId, 2> parents{a, b};
+  return sl.combine(parents);
+}
+
+fs::path fresh_dir(const char* name) {
+  // pid suffix: concurrent manual runs of this binary must not share dirs.
+  const auto dir = fs::temp_directory_path() / (std::string(name) + "_" + std::to_string(getpid()));
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  return dir;
+}
+
+TEST(SourceLocator, MintDeterminismAcrossLocators) {
+  Source_locator x;
+  Source_locator y;
+  const SourceId xa = x.mint("src/foo.prp", 10, 25, 3);
+  const SourceId ya = y.mint("src/foo.prp", 10, 25, 3);
+  EXPECT_EQ(xa, ya);
+  EXPECT_NE(xa, SourceId_invalid);
+
+  // Same span re-minted dedups to one entry.
+  EXPECT_EQ(x.mint("src/foo.prp", 10, 25, 3), xa);
+  EXPECT_EQ(x.size(), 1u);
+
+  // Distinct spans / kinds / paths get distinct ids.
+  EXPECT_NE(x.mint("src/foo.prp", 10, 26, 3), xa);
+  EXPECT_NE(x.mint("src/bar.prp", 10, 25, 3), xa);
+  EXPECT_NE(x.mint_line("src/foo.prp", 3), xa);
+}
+
+TEST(SourceLocator, ResolveRoundTrip) {
+  Source_locator sl;
+  const SourceId span = sl.mint("a.prp", 5, 9, 2);
+  const SourceId line = sl.mint_line("b.v", 42);
+
+  const auto sa = sl.resolve(span);
+  ASSERT_TRUE(sa.has_value());
+  EXPECT_EQ(sa->path, "a.prp");
+  EXPECT_EQ(sa->start_byte, 5u);
+  EXPECT_EQ(sa->end_byte, 9u);
+  EXPECT_EQ(sa->line, 2u);
+  EXPECT_EQ(sa->kind, Kind::Span);
+
+  const auto la = sl.resolve(line);
+  ASSERT_TRUE(la.has_value());
+  EXPECT_EQ(la->path, "b.v");
+  EXPECT_EQ(la->line, 42u);
+  EXPECT_EQ(la->kind, Kind::Line_only);
+
+  EXPECT_FALSE(sl.resolve(SourceId{0xdeadbeef}).has_value());
+  EXPECT_FALSE(sl.has(SourceId{0xdeadbeef}));
+}
+
+TEST(SourceLocator, CombineOrderSignificantAndDedup) {
+  Source_locator sl;
+  const SourceId a = sl.mint("a.prp", 0, 4, 1);
+  const SourceId b = sl.mint("a.prp", 8, 12, 2);
+
+  const SourceId ab  = combine2(sl, a, b);
+  const SourceId ab2 = combine2(sl, a, b);
+  const SourceId ba  = combine2(sl, b, a);
+  EXPECT_EQ(ab, ab2) << "re-minting the same ordered list must dedup";
+  EXPECT_NE(ab, ba) << "parents are order-significant (parents[0] is the primary)";
+  EXPECT_EQ(sl.size(), 4u);  // a, b, ab, ba
+
+  // Degenerate single-parent combine returns the parent itself.
+  const std::array<SourceId, 1> one{a};
+  EXPECT_EQ(sl.combine(one), a);
+
+  // resolve follows the primary (first) parent to a concrete anchor.
+  const auto pa = sl.resolve(ab);
+  ASSERT_TRUE(pa.has_value());
+  EXPECT_EQ(pa->start_byte, 0u);
+  const auto pb = sl.resolve(ba);
+  ASSERT_TRUE(pb.has_value());
+  EXPECT_EQ(pb->start_byte, 8u);
+
+  // resolve_all expands first-parent-first.
+  const auto all = sl.resolve_all(ab);
+  EXPECT_FALSE(all.truncated);
+  ASSERT_EQ(all.anchors.size(), 2u);
+  EXPECT_EQ(all.anchors[0].start_byte, 0u);
+  EXPECT_EQ(all.anchors[1].start_byte, 8u);
+}
+
+TEST(SourceLocator, ResolveAllDiamondAndTruncation) {
+  Source_locator sl;
+  const SourceId a  = sl.mint("a.prp", 0, 1, 1);
+  const SourceId b  = sl.mint("a.prp", 2, 3, 1);
+  const SourceId c  = sl.mint("a.prp", 4, 5, 1);
+  const SourceId d1 = combine2(sl, a, b);
+  const SourceId d2 = combine2(sl, a, c);
+  const SourceId e  = combine2(sl, d1, d2);
+
+  // Diamond: `a` is reachable twice but reported once.
+  const auto all = sl.resolve_all(e);
+  EXPECT_FALSE(all.truncated);
+  ASSERT_EQ(all.anchors.size(), 3u);
+  EXPECT_EQ(all.anchors[0].start_byte, 0u);
+  EXPECT_EQ(all.anchors[1].start_byte, 2u);
+  EXPECT_EQ(all.anchors[2].start_byte, 4u);
+
+  // Depth cap reports truncation instead of silently dropping anchors.
+  const auto capped = sl.resolve_all(e, 1);
+  EXPECT_TRUE(capped.truncated);
+  EXPECT_LT(capped.anchors.size(), 3u);
+}
+
+TEST(SourceLocator, LineColDerivation) {
+  Source_locator sl;
+  (void)sl.mint("a.prp", 0, 4, 1);
+  sl.set_file_line_offsets("a.prp", {0, 10, 25});
+
+  const auto lc0 = sl.to_line_col("a.prp", 0);
+  ASSERT_TRUE(lc0.has_value());
+  EXPECT_EQ(lc0->line, 1u);
+  EXPECT_EQ(lc0->col, 1u);
+
+  const auto lc9 = sl.to_line_col("a.prp", 9);
+  ASSERT_TRUE(lc9.has_value());
+  EXPECT_EQ(lc9->line, 1u);
+  EXPECT_EQ(lc9->col, 10u);
+
+  const auto lc10 = sl.to_line_col("a.prp", 10);
+  ASSERT_TRUE(lc10.has_value());
+  EXPECT_EQ(lc10->line, 2u);
+  EXPECT_EQ(lc10->col, 1u);
+
+  const auto lc30 = sl.to_line_col("a.prp", 30);
+  ASSERT_TRUE(lc30.has_value());
+  EXPECT_EQ(lc30->line, 3u);
+  EXPECT_EQ(lc30->col, 6u);
+
+  EXPECT_FALSE(sl.to_line_col("missing.prp", 0).has_value());
+}
+
+TEST(SourceLocator, BaseChaining) {
+  Source_locator base;
+  const SourceId in_base = base.mint("a.prp", 0, 4, 1);
+
+  Source_locator delta;
+  delta.set_base(&base);
+  EXPECT_TRUE(delta.has(in_base));
+  const auto a = delta.resolve(in_base);
+  ASSERT_TRUE(a.has_value());
+  EXPECT_EQ(a->path, "a.prp");
+
+  // Minting a span that already lives in the base returns the base id and
+  // leaves the delta empty.
+  EXPECT_EQ(delta.mint("a.prp", 0, 4, 1), in_base);
+  EXPECT_TRUE(delta.empty());
+
+  // A fresh span lands in the delta; the base is untouched.
+  const SourceId fresh = delta.mint("a.prp", 8, 12, 2);
+  EXPECT_TRUE(delta.has(fresh));
+  EXPECT_FALSE(base.has(fresh));
+
+  // Combines may reference base parents.
+  const SourceId c   = combine2(delta, in_base, fresh);
+  const auto     all = delta.resolve_all(c);
+  EXPECT_EQ(all.anchors.size(), 2u);
+}
+
+TEST(SourceLocator, ProbeRemapOnTrueCollision) {
+  Source_locator sl;
+  Source_locator_tester::set_hash_mask(sl, 1);  // every hash lands on id 1
+
+  const SourceId p1 = sl.mint("a.prp", 0, 4, 1);
+  const SourceId p2 = sl.mint("a.prp", 8, 12, 2);
+  EXPECT_EQ(p1, 1u);
+  EXPECT_EQ(p2, 2u) << "true collision probes to the next free id";
+
+  // Probed ids are stable for re-mints.
+  EXPECT_EQ(sl.mint("a.prp", 0, 4, 1), p1);
+  EXPECT_EQ(sl.mint("a.prp", 8, 12, 2), p2);
+  EXPECT_EQ(sl.size(), 2u);
+
+  const auto a2 = sl.resolve(p2);
+  ASSERT_TRUE(a2.has_value());
+  EXPECT_EQ(a2->start_byte, 8u);
+}
+
+TEST(SourceLocator, MergeDisjointAndOverlap) {
+  Source_locator x;
+  Source_locator y;
+  const SourceId shared_x = x.mint("a.prp", 0, 4, 1);
+  const SourceId only_x   = x.mint("a.prp", 8, 12, 2);
+  const SourceId shared_y = y.mint("a.prp", 0, 4, 1);
+  const SourceId only_y   = y.mint("b.prp", 1, 2, 1);
+  EXPECT_EQ(shared_x, shared_y);
+
+  const auto remap = x.merge(y);
+  EXPECT_TRUE(remap.empty()) << "hash-agreeing locators union without remap";
+  EXPECT_EQ(x.size(), 3u) << "shared span dedups by payload";
+  EXPECT_TRUE(x.has(only_x));
+  EXPECT_TRUE(x.has(only_y));
+}
+
+TEST(SourceLocator, MergeCrossOrderCollisionConverges) {
+  Source_locator x;
+  Source_locator y;
+  Source_locator_tester::set_hash_mask(x, 1);
+  Source_locator_tester::set_hash_mask(y, 1);
+
+  // Same two colliding payloads, probe-resolved in opposite orders.
+  const SourceId x1 = x.mint("a.prp", 0, 4, 1);   // id 1
+  const SourceId x2 = x.mint("a.prp", 8, 12, 2);  // id 2
+  const SourceId y1 = y.mint("a.prp", 8, 12, 2);  // id 1
+  const SourceId y2 = y.mint("a.prp", 0, 4, 1);   // id 2
+  EXPECT_EQ(x1, y1);
+  EXPECT_EQ(x2, y2);
+
+  const auto remap = x.merge(y);
+  EXPECT_EQ(x.size(), 2u) << "payload dedup must converge the cross-order collision";
+  ASSERT_EQ(remap.size(), 2u);
+  EXPECT_EQ(remap.at(y1), x2) << "y's id 1 (span 8-12) lands on x's id 2";
+  EXPECT_EQ(remap.at(y2), x1);
+}
+
+TEST(SourceLocator, MergeCombineCascade) {
+  Source_locator x;
+  Source_locator y;
+  Source_locator_tester::set_hash_mask(x, 0xF);
+  Source_locator_tester::set_hash_mask(y, 0xF);
+
+  // x holds the two anchors in mint order A,B; y minted them in the opposite
+  // order, then combined them. If A/B collide cross-order, the combine entry's
+  // parent list must be rewritten and the entry re-keyed on merge.
+  const SourceId xa = x.mint("a.prp", 0, 4, 1);
+  const SourceId xb = x.mint("a.prp", 8, 12, 2);
+
+  const SourceId yb = y.mint("a.prp", 8, 12, 2);
+  const SourceId ya = y.mint("a.prp", 0, 4, 1);
+  const SourceId yc = combine2(y, ya, yb);
+
+  const auto     remap = x.merge(y);
+  const SourceId xc    = remap.count(yc) != 0 ? remap.at(yc) : yc;
+  ASSERT_TRUE(x.has(xc));
+
+  const auto all = x.resolve_all(xc);
+  ASSERT_EQ(all.anchors.size(), 2u);
+  EXPECT_EQ(all.anchors[0].start_byte, 0u) << "primary parent stays the A anchor through the cascade";
+  EXPECT_EQ(all.anchors[1].start_byte, 8u);
+
+  // The cascaded combine must agree with a directly-minted combine(A,B).
+  EXPECT_EQ(combine2(x, xa, xb), xc);
+}
+
+TEST(SourceLocator, MergeFlattensBaseChain) {
+  Source_locator base;
+  const SourceId a = base.mint("a.prp", 0, 4, 1);
+
+  Source_locator delta;
+  delta.set_base(&base);
+  const SourceId b = delta.mint("a.prp", 8, 12, 2);
+  const SourceId c = combine2(delta, a, b);
+
+  // The union operand is the own-then-base view: base entries (and combine
+  // parents that live there) must land in the destination too.
+  Source_locator dst;
+  const auto     remap = dst.merge(delta);
+  EXPECT_TRUE(remap.empty());
+  EXPECT_TRUE(dst.has(a));
+  EXPECT_TRUE(dst.has(b));
+  const auto all = dst.resolve_all(c);
+  EXPECT_EQ(all.anchors.size(), 2u);
+}
+
+TEST(SourceLocatorPersist, SaveLoadRoundTrip) {
+  const auto dir = fresh_dir("hhds_srcloc_roundtrip");
+
+  Source_locator sl;
+  const SourceId a = sl.mint("src/a.prp", 0, 4, 1);
+  const SourceId b = sl.mint_line("src/b.v", 42);
+  const SourceId c = combine2(sl, a, b);
+  sl.set_file_content_hash("src/a.prp", 0x1234u);
+  sl.set_file_line_offsets("src/a.prp", {0, 10, 25});
+  sl.save(dir.string());
+
+  Source_locator loaded;
+  ASSERT_TRUE(loaded.load(dir.string()));
+  EXPECT_EQ(loaded.size(), sl.size());
+  const auto la = loaded.resolve(a);
+  ASSERT_TRUE(la.has_value());
+  EXPECT_EQ(la->path, "src/a.prp");
+  EXPECT_EQ(la->end_byte, 4u);
+  EXPECT_EQ(loaded.file_content_hash("src/a.prp"), 0x1234u);
+  const auto lc = loaded.to_line_col("src/a.prp", 10);
+  ASSERT_TRUE(lc.has_value());
+  EXPECT_EQ(lc->line, 2u);
+  const auto all = loaded.resolve_all(c);
+  ASSERT_EQ(all.anchors.size(), 2u);
+  EXPECT_EQ(all.anchors[0].path, "src/a.prp");
+
+  // Loaded state is payload-identical: merging it back is a pure no-op.
+  Source_locator again;
+  (void)again.merge(sl);
+  const auto remap = again.merge(loaded);
+  EXPECT_TRUE(remap.empty());
+  EXPECT_EQ(again.size(), sl.size());
+
+  // An empty locator's save removes the stale table.
+  Source_locator empty;
+  empty.save(dir.string());
+  EXPECT_FALSE(fs::exists(dir / "srcmap.txt"));
+
+  fs::remove_all(dir);
+}
+
+TEST(SourceLocatorPersist, PathsWithSpacesSurvive) {
+  const auto dir = fresh_dir("hhds_srcloc_spaces");
+
+  Source_locator sl;
+  const SourceId a = sl.mint("dir with space/a b.prp", 3, 7, 1);
+  sl.save(dir.string());
+
+  Source_locator loaded;
+  ASSERT_TRUE(loaded.load(dir.string()));
+  const auto la = loaded.resolve(a);
+  ASSERT_TRUE(la.has_value());
+  EXPECT_EQ(la->path, "dir with space/a b.prp");
+
+  fs::remove_all(dir);
+}
+
+TEST(SourceLocatorGraph, LibrarySaveLoadCarriesProvenance) {
+  const auto dir = fresh_dir("hhds_srcloc_graphlib");
+
+  SourceId span = SourceId_invalid;
+  {
+    hhds::GraphLibrary lib;
+    auto               gio = lib.create_io("alu");
+    gio->add_input("x", 0);
+    gio->add_output("y", 0);
+    {
+      auto g = gio->create_graph();
+      span   = g->source_locator().mint("src/alu.prp", 100, 140, 7);
+      auto n = g->create_node();
+      n.attr(hhds::attrs::srcid).set(span);
+    }
+    lib.save(dir.string());
+
+    // The delta folded into the library base at save; resolution still works
+    // through the graph (own-then-base chain).
+    auto g = lib.find_io("alu")->get_graph();
+    ASSERT_TRUE(g);
+    EXPECT_TRUE(g->source_locator().empty());
+    EXPECT_TRUE(g->source_locator().has(span));
+    EXPECT_TRUE(lib.source_map().has(span));
+  }
+
+  hhds::GraphLibrary lib2;
+  lib2.load(dir.string());
+  auto g2 = lib2.find_io("alu")->get_graph();
+  ASSERT_TRUE(g2);
+  bool found = false;
+  for (auto node : g2->fast_class()) {
+    if (!node.attr(hhds::attrs::srcid).has()) {
+      continue;
+    }
+    found             = true;
+    const SourceId id = node.attr(hhds::attrs::srcid).get();
+    EXPECT_EQ(id, span);
+    const auto a = g2->source_locator().resolve(id);
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->path, "src/alu.prp");
+    EXPECT_EQ(a->start_byte, 100u);
+    EXPECT_EQ(a->line, 7u);
+  }
+  EXPECT_TRUE(found) << "srcid attribute must ride the body save/load";
+
+  fs::remove_all(dir);
+}
+
+TEST(SourceLocatorGraph, LoadMergeUnionsSourceMaps) {
+  const auto base = fresh_dir("hhds_srcloc_merge");
+  const auto dirA = (base / "A").string();
+  const auto dirB = (base / "B").string();
+
+  SourceId shared_a = SourceId_invalid;
+  SourceId only_a   = SourceId_invalid;
+  SourceId only_b   = SourceId_invalid;
+  {
+    hhds::GraphLibrary a;
+    auto               gio = a.create_io("foo");
+    {
+      auto g   = gio->create_graph();
+      shared_a = g->source_locator().mint("src/common.prp", 0, 9, 1);
+      only_a   = g->source_locator().mint("src/foo.prp", 5, 9, 2);
+      auto n   = g->create_node();
+      n.attr(hhds::attrs::srcid).set(only_a);
+    }
+    a.save(dirA);
+  }
+  {
+    hhds::GraphLibrary b;
+    auto               gio = b.create_io("bar");
+    {
+      auto           g        = gio->create_graph();
+      const SourceId shared_b = g->source_locator().mint("src/common.prp", 0, 9, 1);
+      EXPECT_EQ(shared_b, shared_a) << "same span, same id, in a separately-built library";
+      only_b = g->source_locator().mint("src/bar.prp", 2, 6, 1);
+      auto n = g->create_node();
+      n.attr(hhds::attrs::srcid).set(only_b);
+    }
+    b.save(dirB);
+  }
+
+  hhds::GraphLibrary c;
+  c.load_merge(dirA);
+  c.load_merge(dirB);
+  EXPECT_TRUE(c.source_map().has(shared_a));
+  EXPECT_TRUE(c.source_map().has(only_a));
+  EXPECT_TRUE(c.source_map().has(only_b));
+
+  auto gfoo = c.find_io("foo")->get_graph();
+  auto gbar = c.find_io("bar")->get_graph();
+  ASSERT_TRUE(gfoo && gbar);
+  const auto afoo = gfoo->source_locator().resolve(only_a);
+  ASSERT_TRUE(afoo.has_value());
+  EXPECT_EQ(afoo->path, "src/foo.prp");
+  const auto abar = gbar->source_locator().resolve(only_b);
+  ASSERT_TRUE(abar.has_value());
+  EXPECT_EQ(abar->path, "src/bar.prp");
+
+  // The merged library re-saves with one union table.
+  const auto dirC = (base / "C").string();
+  c.save(dirC);
+  hhds::GraphLibrary d;
+  d.load(dirC);
+  EXPECT_TRUE(d.source_map().has(shared_a));
+  EXPECT_TRUE(d.source_map().has(only_a));
+  EXPECT_TRUE(d.source_map().has(only_b));
+
+  fs::remove_all(base);
+}
+
+TEST(SourceLocator, InitializerListCombine) {
+  Source_locator sl;
+  const SourceId a = sl.mint("a.prp", 0, 4, 1);
+  const SourceId b = sl.mint("a.prp", 8, 12, 2);
+  EXPECT_EQ(sl.combine({a, b}), combine2(sl, a, b));
+}
+
+TEST(SourceLocator, DeepCombineChainResolves) {
+  Source_locator sl;
+  const SourceId a    = sl.mint("a.prp", 0, 4, 1);
+  SourceId       head = a;
+  for (uint32_t i = 1; i <= 40; ++i) {
+    head = sl.combine({head, sl.mint("a.prp", i * 100, i * 100 + 4, i)});
+  }
+  // resolve() follows the primary parent without an arbitrary depth cap.
+  const auto pa = sl.resolve(head);
+  ASSERT_TRUE(pa.has_value());
+  EXPECT_EQ(pa->start_byte, 0u);
+  // resolve_all() honors its depth cap and reports the truncation...
+  const auto capped = sl.resolve_all(head);
+  EXPECT_TRUE(capped.truncated);
+  // ...and a sufficient cap recovers all 41 anchors.
+  const auto full = sl.resolve_all(head, 64);
+  EXPECT_FALSE(full.truncated);
+  EXPECT_EQ(full.anchors.size(), 41u);
+}
+
+TEST(SourceLocator, SpanLineDisagreementDoesNotSplitIdentity) {
+  // Span identity is (path, start, end); the stored line is derived data —
+  // first writer wins, the id never diverges.
+  Source_locator sl;
+  const SourceId a = sl.mint("a.prp", 0, 4, 1);
+  const SourceId b = sl.mint("a.prp", 0, 4, 9);
+  EXPECT_EQ(a, b);
+  EXPECT_EQ(sl.size(), 1u);
+  EXPECT_EQ(sl.resolve(a)->line, 1u);
+}
+
+TEST(SourceLocatorPersist, MalformedTablesAreRejectedWhole) {
+  const auto dir = fresh_dir("hhds_srcloc_corrupt");
+
+  const auto try_load = [&dir](std::string_view body) {
+    {
+      std::ofstream ofs(dir / "srcmap.txt");
+      ofs << body;
+    }
+    Source_locator sl;
+    const bool     ok = sl.load(dir.string());
+    if (!ok) {
+      EXPECT_TRUE(sl.empty()) << "a rejected table must leave the locator empty";
+    }
+    return ok;
+  };
+
+  EXPECT_FALSE(try_load("not_a_srcmap 1\n"));
+  EXPECT_FALSE(try_load("hhds_srcmap 1\nfile 0 a.prp\ncombine 5 0\n"));                      // empty combine
+  EXPECT_FALSE(try_load("hhds_srcmap 1\nfile 0 a.prp\ncombine 5 2 77 78\n"));                // dangling parents
+  EXPECT_FALSE(try_load("hhds_srcmap 1\nspan 9 99 0 0 1\n"));                                // undeclared file id
+  EXPECT_FALSE(try_load("hhds_srcmap 1\nfile 0 a.prp\nspan 7 0 0 4 1\nspan 7 0 8 12 2\n"));  // duplicate id
+  EXPECT_FALSE(try_load("hhds_srcmap 1\nfile x a.prp\n"));                                   // non-numeric fid
+  EXPECT_FALSE(try_load("hhds_srcmap 1\nfile 0 a.prp\nfilelines 0 3 0 10\n"));               // short offset list
+  EXPECT_FALSE(try_load("hhds_srcmap 1\nfile 0 a.prp\nfilelines 0 3 0 25 10\n"));            // non-ascending
+  EXPECT_FALSE(try_load("hhds_srcmap 1\nfile 0 a.prp\nwhatever 1 2 3\n"));                   // unknown record
+  EXPECT_TRUE(try_load("hhds_srcmap 1\nfile 0 a.prp\nspan 7 0 0 4 1\ncombine 9 2 7 7\n"));   // valid control
+
+  fs::remove_all(dir);
+}
+
+TEST(SourceLocatorGraph, SaveFoldRemapRewritesStampedAttrs) {
+  const auto dir = fresh_dir("hhds_srcloc_fold_remap");
+
+  // Narrow the graph delta's hash so its two mints probe-collide onto the tiny
+  // ids 1 and 2; the library-level fold re-mints them at canonical full-width
+  // ids, forcing a non-empty remap that must rewrite the stamped attr values.
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_io("alu");
+  {
+    auto g = gio->create_graph();
+    Source_locator_tester::set_hash_mask(g->source_locator(), 1);
+    const SourceId s1 = g->source_locator().mint("src/a.prp", 0, 4, 1);
+    const SourceId s2 = g->source_locator().mint("src/a.prp", 8, 12, 2);
+    ASSERT_EQ(s1, 1u);
+    ASSERT_EQ(s2, 2u);
+    auto n1 = g->create_node();
+    auto n2 = g->create_node();
+    n1.attr(hhds::attrs::srcid).set(s1);
+    n2.attr(hhds::attrs::srcid).set(s2);
+  }
+  lib.save(dir.string());
+
+  // The canonical ids the fold must have remapped onto.
+  Source_locator reference;
+  const SourceId c1 = reference.mint("src/a.prp", 0, 4, 1);
+  const SourceId c2 = reference.mint("src/a.prp", 8, 12, 2);
+
+  hhds::GraphLibrary lib2;
+  lib2.load(dir.string());
+  auto g2 = lib2.find_io("alu")->get_graph();
+  ASSERT_TRUE(g2);
+  std::vector<SourceId> stamped;
+  for (auto node : g2->fast_class()) {
+    if (node.attr(hhds::attrs::srcid).has()) {
+      stamped.push_back(node.attr(hhds::attrs::srcid).get());
+    }
+  }
+  ASSERT_EQ(stamped.size(), 2u);
+  std::sort(stamped.begin(), stamped.end());
+  std::vector<SourceId> expected{c1, c2};
+  std::sort(expected.begin(), expected.end());
+  EXPECT_EQ(stamped, expected) << "fold remap must rewrite the saved attr values to the canonical ids";
+  const auto a1 = g2->source_locator().resolve(c1);
+  ASSERT_TRUE(a1.has_value());
+  EXPECT_EQ(a1->start_byte, 0u);
+  const auto a2 = g2->source_locator().resolve(c2);
+  ASSERT_TRUE(a2.has_value());
+  EXPECT_EQ(a2->start_byte, 8u);
+
+  fs::remove_all(dir);
+}
+
+TEST(SourceLocatorGraph, LoadMergeRemapRewritesAbsorbedAttrs) {
+  const auto base = fresh_dir("hhds_srcloc_merge_remap");
+  const auto dirA = (base / "A").string();
+
+  SourceId orig = SourceId_invalid;
+  {
+    hhds::GraphLibrary a;
+    auto               gio = a.create_io("foo");
+    {
+      auto g = gio->create_graph();
+      orig   = g->source_locator().mint("src/foo.prp", 5, 9, 2);
+      auto n = g->create_node();
+      n.attr(hhds::attrs::srcid).set(orig);
+    }
+    a.save(dirA);
+  }
+
+  // A destination whose hash space is collapsed re-keys every incoming entry,
+  // so the absorbed body's attr values must be rewritten through the remap.
+  hhds::GraphLibrary c;
+  Source_locator_tester::set_hash_mask(c.source_map(), 1);
+  c.load_merge(dirA);
+
+  auto g = c.find_io("foo")->get_graph();
+  ASSERT_TRUE(g);
+  bool found = false;
+  for (auto node : g->fast_class()) {
+    if (!node.attr(hhds::attrs::srcid).has()) {
+      continue;
+    }
+    found             = true;
+    const SourceId id = node.attr(hhds::attrs::srcid).get();
+    EXPECT_NE(id, orig) << "collapsed destination hash space must have re-keyed the id";
+    const auto a = c.source_map().resolve(id);
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->path, "src/foo.prp");
+    EXPECT_EQ(a->start_byte, 5u);
+  }
+  EXPECT_TRUE(found);
+
+  fs::remove_all(base);
+}
+
+TEST(SourceLocatorForest, SaveLoadAndResaveCarriesProvenance) {
+  const auto dir1 = fresh_dir("hhds_srcloc_forest1");
+  const auto dir2 = fresh_dir("hhds_srcloc_forest2");
+
+  SourceId span = SourceId_invalid;
+  {
+    // The working locator belongs to the artifact wrapper (livehd's Lnast); the
+    // caller unions it into the forest before save. Modeled here with a
+    // standalone unit locator.
+    Source_locator unit;
+    span = unit.mint("src/top.prp", 12, 30, 2);
+
+    auto forest = hhds::Forest::create();
+    auto tio    = forest->create_io("top");
+    {
+      auto tree = tio->create_tree();
+      auto root = tree->add_root_node();
+      root.attr(hhds::attrs::srcid).set(span);
+      tree->commit();
+    }
+    const auto remap = forest->source_map().merge(unit);
+    EXPECT_TRUE(remap.empty());
+    forest->save(dir1.string());
+  }
+
+  auto loaded = hhds::Forest::create();
+  loaded->load(dir1.string());
+  EXPECT_TRUE(loaded->source_map().has(span));
+  {
+    auto tree = loaded->find_tree("top");
+    ASSERT_TRUE(tree);
+    const auto root = tree->get_root_node();
+    ASSERT_TRUE(root.attr(hhds::attrs::srcid).has());
+    EXPECT_EQ(root.attr(hhds::attrs::srcid).get(), span);
+    const auto a = loaded->source_map().resolve(root.attr(hhds::attrs::srcid).get());
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->path, "src/top.prp");
+    EXPECT_EQ(a->start_byte, 12u);
+  }
+
+  // load -> no-op -> save must not drop provenance (the table is rewritten in
+  // full, independent of the dirty-skip on clean tree bodies).
+  loaded->save(dir2.string());
+  auto reloaded = hhds::Forest::create();
+  reloaded->load(dir2.string());
+  EXPECT_TRUE(reloaded->source_map().has(span));
+
+  fs::remove_all(dir1);
+  fs::remove_all(dir2);
+}
+
+}  // namespace

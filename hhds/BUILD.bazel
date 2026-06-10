@@ -43,7 +43,9 @@ cc_library(
         "tree.hpp",
         "tree_print.hpp",
         "graph_sizing.hpp",
+        "source_locator.hpp",
         "attrs/name.hpp",
+        "attrs/srcid.hpp",
     ]),
     copts = COPTS,
     defines = select({
@@ -71,10 +73,12 @@ cc_library(
     hdrs = [
         "attr.hpp",
         "attrs/name.hpp",
+        "attrs/srcid.hpp",
         "graph.hpp",
         "graph_sizing.hpp",
         "hash_set3.hpp",
         "index.hpp",
+        "source_locator.hpp",
         "stl.h",
         "tree.hpp",
         "tree_print.hpp",
@@ -315,6 +319,17 @@ cc_test(
     name = "graph_concurrency",
     srcs = ["tests/graph_concurrency.cpp"],
     deps = [
+        ":graph",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "source_locator_test",
+    size = "small",
+    srcs = ["tests/source_locator_test.cpp"],
+    deps = [
+        ":core",
         ":graph",
         "@googletest//:gtest_main",
     ],

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cassert>
@@ -11,7 +12,6 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
-#include <algorithm>
 #include <shared_mutex>
 #include <span>
 #include <string>
@@ -23,8 +23,10 @@
 #include "absl/container/inlined_vector.h"
 #include "attr.hpp"
 #include "attrs/name.hpp"
+#include "attrs/srcid.hpp"
 #include "graph_sizing.hpp"
 #include "index.hpp"
+#include "source_locator.hpp"
 #include "tree.hpp"
 #include "unordered_dense.hpp"
 
@@ -516,6 +518,13 @@ public:
   [[nodiscard]] std::string_view         get_name() const noexcept { return name_; }
   [[nodiscard]] std::shared_ptr<GraphIO> get_io() const { return graphio_owner_.lock(); }
 
+  // Per-graph source-provenance table (hhds-srcloc). Single-writer like the
+  // body itself; resolution chains to the owning library's base table. The
+  // library-level union is built at GraphLibrary::save()/load_merge() time, at
+  // which point this delta is folded in and cleared.
+  [[nodiscard]] Source_locator&       source_locator() noexcept { return srcloc_; }
+  [[nodiscard]] const Source_locator& source_locator() const noexcept { return srcloc_; }
+
   // Publish a writable graph (create_graph or find_graph_rw) ahead of the
   // writable handle going out of scope. Transitions the owning library slot
   // from Writing -> Public so that find_graph(name) starts returning a
@@ -731,6 +740,11 @@ private:
   // single-threaded — only the writer has a writable handle.
   bool                                           frozen_   = false;
   std::string                                    name_;
+  // Source-provenance delta (hhds-srcloc). Provenance is body content, so it
+  // is cleared with the attr stores (clear()/clear_graph()/
+  // invalidate_from_library()); the base pointer to the owning library's
+  // srcmap_ (set in bind_library) survives everything but detach.
+  Source_locator                                 srcloc_;
 
   friend class Node_class;
   friend class Pin_class;
@@ -1639,6 +1653,17 @@ public:
     return out;
   }
 
+  // Library-level source-provenance base (hhds-srcloc): the loaded srcmap.txt
+  // table plus the save-time union of the per-graph locators. Graphs chain to
+  // it for resolution; it is only mutated under the EXCLUSIVE registry lock by
+  // load(), load_merge() and save() (whose delta-fold is why the member is
+  // mutable, mirroring dirty_). Per-graph srcid resolution chains to it
+  // lock-free, so resolution must not run concurrently with those three.
+  [[nodiscard]] const Source_locator& source_map() const noexcept { return srcmap_; }
+  // Non-const access is for single-threaded setup/tests only — never while
+  // other threads hold graphs from this library.
+  [[nodiscard]] Source_locator&       source_map() noexcept { return srcmap_; }
+
   // Persistence — saves all declarations (text) and bodies (binary).
   // db_path is the root directory (e.g., "my_db/").
   void save(const std::string& db_path) const;
@@ -1880,7 +1905,7 @@ private:
   // Graph bodies remain single-threaded per pointer; this lock protects only
   // the slot vectors and name maps so concurrent find_io / find_graph callers
   // from different threads can proceed in parallel.
-  mutable std::shared_mutex                      registry_mu_;
+  mutable std::shared_mutex                          registry_mu_;
   // gid-keyed maps (Task 1m / hhds gid refactor): gids are a deterministic hash
   // of the graph name (see pick_gid_for_name_unlocked) rather than a positional
   // counter, so two libraries assign the SAME gid to the SAME name — making a
@@ -1891,9 +1916,12 @@ private:
   absl::flat_hash_map<Gid, std::shared_ptr<Graph>>   graphs_;
   ankerl::unordered_dense::map<std::string, Gid>     graph_name_to_id_;
   ankerl::unordered_dense::map<std::string, Gid>     deleted_name_to_id_;
+  // Source-provenance base (hhds-srcloc): see source_map(). mutable because
+  // save() is const yet folds the per-graph deltas in (precedent: dirty_).
+  mutable Source_locator                             srcmap_;
   // count of live graphs
-  Gid                                            live_count_     = 0;
-  mutable std::atomic<uint64_t>                  mutation_epoch_ = 1;
+  Gid                                                live_count_     = 0;
+  mutable std::atomic<uint64_t>                      mutation_epoch_ = 1;
 
   // Per-slot state machine for the body in graphs_[idx]:
   //   Empty   -> no body; create_graph may CAS to Writing

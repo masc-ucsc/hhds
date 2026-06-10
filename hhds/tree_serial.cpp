@@ -449,6 +449,9 @@ void Forest::save(const std::string& db_path) const {
     const auto dir = fs::path(db_path) / ("tree_" + std::to_string(i));
     trees[i]->save_body(dir.string());
   }
+
+  // --- source-provenance table (always rewritten in full, like forest.txt) ---
+  srcmap_.save(db_path);
 }
 
 void Forest::load(const std::string& db_path) {
@@ -462,6 +465,9 @@ void Forest::load(const std::string& db_path) {
   reference_counts.clear();
   tree_name_to_tid_.clear();
   deleted_name_to_tid_.clear();
+
+  // Source-provenance base: state = what's on disk (missing file -> empty).
+  (void)srcmap_.load(db_path);
 
   // --- Parse forest.txt ---
   {

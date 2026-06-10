@@ -77,6 +77,13 @@ bazel build --config=ubsan //hhds:all      # Undefined behavior sanitizer
 
 **Traversal consistency:** Both tree and graph provide hierarchical and non-hierarchical traversals with a consistent API, since compilers frequently translate between tree and graph representations.
 
+**Source_locator (`source_locator.hpp`, header-only)** — Compact source-provenance table: a 64-bit `SourceId` → anchor (file + byte span + line). IR nodes/pins carry one `uint64` attribute (`attrs/srcid.hpp`) instead of a filename string + span struct:
+- Ids are FNV-1a hashes of (path, start_byte, end_byte) — same span, same id in every locator/run/artifact; true collisions linear-probe to a nearby id (same scheme as name-hash gids)
+- `combine(parents)` mints an id meaning "all of these anchors" (caller-ordered; `parents[0]` is the primary a diagnostic renders); `resolve_all` expands the combine DAG with a visited set + depth cap
+- One instance per single-writer artifact: a member on `Graph` (chains to the library base via `set_base`), and per artifact wrapper on the tree side (e.g. livehd's `Lnast`); `Forest`/`GraphLibrary` hold the loaded read-only base
+- `merge()` unions payload-first (cross-order collision convergence), translates combine parents through the remap, and returns old→new for the caller to apply to `attrs::srcid` values; `GraphLibrary::save`/`load_merge` do this natively, `Forest::save` writes the table the caller unioned in
+- Persists as `srcmap.txt` next to `library.txt` / `forest.txt`; missing file = empty (older dirs load fine)
+
 ### ID Types
 
 - `Tree_pos` (int64_t) — tree node positions

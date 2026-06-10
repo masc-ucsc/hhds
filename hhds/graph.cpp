@@ -615,6 +615,8 @@ void Graph::invalidate_from_library() noexcept {
   discard_attr_stores();
   deleted_   = true;
   owner_lib_ = nullptr;
+  srcloc_.clear();
+  srcloc_.set_base(nullptr);
   node_table.clear();
   pin_table.clear();
   forward_pass2_cache_.clear();
@@ -636,6 +638,7 @@ void Graph::clear_graph() {
   assert_accessible();
   release_storage();
   discard_attr_stores();
+  srcloc_.clear();  // provenance is body content: dropped with the attrs (base kept)
   node_table.clear();
   pin_table.clear();
   input_pins_.clear();
@@ -662,6 +665,7 @@ void Graph::clear() {
   overflow_sets_.clear();
   overflow_free_.clear();
   discard_attr_stores();
+  srcloc_.clear();  // provenance is body content: dropped with the attrs (base kept)
 
   for (auto& pin : pin_table) {
     pin = PinEntry();
@@ -716,6 +720,10 @@ void Graph::bind_library(const GraphLibrary* owner, Gid self_gid) noexcept {
   owner_lib_ = owner;
   self_gid_  = self_gid;
   deleted_   = false;
+  // Resolution chains per-graph source-provenance mints to the library base
+  // (mutable member: stable address for the library's lifetime, which outlives
+  // every attached graph).
+  srcloc_.set_base(owner != nullptr ? &owner->srcmap_ : nullptr);
 }
 
 // Shared traversal constant: where iteration over user nodes begins in
@@ -3555,7 +3563,9 @@ void GraphLibrary::save(const std::string& db_path) const {
   namespace fs = std::filesystem;
   fs::create_directories(db_path);
 
-  std::shared_lock lock(registry_mu_);
+  // Exclusive: the source-map fold below mutates srcmap_ and the per-graph
+  // locators/attr stores (load/load_merge already take the unique lock).
+  std::unique_lock lock(registry_mu_);
 
   // Deterministic gid order (the map iterates in arbitrary order).
   std::vector<Gid> io_gids;
@@ -3566,6 +3576,38 @@ void GraphLibrary::save(const std::string& db_path) const {
     }
   }
   std::sort(io_gids.begin(), io_gids.end());
+
+  // --- source-map union (library base ∪ per-graph deltas) ---
+  // Folded in before the body pass so a collision remap can rewrite a graph's
+  // srcid attribute values (and re-dirty it) ahead of save_body. Only fresh
+  // delta entries can remap; ids already in the base (= previously saved, the
+  // ones clean bodies reference) never move.
+  for (const Gid gid : io_gids) {
+    const auto git = graphs_.find(gid);
+    if (git == graphs_.end() || !git->second || git->second->deleted_) {
+      continue;
+    }
+    Graph& g = *git->second;
+    if (g.srcloc_.empty()) {
+      continue;
+    }
+    const auto remap = srcmap_.merge(g.srcloc_);
+    if (!remap.empty() && g.has_attr(attrs::srcid)) {
+      auto& ids     = g.attr_store(attrs::srcid);
+      bool  changed = false;
+      for (auto& [key, value] : ids) {
+        if (const auto rit = remap.find(value); rit != remap.end()) {
+          value   = rit->second;
+          changed = true;
+        }
+      }
+      if (changed) {
+        g.dirty_ = true;  // body must re-save with the rewritten ids
+      }
+    }
+    g.srcloc_.clear();  // entries now live in the base; resolution chains to it
+  }
+  srcmap_.save(db_path);
 
   // --- library.txt (declarations, text format) ---
   {
@@ -3643,6 +3685,9 @@ void GraphLibrary::load(const std::string& db_path) {
   live_count_ = 0;
   mutation_epoch_.store(1, std::memory_order_release);
   // (gid-keyed maps need no slot-0 reservation)
+
+  // Source-provenance base: state = what's on disk (missing file -> empty).
+  (void)srcmap_.load(db_path);
 
   // --- Parse library.txt ---
   {
@@ -3790,13 +3835,22 @@ void GraphLibrary::load_merge(const std::string& db_path) {
     }
   }
 
+  // --- Merge the incoming library's source map (payload dedup + id remap) ---
+  // Done before the bodies load so the remap can rewrite each absorbed body's
+  // srcid attribute values below. Matching spans share ids by construction
+  // (hash-minted), so the remap is empty unless a true hash collision was
+  // probe-resolved differently by the two libraries.
+  Source_locator incoming_srcmap;
+  (void)incoming_srcmap.load(db_path);
+  const auto src_remap = srcmap_.merge(incoming_srcmap);
+
   // --- Assign each incoming graph a gid in THIS library + build the remap ---
-  absl::flat_hash_map<Gid, Gid>     remap;           // src_gid -> dst_gid in this
-  std::vector<std::pair<Gid, Gid>>  bodies_to_load;  // (src_gid, dst_gid)
+  absl::flat_hash_map<Gid, Gid>    remap;           // src_gid -> dst_gid in this
+  std::vector<std::pair<Gid, Gid>> bodies_to_load;  // (src_gid, dst_gid)
   for (const auto& e : entries) {
     if (auto existing = find_io_unlocked(e.name)) {
       // Dedup by name. Load the incoming body only if ours is an IO-only stub.
-      const Gid dst = existing->get_gid();
+      const Gid dst    = existing->get_gid();
       remap[e.src_gid] = dst;
       if (!has_graph_unlocked(dst)) {
         bodies_to_load.emplace_back(e.src_gid, dst);
@@ -3844,6 +3898,16 @@ void GraphLibrary::load_merge(const std::string& db_path) {
       }
       if (const auto it = remap.find(old); it != remap.end() && it->second != old) {
         graph->set_subnode(node, it->second);
+      }
+    }
+    // Rewrite srcid attribute values through the source-map remap (identity →
+    // no-op, the common all-hash-agree case). The body is already marked dirty.
+    if (!src_remap.empty() && graph->has_attr(attrs::srcid)) {
+      auto& ids = graph->attr_store(attrs::srcid);
+      for (auto& [key, value] : ids) {
+        if (const auto it = src_remap.find(value); it != src_remap.end()) {
+          value = it->second;
+        }
       }
     }
   }
