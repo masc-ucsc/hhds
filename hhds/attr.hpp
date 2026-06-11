@@ -12,6 +12,14 @@
 #include <typeindex>
 #include <unordered_map>
 #include <utility>
+#include <vector>
+
+#ifdef HHDS_ATTR_PROFILE
+#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <mutex>
+#endif
 
 #include "hhds/graph_sizing.hpp"
 
@@ -26,6 +34,49 @@ concept Attribute = requires {
   typename Tag::storage;
   requires std::is_same_v<typename Tag::storage, flat_storage> || std::is_same_v<typename Tag::storage, hier_storage>;
 };
+
+// Optional per-tag layout policy (`using layout = hhds::dense_layout;`).
+// Default is sparse (hash map). dense_layout backs the store with a plain
+// vector indexed by the flat key; it is only valid for flat_storage tags.
+//
+// dense_layout contract: value_type{} is reserved as the not-present
+// sentinel (hhds ids reserve 0 as invalid), so a dense tag must never store
+// value_type{} — set() asserts on it; use del() instead. Iteration over a
+// dense store yields proxy entries: bind with `auto&&` or `const auto&`,
+// never `auto&`.
+//
+// Build with -DHHDS_ATTR_PROFILE (bazel --config=attr_profile) to dump
+// per-tag utilization at exit and get a dense-vs-sparse recommendation.
+struct sparse_layout {};
+struct dense_layout {};
+
+template <class Tag>
+struct attr_layout {
+  using type = sparse_layout;
+};
+
+template <class Tag>
+  requires requires { typename Tag::layout; }
+struct attr_layout<Tag> {
+  using type = typename Tag::layout;
+};
+
+template <class Tag>
+using attr_layout_t = typename attr_layout<Tag>::type;
+
+template <Attribute Tag>
+[[nodiscard]] constexpr bool attr_is_dense() noexcept {
+  using Layout = attr_layout_t<Tag>;
+  static_assert(std::is_same_v<Layout, sparse_layout> || std::is_same_v<Layout, dense_layout>,
+                "attribute Tag::layout must be hhds::sparse_layout or hhds::dense_layout");
+  if constexpr (std::is_same_v<Layout, dense_layout>) {
+    static_assert(std::is_same_v<typename Tag::storage, flat_storage>,
+                  "dense_layout requires flat_storage; hier_storage attributes must stay sparse");
+    return true;
+  } else {
+    return false;
+  }
+}
 
 template <Attribute Tag>
 using attr_result_t
@@ -152,6 +203,189 @@ T read_value(std::istream& is) {
   }
 }
 
+// Vector-backed store for dense_layout attributes. value_type{} marks an
+// absent entry (see the dense_layout contract above), so presence needs no
+// extra bitmap. Exposes the subset of the unordered_map surface that
+// Attr_store_impl and AttrRef use; iterators yield proxy entries by value.
+template <typename T>
+class Dense_attr_map {
+public:
+  using key_type    = Attr_key;
+  using mapped_type = T;
+
+  template <bool IsConst>
+  class basic_iterator {
+  public:
+    using vector_type    = std::conditional_t<IsConst, const std::vector<T>, std::vector<T>>;
+    using reference_type = std::conditional_t<IsConst, const T&, T&>;
+
+    struct entry {
+      Attr_key       first;
+      reference_type second;
+    };
+
+    struct arrow_proxy {
+      entry  value;
+      entry* operator->() noexcept { return &value; }
+    };
+
+    basic_iterator() = default;
+    basic_iterator(vector_type* data, size_t pos) : data_(data), pos_(pos) { skip_absent(); }
+
+    [[nodiscard]] entry       operator*() const noexcept { return entry{static_cast<Attr_key>(pos_), (*data_)[pos_]}; }
+    [[nodiscard]] arrow_proxy operator->() const noexcept { return arrow_proxy{**this}; }
+
+    basic_iterator& operator++() noexcept {
+      ++pos_;
+      skip_absent();
+      return *this;
+    }
+
+    [[nodiscard]] bool operator==(const basic_iterator& other) const noexcept { return pos_ == other.pos_; }
+
+  private:
+    void skip_absent() noexcept {
+      while (data_ != nullptr && pos_ < data_->size() && (*data_)[pos_] == T{}) {
+        ++pos_;
+      }
+    }
+
+    vector_type* data_ = nullptr;
+    size_t       pos_  = 0;
+  };
+
+  using iterator       = basic_iterator<false>;
+  using const_iterator = basic_iterator<true>;
+
+  [[nodiscard]] iterator       begin() noexcept { return iterator(&data_, 0); }
+  [[nodiscard]] iterator       end() noexcept { return iterator(&data_, data_.size()); }
+  [[nodiscard]] const_iterator begin() const noexcept { return const_iterator(&data_, 0); }
+  [[nodiscard]] const_iterator end() const noexcept { return const_iterator(&data_, data_.size()); }
+
+  [[nodiscard]] iterator find(Attr_key key) noexcept {
+    if (key < data_.size() && !(data_[key] == T{})) {
+      return iterator(&data_, static_cast<size_t>(key));
+    }
+    return end();
+  }
+
+  [[nodiscard]] const_iterator find(Attr_key key) const noexcept {
+    if (key < data_.size() && !(data_[key] == T{})) {
+      return const_iterator(&data_, static_cast<size_t>(key));
+    }
+    return end();
+  }
+
+  [[nodiscard]] T& operator[](Attr_key key) {
+    if (key >= data_.size()) {
+      data_.resize(static_cast<size_t>(key) + 1);
+    }
+    return data_[static_cast<size_t>(key)];
+  }
+
+  template <typename V>
+  void emplace(Attr_key key, V&& value) {
+    (*this)[key] = std::forward<V>(value);
+  }
+
+  size_t erase(Attr_key key) {
+    if (key < data_.size() && !(data_[key] == T{})) {
+      data_[static_cast<size_t>(key)] = T{};
+      return 1;
+    }
+    return 0;
+  }
+
+  void clear() noexcept { data_.clear(); }
+
+  [[nodiscard]] size_t size() const noexcept {
+    size_t count = 0;
+    for (const auto& value : data_) {
+      if (!(value == T{})) {
+        ++count;
+      }
+    }
+    return count;
+  }
+
+  [[nodiscard]] bool empty() const noexcept {
+    for (const auto& value : data_) {
+      if (!(value == T{})) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+private:
+  std::vector<T> data_;
+};
+
+#ifdef HHDS_ATTR_PROFILE
+// Aggregates per-tag occupancy from flat Attr_store_impl destructors and
+// dumps a dense-vs-sparse recommendation at exit. Immortal (never deleted):
+// records arrive during static destruction, after atexit handlers started.
+// Stores still alive at process exit are not counted.
+class Attr_profile {
+public:
+  static Attr_profile& instance() {
+    static auto* profile = new Attr_profile();
+    return *profile;
+  }
+
+  void record(std::string_view persistent_id, bool is_dense, uint64_t value_bytes, uint64_t entries, uint64_t key_span) {
+    const std::lock_guard<std::mutex> guard(mutex_);
+    auto&                             stat  = stats_[std::string(persistent_id)];
+    stat.is_dense                           = is_dense;
+    stat.value_bytes                        = value_bytes;
+    stat.stores                            += 1;
+    stat.entries                           += entries;
+    stat.key_span                          += key_span;
+  }
+
+private:
+  struct Stat {
+    bool     is_dense    = false;
+    uint64_t value_bytes = 0;
+    uint64_t stores      = 0;
+    uint64_t entries     = 0;
+    uint64_t key_span    = 0;
+  };
+
+  Attr_profile() {
+    std::atexit([]() { instance().dump(); });
+  }
+
+  void dump() const {
+    const std::lock_guard<std::mutex> guard(mutex_);
+    if (stats_.empty()) {
+      return;
+    }
+    std::fprintf(stderr, "\nhhds attr profile (flat stores, aggregated at store destruction):\n");
+    for (const auto& [id, stat] : stats_) {
+      // Dense pays value_bytes per key slot; sparse pays key+value plus hash
+      // node overhead per present entry.
+      const uint64_t dense_bytes  = stat.key_span * stat.value_bytes;
+      const uint64_t sparse_bytes = stat.entries * (sizeof(Attr_key) + stat.value_bytes + 16);
+      const double   utilization
+          = stat.key_span == 0 ? 0.0 : 100.0 * static_cast<double>(stat.entries) / static_cast<double>(stat.key_span);
+      std::fprintf(stderr,
+                   "  %-44s layout=%-6s stores=%llu entries=%llu key_span=%llu util=%5.1f%% recommend=%s\n",
+                   id.c_str(),
+                   stat.is_dense ? "dense" : "sparse",
+                   static_cast<unsigned long long>(stat.stores),
+                   static_cast<unsigned long long>(stat.entries),
+                   static_cast<unsigned long long>(stat.key_span),
+                   utilization,
+                   dense_bytes <= sparse_bytes ? "dense" : "sparse");
+    }
+  }
+
+  mutable std::mutex          mutex_;
+  std::map<std::string, Stat> stats_;
+};
+#endif
+
 class Attr_store_base {
 public:
   virtual ~Attr_store_base() = default;
@@ -169,9 +403,10 @@ public:
 };
 
 template <Attribute Tag>
-using attr_map_t = std::conditional_t<std::is_same_v<typename Tag::storage, flat_storage>,
-                                      std::unordered_map<Attr_key, typename Tag::value_type>,
-                                      std::unordered_map<Hier_attr_key, typename Tag::value_type, Hier_attr_key_hash>>;
+using attr_map_t = std::conditional_t<
+    attr_is_dense<Tag>(), Dense_attr_map<typename Tag::value_type>,
+    std::conditional_t<std::is_same_v<typename Tag::storage, flat_storage>, std::unordered_map<Attr_key, typename Tag::value_type>,
+                       std::unordered_map<Hier_attr_key, typename Tag::value_type, Hier_attr_key_hash>>>;
 
 template <Attribute Tag>
 class Attr_store_impl final : public Attr_store_base {
@@ -180,6 +415,24 @@ public:
   using value_type = typename Tag::value_type;
 
   explicit Attr_store_impl(std::string persistent_id) : persistent_id_(std::move(persistent_id)) {}
+
+#ifdef HHDS_ATTR_PROFILE
+  ~Attr_store_impl() override {
+    if constexpr (std::is_same_v<typename Tag::storage, flat_storage>) {
+      uint64_t entries  = 0;
+      uint64_t key_span = 0;
+      for (const auto& [key, value] : map_) {
+        ++entries;
+        if (static_cast<uint64_t>(key) + 1 > key_span) {
+          key_span = static_cast<uint64_t>(key) + 1;
+        }
+      }
+      if (entries != 0) {
+        Attr_profile::instance().record(persistent_id_, attr_is_dense<Tag>(), sizeof(value_type), entries, key_span);
+      }
+    }
+  }
+#endif
 
   [[nodiscard]] Attr_storage_kind storage_kind() const noexcept override { return attr_storage_kind<Tag>(); }
   [[nodiscard]] std::type_index   type_key() const noexcept override { return std::type_index(typeid(Tag)); }
@@ -484,6 +737,9 @@ inline attr_result_t<Tag> AttrRef<Tag>::get() const {
 
 template <Attribute Tag>
 inline void AttrRef<Tag>::set(const value_type& value) {
+  if constexpr (attr_is_dense<Tag>()) {
+    assert(!(value == value_type{}) && "AttrRef::set: dense_layout reserves value_type{} as not-present; use del()");
+  }
   auto& map  = host_->attr_store(Tag{});
   map[key()] = value;
   host_->attr_note_modified();
@@ -491,6 +747,9 @@ inline void AttrRef<Tag>::set(const value_type& value) {
 
 template <Attribute Tag>
 inline void AttrRef<Tag>::set(value_type&& value) {
+  if constexpr (attr_is_dense<Tag>()) {
+    assert(!(value == value_type{}) && "AttrRef::set: dense_layout reserves value_type{} as not-present; use del()");
+  }
   auto& map  = host_->attr_store(Tag{});
   map[key()] = std::move(value);
   host_->attr_note_modified();

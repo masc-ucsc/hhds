@@ -30,6 +30,10 @@ build:debug --strip=never
 
 # test --cache_test_results=no
 
+# Attribute utilization profiling: dumps per-tag dense-vs-sparse stats at exit
+build:attr_profile --copt=-DHHDS_ATTR_PROFILE
+build:attr_profile --cxxopt=-DHHDS_ATTR_PROFILE
+
 # Use Clang
 build:clang --action_env=CC=clang
 build:clang --action_env=CXX=clang++

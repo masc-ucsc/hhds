@@ -25,7 +25,22 @@ struct loc_t {
 };
 inline constexpr loc_t loc{};
 
+struct dbits_t {
+  using value_type = int;
+  using storage    = hhds::flat_storage;
+  using layout     = hhds::dense_layout;
+};
+inline constexpr dbits_t dbits{};
+
 }  // namespace test_attrs
+
+// Layout policy resolution: sparse by default, dense only when opted in.
+// dense_layout + hier_storage is a compile error (static_assert in attr_is_dense).
+static_assert(std::is_same_v<hhds::attr_layout_t<test_attrs::bits_t>, hhds::sparse_layout>);
+static_assert(std::is_same_v<hhds::attr_layout_t<test_attrs::dbits_t>, hhds::dense_layout>);
+static_assert(!hhds::attr_is_dense<test_attrs::bits_t>());
+static_assert(!hhds::attr_is_dense<test_attrs::hbits_t>());
+static_assert(hhds::attr_is_dense<test_attrs::dbits_t>());
 
 // ------------------------------------------------------------------
 // Compile-time size checks — these enforce the public storage layout
@@ -289,6 +304,79 @@ TEST(GraphAttrs, AttrClearKeepsRegistrationAndClearDropsIt) {
   EXPECT_FALSE(graph->has_attr(test_attrs::bits));
 }
 
+TEST(GraphAttrs, DenseLayoutGetSetHasDelete) {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto node = graph->create_node();
+  auto pin  = node.create_driver_pin(1);
+
+  EXPECT_FALSE(node.attr(test_attrs::dbits).has());
+
+  node.attr(test_attrs::dbits).set(32);
+  pin.attr(test_attrs::dbits).set(7);
+
+  EXPECT_TRUE(graph->has_attr(test_attrs::dbits));
+  EXPECT_TRUE(node.attr(test_attrs::dbits).has());
+  EXPECT_TRUE(pin.attr(test_attrs::dbits).has());
+  EXPECT_EQ(node.attr(test_attrs::dbits).get(), 32);
+  EXPECT_EQ(pin.attr(test_attrs::dbits).get(), 7);
+
+  node.attr(test_attrs::dbits).del();
+  EXPECT_FALSE(node.attr(test_attrs::dbits).has());
+  EXPECT_TRUE(pin.attr(test_attrs::dbits).has());
+
+  node.attr(test_attrs::dbits).set(64);
+  EXPECT_EQ(node.attr(test_attrs::dbits).get(), 64);
+}
+
+TEST(GraphAttrs, DenseLayoutIterationSizeAndClear) {
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+
+  n1.attr(test_attrs::dbits).set(1);
+  n2.attr(test_attrs::dbits).set(2);
+  n3.attr(test_attrs::dbits).set(3);
+
+  auto& store = graph->attr_store(test_attrs::dbits);
+  EXPECT_EQ(store.size(), 3u);
+
+  // Iteration yields proxy entries (bind with auto&& / const auto&, not
+  // auto&); absent slots between keys are skipped.
+  int sum = 0;
+  for (const auto& [key, value] : store) {
+    (void)key;
+    sum += value;
+  }
+  EXPECT_EQ(sum, 6);
+
+  // Writes through the proxy reach the store (srcid-remap pattern).
+  for (auto&& [key, value] : store) {
+    (void)key;
+    value += 10;
+  }
+  EXPECT_EQ(n1.attr(test_attrs::dbits).get(), 11);
+  EXPECT_EQ(n2.attr(test_attrs::dbits).get(), 12);
+  EXPECT_EQ(n3.attr(test_attrs::dbits).get(), 13);
+
+  n2.attr(test_attrs::dbits).del();
+  EXPECT_EQ(store.size(), 2u);
+
+  n1.del_node();
+  EXPECT_EQ(store.size(), 1u);
+
+  graph->attr_clear(test_attrs::dbits);
+  EXPECT_TRUE(graph->has_attr(test_attrs::dbits));
+  EXPECT_FALSE(n3.attr(test_attrs::dbits).has());
+  EXPECT_EQ(store.size(), 0u);
+}
+
 TEST(GraphAttrs, HierAttrUsesHierarchyContext) {
   hhds::GraphLibrary lib;
 
@@ -530,6 +618,45 @@ TEST(GraphPersistence, SaveLoadRoundTrip) {
   EXPECT_EQ(loaded_n1.attr(hhds::attrs::name).get(), "adder");
   EXPECT_EQ(loaded_n2.attr(test_attrs::bits).get(), 32);
   EXPECT_EQ(loaded_n3.get_driver_pin(1).attr(test_attrs::bits).get(), 7);
+
+  fs::remove_all(test_dir);
+}
+
+TEST(GraphPersistence, DenseAttrRoundTrip) {
+  namespace fs               = std::filesystem;
+  const std::string test_dir = "/tmp/hhds_test_graph_dense_attr";
+  fs::remove_all(test_dir);
+
+  hhds::register_attr_tag<test_attrs::dbits_t>("test_attrs::dbits");
+
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  n1.attr(test_attrs::dbits).set(32);
+  n2.attr(test_attrs::dbits).set(7);
+  n2.create_driver_pin(1).attr(test_attrs::dbits).set(9);
+
+  auto n1_nid = n1.get_debug_nid();
+  auto n2_nid = n2.get_debug_nid();
+
+  lib.save(test_dir);
+
+  hhds::GraphLibrary lib2;
+  lib2.load(test_dir);
+  auto gio2 = lib2.find_io("top");
+  ASSERT_NE(gio2, nullptr);
+  auto graph2 = gio2->get_graph();
+  ASSERT_NE(graph2, nullptr);
+
+  auto loaded_n1 = hhds::Node_class(graph2.get(), n1_nid);
+  auto loaded_n2 = hhds::Node_class(graph2.get(), n2_nid);
+  EXPECT_EQ(loaded_n1.attr(test_attrs::dbits).get(), 32);
+  EXPECT_EQ(loaded_n2.attr(test_attrs::dbits).get(), 7);
+  EXPECT_EQ(loaded_n2.get_driver_pin(1).attr(test_attrs::dbits).get(), 9);
+  EXPECT_EQ(graph2->attr_store(test_attrs::dbits).size(), 3u);
 
   fs::remove_all(test_dir);
 }

@@ -45,6 +45,7 @@ cc_library(
         "graph_sizing.hpp",
         "rapidhash.h",
         "source_locator.hpp",
+        "sourcemap_emit.hpp",
         "attrs/name.hpp",
         "attrs/srcid.hpp",
     ]),
@@ -81,6 +82,7 @@ cc_library(
         "index.hpp",
         "rapidhash.h",
         "source_locator.hpp",
+        "sourcemap_emit.hpp",
         "stl.h",
         "tree.hpp",
         "tree_print.hpp",
@@ -333,6 +335,16 @@ cc_test(
     deps = [
         ":core",
         ":graph",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "sourcemap_emit_test",
+    size = "small",
+    srcs = ["tests/sourcemap_emit_test.cpp"],
+    deps = [
+        ":core",
         "@googletest//:gtest_main",
     ],
 )
