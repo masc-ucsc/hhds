@@ -768,4 +768,109 @@ TEST(SourceLocatorForest, SaveLoadAndResaveCarriesProvenance) {
   fs::remove_all(dir2);
 }
 
+TEST(SourceLocator, ResolveSpanLineCol) {
+  Source_locator sl;
+  sl.set_file_content("src/a.prp", std::string("mut x = 1\ny = x << amt\n"));
+  const SourceId id = sl.mint("src/a.prp", 14, 22, 2);  // "x << amt" on line 2
+
+  const auto span = sl.resolve_span(id);
+  EXPECT_FALSE(span.is_null());
+  EXPECT_EQ(span.source_id.value_or(0), id);
+  EXPECT_EQ(span.file, "src/a.prp");
+  EXPECT_EQ(span.start_byte.value_or(0), 14u);
+  EXPECT_EQ(span.end_byte.value_or(0), 22u);
+  EXPECT_EQ(span.start_line.value_or(0), 2u);
+  EXPECT_EQ(span.start_col.value_or(0), 5u);
+  EXPECT_EQ(span.end_line.value_or(0), 2u);
+  EXPECT_EQ(span.end_col.value_or(0), 13u);  // exclusive
+
+  // Without a line-offset table the span still carries bytes + minted line.
+  Source_locator bare;
+  const auto     bspan = bare.resolve_span(bare.mint("src/a.prp", 14, 22, 2));
+  EXPECT_EQ(bspan.start_line.value_or(0), 2u);
+  EXPECT_FALSE(bspan.start_col.has_value());
+
+  // Line-only anchors resolve to a line with no byte range.
+  const auto lspan = sl.resolve_span(sl.mint_line("src/b.v", 42));
+  EXPECT_EQ(lspan.start_line.value_or(0), 42u);
+  EXPECT_FALSE(lspan.start_byte.has_value());
+}
+
+TEST(SourceLocator, ResolveSpanUnknownIsNull) {
+  Source_locator sl;
+  EXPECT_TRUE(sl.resolve_span(SourceId_invalid).is_null());
+  EXPECT_TRUE(sl.resolve_span(SourceId{0xdeadbeefu}).is_null());
+  EXPECT_TRUE(sl.resolve_spans(SourceId{0xdeadbeefu}).primary.is_null());
+}
+
+TEST(SourceLocator, ResolveSpansCombined) {
+  Source_locator sl;
+  sl.set_file_content("src/a.prp", std::string("aaa\nbbb\n"));
+  const SourceId a    = sl.mint("src/a.prp", 0, 3, 1);
+  const SourceId b    = sl.mint("src/a.prp", 4, 7, 2);
+  const SourceId comb = combine2(sl, a, b);
+
+  const auto rs = sl.resolve_spans(comb);
+  EXPECT_FALSE(rs.truncated);
+  // Primary = first parent; every span keeps the resolving (combined) id.
+  EXPECT_EQ(rs.primary.start_byte.value_or(99), 0u);
+  EXPECT_EQ(rs.primary.source_id.value_or(0), comb);
+  ASSERT_EQ(rs.related.size(), 1u);
+  EXPECT_EQ(rs.related[0].start_line.value_or(0), 2u);
+  EXPECT_EQ(rs.related[0].source_id.value_or(0), comb);
+
+  // A plain anchor has no related spans.
+  EXPECT_TRUE(sl.resolve_spans(a).related.empty());
+}
+
+TEST(SourceLocator, ImportFromReMintsAndCarriesContent) {
+  Source_locator src;
+  src.set_file_content("src/i.prp", std::string("aaa\nbbb\n"));
+  const SourceId sa   = src.mint("src/i.prp", 0, 3, 1);
+  const SourceId sb   = src.mint("src/i.prp", 4, 7, 2);
+  const SourceId comb = combine2(src, sa, sb);
+
+  Source_locator dst;
+  // Payload-hashed ids re-mint to the SAME id; the combine re-mints too.
+  EXPECT_EQ(dst.import_from(src, sa), sa);
+  EXPECT_EQ(dst.import_from(src, comb), comb);
+  EXPECT_TRUE(dst.has(sb));  // flattening minted the second parent as well
+
+  // The bytes rode along (shared pointer), so line:col resolves in dst too.
+  EXPECT_EQ(dst.file_content("src/i.prp"), src.file_content("src/i.prp"));
+  const auto rs = dst.resolve_spans(comb);
+  EXPECT_EQ(rs.primary.start_col.value_or(0), 1u);
+  ASSERT_EQ(rs.related.size(), 1u);
+  EXPECT_EQ(rs.related[0].start_line.value_or(0), 2u);
+
+  // Re-import is a no-op (already present).
+  EXPECT_EQ(dst.import_from(src, comb), comb);
+}
+
+TEST(SourceLocator, ImportFromCarriesMetadataWithoutContent) {
+  Source_locator src;
+  src.set_file_line_offsets("src/m.prp", {0, 10, 25});
+  src.set_file_content_hash("src/m.prp", 0xfeedu);
+  const SourceId s = src.mint("src/m.prp", 12, 14, 2);
+
+  Source_locator dst;
+  EXPECT_EQ(dst.import_from(src, s), s);
+  const auto* offs = dst.file_line_offsets("src/m.prp");
+  ASSERT_NE(offs, nullptr);
+  EXPECT_EQ(offs->size(), 3u);
+  EXPECT_EQ(dst.file_content_hash("src/m.prp"), 0xfeedu);  // disk fallback still validates
+  EXPECT_EQ(dst.file_content("src/m.prp"), nullptr);
+  EXPECT_EQ(dst.resolve_span(s).start_col.value_or(0), 3u);
+}
+
+TEST(SourceLocator, ImportFromEdgeCases) {
+  Source_locator src;
+  Source_locator dst;
+  EXPECT_EQ(dst.import_from(src, SourceId_invalid), SourceId_invalid);
+  EXPECT_EQ(dst.import_from(src, SourceId{12345u}), SourceId_invalid);  // unknown in src
+
+  const SourceId s = dst.mint("src/a.prp", 1, 2, 1);
+  EXPECT_EQ(dst.import_from(dst, s), s);  // self-import is a no-op
+}
+
 }  // namespace

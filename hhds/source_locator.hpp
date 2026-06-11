@@ -71,6 +71,28 @@ using SourceId = uint64_t;
 
 inline constexpr SourceId SourceId_invalid = 0;
 
+// Fully resolved, self-contained source span — the diagnostic-grade view of a
+// SourceId. Unlike Anchor (whose `path` borrows from the locator's file
+// table), every field is an owned copy/value, so a diagnostic record built
+// from it can outlive the locator that resolved it. Every field is optional; a
+// default-constructed Source_span means "unknown location" — consumers render
+// location-less rather than wrong. Lines/cols are 1-based, ends exclusive
+// (tree-sitter / LSP convention). A consumer diagnostic layer can adopt this
+// directly as its span type.
+struct Source_span {
+  std::optional<uint64_t> source_id  = {};  // the SourceId this span resolved from
+  std::optional<uint32_t> file_id    = {};  // producer-local file index (never set by the locator)
+  std::string             file       = {};  // workspace-relative path; empty = unknown
+  std::optional<uint64_t> start_byte = {};
+  std::optional<uint64_t> end_byte   = {};  // exclusive
+  std::optional<uint32_t> start_line = {};  // 1-based
+  std::optional<uint32_t> start_col  = {};  // 1-based
+  std::optional<uint32_t> end_line   = {};
+  std::optional<uint32_t> end_col    = {};  // exclusive
+
+  [[nodiscard]] bool is_null() const { return !source_id && !file_id && file.empty() && !start_byte && !start_line; }
+};
+
 class Source_locator_tester;  // test-only seam (friend)
 
 class Source_locator {
@@ -141,6 +163,58 @@ public:
     return combine(std::span<const SourceId>(parents.begin(), parents.size()));
   }
 
+  // Re-mint `id` (an entry of `src`) into this locator, so a node copied
+  // across artifacts keeps a resolvable provenance id. Anchors re-mint to the
+  // SAME id in practice (ids hash the payload); a combine flattens to its
+  // concrete anchors (first-parent-first) and re-combines, which preserves the
+  // primary anchor and the note ordering even when the nesting shape differs.
+  // Per-file metadata is carried along — the bytes themselves (a shared-pointer
+  // copy) or, for files ingested without content, the line-offset table and
+  // content hash — so resolved spans keep full line:col and excerpt fidelity
+  // in this locator too. Returns SourceId_invalid when `id` does not resolve
+  // in `src`.
+  SourceId import_from(const Source_locator& src, SourceId id) {
+    if (id == SourceId_invalid || &src == this) {
+      return id;
+    }
+    if (has(id)) {
+      return id;  // already present (shared base, or a previous import)
+    }
+    const auto rs = src.resolve_all(id);
+    if (rs.anchors.empty()) {
+      return SourceId_invalid;
+    }
+    std::vector<SourceId> ids;
+    ids.reserve(rs.anchors.size());
+    for (const auto& a : rs.anchors) {
+      if (file_content(a.path) == nullptr) {
+        if (auto content = src.file_content(a.path); content != nullptr) {
+          set_file_content(a.path, std::move(content));
+        } else {
+          if (file_line_offsets(a.path) == nullptr) {
+            if (const auto* offs = src.file_line_offsets(a.path); offs != nullptr) {
+              set_file_line_offsets(a.path, *offs);
+            }
+          }
+          if (file_content_hash(a.path) == 0) {
+            if (const uint64_t h = src.file_content_hash(a.path); h != 0) {
+              set_file_content_hash(a.path, h);  // load_file_content can still validate here
+            }
+          }
+        }
+      }
+      if (a.kind == Anchor_kind::Line_only) {
+        ids.push_back(mint_line(a.path, a.line));
+      } else {
+        ids.push_back(mint(a.path, a.start_byte, a.end_byte, a.line));
+      }
+    }
+    if (ids.size() == 1) {
+      return ids.front();
+    }
+    return combine(std::span<const SourceId>(ids.data(), ids.size()));
+  }
+
   // ---- resolution (own entries first, then the chained base) ---------------
 
   [[nodiscard]] bool has(SourceId id) const { return find_entry(id, nullptr) != nullptr; }
@@ -196,6 +270,50 @@ public:
       for (auto it = e->parents.rbegin(); it != e->parents.rend(); ++it) {
         stack.emplace_back(*it, depth + 1);
       }
+    }
+    return out;
+  }
+
+  // ---- resolved spans (diagnostic-grade views) ------------------------------
+
+  // Primary anchor of `id` as an owned Source_span: file + byte span + line,
+  // plus full 1-based line:col intervals when the file's line-offset table is
+  // known. A null span (is_null()) when `id` is invalid or unresolvable.
+  [[nodiscard]] Source_span resolve_span(SourceId id) const {
+    if (id == SourceId_invalid) {
+      return {};
+    }
+    const auto a = resolve(id);
+    if (!a) {
+      return {};
+    }
+    return make_span(*a, id);
+  }
+
+  // resolve_spans result: the primary anchor plus the secondary anchors of a
+  // combined id, first-parent-first. A diagnostic renders `primary` as its
+  // span and `related` as its note locations — one call resolves both, so the
+  // related sites (inline call chains, merged writes, ...) are never dropped.
+  struct Resolved_spans {
+    Source_span              primary;  // null when `id` does not resolve
+    std::vector<Source_span> related;
+    bool                     truncated = false;
+  };
+
+  [[nodiscard]] Resolved_spans resolve_spans(SourceId id, uint32_t max_depth = kDefaultMaxDepth) const {
+    Resolved_spans out;
+    if (id == SourceId_invalid) {
+      return out;
+    }
+    const auto rs = resolve_all(id, max_depth);
+    out.truncated = rs.truncated;
+    if (rs.anchors.empty()) {
+      return out;
+    }
+    out.primary = make_span(rs.anchors.front(), id);
+    out.related.reserve(rs.anchors.size() - 1);
+    for (size_t i = 1; i < rs.anchors.size(); ++i) {
+      out.related.push_back(make_span(rs.anchors[i], id));
     }
     return out;
   }
@@ -541,6 +659,31 @@ private:
 
   static Anchor make_anchor(const Entry& e, const Source_locator& owner) {
     return Anchor{owner.file_path(e.file_id), e.start_byte, e.end_byte, e.line, e.kind};
+  }
+
+  // Anchor -> owned Source_span. Every Source_span the locator hands out keeps
+  // the resolving id, so a consumer can chase back to the combine parents.
+  [[nodiscard]] Source_span make_span(const Anchor& a, SourceId id) const {
+    Source_span span;
+    span.source_id = id;
+    span.file      = std::string(a.path);
+    if (a.line != 0) {
+      span.start_line = a.line;
+      span.end_line   = a.line;
+    }
+    if (a.kind != Anchor_kind::Line_only) {
+      span.start_byte = a.start_byte;
+      span.end_byte   = a.end_byte;
+      if (const auto lc = to_line_col(a.path, a.start_byte)) {
+        span.start_line = lc->line;
+        span.start_col  = lc->col;
+      }
+      if (const auto lc = to_line_col(a.path, a.end_byte)) {
+        span.end_line = lc->line;
+        span.end_col  = lc->col;
+      }
+    }
+    return span;
   }
 
   // ---- insertion (probe-remap on true collisions) ---------------------------------
