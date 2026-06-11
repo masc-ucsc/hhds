@@ -1,15 +1,36 @@
-# Enable Bzlmod for every Bazel command
-common --enable_bzlmod
-
 # livehd specific bazel options
 build --output_filter='^//(core|pass|inou)'
-#build --output_filter="^//"
-#build --cxxopt="-std=c++17" --cxxopt="-fexceptions" --force_pic --build_tag_filters="-fixme"
-build --cxxopt="-std=c++20" --force_pic --build_tag_filters="-fixme"
+# External-repo headers via -isystem so -Werror (tools/copt_default.bzl) only
+# gates LiveHD code, not warnings emitted inside third-party headers
+build --features=external_include_paths
+build --repo_env=BAZEL_CONLYOPTS="-std=gnu17"
+build --cxxopt="-std=c++23" --cxxopt="-fexceptions" --force_pic --build_tag_filters="-fixme"
+build --action_env=BAZEL_CXXOPTS="-std=c++23"
+# build --action_env=PATH
+
+# Set minimum macOS version to support C++23 features (requires 13.3+)
+# Only applies to macOS builds, ignored on other platforms
+build:macos --linkopt="-mmacosx-version-min=13.3"
+build:macos --copt="-mmacosx-version-min=13.3"
+build:macos --cxxopt="-mmacosx-version-min=13.3"
+build:macos --host_linkopt="-mmacosx-version-min=13.3"
+build:macos --host_copt="-mmacosx-version-min=13.3"
+
+# Auto-detect and apply macOS config when building on Darwin
+build --enable_platform_specific_config
+build:darwin --config=macos
+
+# Custom debug configuration with C++23 (use --config=debug instead of -c dbg)
+build:debug --repo_env=BAZEL_CONLYOPTS="-std=gnu17"
+build:debug --copt="-g"
+build:debug --copt="-std=c++23"
+build:debug --cxxopt="-g"
+build:debug --cxxopt="-std=c++23"
+build:debug --strip=never
+
 # test --cache_test_results=no
 
 # Use Clang
-build --compiler=clang
 build:clang --action_env=CC=clang
 build:clang --action_env=CXX=clang++
 #build:clang --linkopt -fuse-ld=lld
@@ -55,30 +76,10 @@ build:asan --copt -fno-omit-frame-pointer
 build:asan --cxxopt -fsanitize=address
 build:asan --cxxopt -DADDRESS_SANITIZER
 #build:asan --cxxopt -O1
-build:asan --cxxopt -std=c++20
+build:asan --cxxopt -std=c++23
 build:asan --cxxopt -g
 build:asan --cxxopt -fno-omit-frame-pointer
 build:asan --linkopt -fsanitize=address
-
-# asan for OSX
-build:asan_macos --strip=never
-build:asan_macos --copt=-fsanitize=address
-build:asan_macos --copt -Wno-macro-redefined
-build:asan_macos --copt -D_FORTIFY_SOURCE=0
-build:asan_macos --copt=-fsanitize=address
-build:asan_macos --copt=-O0
-build:asan_macos --copt=-fno-omit-frame-pointer
-build:asan_macos --copt=-DGPR_NO_DIRECT_SYSCALLS
-build:asan_macos --cxxopt=-fsanitize=address
-build:asan_macos --cxxopt -Wno-macro-redefined
-build:asan_macos --cxxopt -D_FORTIFY_SOURCE=0
-build:asan_macos --cxxopt=-fsanitize=address
-build:asan_macos --cxxopt=-O0
-build:asan_macos --cxxopt=-fno-omit-frame-pointer
-build:asan_macos --cxxopt=-DGPR_NO_DIRECT_SYSCALLS
-build:asan_macos --linkopt=-fsanitize=address
-build:asan_macos --action_env=ASAN_OPTIONS=detect_leaks=0
-build:asan_macos --dynamic_mode=off
 
 # Thread sanitizer
 build:tsan --strip=never
@@ -95,7 +96,7 @@ build:tsan --cxxopt -DTHREAD_SANITIZER
 build:tsan --cxxopt -DDYNAMIC_ANNOTATIONS_ENABLED=1
 build:tsan --cxxopt -DDYNAMIC_ANNOTATIONS_EXTERNAL_IMPL=1
 build:tsan --cxxopt -g
-build:tsan --cxxopt -std=c++20
+build:tsan --cxxopt -std=c++23
 # build:tsan --copt -O1
 build:tsan --cxxopt -fno-omit-frame-pointer
 build:tsan --linkopt -fsanitize=thread
@@ -108,12 +109,23 @@ build:ubsan --linkopt -fsanitize=undefined
 build:ubsan --linkopt -lubsan
 build:ubsan --action_env=UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
 
-# clang-tidy
-build:clang-tidy --aspects @bazel_clang_tidy//clang_tidy:clang_tidy.bzl%clang_tidy_aspect
-build:clang-tidy --output_groups=report
-
-# Optionally override the .clang-tidy config file target
-build:clang-tidy --@bazel_clang_tidy//:clang_tidy_config=//:clang_tidy_config
-
-build:ci --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
-build:ci --output_groups=+rustfmt_checks
+# Memory sanitizer (uninitialized-read detection; todo/ 1s).
+# NOTE: MSan needs an MSan-instrumented libc++ or it floods false positives
+# from the standard library. Until that toolchain is wired up, prefer Valgrind
+# memcheck (--track-origins=yes) on a `--config=debug` binary — it detects the
+# same uninitialized reads on an uninstrumented build. Use clang for MSan:
+#   bazel build --config=clang --config=msan //main:lgshell
+build:msan --strip=never
+build:msan --copt -fsanitize=memory
+build:msan --copt -fsanitize-memory-track-origins=2
+build:msan --copt -DMEMORY_SANITIZER
+build:msan --copt -g
+build:msan --copt -fno-omit-frame-pointer
+build:msan --cxxopt -fsanitize=memory
+build:msan --cxxopt -fsanitize-memory-track-origins=2
+build:msan --cxxopt -DMEMORY_SANITIZER
+build:msan --cxxopt -std=c++23
+build:msan --cxxopt -g
+build:msan --cxxopt -fno-omit-frame-pointer
+build:msan --linkopt -fsanitize=memory
+build:msan --action_env=MSAN_OPTIONS=halt_on_error=1:print_stats=1
