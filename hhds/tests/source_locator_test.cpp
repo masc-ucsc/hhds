@@ -16,7 +16,7 @@
 namespace hhds {
 
 // Test-only seam (friend of Source_locator): narrowing the hash mask makes
-// collision/probe/merge-convergence paths reachable — genuine 64-bit FNV
+// collision/probe/merge-convergence paths reachable — genuine 64-bit rapidhash
 // collisions cannot be constructed in a test.
 class Source_locator_tester {
 public:

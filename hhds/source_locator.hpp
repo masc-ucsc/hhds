@@ -5,7 +5,7 @@
 // SourceId to a source anchor (file + byte span + line). IR nodes/pins carry one
 // uint64 attribute (attrs::srcid) instead of a filename string + span struct.
 //
-// Identity. SourceId = FNV-1a over (file path, start_byte, end_byte) — the same
+// Identity. SourceId = rapidhash over (file path, start_byte, end_byte) — the same
 // span yields the same id in every locator, every run, every separately-compiled
 // artifact, so unioning two locators dedups for free (the GraphLibrary gid
 // trick). Only true hash collisions probe-remap to a nearby id; remapped ids are
@@ -55,6 +55,7 @@
 #include <vector>
 
 #include "hhds/attrs/srcid.hpp"
+#include "hhds/rapidhash.h"
 
 namespace hhds {
 
@@ -350,27 +351,21 @@ private:
   };
 
   // ---- hashing -----------------------------------------------------------------
-  // Deterministic FNV-1a (same constants as GraphLibrary's gid hash; std::hash
-  // is not stable across platforms and must not be used — cross-artifact id
-  // agreement is the whole point). A distinct kind byte seeds each id family.
+  // Deterministic rapidhash (vendored rapidhash.h; std::hash is not stable
+  // across platforms and must not be used — cross-artifact id agreement is the
+  // whole point). Fields chain through the seed, integers serialized to
+  // little-endian bytes first: rapidhash interprets its input as a
+  // little-endian byte sequence on any host, so ids agree across platforms. A
+  // distinct kind byte seeds each id family.
 
-  static constexpr uint64_t kFnvOffset = 1469598103934665603ULL;
-  static constexpr uint64_t kFnvPrime  = 1099511628211ULL;
+  static uint64_t hash_bytes(uint64_t h, std::string_view s) noexcept { return rapidhash_withSeed(s.data(), s.size(), h); }
 
-  static constexpr uint64_t fnv_byte(uint64_t h, uint8_t b) noexcept { return (h ^ b) * kFnvPrime; }
-
-  static constexpr uint64_t fnv_bytes(uint64_t h, std::string_view s) noexcept {
-    for (const char c : s) {
-      h = fnv_byte(h, static_cast<uint8_t>(c));
-    }
-    return h;
-  }
-
-  static constexpr uint64_t fnv_u64(uint64_t h, uint64_t v) noexcept {
+  static uint64_t hash_u64(uint64_t h, uint64_t v) noexcept {
+    uint8_t le[8];
     for (int i = 0; i < 8; ++i) {
-      h = fnv_byte(h, static_cast<uint8_t>(v >> (i * 8)));
+      le[i] = static_cast<uint8_t>(v >> (i * 8));
     }
-    return h;
+    return rapidhash_withSeed(le, sizeof(le), h);
   }
 
   [[nodiscard]] SourceId finish_hash(uint64_t h) const noexcept {
@@ -379,24 +374,22 @@ private:
   }
 
   [[nodiscard]] SourceId hash_span(std::string_view path, uint64_t start_byte, uint64_t end_byte) const noexcept {
-    uint64_t h = fnv_byte(kFnvOffset, static_cast<uint8_t>(Anchor_kind::Span));
-    h          = fnv_bytes(h, path);
-    h          = fnv_u64(h, start_byte);
-    h          = fnv_u64(h, end_byte);
+    uint64_t h = hash_bytes(static_cast<uint64_t>(Anchor_kind::Span), path);
+    h          = hash_u64(h, start_byte);
+    h          = hash_u64(h, end_byte);
     return finish_hash(h);
   }
 
   [[nodiscard]] SourceId hash_line_only(std::string_view path, uint32_t line) const noexcept {
-    uint64_t h = fnv_byte(kFnvOffset, static_cast<uint8_t>(Anchor_kind::Line_only));
-    h          = fnv_bytes(h, path);
-    h          = fnv_u64(h, line);
+    uint64_t h = hash_bytes(static_cast<uint64_t>(Anchor_kind::Line_only), path);
+    h          = hash_u64(h, line);
     return finish_hash(h);
   }
 
   [[nodiscard]] SourceId hash_combine_parents(std::span<const SourceId> parents) const noexcept {
-    uint64_t h = fnv_byte(kFnvOffset, static_cast<uint8_t>(Anchor_kind::Combine));
+    uint64_t h = static_cast<uint64_t>(Anchor_kind::Combine);
     for (const SourceId p : parents) {
-      h = fnv_u64(h, p);
+      h = hash_u64(h, p);
     }
     return finish_hash(h);
   }
@@ -679,8 +672,8 @@ private:
   std::unordered_map<std::string, uint32_t> path_to_fid_;
   const Source_locator*                     base_      = nullptr;
   // Test seam: narrows every minted hash so collision/probe/merge-convergence
-  // paths become reachable (64-bit FNV collisions cannot be constructed in a
-  // test). Production code never changes it.
+  // paths become reachable (64-bit rapidhash collisions cannot be constructed
+  // in a test). Production code never changes it.
   uint64_t                                  hash_mask_ = ~uint64_t{0};
 
   friend class Source_locator_tester;

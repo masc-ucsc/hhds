@@ -26,6 +26,7 @@
 #include "attrs/srcid.hpp"
 #include "graph_sizing.hpp"
 #include "index.hpp"
+#include "rapidhash.h"
 #include "source_locator.hpp"
 #include "tree.hpp"
 #include "unordered_dense.hpp"
@@ -1854,16 +1855,12 @@ private:
   // distinct names rarely collide, while leaving headroom below the 2^42 cap.
   static constexpr Gid kGidModulus = (Gid{1} << 40);
 
-  // Deterministic FNV-1a over the name → a stable gid, identical across runs,
-  // platforms and libraries (std::hash is NONE of these, so it must not be used
-  // here — cross-library gid agreement is the whole point).
+  // Deterministic rapidhash over the name → a stable gid, identical across
+  // runs, platforms and libraries (std::hash is NONE of these, so it must not
+  // be used here — cross-library gid agreement is the whole point).
   [[nodiscard]] static Gid hash_name_to_gid(std::string_view name) noexcept {
-    uint64_t h = 1469598103934665603ULL;  // FNV-1a offset basis
-    for (unsigned char c : name) {
-      h ^= static_cast<uint64_t>(c);
-      h *= 1099511628211ULL;  // FNV-1a prime
-    }
-    const Gid g = static_cast<Gid>(h % (kGidModulus - 1)) + 1;  // ∈ [1, kGidModulus)
+    const uint64_t h = rapidhash(name.data(), name.size());
+    const Gid      g = static_cast<Gid>(h % (kGidModulus - 1)) + 1;  // ∈ [1, kGidModulus)
     return g;
   }
 
