@@ -35,6 +35,12 @@
 // Persistence. save()/load() write one text table (srcmap.txt) next to
 // library.txt / forest.txt, in the same line-prefix style. Entries are
 // append-only; existing entries never change meaning.
+//
+// File contents. set_file_content keeps the source bytes in memory (shared
+// across locators by pointer) and derives content_hash + line_offsets from
+// them; save() persists only the hash, and load_file_content re-reads disk
+// validated against it — so consumers (sourcesContent egress, diagnostics
+// excerpts) never see bytes that drifted from what the spans were minted on.
 
 #include <algorithm>
 #include <cassert>
@@ -44,6 +50,8 @@
 #include <fstream>
 #include <initializer_list>
 #include <iostream>
+#include <iterator>
+#include <memory>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -217,7 +225,9 @@ public:
 
   // Optional per-file metadata. The line-offset table (byte offset of each line
   // start, ascending, first entry 0) lets to_line_col derive 1-based line:col —
-  // full LSP-grade intervals — without storing columns per entry.
+  // full LSP-grade intervals — without storing columns per entry. Producers
+  // holding the file's bytes should prefer set_file_content, which derives
+  // both; these manual setters remain for carry paths that only have metadata.
   void set_file_content_hash(std::string_view path, uint64_t hash) { files_[intern_file(path)].content_hash = hash; }
 
   [[nodiscard]] uint64_t file_content_hash(std::string_view path) const {
@@ -227,6 +237,71 @@ public:
 
   void set_file_line_offsets(std::string_view path, std::vector<uint64_t> offsets) {
     files_[intern_file(path)].line_offsets = std::move(offsets);
+  }
+
+  // ---- file contents ---------------------------------------------------------
+
+  // Deterministic hash of a file's bytes — the value content_hash records.
+  // Public so every producer and validator agrees on the function.
+  [[nodiscard]] static uint64_t content_hash_of(std::string_view content) noexcept {
+    return rapidhash(content.data(), content.size());
+  }
+
+  // Full-file ingestion: keeps the bytes in memory and derives content_hash +
+  // line_offsets from them in one step, so the three can never disagree. The
+  // producer that just read/parsed the file calls this instead of hand-rolling
+  // the newline scan. save() persists only the hash (see load_file_content).
+  void set_file_content(std::string_view path, std::string&& content) {
+    set_file_content(path, std::make_shared<const std::string>(std::move(content)));
+  }
+
+  // Shared-pointer form: carrying a file across locators (import/merge paths)
+  // is a refcount bump, not a byte copy.
+  void set_file_content(std::string_view path, std::shared_ptr<const std::string> content) {
+    assert(content != nullptr && "Source_locator::set_file_content: null content");
+    File& f        = files_[intern_file(path)];
+    f.content      = std::move(content);
+    f.content_hash = content_hash_of(*f.content);
+    f.line_offsets = derive_line_offsets(*f.content);
+  }
+
+  // In-memory bytes (own files first, then the base chain); nullptr when this
+  // run never ingested the file (e.g. a load()ed table). The shared_ptr keeps
+  // the bytes alive independently of the locator, so string_view slices of
+  // *result are safe while the pointer is held.
+  [[nodiscard]] std::shared_ptr<const std::string> file_content(std::string_view path) const {
+    const File* f = find_file(path);
+    return f == nullptr ? nullptr : f->content;
+  }
+
+  // Post-load() recovery: srcmap.txt persists the content hash, never the
+  // bytes. Re-read `path` from disk (resolved against `root` — paths are
+  // workspace-relative by contract) and return the bytes ONLY when they still
+  // match the recorded hash; a drifted, unknown, or hash-less file returns
+  // nullptr (no content beats wrong content). Never caches into the locator:
+  // a loaded table often serves as a shared read-only base across threads.
+  [[nodiscard]] std::shared_ptr<const std::string> load_file_content(std::string_view path, std::string_view root = {}) const {
+    const File* f = find_file(path);
+    if (f == nullptr) {
+      return nullptr;
+    }
+    if (f->content != nullptr) {
+      return f->content;
+    }
+    if (f->content_hash == 0) {
+      return nullptr;  // nothing to validate against
+    }
+    namespace fs = std::filesystem;
+    const auto    full = root.empty() ? fs::path(path) : fs::path(root) / path;
+    std::ifstream ifs(full, std::ios::binary);
+    if (!ifs) {
+      return nullptr;
+    }
+    std::string bytes((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    if (content_hash_of(bytes) != f->content_hash) {
+      return nullptr;
+    }
+    return std::make_shared<const std::string>(std::move(bytes));
   }
 
   [[nodiscard]] std::optional<Line_col> to_line_col(std::string_view path, uint64_t byte) const {
@@ -364,7 +439,23 @@ private:
     std::string           path;
     uint64_t              content_hash = 0;
     std::vector<uint64_t> line_offsets;  // ascending byte offsets of line starts
+    // In-memory source bytes (never persisted). shared_ptr: cross-locator
+    // carries are pointer copies, and views into *content outlive clear().
+    std::shared_ptr<const std::string> content;
   };
+
+  // Byte offset of every line start (first entry always 0) — the table
+  // to_line_col binary-searches.
+  [[nodiscard]] static std::vector<uint64_t> derive_line_offsets(std::string_view content) {
+    std::vector<uint64_t> offsets;
+    offsets.push_back(0);
+    for (size_t i = 0; i < content.size(); ++i) {
+      if (content[i] == '\n') {
+        offsets.push_back(i + 1);
+      }
+    }
+    return offsets;
+  }
 
   // ---- hashing -----------------------------------------------------------------
   // Deterministic rapidhash (vendored rapidhash.h; std::hash is not stable
@@ -443,7 +534,7 @@ private:
       return it->second;
     }
     const auto fid = static_cast<uint32_t>(files_.size());
-    files_.push_back(File{std::string(path), 0, {}});
+    files_.push_back(File{std::string(path), 0, {}, nullptr});
     path_to_fid_.emplace(files_.back().path, fid);
     return fid;
   }
@@ -654,6 +745,9 @@ private:
       }
       if (mine.line_offsets.empty() && !f.line_offsets.empty()) {
         mine.line_offsets = f.line_offsets;
+      }
+      if (mine.content == nullptr && f.content != nullptr) {
+        mine.content = f.content;
       }
     }
     for (const auto& [oid, oe] : other.entries_) {

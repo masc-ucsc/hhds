@@ -173,6 +173,46 @@ TEST(SourceLocator, LineColDerivation) {
   EXPECT_FALSE(sl.to_line_col("missing.prp", 0).has_value());
 }
 
+TEST(SourceLocator, SetFileContentDerivesMetadata) {
+  Source_locator sl;
+  sl.set_file_content("src/a.prp", std::string("ab\ncd\n"));
+
+  const auto content = sl.file_content("src/a.prp");
+  ASSERT_NE(content, nullptr);
+  EXPECT_EQ(*content, "ab\ncd\n");
+  EXPECT_EQ(sl.file_content_hash("src/a.prp"), Source_locator::content_hash_of("ab\ncd\n"));
+
+  const auto* offs = sl.file_line_offsets("src/a.prp");
+  ASSERT_NE(offs, nullptr);
+  EXPECT_EQ(*offs, (std::vector<uint64_t>{0, 3, 6}));
+  const auto lc = sl.to_line_col("src/a.prp", 4);  // the 'd'
+  ASSERT_TRUE(lc.has_value());
+  EXPECT_EQ(lc->line, 2u);
+  EXPECT_EQ(lc->col, 2u);
+
+  EXPECT_EQ(sl.file_content("src/missing.prp"), nullptr);
+}
+
+TEST(SourceLocator, FileContentSharesAcrossCarryMergeAndBase) {
+  Source_locator src;
+  src.set_file_content("src/a.prp", std::string("hello\n"));
+
+  // Cross-locator carry is a refcount bump, not a byte copy.
+  Source_locator dst;
+  dst.set_file_content("src/a.prp", src.file_content("src/a.prp"));
+  EXPECT_EQ(dst.file_content("src/a.prp").get(), src.file_content("src/a.prp").get());
+
+  // merge() carries the content pointer with the rest of the file metadata.
+  Source_locator merged;
+  (void)merged.merge(src);
+  EXPECT_EQ(merged.file_content("src/a.prp").get(), src.file_content("src/a.prp").get());
+
+  // file_content looks through the base chain like every other lookup.
+  Source_locator chained;
+  chained.set_base(&src);
+  EXPECT_EQ(chained.file_content("src/a.prp").get(), src.file_content("src/a.prp").get());
+}
+
 TEST(SourceLocator, BaseChaining) {
   Source_locator base;
   const SourceId in_base = base.mint("a.prp", 0, 4, 1);
@@ -342,6 +382,46 @@ TEST(SourceLocatorPersist, SaveLoadRoundTrip) {
   Source_locator empty;
   empty.save(dir.string());
   EXPECT_FALSE(fs::exists(dir / "srcmap.txt"));
+
+  fs::remove_all(dir);
+}
+
+TEST(SourceLocatorPersist, LoadFileContentValidatesHash) {
+  const auto dir = fresh_dir("hhds_srcloc_content");
+  // The "workspace": a real source file under `root`, ingested whole.
+  const std::string rel = "a.prp";
+  {
+    std::ofstream ofs(dir / rel);
+    ofs << "mut x = 1\n";
+  }
+  Source_locator sl;
+  (void)sl.mint(rel, 0, 9, 1);
+  sl.set_file_content(rel, std::string("mut x = 1\n"));
+  sl.save(dir.string());
+
+  Source_locator loaded;
+  ASSERT_TRUE(loaded.load(dir.string()));
+  EXPECT_EQ(loaded.file_content(rel), nullptr);  // bytes are never persisted
+  const auto bytes = loaded.load_file_content(rel, dir.string());
+  ASSERT_NE(bytes, nullptr);
+  EXPECT_EQ(*bytes, "mut x = 1\n");
+
+  // In-memory content short-circuits the disk read.
+  const auto live = sl.load_file_content(rel, dir.string());
+  ASSERT_NE(live, nullptr);
+  EXPECT_EQ(live.get(), sl.file_content(rel).get());
+
+  // Drifted source: hash mismatch returns nullptr, never the wrong bytes.
+  {
+    std::ofstream ofs(dir / rel);
+    ofs << "mut x = 2\n";
+  }
+  EXPECT_EQ(loaded.load_file_content(rel, dir.string()), nullptr);
+
+  // No recorded hash: nothing to validate against, so no content.
+  Source_locator nohash;
+  (void)nohash.mint(rel, 0, 9, 1);
+  EXPECT_EQ(nohash.load_file_content(rel, dir.string()), nullptr);
 
   fs::remove_all(dir);
 }
