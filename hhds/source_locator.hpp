@@ -199,6 +199,22 @@ public:
     return files_[file_id].path;
   }
 
+  // Own files only (the base is not counted): with file_path this lets a
+  // consumer enumerate the files this locator actually minted from — e.g. a
+  // build-system depfile listing the sources a compile read.
+  [[nodiscard]] uint32_t file_count() const noexcept { return static_cast<uint32_t>(files_.size()); }
+
+  // The per-file line-offset table (nullptr when absent), so a consumer
+  // re-minting anchors into another locator can carry the line:col metadata
+  // along. Looks through the base chain like every other lookup.
+  [[nodiscard]] const std::vector<uint64_t>* file_line_offsets(std::string_view path) const {
+    const File* f = find_file(path);
+    if (f == nullptr || f->line_offsets.empty()) {
+      return nullptr;
+    }
+    return &f->line_offsets;
+  }
+
   // Optional per-file metadata. The line-offset table (byte offset of each line
   // start, ascending, first entry 0) lets to_line_col derive 1-based line:col —
   // full LSP-grade intervals — without storing columns per entry.
