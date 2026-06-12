@@ -153,13 +153,21 @@ auto Graph::PinEntry::add_edge(Pid self_id, Vid other_id, OverflowPool& pool) ->
   if (other_id & 1) {
     e = e | 1;
   }
+  // e == 0 (diff == 0 with a node-as-sink target, flag bits 00) is
+  // indistinguishable from the empty-slot sentinel: storing it in a sedge
+  // slot would silently drop the edge. This aliasing is legal — pin_table
+  // and node_table indices are independent, so a pin at index N can drive
+  // port 0 of the node at index N. Route it through the long-edge slots /
+  // overflow set, which keep the full Vid.
   constexpr int      SHIFT = 16;
   constexpr uint64_t SLOT  = (1ULL << SHIFT) - 1;
-  for (int i = 0; i < 4; ++i) {
-    uint64_t mask = SLOT << (i * SHIFT);
-    if ((sedges_.sedges & mask) == 0) {
-      sedges_.sedges |= (e & SLOT) << (i * SHIFT);
-      return true;
+  if (e != 0) {
+    for (int i = 0; i < 4; ++i) {
+      uint64_t mask = SLOT << (i * SHIFT);
+      if ((sedges_.sedges & mask) == 0) {
+        sedges_.sedges |= (e & SLOT) << (i * SHIFT);
+        return true;
+      }
     }
   }
   // if we reach here, insert into ledge0 or ledge1, or overflow
@@ -377,21 +385,27 @@ auto Graph::NodeEntry::add_edge(Nid self_id, Vid other_id, OverflowPool& pool) -
   if (other_id & 1) {
     e = e | 1;
   }
+  // e == 0 (diff == 0 with a node-as-sink target, flag bits 00) aliases the
+  // empty-slot sentinel — see the matching comment in PinEntry::add_edge.
+  // For a NodeEntry this is the port0->port0 self-loop. Route it through the
+  // long-edge slots / overflow set, which keep the full Vid.
   constexpr int      SHIFT = 16;
   constexpr uint64_t SLOT  = (1ULL << SHIFT) - 1;
-  for (int i = 0; i < 4; ++i) {
-    uint64_t mask = SLOT << (i * SHIFT);
-    if ((sedges_.sedges & mask) == 0) {
-      sedges_.sedges |= (e & SLOT) << (i * SHIFT);
-      return true;
+  if (e != 0) {
+    for (int i = 0; i < 4; ++i) {
+      uint64_t mask = SLOT << (i * SHIFT);
+      if ((sedges_.sedges & mask) == 0) {
+        sedges_.sedges |= (e & SLOT) << (i * SHIFT);
+        return true;
+      }
     }
-  }
-  uint64_t extra = sedges_extra;
-  for (int i = 0; i < 3; ++i) {
-    uint64_t mask = SLOT << (i * SHIFT);
-    if ((extra & mask) == 0) {
-      sedges_extra = extra | ((e & SLOT) << (i * SHIFT));
-      return true;
+    uint64_t extra = sedges_extra;
+    for (int i = 0; i < 3; ++i) {
+      uint64_t mask = SLOT << (i * SHIFT);
+      if ((extra & mask) == 0) {
+        sedges_extra = extra | ((e & SLOT) << (i * SHIFT));
+        return true;
+      }
     }
   }
   // if we reach here, insert into ledge0 or ledge1, or overflow

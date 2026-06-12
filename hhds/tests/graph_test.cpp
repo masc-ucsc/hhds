@@ -122,6 +122,81 @@ void test_subnode_accessors_round_trip_with_set_subnode() {
   assert(inst.get_subnode_graph() == other);
 }
 
+// Regression (LiveHD simple_hier_test via the slang reader): a sedge whose
+// target is a node-as-sink (flag bits 00) at the SAME table index as the
+// storing entry encoded to 0 — the empty-slot sentinel — so the driver-side
+// half of the edge silently vanished while the sink-side half (flags 11,
+// never zero) survived. pin_table and node_table indices are independent, so
+// a pin at pin_table index N may legally drive port 0 of the node at
+// node_table index N. In LiveHD the collision was sub.y (pin idx 6) ->
+// get_mask.p0 (node idx 6); creating the big-pid const earlier merely
+// shifted pin indices, which is why it appeared const-correlated.
+void test_same_index_pin_to_node_port0_edge_survives() {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_io("top");
+  auto               g   = gio->create_graph();
+
+  // node_table: 0=invalid, 1=INPUT, 2=OUTPUT, 3=CONST, then:
+  auto filler   = g->create_node();  // node idx 4
+  auto sub      = g->create_node();  // node idx 5 (the "instance")
+  auto consumer = g->create_node();  // node idx 6 (sinks on port 0)
+
+  // pin_table: 0=invalid; burn slots 1..5 so the driver pin lands at
+  // pin_table idx 6 == consumer's node_table idx.
+  for (hhds::Port_id p = 1; p <= 5; ++p) {
+    (void)filler.create_sink_pin(p);
+  }
+  auto drv = sub.create_driver_pin(2);       // pin_table idx 6
+  auto snk = consumer.create_sink_pin();     // node-as-pin (port 0, flags 00)
+
+  snk.connect_driver(drv);
+
+  // Sink-side half always survived.
+  {
+    auto in = consumer.inp_edges();
+    assert(in.size() == 1);
+    assert(in.front().driver == drv);
+  }
+
+  // Driver-side half: the regression. diff == 0 + flags 00 encoded to 0.
+  {
+    auto out = drv.out_edges();
+    assert(out.size() == 1);
+    assert(out.front().sink == snk);
+  }
+  assert(sub.out_edges().size() == 1);
+  assert(sub.has_out_edges());
+
+  // The edge must also be deletable and re-addable through the spill slot.
+  drv.out_edges().front().del_edge();
+  assert(drv.out_edges().empty());
+  assert(consumer.inp_edges().empty());
+  snk.connect_driver(drv);
+  assert(drv.out_edges().size() == 1);
+  assert(consumer.inp_edges().size() == 1);
+}
+
+// Same encoding hole on NodeEntry: a port0 -> port0 self-loop stores
+// (diff == 0, flags 00) on the driver side.
+void test_node_port0_self_loop_edge_survives() {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_io("top");
+  auto               g   = gio->create_graph();
+
+  auto n = g->create_node();
+  n.create_sink_pin().connect_driver(n.create_driver_pin());
+
+  assert(n.inp_edges().size() == 1);
+  assert(n.out_edges().size() == 1);
+  assert(n.out_edges().front().sink == n.create_sink_pin());
+  assert(n.has_out_edges());
+  assert(n.has_inp_edges());
+
+  n.out_edges().front().del_edge();
+  assert(n.out_edges().empty());
+  assert(n.inp_edges().empty());
+}
+
 void test_forward_class_returns_wrappers() {
   hhds::GraphLibrary lib;
   auto               gio   = lib.create_io("top");
@@ -986,6 +1061,8 @@ int main() {
   test_declaration_api();
   test_subnode_accessors_round_trip_with_set_subnode();
   test_wrapper_pin_connect_api();
+  test_same_index_pin_to_node_port0_edge_survives();
+  test_node_port0_self_loop_edge_survives();
   test_forward_class_returns_wrappers();
   test_backward_class_returns_wrappers();
   test_traversal_contexts_use_one_node_type();
