@@ -126,6 +126,28 @@ public:
 
   using Remap = std::unordered_map<SourceId, SourceId>;
 
+  // Fast per-file Span minting handle (see span_minter() below). Caches the
+  // file id and the path's hash contribution, so each span costs one rapidhash
+  // over (start,end) plus the table insert — no per-span path re-hash and no
+  // per-span path interning. Ids are byte-identical to mint(path, ...). Valid
+  // only while the owning locator is alive and its file table is not cleared.
+  class Span_minter {
+  public:
+    Span_minter() = default;
+    SourceId mint(uint64_t start_byte, uint64_t end_byte, uint32_t line) const {
+      return loc_->insert_span_fast(path_seed_, file_id_, start_byte, end_byte, line);
+    }
+    [[nodiscard]] bool valid() const noexcept { return loc_ != nullptr; }
+
+  private:
+    friend class Source_locator;
+    Span_minter(Source_locator* loc, uint32_t file_id, uint64_t path_seed)
+        : loc_(loc), file_id_(file_id), path_seed_(path_seed) {}
+    Source_locator* loc_       = nullptr;
+    uint32_t        file_id_   = 0;
+    uint64_t        path_seed_ = 0;
+  };
+
   Source_locator() = default;
 
   // ---- minting (single-writer; no locks by design) -------------------------
@@ -134,6 +156,25 @@ public:
   // re-read the source file.
   SourceId mint(std::string_view path, uint64_t start_byte, uint64_t end_byte, uint32_t line) {
     return insert_anchor(hash_span(path, start_byte, end_byte), Anchor_kind::Span, path, start_byte, end_byte, line);
+  }
+
+  // Hand out a Span_minter bound to `path` (interned once here). Use when
+  // minting many spans for the same file (e.g. a parser materializing a tree):
+  // the path hash and file interning are paid once instead of per span.
+  [[nodiscard]] Span_minter span_minter(std::string_view path) {
+    assert(!path.empty() && path.front() != '/'
+           && "Source_locator: path must be workspace-relative (absolute paths break cross-artifact id agreement)");
+    const uint32_t fid  = intern_file(path);
+    const uint64_t seed = hash_bytes(static_cast<uint64_t>(Anchor_kind::Span), path);
+    return Span_minter(this, fid, seed);
+  }
+
+  // Pre-size the entry table and id index for an expected entry count, so a
+  // bulk mint (a whole-tree materialization) does not rehash/realloc its way
+  // up from empty. Advisory; over- or under-reserving only affects speed.
+  void reserve(size_t expected_entries) {
+    entries_.reserve(expected_entries);
+    index_.reserve(expected_entries);
   }
 
   // Line-only anchor: for ingress that only knows file:line (e.g. yosys).
@@ -723,6 +764,37 @@ private:
     Entry e;
     e.kind       = kind;
     e.file_id    = intern_file(path);
+    e.start_byte = start_byte;
+    e.end_byte   = end_byte;
+    e.line       = line;
+    index_.emplace(id, static_cast<uint32_t>(entries_.size()));
+    entries_.emplace_back(id, std::move(e));
+    return id;
+  }
+
+  // Span_minter's hot path: the file is already interned (`file_id`) and the
+  // path's hash contribution is precomputed (`path_seed`), so this is
+  // insert_anchor for a Span without the per-call path hash or path interning.
+  // Identical id and dedup/probe semantics to insert_anchor(Span, ...).
+  SourceId insert_span_fast(uint64_t path_seed, uint32_t file_id, uint64_t start_byte, uint64_t end_byte, uint32_t line) {
+    SourceId id = finish_hash(hash_u64(hash_u64(path_seed, start_byte), end_byte));
+    for (;;) {
+      const Source_locator* owner = nullptr;
+      const Entry*          e     = find_entry(id, &owner);
+      if (e == nullptr) {
+        break;
+      }
+      if (anchor_payload_equal(*e, *owner, Anchor_kind::Span, file_path(file_id), start_byte, end_byte, line)) {
+        return id;
+      }
+      ++id;
+      if (id == SourceId_invalid) {
+        id = 1;
+      }
+    }
+    Entry e;
+    e.kind       = Anchor_kind::Span;
+    e.file_id    = file_id;
     e.start_byte = start_byte;
     e.end_byte   = end_byte;
     e.line       = line;

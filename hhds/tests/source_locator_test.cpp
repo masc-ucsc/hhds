@@ -67,6 +67,33 @@ TEST(SourceLocator, MintDeterminismAcrossLocators) {
   EXPECT_NE(x.mint_line("src/foo.prp", 3), xa);
 }
 
+TEST(SourceLocator, SpanMinterMatchesMintAndDedups) {
+  Source_locator viamint;
+  Source_locator viaminter;
+  viaminter.reserve(8);  // advisory; must not change results
+
+  auto m = viaminter.span_minter("src/foo.prp");
+  ASSERT_TRUE(m.valid());
+
+  // span_minter ids are byte-identical to mint(path, ...) for the same span.
+  EXPECT_EQ(m.mint(10, 25, 3), viamint.mint("src/foo.prp", 10, 25, 3));
+  EXPECT_EQ(m.mint(30, 40, 4), viamint.mint("src/foo.prp", 30, 40, 4));
+
+  // Re-minting a span dedups to the same id and one entry (the leading entry
+  // is the interned file's first use; minted spans follow).
+  const SourceId again = m.mint(10, 25, 3);
+  EXPECT_EQ(again, viamint.mint("src/foo.prp", 10, 25, 3));
+  EXPECT_EQ(viaminter.size(), 2u);
+
+  // Resolves back through the same machinery as mint().
+  const auto a = viaminter.resolve(m.mint(10, 25, 3));
+  ASSERT_TRUE(a.has_value());
+  EXPECT_EQ(a->path, "src/foo.prp");
+  EXPECT_EQ(a->start_byte, 10u);
+  EXPECT_EQ(a->end_byte, 25u);
+  EXPECT_EQ(a->line, 3u);
+}
+
 TEST(SourceLocator, ResolveRoundTrip) {
   Source_locator sl;
   const SourceId span = sl.mint("a.prp", 5, 9, 2);
