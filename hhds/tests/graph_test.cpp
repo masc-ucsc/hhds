@@ -34,6 +34,26 @@ std::vector<std::pair<hhds::Gid, hhds::Nid>> collect_gid_nids(Range&& range) {
   return order;
 }
 
+constexpr hhds::Nid node_of(hhds::Nid nid) { return nid & ~static_cast<hhds::Nid>(3); }
+
+// Resolve the hier-context Node_class for the user node (gid, nid) as visited by
+// top->forward_hier(). The cross-boundary tests below use distinct leaf modules,
+// so (gid, nid) identifies a node uniquely across the whole hierarchy walk.
+hhds::Node_class find_hier_node(hhds::Graph* top, hhds::Gid gid, hhds::Nid nid) {
+  hhds::Node_class found;
+  bool             ok   = false;
+  const hhds::Nid  want = node_of(nid);
+  for (auto n : top->forward_hier()) {
+    if (n.get_current_gid() == gid && node_of(n.get_debug_nid()) == want) {
+      assert(!ok && "find_hier_node: node visited more than once");
+      found = n;
+      ok    = true;
+    }
+  }
+  assert(ok && "find_hier_node: node not found in forward_hier walk");
+  return found;
+}
+
 void test_declaration_api() {
   hhds::GraphLibrary lib;
   auto               gio = lib.create_io("alu");
@@ -303,8 +323,8 @@ void test_traversal_contexts_use_one_node_type() {
   assert(saw_backward_hier_leaf);
 }
 
-void test_forward_loop_last_is_source() {
-  // A user node marked loop_last (odd type) acts as a forward source:
+void test_forward_loop_break_is_source() {
+  // A user node marked loop_break (odd type) acts as a forward source:
   // emitted unconditionally and does not propagate to sinks. The feedback
   // edge through the flop therefore does not block combinational users.
   hhds::GraphLibrary lib;
@@ -314,18 +334,18 @@ void test_forward_loop_last_is_source() {
   auto n1 = graph->create_node();
   auto n2 = graph->create_node();
   auto n3 = graph->create_node();
-  n3.set_type(3);  // bit 0 set -> is_loop_last
+  n3.set_type(3);  // bit 0 set -> is_loop_break
 
   n1.create_driver_pin().connect_sink(n2.create_sink_pin());
   n2.create_driver_pin().connect_sink(n3.create_sink_pin());
-  // Feedback: flop drives n2, closing the loop. Without loop_last, this
-  // would either cycle or force n3 before n2. With loop_last, n3 is a
+  // Feedback: flop drives n2, closing the loop. Without loop_break, this
+  // would either cycle or force n3 before n2. With loop_break, n3 is a
   // source and does not contribute to n2's pending count.
   n3.create_driver_pin().connect_sink(n2.create_sink_pin());
 
-  assert(n3.is_loop_last());
-  assert(!n1.is_loop_last());
-  assert(!n2.is_loop_last());
+  assert(n3.is_loop_break());
+  assert(!n1.is_loop_break());
+  assert(!n2.is_loop_break());
 
   std::vector<hhds::Nid> order;
   for (auto node : graph->forward_class()) {
@@ -337,7 +357,7 @@ void test_forward_loop_last_is_source() {
   assert(order[2] == n3.get_debug_nid());
 }
 
-void test_backward_loop_last_is_sink() {
+void test_backward_loop_break_is_sink() {
   hhds::GraphLibrary lib;
   auto               gio   = lib.create_io("top");
   auto               graph = gio->create_graph();
@@ -345,7 +365,7 @@ void test_backward_loop_last_is_sink() {
   auto n1 = graph->create_node();
   auto n2 = graph->create_node();
   auto n3 = graph->create_node();
-  n3.set_type(3);  // bit 0 set -> is_loop_last
+  n3.set_type(3);  // bit 0 set -> is_loop_break
 
   n1.create_driver_pin().connect_sink(n2.create_sink_pin());
   n2.create_driver_pin().connect_sink(n3.create_sink_pin());
@@ -359,6 +379,93 @@ void test_backward_loop_last_is_sink() {
   assert(order[0] == n3.get_debug_nid());
   assert(order[1] == n2.get_debug_nid());
   assert(order[2] == n1.get_debug_nid());
+}
+
+void test_forward_loop_break_visit_flags() {
+  // n1 -> n2(loop_break/flop) -> n3. n2 is a forward source, so its edges
+  // impose no ordering and all three nodes are emittable from the start;
+  // Pass 1 yields them in storage order. The loop_break_first/last flags only
+  // move n2 (the flop) within that sequence.
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+  n2.set_type(3);  // bit 0 set -> loop_break
+  assert(n2.is_loop_break());
+
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+  n2.create_driver_pin().connect_sink(n3.create_sink_pin());
+
+  const auto a = n1.get_debug_nid();
+  const auto b = n2.get_debug_nid();
+  const auto c = n3.get_debug_nid();
+  using V      = std::vector<hhds::Nid>;
+
+  // Default == (loop_break_first=true, loop_break_last=false): flop visited first.
+  assert(collect_nids(graph->forward_class()) == (V{a, b, c}));
+  assert(collect_nids(graph->forward_class(true, false)) == (V{a, b, c}));
+  // See the flop only at the end.
+  assert(collect_nids(graph->forward_class(false, true)) == (V{a, c, b}));
+  // See the flop both first and last.
+  assert(collect_nids(graph->forward_class(true, true)) == (V{a, b, c, b}));
+  // Never see the flop (but it still breaks the cycle for n3).
+  assert(collect_nids(graph->forward_class(false, false)) == (V{a, c}));
+}
+
+void test_backward_loop_break_visit_flags() {
+  // Mirror of the forward case: n2 is a backward sink, emitted high->low in
+  // Pass 1; the flags move it within [c, b, a].
+  hhds::GraphLibrary lib;
+  auto               gio   = lib.create_io("top");
+  auto               graph = gio->create_graph();
+
+  auto n1 = graph->create_node();
+  auto n2 = graph->create_node();
+  auto n3 = graph->create_node();
+  n2.set_type(3);  // bit 0 set -> loop_break
+  assert(n2.is_loop_break());
+
+  n1.create_driver_pin().connect_sink(n2.create_sink_pin());
+  n2.create_driver_pin().connect_sink(n3.create_sink_pin());
+
+  const auto a = n1.get_debug_nid();
+  const auto b = n2.get_debug_nid();
+  const auto c = n3.get_debug_nid();
+  using V      = std::vector<hhds::Nid>;
+
+  assert(collect_nids(graph->backward_class()) == (V{c, b, a}));
+  assert(collect_nids(graph->backward_class(true, false)) == (V{c, b, a}));
+  assert(collect_nids(graph->backward_class(false, true)) == (V{c, a, b}));
+  assert(collect_nids(graph->backward_class(true, true)) == (V{c, b, a, b}));
+  assert(collect_nids(graph->backward_class(false, false)) == (V{c, a}));
+}
+
+void test_forward_hier_loop_break_both_descends_once() {
+  // A loop_break flop instance emitted both first and last (loop_break_first &&
+  // loop_break_last) must have its subnode body walked only once — on the
+  // first emission, not the LoopLast replay.
+  hhds::GraphLibrary lib;
+
+  auto leaf_gio = lib.create_io("leaf");
+  leaf_gio->add_output("Q", 0, /*loop_break=*/true);  // makes the instance a loop_break
+  auto leaf   = leaf_gio->create_graph();
+  auto leaf_n = leaf->create_node();
+
+  auto top_gio   = lib.create_io("top");
+  auto top       = top_gio->create_graph();
+  auto flop_inst = top->create_node();
+  flop_inst.set_subnode(leaf_gio);
+  assert(flop_inst.is_loop_break());
+
+  const std::vector<std::pair<hhds::Gid, hhds::Nid>> expected{
+      { top->get_gid(), flop_inst.get_debug_nid()},
+      {leaf->get_gid(),    leaf_n.get_debug_nid()},
+      { top->get_gid(), flop_inst.get_debug_nid()},
+  };
+  assert(collect_gid_nids(top->forward_hier(/*loop_break_first=*/true, /*loop_break_last=*/true)) == expected);
 }
 
 void test_forward_out_of_order_uses_pending_list() {
@@ -409,9 +516,9 @@ void test_backward_out_of_order_uses_pending_list() {
 }
 
 void test_backward_cache_invalidates_after_set_type() {
-  // Cycle n1<->n2 with no loop_last: both nodes fall through to the Tail
+  // Cycle n1<->n2 with no loop_break: both nodes fall through to the Tail
   // phase (Pass 1 and Pass 2 can't break the cycle), so order is [n2, n1].
-  // After set_type marks n2 as loop_last, n2 becomes a sink: Pass 1 emits it
+  // After set_type marks n2 as loop_break, n2 becomes a sink: Pass 1 emits it
   // first and frees n1's count, yielding [n2, n1]. The Pass-1 vs Tail
   // distinction is what we exercise — a stale cache would surface as the
   // wrong relative ordering when nodes shift between phases.
@@ -429,7 +536,7 @@ void test_backward_cache_invalidates_after_set_type() {
   assert(collect_nids(graph->backward_class()) == before);
 
   n2.set_type(3);
-  assert(n2.is_loop_last());
+  assert(n2.is_loop_break());
 
   const std::vector<hhds::Nid> after{n2.get_debug_nid(), n1.get_debug_nid()};
   assert(collect_nids(graph->backward_class()) == after);
@@ -516,7 +623,7 @@ void test_backward_skips_tombstones_after_delete() {
   assert(collect_nids(graph->backward_class()) == after_delete);
 }
 
-void test_backward_cycle_tail_without_loop_last() {
+void test_backward_cycle_tail_without_loop_break() {
   hhds::GraphLibrary lib;
   auto               gio   = lib.create_io("top");
   auto               graph = gio->create_graph();
@@ -708,14 +815,14 @@ void test_backward_hier_descends_into_nested_subnodes() {
   assert(collect_gid_nids(top->backward_hier()) == expected);
 }
 
-void test_subnode_with_loop_last_pin_marks_node() {
+void test_subnode_with_loop_break_pin_marks_node() {
   // set_subnode must stamp the node type with bit 0 set iff the subnode's
-  // declared IO contains any loop_last pin (flop/register instance).
+  // declared IO contains any loop_break pin (flop/register instance).
   hhds::GraphLibrary lib;
 
   auto flop_gio = lib.create_io("flop");
-  flop_gio->add_input("D", 0, /*loop_last=*/false);
-  flop_gio->add_output("Q", 0, /*loop_last=*/true);
+  flop_gio->add_input("D", 0, /*loop_break=*/false);
+  flop_gio->add_output("Q", 0, /*loop_break=*/true);
   (void)flop_gio->create_graph();
 
   auto buf_gio = lib.create_io("buf");
@@ -731,9 +838,9 @@ void test_subnode_with_loop_last_pin_marks_node() {
   auto buf_inst = top->create_node();
   buf_inst.set_subnode(buf_gio);
 
-  assert(flop_inst.is_loop_last());
+  assert(flop_inst.is_loop_break());
   assert((flop_inst.get_type() & 1) == 1);
-  assert(!buf_inst.is_loop_last());
+  assert(!buf_inst.is_loop_break());
   assert((buf_inst.get_type() & 1) == 0);
 }
 
@@ -1055,6 +1162,202 @@ void test_load_merge() {
   fs::remove_all(base);
 }
 
+// ===========================================================================
+// EXPECTED-BEHAVIOR SPEC: cross-boundary inp_edges()/out_edges() in hier context
+// ===========================================================================
+// These encode the agreed contract: in a HIER traversal, inp_edges()/out_edges()
+// must NOT stop at a sub-module's GraphIO boundary pin. The reported driver/sink
+// pin must hop through the instance(s) that wrap the module — up to the caller
+// and/or down into a callee — crossing the boundary as many times as needed,
+// until it reaches a real driver/sink leaf. Only the *top* (starting) graph's
+// own IO pins may surface as a driver/sink.
+//
+// NOTE: these are RED against current hhds (which returns the local boundary
+// pin). They define what the resolver must produce before we implement it.
+
+// Single boundary, both directions:
+//
+//   top:   src ──▶ r.a │ leaf:  a ──▶ buf ──▶ y │ r.y ──▶ dst
+//
+// From inside `leaf` (instance r), buf's driver/sink must resolve up into `top`.
+void test_hier_edges_cross_one_boundary_EXPECTED() {
+  hhds::GraphLibrary lib;
+
+  auto leaf_io = lib.create_io("leaf");
+  leaf_io->add_input("a", 1);
+  leaf_io->add_output("y", 2);
+  auto leaf = leaf_io->create_graph();
+  auto buf  = leaf->create_node();
+  leaf->get_input_pin("a").connect_sink(buf.create_sink_pin());     // a   -> buf (port 0)
+  buf.create_driver_pin().connect_sink(leaf->get_output_pin("y"));  // buf -> y   (port 0)
+
+  auto top_io = lib.create_io("top");
+  auto top    = top_io->create_graph();
+  auto src    = top->create_node();
+  auto r      = top->create_node();
+  r.set_subnode(leaf_io);
+  auto dst = top->create_node();
+  src.create_driver_pin().connect_sink(r.create_sink_pin(1));  // src -> r.a (port 1)
+  r.create_driver_pin(2).connect_sink(dst.create_sink_pin());  // r.y -> dst (port 2)
+
+  const auto buf_h = find_hier_node(top.get(), leaf->get_gid(), buf.get_debug_nid());
+
+  // inp_edges: driver resolves up to src (top), NOT leaf's input pin "a".
+  const auto ins = buf_h.inp_edges();
+  assert(ins.size() == 1);
+  const auto drv = ins[0].driver;
+  assert(drv.get_current_gid() == top->get_gid());
+  assert(node_of(drv.get_master_node().get_debug_nid()) == node_of(src.get_debug_nid()));
+  assert(drv.is_driver());
+
+  // out_edges: sink resolves up to dst (top), NOT leaf's output pin "y".
+  const auto outs = buf_h.out_edges();
+  assert(outs.size() == 1);
+  const auto snk = outs[0].sink;
+  assert(snk.get_current_gid() == top->get_gid());
+  assert(node_of(snk.get_master_node().get_debug_nid()) == node_of(dst.get_debug_nid()));
+  assert(snk.is_sink());
+}
+
+// Up THEN down through several nodes, plus stopping at top-level IO:
+//
+//   top "pi" ─▶ ra(leafA): a─▶bufA─▶y │ ra.y ─▶ rb.a │ rb(leafB): a─▶bufB─▶y │ rb.y ─▶ top "po"
+//
+//   bufA.out_edges -> (up out of leafA via ra.y, down into rb) -> bufB sink
+//   bufB.inp_edges -> (up out of leafB via rb.a, down into ra) -> bufA driver
+//   bufA.inp_edges -> (up via ra.a) -> top input  "pi"   (top-level IO: visible)
+//   bufB.out_edges -> (up via rb.y) -> top output "po"   (top-level IO: visible)
+void test_hier_edges_cross_up_then_down_EXPECTED() {
+  hhds::GraphLibrary lib;
+
+  auto leafA_io = lib.create_io("leafA");
+  leafA_io->add_input("a", 1);
+  leafA_io->add_output("y", 2);
+  auto leafA = leafA_io->create_graph();
+  auto bufA  = leafA->create_node();
+  leafA->get_input_pin("a").connect_sink(bufA.create_sink_pin());
+  bufA.create_driver_pin().connect_sink(leafA->get_output_pin("y"));
+
+  auto leafB_io = lib.create_io("leafB");
+  leafB_io->add_input("a", 1);
+  leafB_io->add_output("y", 2);
+  auto leafB = leafB_io->create_graph();
+  auto bufB  = leafB->create_node();
+  leafB->get_input_pin("a").connect_sink(bufB.create_sink_pin());
+  bufB.create_driver_pin().connect_sink(leafB->get_output_pin("y"));
+
+  auto top_io = lib.create_io("top");
+  top_io->add_input("pi", 1);
+  top_io->add_output("po", 2);
+  auto top = top_io->create_graph();
+  auto ra  = top->create_node();
+  ra.set_subnode(leafA_io);
+  auto rb = top->create_node();
+  rb.set_subnode(leafB_io);
+  top->get_input_pin("pi").connect_sink(ra.create_sink_pin(1));     // pi   -> ra.a
+  ra.create_driver_pin(2).connect_sink(rb.create_sink_pin(1));      // ra.y -> rb.a
+  rb.create_driver_pin(2).connect_sink(top->get_output_pin("po"));  // rb.y -> po
+
+  const auto bufA_h = find_hier_node(top.get(), leafA->get_gid(), bufA.get_debug_nid());
+  const auto bufB_h = find_hier_node(top.get(), leafB->get_gid(), bufB.get_debug_nid());
+
+  // bufA.out -> bufB sink (up out of leafA, down into leafB)
+  {
+    const auto outs = bufA_h.out_edges();
+    assert(outs.size() == 1);
+    const auto snk = outs[0].sink;
+    assert(snk.get_current_gid() == leafB->get_gid());
+    assert(node_of(snk.get_master_node().get_debug_nid()) == node_of(bufB.get_debug_nid()));
+    assert(snk.is_sink());
+  }
+  // bufB.inp -> bufA driver (up out of leafB, down into leafA)
+  {
+    const auto ins = bufB_h.inp_edges();
+    assert(ins.size() == 1);
+    const auto drv = ins[0].driver;
+    assert(drv.get_current_gid() == leafA->get_gid());
+    assert(node_of(drv.get_master_node().get_debug_nid()) == node_of(bufA.get_debug_nid()));
+    assert(drv.is_driver());
+  }
+  // bufA.inp -> top input "pi" (resolution stops at the starting graph's own IO)
+  {
+    const auto ins = bufA_h.inp_edges();
+    assert(ins.size() == 1);
+    const auto drv = ins[0].driver;
+    assert(drv.get_current_gid() == top->get_gid());
+    assert(node_of(drv.get_master_node().get_debug_nid()) == node_of(top->get_input_node().get_debug_nid()));
+    assert(drv.get_pin_name() == "pi");
+    assert(drv.is_driver());
+  }
+  // bufB.out -> top output "po"
+  {
+    const auto outs = bufB_h.out_edges();
+    assert(outs.size() == 1);
+    const auto snk = outs[0].sink;
+    assert(snk.get_current_gid() == top->get_gid());
+    assert(node_of(snk.get_master_node().get_debug_nid()) == node_of(top->get_output_node().get_debug_nid()));
+    assert(snk.get_pin_name() == "po");
+    assert(snk.is_sink());
+  }
+}
+
+// Three levels of pass-through wrappers. From inside the deepest leaf, edges
+// must resolve up TWO module boundaries to the top's primary IO — exercising
+// the instance-chain reconstruction:
+//   top "pi" ─▶ mi.a │ mid: a ─▶ li.a │ leaf: a ─▶ bufL ─▶ y │ li.y ─▶ mid.y │ mi.y ─▶ top "po"
+void test_hier_edges_three_levels_EXPECTED() {
+  hhds::GraphLibrary lib;
+
+  auto leaf_io = lib.create_io("leaf3");
+  leaf_io->add_input("a", 1);
+  leaf_io->add_output("y", 2);
+  auto leaf = leaf_io->create_graph();
+  auto bufL = leaf->create_node();
+  leaf->get_input_pin("a").connect_sink(bufL.create_sink_pin());
+  bufL.create_driver_pin().connect_sink(leaf->get_output_pin("y"));
+
+  auto mid_io = lib.create_io("mid3");
+  mid_io->add_input("a", 1);
+  mid_io->add_output("y", 2);
+  auto mid = mid_io->create_graph();
+  auto li  = mid->create_node();
+  li.set_subnode(leaf_io);
+  mid->get_input_pin("a").connect_sink(li.create_sink_pin(1));     // mid.a -> li.a
+  li.create_driver_pin(2).connect_sink(mid->get_output_pin("y"));  // li.y -> mid.y
+
+  auto top_io = lib.create_io("top3");
+  top_io->add_input("pi", 1);
+  top_io->add_output("po", 2);
+  auto top = top_io->create_graph();
+  auto mi  = top->create_node();
+  mi.set_subnode(mid_io);
+  top->get_input_pin("pi").connect_sink(mi.create_sink_pin(1));     // top.pi -> mi.a
+  mi.create_driver_pin(2).connect_sink(top->get_output_pin("po"));  // mi.y -> top.po
+
+  const auto bufL_h = find_hier_node(top.get(), leaf->get_gid(), bufL.get_debug_nid());
+
+  // inp_edges resolves up two boundaries to top input "pi".
+  {
+    const auto ins = bufL_h.inp_edges();
+    assert(ins.size() == 1);
+    const auto drv = ins[0].driver;
+    assert(drv.get_current_gid() == top->get_gid());
+    assert(node_of(drv.get_master_node().get_debug_nid()) == node_of(top->get_input_node().get_debug_nid()));
+    assert(drv.get_pin_name() == "pi");
+    assert(drv.is_driver());
+  }
+  // out_edges resolves up two boundaries to top output "po".
+  {
+    const auto outs = bufL_h.out_edges();
+    assert(outs.size() == 1);
+    const auto snk = outs[0].sink;
+    assert(snk.get_current_gid() == top->get_gid());
+    assert(node_of(snk.get_master_node().get_debug_nid()) == node_of(top->get_output_node().get_debug_nid()));
+    assert(snk.get_pin_name() == "po");
+    assert(snk.is_sink());
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1066,8 +1369,11 @@ int main() {
   test_forward_class_returns_wrappers();
   test_backward_class_returns_wrappers();
   test_traversal_contexts_use_one_node_type();
-  test_forward_loop_last_is_source();
-  test_backward_loop_last_is_sink();
+  test_forward_loop_break_is_source();
+  test_backward_loop_break_is_sink();
+  test_forward_loop_break_visit_flags();
+  test_backward_loop_break_visit_flags();
+  test_forward_hier_loop_break_both_descends_once();
   test_forward_out_of_order_uses_pending_list();
   test_backward_out_of_order_uses_pending_list();
   test_backward_cache_invalidates_after_set_type();
@@ -1075,14 +1381,14 @@ int main() {
   test_backward_diamond_fan_in();
   test_backward_named_pin_and_declared_io_edges();
   test_backward_skips_tombstones_after_delete();
-  test_backward_cycle_tail_without_loop_last();
+  test_backward_cycle_tail_without_loop_break();
   test_traversal_caches_after_edge_delete();
   test_traversal_caches_after_pin_delete();
   test_traversal_caches_after_back_edge_add();
   test_backward_flat_exact_order_and_shared_body_dedup();
   test_backward_hier_exact_order_and_shared_body_per_instance();
   test_backward_hier_descends_into_nested_subnodes();
-  test_subnode_with_loop_last_pin_marks_node();
+  test_subnode_with_loop_break_pin_marks_node();
   test_hier_range_flat_graph_is_empty();
   test_hier_range_yields_one_per_subnode();
   test_hier_range_descends_into_nested_subnodes();
@@ -1102,6 +1408,11 @@ int main() {
   test_set_subnode_indirect_cycle_aborts();
 #endif
   test_load_merge();
+  // Cross-boundary hier edge resolution — EXPECTED-BEHAVIOR SPEC. RED until the
+  // resolver is implemented; run last so every other test reports first.
+  test_hier_edges_cross_one_boundary_EXPECTED();
+  test_hier_edges_cross_up_then_down_EXPECTED();
+  test_hier_edges_three_levels_EXPECTED();
   std::cout << "graph_test passed\n";
   return 0;
 }

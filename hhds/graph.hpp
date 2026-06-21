@@ -259,7 +259,7 @@ public:
   [[nodiscard]] std::shared_ptr<Graph>            get_subnode_graph() const;
   void                                            set_type(Type type) const;
   [[nodiscard]] Type                              get_type() const;
-  [[nodiscard]] bool                              is_loop_last() const;
+  [[nodiscard]] bool                              is_loop_break() const;
   [[nodiscard]] Pin_class                         create_driver_pin() const;
   [[nodiscard]] Pin_class                         create_driver_pin(Port_id port_id) const;
   [[nodiscard]] Pin_class                         create_driver_pin(std::string_view name) const;
@@ -441,7 +441,7 @@ class Graph : public Attr_host {
     [[nodiscard]] bool     is_alive() const noexcept { return alive != 0; }
     [[nodiscard]] Type     get_type() const { return static_cast<Type>(type); }
     void                   set_type(Type t) { type = t; }
-    [[nodiscard]] bool     is_loop_last() const noexcept { return (type & 1u) != 0u; }
+    [[nodiscard]] bool     is_loop_break() const noexcept { return (type & 1u) != 0u; }
     [[nodiscard]] Pid      get_next_pin_id() const { return next_pin_id; }
     void                   set_next_pin_id(Pid id) { next_pin_id = id; }
     [[nodiscard]] bool     has_edges(const OverflowVec& overflow) const;
@@ -599,14 +599,25 @@ public:
   [[nodiscard]] Pin_class  create_constant() { return get_constant_node().create_driver_pin(); }
 
   [[nodiscard]] FastClassRange     fast_class() const noexcept;
-  [[nodiscard]] ForwardClassRange  forward_class() const noexcept;
+  // Topological traversals. loop_break nodes (flops/registers — Type bit 0
+  // set; forward sources / backward sinks) break the combinational cycle
+  // regardless of these flags. The flags only control *when* the loop_break
+  // node itself is emitted:
+  //   loop_break_first (default true)  — emit it up front (forward: as a
+  //                                       source; backward: as a sink).
+  //   loop_break_last  (default false) — also/instead emit it after every
+  //                                       combinational node.
+  // The four combinations cover: see-first (default), see-last, see-both
+  // (T,T — emitted twice), and never (F,F — skip flops entirely). The default
+  // (true,false) preserves the historical "loop_break visited first" order.
+  [[nodiscard]] ForwardClassRange  forward_class(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
   [[nodiscard]] FastFlatRange      fast_flat() const noexcept;
-  [[nodiscard]] ForwardFlatRange   forward_flat() const noexcept;
+  [[nodiscard]] ForwardFlatRange   forward_flat(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
   [[nodiscard]] FastHierRange      fast_hier() const noexcept;
-  [[nodiscard]] ForwardHierRange   forward_hier() const noexcept;
-  [[nodiscard]] BackwardClassRange backward_class() const noexcept;
-  [[nodiscard]] BackwardFlatRange  backward_flat() const noexcept;
-  [[nodiscard]] BackwardHierRange  backward_hier() const noexcept;
+  [[nodiscard]] ForwardHierRange   forward_hier(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
+  [[nodiscard]] BackwardClassRange backward_class(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
+  [[nodiscard]] BackwardFlatRange  backward_flat(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
+  [[nodiscard]] BackwardHierRange  backward_hier(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
   // Hierarchy-only traversal: yields one Hier_instance per subnode in the
   // structure tree, recursing into each instance's target graph (cycle-
   // guarded by active_graphs). Walks tree_ alone — it never iterates
@@ -701,6 +712,46 @@ private:
   void               ensure_backward_caches() const;
   // Exposed to the Backward iterator classes (which are friends).
   [[nodiscard]] bool backward_is_sink(size_t idx) const noexcept;
+
+  // --- Cross-boundary (hierarchical) edge resolution -----------------------
+  // In a HIER traversal, inp_edges()/out_edges() must not stop at a sub-module's
+  // GraphIO boundary pin: the reported driver/sink hops through the wrapping
+  // instance(s) — up to the caller and/or down into a callee — until it reaches
+  // a real driver/sink leaf. Only the root (starting) graph's own IO pins
+  // surface. These helpers implement that walk.
+  struct HierInst {
+    Graph*   parent;         // graph that instantiates inst_nid
+    Nid      inst_nid;       // subnode instance node within parent
+    Tree_pos inst_tree_pos;  // inst_nid's structure-tree position in parent (== a child's hier_pos_)
+  };
+  // A resolved leaf endpoint: a real pin in `graph`, reached through `path`.
+  struct HierLeaf {
+    Graph*   graph;
+    Pid      pid;
+    Tree_pos hier_pos;
+  };
+  // Reconstruct the instance chain root..(wrapper of body_gid reached at
+  // body_hier_pos). Returns false (empty path) when body_gid is the root itself.
+  [[nodiscard]] static bool reconstruct_hier_path(Graph* root, Gid body_gid, Tree_pos body_hier_pos, std::vector<HierInst>& path);
+  // Follow a local driver (inp) / sink (out) pin across module boundaries until
+  // real leaves are reached, appending each to `out`. `path` is the instance
+  // chain from root to `g` (passed by value: pushed/popped per crossing).
+  static void resolve_hier_driver(Graph* g, std::vector<HierInst> path, Pid driver_pid, std::vector<HierLeaf>& out, int depth);
+  static void resolve_hier_sink(Graph* g, std::vector<HierInst> path, Pid sink_pid, std::vector<HierLeaf>& out, int depth);
+  // Non-asserting pin lookup by port_id (0 == node-as-pin). Returns 0 if absent.
+  [[nodiscard]] Pid     find_pin_or_zero(Nid nid, Port_id port_id, bool driver) const;
+  // Master node nid (role bits cleared) and port_id of an arbitrary pin pid.
+  [[nodiscard]] Nid     master_nid_of_pid(Pid pid) const;
+  [[nodiscard]] Port_id port_of_pid(Pid pid) const;
+  static constexpr int  kHierResolveMaxDepth = 4096;  // runaway guard for malformed nets
+
+  // Local (single-graph) edge readers — the historical behavior, used directly
+  // for Class/Flat handles and as the per-graph primitive by the hier readers.
+  [[nodiscard]] std::vector<Edge_class> inp_edges_local(Node_class node);
+  [[nodiscard]] std::vector<Edge_class> out_edges_local(Node_class node);
+  // Hier readers: resolve each far endpoint across module boundaries.
+  [[nodiscard]] std::vector<Edge_class> inp_edges_hier(Node_class node);
+  [[nodiscard]] std::vector<Edge_class> out_edges_hier(Node_class node);
 
   std::vector<NodeEntry>                         node_table;
   std::vector<PinEntry>                          pin_table;
@@ -955,21 +1006,30 @@ public:
   [[nodiscard]] bool operator!=(const ForwardClassIterator& o) const noexcept { return !(*this == o); }
 
 private:
-  enum class Phase : uint8_t { Pass1, Pass2, Tail, End };
+  // Phase order: Pass1 (sources + storage-order combinational), Pass2 (cached
+  // back-edge replay), Tail (cycle survivors), LoopLast (loop_break replay,
+  // only entered when loop_break_last_), End.
+  enum class Phase : uint8_t { Pass1, Pass2, Tail, LoopLast, End };
 
-  explicit ForwardClassIterator(Graph* graph);
+  explicit ForwardClassIterator(Graph* graph, bool loop_break_first = true, bool loop_break_last = false);
   void               advance();
   void               propagate(size_t driver_idx, size_t cursor);
   [[nodiscard]] bool is_source(size_t idx) const noexcept;
   [[nodiscard]] bool is_emitted(size_t idx) const noexcept;
   void               mark_emitted(size_t idx) noexcept;
+  // True while the current emission is a loop_break_last replay. Used by the
+  // flat/hier wrappers to avoid descending into a loop_break subnode twice
+  // when it is emitted both first and last.
+  [[nodiscard]] bool current_is_loop_break_replay() const noexcept { return phase_ == Phase::LoopLast; }
 
-  Graph* graph_       = nullptr;
-  Phase  phase_       = Phase::End;
-  size_t idx_         = 0;
-  size_t pass2_head_  = 0;
-  size_t node_count_  = 0;
-  size_t current_idx_ = 0;
+  Graph* graph_            = nullptr;
+  Phase  phase_            = Phase::End;
+  size_t idx_              = 0;
+  size_t pass2_head_       = 0;
+  size_t node_count_       = 0;
+  size_t current_idx_      = 0;
+  bool   loop_break_first_ = true;
+  bool   loop_break_last_  = false;
 
   std::vector<uint32_t> working_remaining_in_;
   std::vector<uint64_t> emitted_bits_;
@@ -981,7 +1041,8 @@ private:
 
 class ForwardClassRange {
 public:
-  explicit ForwardClassRange(Graph* graph) noexcept : graph_(graph) {}
+  explicit ForwardClassRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {}
   [[nodiscard]] ForwardClassIterator begin() const;
   [[nodiscard]] ForwardClassIterator end() const noexcept { return ForwardClassIterator{}; }
 
@@ -993,6 +1054,8 @@ public:
 
 private:
   Graph* graph_;
+  bool   loop_break_first_ = true;
+  bool   loop_break_last_  = false;
 };
 
 // Forward flat traversal: local graph's forward order, with subgraph bodies
@@ -1024,10 +1087,12 @@ private:
     ForwardClassIterator it;
   };
 
-  explicit ForwardFlatIterator(Graph* root_graph);
+  explicit ForwardFlatIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false);
   void advance();
 
-  Gid                               top_graph_ = Gid_invalid;
+  Gid                               top_graph_        = Gid_invalid;
+  bool                              loop_break_first_ = true;
+  bool                              loop_break_last_  = false;
   std::vector<Frame>                stack_;
   ankerl::unordered_dense::set<Gid> active_graphs_;
 
@@ -1036,12 +1101,15 @@ private:
 
 class ForwardFlatRange {
 public:
-  explicit ForwardFlatRange(Graph* graph) noexcept : graph_(graph) {}
+  explicit ForwardFlatRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {}
   [[nodiscard]] ForwardFlatIterator begin() const;
   [[nodiscard]] ForwardFlatIterator end() const noexcept { return ForwardFlatIterator{}; }
 
 private:
   Graph* graph_;
+  bool   loop_break_first_ = true;
+  bool   loop_break_last_  = false;
 };
 
 // Forward hier traversal: per-instance hier_pos token, subgraph bodies visited
@@ -1074,10 +1142,12 @@ private:
     Tree_pos             hier_pos;
   };
 
-  explicit ForwardHierIterator(Graph* root_graph);
+  explicit ForwardHierIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false);
   void advance();
 
-  Gid                               root_gid_ = Gid_invalid;
+  Gid                               root_gid_         = Gid_invalid;
+  bool                              loop_break_first_ = true;
+  bool                              loop_break_last_  = false;
   std::vector<Frame>                stack_;
   ankerl::unordered_dense::set<Gid> active_graphs_;
 
@@ -1086,12 +1156,15 @@ private:
 
 class ForwardHierRange {
 public:
-  explicit ForwardHierRange(Graph* graph) noexcept : graph_(graph) {}
+  explicit ForwardHierRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {}
   [[nodiscard]] ForwardHierIterator begin() const;
   [[nodiscard]] ForwardHierIterator end() const noexcept { return ForwardHierIterator{}; }
 
 private:
   Graph* graph_;
+  bool   loop_break_first_ = true;
+  bool   loop_break_last_  = false;
 };
 
 // Backward topological iterator for a single graph body. Emits sinks first,
@@ -1124,21 +1197,27 @@ public:
   [[nodiscard]] bool operator!=(const BackwardClassIterator& o) const noexcept { return !(*this == o); }
 
 private:
-  enum class Phase : uint8_t { Pass1, Pass2, Tail, End };
+  // Phase order mirrors ForwardClassIterator: Pass1 (sinks + reverse
+  // storage-order combinational), Pass2 (cached replay), Tail (cycle
+  // survivors), LoopLast (loop_break replay, only when loop_break_last_), End.
+  enum class Phase : uint8_t { Pass1, Pass2, Tail, LoopLast, End };
 
-  explicit BackwardClassIterator(Graph* graph);
+  explicit BackwardClassIterator(Graph* graph, bool loop_break_first = true, bool loop_break_last = false);
   void               advance();
   void               propagate(size_t sink_idx, size_t cursor);
   [[nodiscard]] bool is_sink(size_t idx) const noexcept;
   [[nodiscard]] bool is_emitted(size_t idx) const noexcept;
   void               mark_emitted(size_t idx) noexcept;
+  [[nodiscard]] bool current_is_loop_break_replay() const noexcept { return phase_ == Phase::LoopLast; }
 
-  Graph* graph_       = nullptr;
-  Phase  phase_       = Phase::End;
-  size_t idx_         = 0;
-  size_t pass2_head_  = 0;
-  size_t node_count_  = 0;
-  size_t current_idx_ = 0;
+  Graph* graph_            = nullptr;
+  Phase  phase_            = Phase::End;
+  size_t idx_              = 0;
+  size_t pass2_head_       = 0;
+  size_t node_count_       = 0;
+  size_t current_idx_      = 0;
+  bool   loop_break_first_ = true;
+  bool   loop_break_last_  = false;
 
   std::vector<uint32_t> working_remaining_out_;
   std::vector<uint64_t> emitted_bits_;
@@ -1150,7 +1229,8 @@ private:
 
 class BackwardClassRange {
 public:
-  explicit BackwardClassRange(Graph* graph) noexcept : graph_(graph) {}
+  explicit BackwardClassRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {}
   [[nodiscard]] BackwardClassIterator begin() const;
   [[nodiscard]] BackwardClassIterator end() const noexcept { return BackwardClassIterator{}; }
 
@@ -1160,6 +1240,8 @@ public:
 
 private:
   Graph* graph_;
+  bool   loop_break_first_ = true;
+  bool   loop_break_last_  = false;
 };
 
 class BackwardFlatIterator {
@@ -1188,10 +1270,12 @@ private:
     BackwardClassIterator it;
   };
 
-  explicit BackwardFlatIterator(Graph* root_graph);
+  explicit BackwardFlatIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false);
   void advance();
 
-  Gid                               top_graph_ = Gid_invalid;
+  Gid                               top_graph_        = Gid_invalid;
+  bool                              loop_break_first_ = true;
+  bool                              loop_break_last_  = false;
   std::vector<Frame>                stack_;
   ankerl::unordered_dense::set<Gid> active_graphs_;
 
@@ -1200,12 +1284,15 @@ private:
 
 class BackwardFlatRange {
 public:
-  explicit BackwardFlatRange(Graph* graph) noexcept : graph_(graph) {}
+  explicit BackwardFlatRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {}
   [[nodiscard]] BackwardFlatIterator begin() const;
   [[nodiscard]] BackwardFlatIterator end() const noexcept { return BackwardFlatIterator{}; }
 
 private:
   Graph* graph_;
+  bool   loop_break_first_ = true;
+  bool   loop_break_last_  = false;
 };
 
 class BackwardHierIterator {
@@ -1235,10 +1322,12 @@ private:
     Tree_pos              hier_pos;
   };
 
-  explicit BackwardHierIterator(Graph* root_graph);
+  explicit BackwardHierIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false);
   void advance();
 
-  Gid                               root_gid_ = Gid_invalid;
+  Gid                               root_gid_         = Gid_invalid;
+  bool                              loop_break_first_ = true;
+  bool                              loop_break_last_  = false;
   std::vector<Frame>                stack_;
   ankerl::unordered_dense::set<Gid> active_graphs_;
 
@@ -1247,12 +1336,15 @@ private:
 
 class BackwardHierRange {
 public:
-  explicit BackwardHierRange(Graph* graph) noexcept : graph_(graph) {}
+  explicit BackwardHierRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {}
   [[nodiscard]] BackwardHierIterator begin() const;
   [[nodiscard]] BackwardHierIterator end() const noexcept { return BackwardHierIterator{}; }
 
 private:
   Graph* graph_;
+  bool   loop_break_first_ = true;
+  bool   loop_break_last_  = false;
 };
 
 // Structure-tree pre-order iterator. Walks tree_ (skipping ROOT) and, when
@@ -1320,15 +1412,15 @@ public:
 
   struct DeclaredIoPin {
     std::string name;
-    Port_id     port_id   = 0;
-    bool        loop_last = false;
+    Port_id     port_id    = 0;
+    bool        loop_break = false;
     // Per-declared-pin bitwidth. 0 means unspecified (defaulted by the
     // consumer). Stored on GraphIO rather than PinEntry so that declared
     // IO bits survive even when the body has not been materialized.
-    uint32_t    bits      = 0;
+    uint32_t    bits       = 0;
     // Sign hint: true == unsigned, false == signed/unspecified. Mirrors
     // LiveHD's `is_unsign()` predicate on graph IO pins.
-    bool        unsign    = false;
+    bool        unsign     = false;
   };
 
 private:
@@ -1362,8 +1454,8 @@ public:
   [[nodiscard]] std::shared_ptr<const Graph> get_graph() const;
   [[nodiscard]] std::shared_ptr<Graph>       create_graph();
   [[nodiscard]] bool                         has_graph() const;
-  void                                       add_input(std::string_view name, Port_id port_id, bool loop_last = false);
-  void                                       add_output(std::string_view name, Port_id port_id, bool loop_last = false);
+  void                                       add_input(std::string_view name, Port_id port_id, bool loop_break = false);
+  void                                       add_output(std::string_view name, Port_id port_id, bool loop_break = false);
   void                                       delete_input(std::string_view name);
   void                                       delete_output(std::string_view name);
   void                                       clear();
@@ -1375,7 +1467,7 @@ public:
   void                                       reset_declarations();
   [[nodiscard]] bool                         has_input(std::string_view name) const;
   [[nodiscard]] bool                         has_output(std::string_view name) const;
-  [[nodiscard]] bool                         is_loop_last(std::string_view name) const;
+  [[nodiscard]] bool                         is_loop_break(std::string_view name) const;
   [[nodiscard]] Port_id                      get_input_port_id(std::string_view name) const;
   [[nodiscard]] Port_id                      get_output_port_id(std::string_view name) const;
   // Reverse lookup: does any declared input/output have this port_id?
@@ -2100,13 +2192,13 @@ inline void Graph::abort() {
   ab->store(true, std::memory_order_release);
 }
 
-inline void GraphIO::add_input(std::string_view name, Port_id port_id, bool loop_last) {
+inline void GraphIO::add_input(std::string_view name, Port_id port_id, bool loop_break) {
   assert(owner_lib_ != nullptr && "add_input: GraphIO is no longer attached to a library");
   assert(!name.empty() && "add_input: name is required");
 
   const std::string key(name);
   assert(declared_io_pins_.find(key) == declared_io_pins_.end() && "add_input: input pin name already exists");
-  input_pin_decls_.push_back(DeclaredIoPin{key, port_id, loop_last});
+  input_pin_decls_.push_back(DeclaredIoPin{key, port_id, loop_break});
   declared_io_pins_.emplace(input_pin_decls_.back().name, DeclaredIoPinRef{IoDirection::Input, input_pin_decls_.size() - 1});
 
   if (auto graph = get_graph()) {
@@ -2116,13 +2208,13 @@ inline void GraphIO::add_input(std::string_view name, Port_id port_id, bool loop
   }
 }
 
-inline void GraphIO::add_output(std::string_view name, Port_id port_id, bool loop_last) {
+inline void GraphIO::add_output(std::string_view name, Port_id port_id, bool loop_break) {
   assert(owner_lib_ != nullptr && "add_output: GraphIO is no longer attached to a library");
   assert(!name.empty() && "add_output: name is required");
 
   const std::string key(name);
   assert(declared_io_pins_.find(key) == declared_io_pins_.end() && "add_output: output pin name already exists");
-  output_pin_decls_.push_back(DeclaredIoPin{key, port_id, loop_last});
+  output_pin_decls_.push_back(DeclaredIoPin{key, port_id, loop_break});
   declared_io_pins_.emplace(output_pin_decls_.back().name, DeclaredIoPinRef{IoDirection::Output, output_pin_decls_.size() - 1});
 
   if (auto graph = get_graph()) {
@@ -2264,17 +2356,17 @@ inline bool GraphIO::is_unsign(std::string_view name) const {
   return pins[it->second.index].unsign;
 }
 
-inline bool GraphIO::is_loop_last(std::string_view name) const {
+inline bool GraphIO::is_loop_break(std::string_view name) const {
   const auto it = declared_io_pins_.find(std::string(name));
-  assert(it != declared_io_pins_.end() && "is_loop_last: declared pin name not found");
+  assert(it != declared_io_pins_.end() && "is_loop_break: declared pin name not found");
   if (it == declared_io_pins_.end()) {
     return false;
   }
 
   if (it->second.direction == IoDirection::Input) {
-    return input_pin_decls_[it->second.index].loop_last;
+    return input_pin_decls_[it->second.index].loop_break;
   }
-  return output_pin_decls_[it->second.index].loop_last;
+  return output_pin_decls_[it->second.index].loop_break;
 }
 
 inline Port_id GraphIO::get_input_port_id(std::string_view name) const {

@@ -748,7 +748,7 @@ static constexpr size_t kFirstUserNodeIdx = 4;
 
 // Source classification used by both the cache builder and the streaming
 // iterator. INPUT (idx=1) and CONST (idx=3) are implicit sources; any live
-// user node whose Type's bit 0 is set (is_loop_last — flop/clocked pin) is an
+// user node whose Type's bit 0 is set (is_loop_break — flop/clocked pin) is an
 // explicit source.
 bool Graph::forward_is_source(size_t idx) const noexcept {
   if (idx == 1 || idx == 3) {
@@ -760,7 +760,7 @@ bool Graph::forward_is_source(size_t idx) const noexcept {
   if (idx >= node_table.size()) {
     return false;
   }
-  return node_table[idx].is_loop_last();
+  return node_table[idx].is_loop_break();
 }
 
 void Graph::ensure_forward_caches() const {
@@ -892,7 +892,7 @@ bool Graph::backward_is_sink(size_t idx) const noexcept {
   if (idx >= node_table.size()) {
     return false;
   }
-  return node_table[idx].is_loop_last();
+  return node_table[idx].is_loop_break();
 }
 
 void Graph::ensure_backward_caches() const {
@@ -1642,9 +1642,9 @@ Type Node_class::get_type() const {
   return graph_->ref_node(raw_nid)->get_type();
 }
 
-bool Node_class::is_loop_last() const {
-  assert(graph_ != nullptr && "is_loop_last: node is not attached to a graph");
-  return graph_->ref_node(raw_nid)->is_loop_last();
+bool Node_class::is_loop_break() const {
+  assert(graph_ != nullptr && "is_loop_break: node is not attached to a graph");
+  return graph_->ref_node(raw_nid)->is_loop_break();
 }
 
 auto Node_class::create_driver_pin() const -> Pin_class { return create_driver_pin(0); }
@@ -1823,25 +1823,25 @@ void Graph::set_subnode(Nid nid, Gid gid) {
   }
 
   // Stamp node type so the forward iterator can O(1) tell whether this
-  // subnode contains any loop_last boundary (flop/register/clocked pin).
-  // Bit 0 of Type encodes is_loop_last (odd == loop_last, even == not).
+  // subnode contains any loop_break boundary (flop/register/clocked pin).
+  // Bit 0 of Type encodes is_loop_break (odd == loop_break, even == not).
   if (subnode_gio != nullptr) {
-    bool has_loop_last = false;
+    bool has_loop_break = false;
     for (const auto& decl : subnode_gio->input_pin_decls_) {
-      if (decl.loop_last) {
-        has_loop_last = true;
+      if (decl.loop_break) {
+        has_loop_break = true;
         break;
       }
     }
-    if (!has_loop_last) {
+    if (!has_loop_break) {
       for (const auto& decl : subnode_gio->output_pin_decls_) {
-        if (decl.loop_last) {
-          has_loop_last = true;
+        if (decl.loop_break) {
+          has_loop_break = true;
           break;
         }
       }
     }
-    ref_node(nid)->set_type(has_loop_last ? static_cast<Type>(3) : static_cast<Type>(2));
+    ref_node(nid)->set_type(has_loop_break ? static_cast<Type>(3) : static_cast<Type>(2));
   }
 
   invalidate_traversal_caches();
@@ -1920,14 +1920,14 @@ void Graph::del_edge(Pin_class driver_pin, Pin_class sink_pin) {
 
 FastClassRange Graph::fast_class() const noexcept { return FastClassRange(const_cast<Graph*>(this)); }
 
-ForwardClassRange Graph::forward_class() const noexcept {
+ForwardClassRange Graph::forward_class(bool loop_break_first, bool loop_break_last) const noexcept {
   assert_accessible();
-  return ForwardClassRange(const_cast<Graph*>(this));
+  return ForwardClassRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
 }
 
-BackwardClassRange Graph::backward_class() const noexcept {
+BackwardClassRange Graph::backward_class(bool loop_break_first, bool loop_break_last) const noexcept {
   assert_accessible();
-  return BackwardClassRange(const_cast<Graph*>(this));
+  return BackwardClassRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
 }
 
 FastFlatRange Graph::fast_flat() const noexcept { return FastFlatRange(const_cast<Graph*>(this)); }
@@ -2098,24 +2098,24 @@ auto FastHierIterator::operator++() -> FastHierIterator& {
 
 FastHierIterator FastHierRange::begin() const { return FastHierIterator(graph_); }
 
-ForwardFlatRange Graph::forward_flat() const noexcept {
+ForwardFlatRange Graph::forward_flat(bool loop_break_first, bool loop_break_last) const noexcept {
   assert_accessible();
-  return ForwardFlatRange(const_cast<Graph*>(this));
+  return ForwardFlatRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
 }
 
-ForwardHierRange Graph::forward_hier() const noexcept {
+ForwardHierRange Graph::forward_hier(bool loop_break_first, bool loop_break_last) const noexcept {
   assert_accessible();
-  return ForwardHierRange(const_cast<Graph*>(this));
+  return ForwardHierRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
 }
 
-BackwardFlatRange Graph::backward_flat() const noexcept {
+BackwardFlatRange Graph::backward_flat(bool loop_break_first, bool loop_break_last) const noexcept {
   assert_accessible();
-  return BackwardFlatRange(const_cast<Graph*>(this));
+  return BackwardFlatRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
 }
 
-BackwardHierRange Graph::backward_hier() const noexcept {
+BackwardHierRange Graph::backward_hier(bool loop_break_first, bool loop_break_last) const noexcept {
   assert_accessible();
-  return BackwardHierRange(const_cast<Graph*>(this));
+  return BackwardHierRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
 }
 
 // --- ForwardClassIterator ---
@@ -2126,7 +2126,8 @@ BackwardHierRange Graph::backward_hier() const noexcept {
 // clobbering the cache). Pass 2 reads the cache directly. Tail re-scans
 // storage order for cycle survivors.
 
-ForwardClassIterator::ForwardClassIterator(Graph* graph) : graph_(graph) {
+ForwardClassIterator::ForwardClassIterator(Graph* graph, bool loop_break_first, bool loop_break_last)
+    : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {
   if (graph_ == nullptr) {
     phase_ = Phase::End;
     return;
@@ -2284,9 +2285,17 @@ void ForwardClassIterator::advance() {
         if (!graph_->node_table[i].is_alive() || is_emitted(i)) {
           continue;
         }
-        if (is_source(i) || working_remaining_in_[i] == 0) {
+        const bool src = is_source(i);
+        if (src || working_remaining_in_[i] == 0) {
           mark_emitted(i);
           propagate(i, i);
+          // loop_break nodes are the only user-range sources. They are always
+          // marked here (so Tail skips them) but only yielded now when
+          // loop_break_first_; if loop_break_last_, they are replayed in
+          // the LoopLast phase instead/also.
+          if (src && !loop_break_first_) {
+            continue;
+          }
           current_idx_ = i;
           return;
         }
@@ -2320,6 +2329,26 @@ void ForwardClassIterator::advance() {
         current_idx_ = i;
         return;
       }
+      phase_ = loop_break_last_ ? Phase::LoopLast : Phase::End;
+      idx_   = kFirstUserNodeIdx;
+      if (phase_ == Phase::End) {
+        current_idx_ = 0;
+        return;
+      }
+      continue;
+    }
+    if (phase_ == Phase::LoopLast) {
+      // Replay every live loop_break (source) node after all combinational
+      // and cycle-tail nodes. Already marked emitted in Pass1, so we test the
+      // source predicate directly rather than the emitted bitset.
+      while (idx_ < node_count_) {
+        const size_t i = idx_++;
+        if (!graph_->node_table[i].is_alive() || !is_source(i)) {
+          continue;
+        }
+        current_idx_ = i;
+        return;
+      }
       phase_       = Phase::End;
       current_idx_ = 0;
       return;
@@ -2335,7 +2364,7 @@ ForwardClassIterator& ForwardClassIterator::operator++() {
   return *this;
 }
 
-ForwardClassIterator ForwardClassRange::begin() const { return ForwardClassIterator(graph_); }
+ForwardClassIterator ForwardClassRange::begin() const { return ForwardClassIterator(graph_, loop_break_first_, loop_break_last_); }
 
 size_t ForwardClassRange::size() const {
   size_t n = 0;
@@ -2355,7 +2384,8 @@ bool ForwardClassRange::empty() const { return begin() == end(); }
 
 // --- ForwardFlatIterator ---
 
-ForwardFlatIterator::ForwardFlatIterator(Graph* root_graph) {
+ForwardFlatIterator::ForwardFlatIterator(Graph* root_graph, bool loop_break_first, bool loop_break_last)
+    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {
   if (root_graph == nullptr) {
     return;
   }
@@ -2364,7 +2394,7 @@ ForwardFlatIterator::ForwardFlatIterator(Graph* root_graph) {
   if (top_graph_ != Gid_invalid) {
     active_graphs_.insert(top_graph_);
   }
-  stack_.push_back(Frame{root_graph, ForwardClassIterator(root_graph)});
+  stack_.push_back(Frame{root_graph, ForwardClassIterator(root_graph, loop_break_first_, loop_break_last_)});
   advance();
 }
 
@@ -2386,28 +2416,33 @@ Node_class ForwardFlatIterator::operator*() const {
 }
 
 ForwardFlatIterator& ForwardFlatIterator::operator++() {
-  auto&       frame   = stack_.back();
-  const Nid   cur_nid = (*frame.it).get_debug_nid();
-  const auto& entry   = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
-  const auto* lib     = frame.graph->owner_lib_;
+  auto&       frame    = stack_.back();
+  const Nid   cur_nid  = (*frame.it).get_debug_nid();
+  const auto& entry    = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
+  const auto* lib      = frame.graph->owner_lib_;
+  // A loop_break subnode emitted both first and last (loop_break_first_ &&
+  // loop_break_last_) must be descended into only once — on its first
+  // emission. Skip the descent when this emission is the LoopLast replay.
+  const bool  skip_sub = loop_break_first_ && frame.it.current_is_loop_break_replay();
   ++frame.it;
-  if (entry.has_subnode() && lib != nullptr) {
+  if (entry.has_subnode() && lib != nullptr && !skip_sub) {
     const Gid sub = entry.get_subnode();
     if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
       Graph* child = const_cast<Graph*>(lib->get_graph(sub).get());
       active_graphs_.insert(sub);
-      stack_.push_back(Frame{child, ForwardClassIterator(child)});
+      stack_.push_back(Frame{child, ForwardClassIterator(child, loop_break_first_, loop_break_last_)});
     }
   }
   advance();
   return *this;
 }
 
-ForwardFlatIterator ForwardFlatRange::begin() const { return ForwardFlatIterator(graph_); }
+ForwardFlatIterator ForwardFlatRange::begin() const { return ForwardFlatIterator(graph_, loop_break_first_, loop_break_last_); }
 
 // --- ForwardHierIterator ---
 
-ForwardHierIterator::ForwardHierIterator(Graph* root_graph) {
+ForwardHierIterator::ForwardHierIterator(Graph* root_graph, bool loop_break_first, bool loop_break_last)
+    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {
   if (root_graph == nullptr) {
     return;
   }
@@ -2416,7 +2451,8 @@ ForwardHierIterator::ForwardHierIterator(Graph* root_graph) {
   if (root_gid_ != Gid_invalid) {
     active_graphs_.insert(root_gid_);
   }
-  stack_.push_back(Frame{root_graph, ForwardClassIterator(root_graph), static_cast<Tree_pos>(ROOT)});
+  stack_.push_back(
+      Frame{root_graph, ForwardClassIterator(root_graph, loop_break_first_, loop_break_last_), static_cast<Tree_pos>(ROOT)});
   advance();
 }
 
@@ -2442,33 +2478,37 @@ Node_class ForwardHierIterator::operator*() const {
 }
 
 ForwardHierIterator& ForwardHierIterator::operator++() {
-  auto&       frame   = stack_.back();
-  const Nid   cur_nid = (*frame.it).get_debug_nid();
-  const auto& entry   = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
-  const auto* lib     = frame.graph->owner_lib_;
+  auto&       frame    = stack_.back();
+  const Nid   cur_nid  = (*frame.it).get_debug_nid();
+  const auto& entry    = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
+  const auto* lib      = frame.graph->owner_lib_;
+  // Descend into a loop_break subnode only on its first emission (see the
+  // flat iterator for the rationale); skip on the LoopLast replay.
+  const bool  skip_sub = loop_break_first_ && frame.it.current_is_loop_break_replay();
   ++frame.it;
-  if (entry.has_subnode() && lib != nullptr) {
+  if (entry.has_subnode() && lib != nullptr && !skip_sub) {
     const Gid sub = entry.get_subnode();
     if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
       Graph*         child     = const_cast<Graph*>(lib->get_graph(sub).get());
       auto           it        = frame.graph->subnode_tree_pos_.find(cur_nid);
       const Tree_pos child_pos = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
       active_graphs_.insert(sub);
-      stack_.push_back(Frame{child, ForwardClassIterator(child), child_pos});
+      stack_.push_back(Frame{child, ForwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos});
     }
   }
   advance();
   return *this;
 }
 
-ForwardHierIterator ForwardHierRange::begin() const { return ForwardHierIterator(graph_); }
+ForwardHierIterator ForwardHierRange::begin() const { return ForwardHierIterator(graph_, loop_break_first_, loop_break_last_); }
 
 // --- BackwardClassIterator ---
 //
 // Replays the reverse topological emission order using backward_pass2_cache_ and
 // initial out-edge counts.
 
-BackwardClassIterator::BackwardClassIterator(Graph* graph) : graph_(graph) {
+BackwardClassIterator::BackwardClassIterator(Graph* graph, bool loop_break_first, bool loop_break_last)
+    : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {
   if (graph_ == nullptr) {
     phase_ = Phase::End;
     return;
@@ -2554,9 +2594,16 @@ void BackwardClassIterator::advance() {
         if (!graph_->node_table[i].is_alive() || is_emitted(i)) {
           continue;
         }
-        if (is_sink(i) || working_remaining_out_[i] == 0) {
+        const bool snk = is_sink(i);
+        if (snk || working_remaining_out_[i] == 0) {
           mark_emitted(i);
           propagate(i, i);
+          // loop_break nodes are the only user-range sinks. Mirror the forward
+          // iterator: always mark here, but yield now only when
+          // loop_break_first_; otherwise replay them in the LoopLast phase.
+          if (snk && !loop_break_first_) {
+            continue;
+          }
           current_idx_ = i;
           return;
         }
@@ -2590,6 +2637,25 @@ void BackwardClassIterator::advance() {
         current_idx_ = i;
         return;
       }
+      phase_ = loop_break_last_ ? Phase::LoopLast : Phase::End;
+      idx_   = node_count_;
+      if (phase_ == Phase::End) {
+        current_idx_ = 0;
+        return;
+      }
+      continue;
+    }
+    if (phase_ == Phase::LoopLast) {
+      // Replay every live loop_break (sink) node after all combinational and
+      // cycle-tail nodes, in the same high→low order as Pass1.
+      while (idx_ > kFirstUserNodeIdx) {
+        const size_t i = --idx_;
+        if (!graph_->node_table[i].is_alive() || !is_sink(i)) {
+          continue;
+        }
+        current_idx_ = i;
+        return;
+      }
       phase_       = Phase::End;
       current_idx_ = 0;
       return;
@@ -2605,7 +2671,9 @@ BackwardClassIterator& BackwardClassIterator::operator++() {
   return *this;
 }
 
-BackwardClassIterator BackwardClassRange::begin() const { return BackwardClassIterator(graph_); }
+BackwardClassIterator BackwardClassRange::begin() const {
+  return BackwardClassIterator(graph_, loop_break_first_, loop_break_last_);
+}
 
 size_t BackwardClassRange::size() const {
   size_t n = 0;
@@ -2625,7 +2693,8 @@ bool BackwardClassRange::empty() const { return begin() == end(); }
 
 // --- BackwardFlatIterator ---
 
-BackwardFlatIterator::BackwardFlatIterator(Graph* root_graph) {
+BackwardFlatIterator::BackwardFlatIterator(Graph* root_graph, bool loop_break_first, bool loop_break_last)
+    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {
   if (root_graph == nullptr) {
     return;
   }
@@ -2634,7 +2703,7 @@ BackwardFlatIterator::BackwardFlatIterator(Graph* root_graph) {
   if (top_graph_ != Gid_invalid) {
     active_graphs_.insert(top_graph_);
   }
-  stack_.push_back(Frame{root_graph, BackwardClassIterator(root_graph)});
+  stack_.push_back(Frame{root_graph, BackwardClassIterator(root_graph, loop_break_first_, loop_break_last_)});
   advance();
 }
 
@@ -2656,28 +2725,30 @@ Node_class BackwardFlatIterator::operator*() const {
 }
 
 BackwardFlatIterator& BackwardFlatIterator::operator++() {
-  auto&       frame   = stack_.back();
-  const Nid   cur_nid = (*frame.it).get_debug_nid();
-  const auto& entry   = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
-  const auto* lib     = frame.graph->owner_lib_;
+  auto&       frame    = stack_.back();
+  const Nid   cur_nid  = (*frame.it).get_debug_nid();
+  const auto& entry    = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
+  const auto* lib      = frame.graph->owner_lib_;
+  const bool  skip_sub = loop_break_first_ && frame.it.current_is_loop_break_replay();
   ++frame.it;
-  if (entry.has_subnode() && lib != nullptr) {
+  if (entry.has_subnode() && lib != nullptr && !skip_sub) {
     const Gid sub = entry.get_subnode();
     if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
       Graph* child = const_cast<Graph*>(lib->get_graph(sub).get());
       active_graphs_.insert(sub);
-      stack_.push_back(Frame{child, BackwardClassIterator(child)});
+      stack_.push_back(Frame{child, BackwardClassIterator(child, loop_break_first_, loop_break_last_)});
     }
   }
   advance();
   return *this;
 }
 
-BackwardFlatIterator BackwardFlatRange::begin() const { return BackwardFlatIterator(graph_); }
+BackwardFlatIterator BackwardFlatRange::begin() const { return BackwardFlatIterator(graph_, loop_break_first_, loop_break_last_); }
 
 // --- BackwardHierIterator ---
 
-BackwardHierIterator::BackwardHierIterator(Graph* root_graph) {
+BackwardHierIterator::BackwardHierIterator(Graph* root_graph, bool loop_break_first, bool loop_break_last)
+    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {
   if (root_graph == nullptr) {
     return;
   }
@@ -2686,7 +2757,8 @@ BackwardHierIterator::BackwardHierIterator(Graph* root_graph) {
   if (root_gid_ != Gid_invalid) {
     active_graphs_.insert(root_gid_);
   }
-  stack_.push_back(Frame{root_graph, BackwardClassIterator(root_graph), static_cast<Tree_pos>(ROOT)});
+  stack_.push_back(
+      Frame{root_graph, BackwardClassIterator(root_graph, loop_break_first_, loop_break_last_), static_cast<Tree_pos>(ROOT)});
   advance();
 }
 
@@ -2712,26 +2784,27 @@ Node_class BackwardHierIterator::operator*() const {
 }
 
 BackwardHierIterator& BackwardHierIterator::operator++() {
-  auto&       frame   = stack_.back();
-  const Nid   cur_nid = (*frame.it).get_debug_nid();
-  const auto& entry   = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
-  const auto* lib     = frame.graph->owner_lib_;
+  auto&       frame    = stack_.back();
+  const Nid   cur_nid  = (*frame.it).get_debug_nid();
+  const auto& entry    = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
+  const auto* lib      = frame.graph->owner_lib_;
+  const bool  skip_sub = loop_break_first_ && frame.it.current_is_loop_break_replay();
   ++frame.it;
-  if (entry.has_subnode() && lib != nullptr) {
+  if (entry.has_subnode() && lib != nullptr && !skip_sub) {
     const Gid sub = entry.get_subnode();
     if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
       Graph*         child     = const_cast<Graph*>(lib->get_graph(sub).get());
       auto           it        = frame.graph->subnode_tree_pos_.find(cur_nid);
       const Tree_pos child_pos = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
       active_graphs_.insert(sub);
-      stack_.push_back(Frame{child, BackwardClassIterator(child), child_pos});
+      stack_.push_back(Frame{child, BackwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos});
     }
   }
   advance();
   return *this;
 }
 
-BackwardHierIterator BackwardHierRange::begin() const { return BackwardHierIterator(graph_); }
+BackwardHierIterator BackwardHierRange::begin() const { return BackwardHierIterator(graph_, loop_break_first_, loop_break_last_); }
 
 // --- Hier_instance members ---
 
@@ -2915,6 +2988,15 @@ void Graph::del_edge_int(Vid driver_id, Vid sink_id) {
 auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
   assert_accessible();
   assert_node_exists(node);
+  // In a HIER traversal, the reported sinks must cross module boundaries
+  // (see inp_edges/out_edges resolution). Class/Flat keep the local view.
+  if (node.is_hier() && owner_lib_ != nullptr) {
+    return out_edges_hier(node);
+  }
+  return out_edges_local(node);
+}
+
+auto Graph::out_edges_local(Node_class node) -> std::vector<Edge_class> {
   std::vector<Edge_class> out;
   const Nid               self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
   auto*                   self     = ref_node(self_nid);
@@ -2982,6 +3064,13 @@ auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
 auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
   assert_accessible();
   assert_node_exists(node);
+  if (node.is_hier() && owner_lib_ != nullptr) {
+    return inp_edges_hier(node);
+  }
+  return inp_edges_local(node);
+}
+
+auto Graph::inp_edges_local(Node_class node) -> std::vector<Edge_class> {
   std::vector<Edge_class> out;
   const Nid               self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
   auto*                   self     = ref_node(self_nid);
@@ -3040,6 +3129,232 @@ auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
     cur_pin = pin_entry->get_next_pin_id();
   }
   return out;
+}
+
+// --- Cross-boundary (hierarchical) edge resolution -------------------------
+
+Pid Graph::find_pin_or_zero(Nid nid, Port_id port_id, bool driver) const {
+  const Nid base = nid & ~static_cast<Nid>(3);
+  if (port_id == 0) {
+    return driver ? (base | static_cast<Pid>(2)) : base;  // node-as-pin
+  }
+  const auto* self = ref_node(base);
+  for (Pid cur = self->get_next_pin_id(); cur != 0;) {
+    const Pid   canonical = (cur & ~static_cast<Pid>(2)) | static_cast<Pid>(1);  // real-pin sink form
+    const auto* pin       = ref_pin(canonical);
+    const auto  port      = pin->get_port_id();
+    if (port == port_id) {
+      return driver ? (canonical | static_cast<Pid>(2)) : canonical;
+    }
+    if (port > port_id) {
+      break;  // pin list is sorted by ascending port_id
+    }
+    cur = pin->get_next_pin_id();
+  }
+  return 0;
+}
+
+Nid Graph::master_nid_of_pid(Pid pid) const {
+  if (pid & static_cast<Pid>(1)) {  // real pin
+    const Pid canonical = (pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    return ref_pin(canonical)->get_master_nid() & ~static_cast<Nid>(3);
+  }
+  return pid & ~static_cast<Nid>(3);  // node-as-pin
+}
+
+Port_id Graph::port_of_pid(Pid pid) const {
+  if (pid & static_cast<Pid>(1)) {
+    const Pid canonical = (pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    return ref_pin(canonical)->get_port_id();
+  }
+  return 0;  // node-as-pin == port 0
+}
+
+bool Graph::reconstruct_hier_path(Graph* root, Gid body_gid, Tree_pos body_hier_pos, std::vector<HierInst>& path) {
+  if (root == nullptr || root->owner_lib_ == nullptr) {
+    return false;
+  }
+  const auto* lib = root->owner_lib_;
+  for (const auto& [nid, tree_pos] : root->subnode_tree_pos_) {
+    const auto* entry = root->ref_node(nid);
+    if (!entry->is_alive() || !entry->has_subnode()) {
+      continue;
+    }
+    const Gid child_gid = entry->get_subnode();
+    path.push_back(HierInst{root, nid, tree_pos});
+    if (child_gid == body_gid && tree_pos == body_hier_pos) {
+      return true;  // path ends at the instance wrapping the target body
+    }
+    if (lib->has_graph(child_gid)) {
+      Graph* child = const_cast<Graph*>(lib->get_graph(child_gid).get());
+      if (reconstruct_hier_path(child, body_gid, body_hier_pos, path)) {
+        return true;
+      }
+    }
+    path.pop_back();
+  }
+  return false;
+}
+
+void Graph::resolve_hier_driver(Graph* g, std::vector<HierInst> path, Pid driver_pid, std::vector<HierLeaf>& out, int depth) {
+  if (depth > kHierResolveMaxDepth) {
+    return;
+  }
+  const Nid master = g->master_nid_of_pid(driver_pid);
+
+  if (master == INPUT_NODE) {
+    // Driver pin on this body's INPUT_NODE == a module input port.
+    if (path.empty()) {
+      out.push_back(HierLeaf{g, driver_pid, static_cast<Tree_pos>(ROOT)});  // root primary input: visible
+      return;
+    }
+    const HierInst up = path.back();
+    path.pop_back();
+    const Port_id port      = g->port_of_pid(driver_pid);
+    const Pid     inst_sink = up.parent->find_pin_or_zero(up.inst_nid, port, /*driver=*/false);
+    if (inst_sink == 0) {
+      return;  // module input unconnected one level up
+    }
+    for (const auto& e : up.parent->inp_edges(Pin_class(up.parent, inst_sink))) {
+      resolve_hier_driver(up.parent, path, e.driver.get_debug_pid(), out, depth + 1);
+    }
+    return;
+  }
+
+  if (master != OUTPUT_NODE && master != CONST_NODE) {
+    const auto* entry = g->ref_node(master);
+    if (entry->has_subnode() && g->owner_lib_ != nullptr) {
+      // Driver pin on a sub-instance == the instance's output port. Cross down
+      // into the body's OUTPUT_NODE sink for the same port.
+      const Gid   child_gid = entry->get_subnode();
+      const auto* lib       = g->owner_lib_;
+      if (lib->has_graph(child_gid)) {
+        Graph*         child          = const_cast<Graph*>(lib->get_graph(child_gid).get());
+        const Port_id  port           = g->port_of_pid(driver_pid);
+        const auto     it             = g->subnode_tree_pos_.find(master);
+        const Tree_pos tp             = (it != g->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
+        const Pid      child_out_sink = child->find_pin_or_zero(OUTPUT_NODE, port, /*driver=*/false);
+        if (child_out_sink != 0) {
+          path.push_back(HierInst{g, master, tp});
+          for (const auto& e : child->inp_edges(Pin_class(child, child_out_sink))) {
+            resolve_hier_driver(child, path, e.driver.get_debug_pid(), out, depth + 1);
+          }
+        }
+        return;
+      }
+    }
+  }
+
+  // Real leaf driver (ordinary node, CONST, or unresolvable boundary).
+  out.push_back(HierLeaf{g, driver_pid, path.empty() ? static_cast<Tree_pos>(ROOT) : path.back().inst_tree_pos});
+}
+
+void Graph::resolve_hier_sink(Graph* g, std::vector<HierInst> path, Pid sink_pid, std::vector<HierLeaf>& out, int depth) {
+  if (depth > kHierResolveMaxDepth) {
+    return;
+  }
+  const Nid master = g->master_nid_of_pid(sink_pid);
+
+  if (master == OUTPUT_NODE) {
+    // Sink pin on this body's OUTPUT_NODE == a module output port.
+    if (path.empty()) {
+      out.push_back(HierLeaf{g, sink_pid, static_cast<Tree_pos>(ROOT)});  // root primary output: visible
+      return;
+    }
+    const HierInst up = path.back();
+    path.pop_back();
+    const Port_id port        = g->port_of_pid(sink_pid);
+    const Pid     inst_driver = up.parent->find_pin_or_zero(up.inst_nid, port, /*driver=*/true);
+    if (inst_driver == 0) {
+      return;  // module output unconnected one level up
+    }
+    for (const auto& e : up.parent->out_edges(Pin_class(up.parent, inst_driver))) {
+      resolve_hier_sink(up.parent, path, e.sink.get_debug_pid(), out, depth + 1);
+    }
+    return;
+  }
+
+  if (master != INPUT_NODE && master != CONST_NODE) {
+    const auto* entry = g->ref_node(master);
+    if (entry->has_subnode() && g->owner_lib_ != nullptr) {
+      // Sink pin on a sub-instance == the instance's input port. Cross down
+      // into the body's INPUT_NODE driver for the same port.
+      const Gid   child_gid = entry->get_subnode();
+      const auto* lib       = g->owner_lib_;
+      if (lib->has_graph(child_gid)) {
+        Graph*         child           = const_cast<Graph*>(lib->get_graph(child_gid).get());
+        const Port_id  port            = g->port_of_pid(sink_pid);
+        const auto     it              = g->subnode_tree_pos_.find(master);
+        const Tree_pos tp              = (it != g->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
+        const Pid      child_in_driver = child->find_pin_or_zero(INPUT_NODE, port, /*driver=*/true);
+        if (child_in_driver != 0) {
+          path.push_back(HierInst{g, master, tp});
+          for (const auto& e : child->out_edges(Pin_class(child, child_in_driver))) {
+            resolve_hier_sink(child, path, e.sink.get_debug_pid(), out, depth + 1);
+          }
+        }
+        return;
+      }
+    }
+  }
+
+  out.push_back(HierLeaf{g, sink_pid, path.empty() ? static_cast<Tree_pos>(ROOT) : path.back().inst_tree_pos});
+}
+
+auto Graph::inp_edges_hier(Node_class node) -> std::vector<Edge_class> {
+  std::vector<HierInst> base_path;
+  const auto*           lib = owner_lib_;
+  if (lib != nullptr && node.root_gid_ != Gid_invalid && lib->has_graph(node.root_gid_)) {
+    Graph* root = const_cast<Graph*>(lib->get_graph(node.root_gid_).get());
+    if (root != this && !reconstruct_hier_path(root, get_gid(), node.get_hier_pos(), base_path)) {
+      return inp_edges_local(node);  // handle not locatable in the hierarchy: degrade to local
+    }
+  }
+
+  std::vector<Edge_class> result;
+  std::vector<HierLeaf>   leaves;
+  for (const auto& local : inp_edges_local(node)) {
+    leaves.clear();
+    resolve_hier_driver(this, base_path, local.driver.get_debug_pid(), leaves, 0);
+    for (const auto& leaf : leaves) {
+      Edge_class e{};
+      e.sink             = local.sink;  // near side: node's pin, already hier context
+      e.driver           = Pin_class(leaf.graph, leaf.pid);
+      e.driver.context_  = node.context_;
+      e.driver.root_gid_ = node.root_gid_;
+      e.driver.hier_pos_ = leaf.hier_pos;
+      result.push_back(e);
+    }
+  }
+  return result;
+}
+
+auto Graph::out_edges_hier(Node_class node) -> std::vector<Edge_class> {
+  std::vector<HierInst> base_path;
+  const auto*           lib = owner_lib_;
+  if (lib != nullptr && node.root_gid_ != Gid_invalid && lib->has_graph(node.root_gid_)) {
+    Graph* root = const_cast<Graph*>(lib->get_graph(node.root_gid_).get());
+    if (root != this && !reconstruct_hier_path(root, get_gid(), node.get_hier_pos(), base_path)) {
+      return out_edges_local(node);  // handle not locatable in the hierarchy: degrade to local
+    }
+  }
+
+  std::vector<Edge_class> result;
+  std::vector<HierLeaf>   leaves;
+  for (const auto& local : out_edges_local(node)) {
+    leaves.clear();
+    resolve_hier_sink(this, base_path, local.sink.get_debug_pid(), leaves, 0);
+    for (const auto& leaf : leaves) {
+      Edge_class e{};
+      e.driver         = local.driver;  // near side: node's pin, already hier context
+      e.sink           = Pin_class(leaf.graph, leaf.pid);
+      e.sink.context_  = node.context_;
+      e.sink.root_gid_ = node.root_gid_;
+      e.sink.hier_pos_ = leaf.hier_pos;
+      result.push_back(e);
+    }
+  }
+  return result;
 }
 
 auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
@@ -3633,8 +3948,8 @@ void GraphLibrary::save(const std::string& db_path) const {
       ofs << "graph_io " << gid << " " << gio->get_name() << "\n";
       auto emit_pin = [&ofs](const char* direction, const GraphIO::DeclaredIoPin& pin) {
         ofs << "  " << direction << " " << pin.port_id << " " << pin.name;
-        if (pin.loop_last) {
-          ofs << " loop_last";
+        if (pin.loop_break) {
+          ofs << " loop_break";
         }
         if (pin.bits) {
           ofs << " bits=" << pin.bits;
@@ -3739,13 +4054,13 @@ void GraphLibrary::load(const std::string& db_path) {
         Port_id            port_id;
         std::string        name;
         ss >> direction >> port_id >> name;
-        bool        loop_last = false;
-        uint32_t    bits      = 0;
-        bool        unsign    = false;
+        bool        loop_break = false;
+        uint32_t    bits       = 0;
+        bool        unsign     = false;
         std::string token;
         while (ss >> token) {
-          if (token == "loop_last") {
-            loop_last = true;
+          if (token == "loop_break" || token == "loop_last") {  // "loop_last": legacy token
+            loop_break = true;
           } else if (token == "unsigned") {
             unsign = true;
           } else if (token.rfind("bits=", 0) == 0) {
@@ -3756,7 +4071,7 @@ void GraphLibrary::load(const std::string& db_path) {
         // GraphIO::add_input/add_output (those call get_graph() which would
         // reacquire the lock as a reader). The body hasn't been materialized
         // yet, so this only needs to populate the GraphIO declaration vectors.
-        GraphIO::DeclaredIoPin decl{name, port_id, loop_last, bits, unsign};
+        GraphIO::DeclaredIoPin decl{name, port_id, loop_break, bits, unsign};
         if (direction == "input") {
           current_gio->input_pin_decls_.push_back(decl);
           current_gio->declared_io_pins_.emplace(
@@ -3830,20 +4145,20 @@ void GraphLibrary::load_merge(const std::string& db_path) {
         Port_id            port_id;
         std::string        name;
         ss >> direction >> port_id >> name;
-        bool        loop_last = false;
-        uint32_t    bits      = 0;
-        bool        unsign    = false;
+        bool        loop_break = false;
+        uint32_t    bits       = 0;
+        bool        unsign     = false;
         std::string token;
         while (ss >> token) {
-          if (token == "loop_last") {
-            loop_last = true;
+          if (token == "loop_break" || token == "loop_last") {  // "loop_last": legacy token
+            loop_break = true;
           } else if (token == "unsigned") {
             unsign = true;
           } else if (token.rfind("bits=", 0) == 0) {
             bits = static_cast<uint32_t>(std::stoul(token.substr(5)));
           }
         }
-        GraphIO::DeclaredIoPin decl{name, port_id, loop_last, bits, unsign};
+        GraphIO::DeclaredIoPin decl{name, port_id, loop_break, bits, unsign};
         (direction == "input" ? entries[cur].inputs : entries[cur].outputs).push_back(decl);
       }
     }
