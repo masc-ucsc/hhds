@@ -110,6 +110,11 @@ auto Graph::PinEntry::overflow_handling(Pid self_id, Vid other_id, OverflowPool&
     hs.insert(static_cast<Vid>(ledge1));
   }
   use_overflow         = true;
+  // Zero the full 64-bit union word before writing the 32-bit overflow_idx so
+  // the stale upper 32 bits of the old packed sedges don't linger (they get
+  // serialized verbatim by save_body, which would make identical graphs
+  // produce byte-different bodies). Mirrors the NodeEntry promotion path.
+  sedges_.sedges       = 0;
   sedges_.overflow_idx = idx;
   ledge0 = ledge1 = 0;
 
@@ -1040,7 +1045,7 @@ void Graph::patch_traversal_caches_for_edge(Vid driver_id, Vid sink_id, int32_t 
       if (delta > 0) {
         slot += static_cast<uint32_t>(delta);
       } else {
-        const auto dec = static_cast<uint32_t>(-delta);
+        const auto dec = 0u - static_cast<uint32_t>(delta);  // magnitude in unsigned space: avoids UB at INT32_MIN
         if (slot >= dec) {
           slot -= dec;
         } else {
@@ -1058,7 +1063,7 @@ void Graph::patch_traversal_caches_for_edge(Vid driver_id, Vid sink_id, int32_t 
       if (delta > 0) {
         slot += static_cast<uint32_t>(delta);
       } else {
-        const auto dec = static_cast<uint32_t>(-delta);
+        const auto dec = 0u - static_cast<uint32_t>(delta);  // magnitude in unsigned space: avoids UB at INT32_MIN
         if (slot >= dec) {
           slot -= dec;
         } else {
@@ -1261,7 +1266,7 @@ auto Graph::pin_name(Pin_class pin) const -> std::string_view {
 
 auto Graph::get_input_pin(std::string_view name) const -> Pin_class {
   assert_accessible();
-  const auto it = input_pins_.find(std::string(name));
+  const auto it = input_pins_.find(name);  // transparent Ci_hash/Ci_eq: no std::string alloc
   assert(it != input_pins_.end() && "get_input_pin: declared input name not found");
   if (it == input_pins_.end()) {
     return {};
@@ -1271,7 +1276,7 @@ auto Graph::get_input_pin(std::string_view name) const -> Pin_class {
 
 auto Graph::get_output_pin(std::string_view name) const -> Pin_class {
   assert_accessible();
-  const auto it = output_pins_.find(std::string(name));
+  const auto it = output_pins_.find(name);  // transparent Ci_hash/Ci_eq: no std::string alloc
   assert(it != output_pins_.end() && "get_output_pin: declared output name not found");
   if (it == output_pins_.end()) {
     return {};
@@ -1284,7 +1289,7 @@ auto Graph::materialize_declared_io_pin(std::string_view name, Port_id port_id, 
   assert_accessible();
   assert(!name.empty() && "materialize_declared_io_pin: name is required");
 
-  const auto it = pins_by_name.find(std::string(name));
+  const auto it = pins_by_name.find(name);  // transparent Ci_hash/Ci_eq: no std::string alloc
   if (it != pins_by_name.end()) {
     return it->second;
   }
@@ -1294,10 +1299,10 @@ auto Graph::materialize_declared_io_pin(std::string_view name, Port_id port_id, 
   return pin_pid;
 }
 
-void Graph::erase_declared_io_pin(std::string_view name,
+void Graph::erase_declared_io_pin(std::string_view                                                name,
                                   ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq>& pins_by_name) {
   assert_accessible();
-  const auto it = pins_by_name.find(std::string(name));
+  const auto it = pins_by_name.find(name);  // transparent Ci_hash/Ci_eq: no std::string alloc
   assert(it != pins_by_name.end() && "erase_declared_io_pin: declared pin name not found");
   if (it == pins_by_name.end()) {
     return;
@@ -1326,167 +1331,22 @@ void Graph::delete_pin(Pid pin_pid) {
     edges_to_remove.push_back(edge);
   }
 
+  // Remove the reverse (back) edge each neighbor stores pointing at this pin.
+  // delete_edge is the canonical primitive: it covers every storage regime
+  // (inline sedges + the 3 NodeEntry sedges_extra slots + ledge0/ledge1 +
+  // overflow set) for both PinEntry and NodeEntry. The previous hand-rolled
+  // inline scan only inspected the 4 sedges_ slots, so a node back-edge that
+  // spilled into sedges_extra was left dangling after the pin was zeroed.
+  auto pool = get_overflow_pool();
   for (auto other_vid : edges_to_remove) {
-    if (other_vid & static_cast<Vid>(2)) {
-      // if other vid is source
-      const Vid reverse_edge = pin_lookup;
-      if (other_vid & static_cast<Vid>(1)) {
-        // other is a pin
-        auto* other_pin = ref_pin(other_vid);
-        if (other_pin->use_overflow) {
-          (void)overflow_sets_[other_pin->get_overflow_idx()].erase(reverse_edge);
-        } else {
-          constexpr int      SHIFT      = 16;
-          constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
-          constexpr uint64_t SIGN_BIT   = 1ULL << 15;
-          constexpr uint64_t DRIVER_BIT = 1ULL << 1;
-          constexpr uint64_t PIN_BIT    = 1ULL << 0;
-          constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;
-          const uint64_t     self_num   = static_cast<uint64_t>(other_vid) >> 2;
-          for (int i = 0; i < 4; ++i) {
-            const uint64_t raw = (other_pin->sedges_.sedges >> (i * SHIFT)) & SLOT;
-            if (raw == 0) {
-              continue;
-            }
-
-            const bool     neg        = (raw & SIGN_BIT) != 0;
-            const bool     driver     = (raw & DRIVER_BIT) != 0;
-            const bool     is_pin     = (raw & PIN_BIT) != 0;
-            const uint64_t magnitude  = (raw >> 2) & MAG_MASK;
-            const int64_t  delta      = neg ? -static_cast<int64_t>(magnitude) : static_cast<int64_t>(magnitude);
-            const uint64_t target_num = self_num - delta;
-            const Vid      candidate  = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (is_pin ? PIN_BIT : 0));
-
-            if (candidate == reverse_edge) {
-              other_pin->sedges_.sedges &= ~(static_cast<int64_t>(SLOT) << (i * SHIFT));
-              break;
-            }
-          }
-          if (other_pin->ledge0 == reverse_edge) {
-            other_pin->ledge0 = 0;
-          } else if (other_pin->ledge1 == reverse_edge) {
-            other_pin->ledge1 = 0;
-          }
-        }
-      } else {
-        // if other_vid is a node
-        auto* other_node = ref_node(other_vid);
-        if (other_node->use_overflow) {
-          (void)overflow_sets_[other_node->get_overflow_idx()].erase(reverse_edge);
-        } else {
-          constexpr int      SHIFT      = 16;
-          constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
-          constexpr uint64_t SIGN_BIT   = 1ULL << 15;
-          constexpr uint64_t DRIVER_BIT = 1ULL << 1;
-          constexpr uint64_t PIN_BIT    = 1ULL << 0;
-          constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;
-          const uint64_t     self_num   = static_cast<uint64_t>(other_vid) >> 2;
-          for (int i = 0; i < 4; ++i) {
-            const uint64_t raw = (other_node->sedges_.sedges >> (i * SHIFT)) & SLOT;
-            if (raw == 0) {
-              continue;
-            }
-
-            const bool     neg        = (raw & SIGN_BIT) != 0;
-            const bool     driver     = (raw & DRIVER_BIT) != 0;
-            const bool     is_pin     = (raw & PIN_BIT) != 0;
-            const uint64_t magnitude  = (raw >> 2) & MAG_MASK;
-            const int64_t  delta      = neg ? -static_cast<int64_t>(magnitude) : static_cast<int64_t>(magnitude);
-            const uint64_t target_num = self_num - delta;
-            const Vid      candidate  = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (is_pin ? PIN_BIT : 0));
-
-            if (candidate == reverse_edge) {
-              other_node->sedges_.sedges &= ~(static_cast<int64_t>(SLOT) << (i * SHIFT));
-              break;
-            }
-          }
-          if (other_node->ledge0 == reverse_edge) {
-            other_node->ledge0 = 0;
-          } else if (other_node->ledge1 == reverse_edge) {
-            other_node->ledge1 = 0;
-          }
-        }
-      }
+    // other_vid drives us (bit 2 set) -> its back edge is this pin as a sink
+    // (pin_lookup); otherwise we drive it and the back edge is this pin as a
+    // driver (pin_lookup | 2).
+    const Vid reverse_edge = (other_vid & static_cast<Vid>(2)) ? pin_lookup : (pin_lookup | static_cast<Vid>(2));
+    if (other_vid & static_cast<Vid>(1)) {
+      (void)ref_pin(other_vid)->delete_edge(other_vid, reverse_edge, pool);
     } else {
-      // other vid is sink
-      const Vid reverse_edge = pin_lookup | static_cast<Pid>(2);
-      if (other_vid & static_cast<Vid>(1)) {
-        // other is a pin
-        auto* other_pin = ref_pin(other_vid);
-        if (other_pin->use_overflow) {
-          (void)overflow_sets_[other_pin->get_overflow_idx()].erase(reverse_edge);
-        } else {
-          constexpr int      SHIFT      = 16;
-          constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
-          constexpr uint64_t SIGN_BIT   = 1ULL << 15;
-          constexpr uint64_t DRIVER_BIT = 1ULL << 1;
-          constexpr uint64_t PIN_BIT    = 1ULL << 0;
-          constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;
-          const uint64_t     self_num   = static_cast<uint64_t>(other_vid) >> 2;
-          for (int i = 0; i < 4; ++i) {
-            const uint64_t raw = (other_pin->sedges_.sedges >> (i * SHIFT)) & SLOT;
-            if (raw == 0) {
-              continue;
-            }
-
-            const bool     neg        = (raw & SIGN_BIT) != 0;
-            const bool     driver     = (raw & DRIVER_BIT) != 0;
-            const bool     is_pin     = (raw & PIN_BIT) != 0;
-            const uint64_t magnitude  = (raw >> 2) & MAG_MASK;
-            const int64_t  delta      = neg ? -static_cast<int64_t>(magnitude) : static_cast<int64_t>(magnitude);
-            const uint64_t target_num = self_num - delta;
-            const Vid      candidate  = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (is_pin ? PIN_BIT : 0));
-
-            if (candidate == reverse_edge) {
-              other_pin->sedges_.sedges &= ~(static_cast<int64_t>(SLOT) << (i * SHIFT));
-              break;
-            }
-          }
-          if (other_pin->ledge0 == reverse_edge) {
-            other_pin->ledge0 = 0;
-          } else if (other_pin->ledge1 == reverse_edge) {
-            other_pin->ledge1 = 0;
-          }
-        }
-      } else {
-        // other is a node
-        auto* other_node = ref_node(other_vid);
-        if (other_node->use_overflow) {
-          (void)overflow_sets_[other_node->get_overflow_idx()].erase(reverse_edge);
-        } else {
-          constexpr int      SHIFT      = 16;
-          constexpr uint64_t SLOT       = (1ULL << SHIFT) - 1;
-          constexpr uint64_t SIGN_BIT   = 1ULL << 15;
-          constexpr uint64_t DRIVER_BIT = 1ULL << 1;
-          constexpr uint64_t PIN_BIT    = 1ULL << 0;
-          constexpr uint64_t MAG_MASK   = (1ULL << 13) - 1;
-          const uint64_t     self_num   = static_cast<uint64_t>(other_vid) >> 2;
-          for (int i = 0; i < 4; ++i) {
-            const uint64_t raw = (other_node->sedges_.sedges >> (i * SHIFT)) & SLOT;
-            if (raw == 0) {
-              continue;
-            }
-
-            const bool     neg        = (raw & SIGN_BIT) != 0;
-            const bool     driver     = (raw & DRIVER_BIT) != 0;
-            const bool     is_pin     = (raw & PIN_BIT) != 0;
-            const uint64_t magnitude  = (raw >> 2) & MAG_MASK;
-            const int64_t  delta      = neg ? -static_cast<int64_t>(magnitude) : static_cast<int64_t>(magnitude);
-            const uint64_t target_num = self_num - delta;
-            const Vid      candidate  = static_cast<Vid>((target_num << 2) | (driver ? DRIVER_BIT : 0) | (is_pin ? PIN_BIT : 0));
-
-            if (candidate == reverse_edge) {
-              other_node->sedges_.sedges &= ~(static_cast<int64_t>(SLOT) << (i * SHIFT));
-              break;
-            }
-          }
-          if (other_node->ledge0 == reverse_edge) {
-            other_node->ledge0 = 0;
-          } else if (other_node->ledge1 == reverse_edge) {
-            other_node->ledge1 = 0;
-          }
-        }
-      }
+      (void)ref_node(other_vid)->delete_edge(other_vid, reverse_edge, pool);
     }
   }
 
@@ -2613,15 +2473,15 @@ void BackwardClassIterator::propagate(size_t sink_idx, size_t /*cursor*/) {
     try_dec(driver_idx_of(vid));
   }
   for (Pid pin_vid = graph_->node_table[sink_idx].get_next_pin_id(); pin_vid != 0;) {
-    const Pid canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-    auto      pin_edges     = graph_->ref_pin(canonical_pin)->get_edges(canonical_pin, graph_->overflow_sets_);
-    for (auto edge_vid : pin_edges) {
+    const Pid   canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    const auto* pin           = graph_->ref_pin(canonical_pin);  // hoist: one lookup per list step (was two)
+    for (auto edge_vid : pin->get_edges(canonical_pin, graph_->overflow_sets_)) {
       if (!(edge_vid & static_cast<Vid>(2))) {
         continue;
       }
       try_dec(driver_idx_of(edge_vid));
     }
-    pin_vid = graph_->ref_pin(canonical_pin)->get_next_pin_id();
+    pin_vid = pin->get_next_pin_id();
   }
 }
 
@@ -3068,7 +2928,7 @@ auto Graph::out_edges_local(Node_class node) -> std::vector<Edge_class> {
       // node-as-pin sink: original code did not inherit context here
       e.sink = Pin_class(this, static_cast<Nid>(vid) & ~static_cast<Nid>(2));
     }
-    out.push_back(e);
+    out.push_back(std::move(e));
   }
 
   // 2) Walk pin linked list inline (avoids std::vector<Pin_class> alloc and
@@ -3097,7 +2957,7 @@ auto Graph::out_edges_local(Node_class node) -> std::vector<Edge_class> {
       } else {
         e.sink = Pin_class(this, static_cast<Nid>(vid) & ~static_cast<Nid>(2));
       }
-      out.push_back(e);
+      out.push_back(std::move(e));
     }
 
     cur_pin = pin_entry->get_next_pin_id();
@@ -3140,7 +3000,7 @@ auto Graph::inp_edges_local(Node_class node) -> std::vector<Edge_class> {
       // node-as-pin driver: original code did not inherit context here
       e.driver = Pin_class(this, static_cast<Nid>(vid) | static_cast<Nid>(2));
     }
-    out.push_back(e);
+    out.push_back(std::move(e));
   }
 
   // 2) Walk pin linked list inline.
@@ -3167,7 +3027,7 @@ auto Graph::inp_edges_local(Node_class node) -> std::vector<Edge_class> {
       } else {
         e.driver = Pin_class(this, static_cast<Nid>(vid) | static_cast<Nid>(2));
       }
-      out.push_back(e);
+      out.push_back(std::move(e));
     }
 
     cur_pin = pin_entry->get_next_pin_id();
@@ -3434,7 +3294,7 @@ auto Graph::inp_edges_hier(Node_class node) -> std::vector<Edge_class> {
       e.driver.root_gid_  = node.root_gid_;
       e.driver.hier_pos_  = leaf.hier_pos;
       e.driver.hier_path_ = leaf.path;
-      result.push_back(e);
+      result.push_back(std::move(e));
     }
   }
   return result;
@@ -3460,7 +3320,7 @@ auto Graph::out_edges_hier(Node_class node) -> std::vector<Edge_class> {
       e.sink.root_gid_    = node.root_gid_;
       e.sink.hier_pos_    = leaf.hier_pos;
       e.sink.hier_path_   = leaf.path;
-      result.push_back(e);
+      result.push_back(std::move(e));
     }
   }
   return result;
@@ -3573,7 +3433,7 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
         e.sink.root_gid_  = pin.root_gid_;
         e.sink.hier_pos_  = pin.hier_pos_;
         e.sink.hier_path_ = pin.hier_path_;
-        out.push_back(e);
+        out.push_back(std::move(e));
       } else {
         const Nid  sink_nid = static_cast<Nid>(vid);
         Edge_class e{};
@@ -3583,7 +3443,7 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
         e.sink.root_gid_  = pin.root_gid_;
         e.sink.hier_pos_  = pin.hier_pos_;
         e.sink.hier_path_ = pin.hier_path_;
-        out.push_back(e);
+        out.push_back(std::move(e));
       }
     }
     return out;
@@ -3614,7 +3474,7 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
       e.sink.root_gid_  = pin.root_gid_;
       e.sink.hier_pos_  = pin.hier_pos_;
       e.sink.hier_path_ = pin.hier_path_;
-      out.push_back(e);
+      out.push_back(std::move(e));
       continue;
     }
 
@@ -3623,7 +3483,7 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
     Edge_class e{};
     e.driver = context_driver_pin;
     e.sink   = Pin_class(this, sink_nid & ~static_cast<Nid>(2));
-    out.push_back(e);
+    out.push_back(std::move(e));
   }
 
   return out;
@@ -3657,7 +3517,7 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
         e.driver.hier_pos_  = pin.hier_pos_;
         e.driver.hier_path_ = pin.hier_path_;
         e.sink              = self_sink_pin;
-        out.push_back(e);
+        out.push_back(std::move(e));
       } else {
         const Nid  driver_nid = static_cast<Nid>(vid);
         Edge_class e{};
@@ -3667,7 +3527,7 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
         e.driver.hier_pos_  = pin.hier_pos_;
         e.driver.hier_path_ = pin.hier_path_;
         e.sink              = self_sink_pin;
-        out.push_back(e);
+        out.push_back(std::move(e));
       }
     }
     return out;
@@ -3698,7 +3558,7 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
       e.driver.hier_pos_  = pin.hier_pos_;
       e.driver.hier_path_ = pin.hier_path_;
       e.sink              = context_sink_pin;
-      out.push_back(e);
+      out.push_back(std::move(e));
       continue;
     }
 
@@ -3707,7 +3567,7 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
     Edge_class e{};
     e.driver = Pin_class(this, driver_nid | static_cast<Nid>(2));
     e.sink   = context_sink_pin;
-    out.push_back(e);
+    out.push_back(std::move(e));
   }
 
   return out;
@@ -3881,10 +3741,13 @@ void Graph::set_next_pin(Nid nid, Pid next_pin) {
 void Graph::display_graph() const {
   assert_accessible();
   for (Pid pid = 1; pid < pin_table.size(); ++pid) {
-    auto p = ref_pin(pid);
+    // ref_pin/get_edges expect a canonical Pid ((index << 2) | 1), not a raw
+    // table index — otherwise every entry decodes against the wrong self index.
+    const Pid cpid = (pid << 2) | static_cast<Pid>(1);
+    auto      p    = ref_pin(cpid);
     std::cout << "PinEntry " << pid << "  node=" << p->get_master_nid() << " port=" << p->get_port_id() << "\n";
     if (p->has_edges()) {
-      auto sed = p->get_edges(pid, overflow_sets_);
+      auto sed = p->get_edges(cpid, overflow_sets_);
       std::cout << "  edges:";
       for (auto e : sed) {
         if (e) {

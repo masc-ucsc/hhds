@@ -308,6 +308,13 @@ private:
   }
 
   [[nodiscard]] inline bool _contains_data(const Tree_pos& idx) const noexcept {
+    // Lower-bound guard mirrors _check_idx_exists: subnode references are stored
+    // as negative Tree_pos values, and a negative idx >> 6 stays negative, which
+    // a signed `< size()` compare does NOT reject — so validity_stack[neg] would
+    // be an out-of-bounds read. Reject negatives up front.
+    if (idx <= INVALID) {
+      return false;
+    }
     const auto bitset_idx = idx >> 6;
     const auto bit_pos    = idx & 63;
     return bitset_idx < static_cast<Tree_pos>(validity_stack.size()) && validity_stack[bitset_idx][bit_pos];
@@ -789,11 +796,7 @@ public:
         this->current = subnode_root;
         return *this;
       }
-      if (tree_ptr->get_sibling_next(current) != INVALID) {
-        current = tree_ptr->get_sibling_next(current);
-      } else {
-        current = INVALID;
-      }
+      current = tree_ptr->get_sibling_next(current);  // single sibling scan (was two); INVALID already means "end"
       return *this;
     }
   };
@@ -846,11 +849,7 @@ public:
         this->current = subnode_root;
         return *this;
       }
-      if (tree_ptr->get_sibling_next(current) != INVALID) {
-        current = tree_ptr->get_sibling_next(current);
-      } else {
-        current = INVALID;
-      }
+      current = tree_ptr->get_sibling_next(current);  // single sibling scan (was two); INVALID already means "end"
       return *this;
     }
   };
@@ -1140,8 +1139,7 @@ public:
 
       if (current == start) {
         current = INVALID;
-      } else if (tree_ptr->get_sibling_next(current) != INVALID) {
-        auto next = tree_ptr->get_sibling_next(current);
+      } else if (auto next = tree_ptr->get_sibling_next(current); next != INVALID) {  // single sibling scan (was two)
         while (tree_ptr->get_first_child(next) != INVALID) {
           next = tree_ptr->get_first_child(next);
         }
@@ -1627,14 +1625,20 @@ private:
   std::vector<std::shared_ptr<TreeIO>> tree_ios_;
   std::vector<std::shared_ptr<Tree>>   trees;
   std::vector<size_t>                  reference_counts;
-  std::unordered_map<std::string, Tid> tree_name_to_tid_;
-  std::unordered_map<std::string, Tid> deleted_name_to_tid_;
+  // Transparent hash/eq so find(string_view) needs no temporary std::string on
+  // these parallel read paths (find_io / name-availability checks).
+  struct Sv_hash {
+    using is_transparent = void;
+    [[nodiscard]] size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
+  };
+  std::unordered_map<std::string, Tid, Sv_hash, std::equal_to<>> tree_name_to_tid_;
+  std::unordered_map<std::string, Tid, Sv_hash, std::equal_to<>> deleted_name_to_tid_;
   // Forest-level source-provenance table (hhds-srcloc): the loaded read-only
   // base plus the save-time union destination. Working mints belong to the
   // artifact wrapper that owns each tree (one Source_locator per single-writer
   // unit, e.g. livehd's Lnast); the caller unions those into this member while
   // exporting trees, before save(). Forest::save only writes it.
-  Source_locator                       srcmap_;
+  Source_locator                                                 srcmap_;
 
   // Per-slot state machine for the body in trees[idx]:
   //   Empty   -> no body; create_tree may CAS to Writing
@@ -1680,7 +1684,7 @@ public:
   [[nodiscard]] std::shared_ptr<TreeIO> create_io(std::string_view name) {
     I(!name.empty(), "create_io: name is required");
     std::unique_lock lock(registry_mu_);
-    const auto       it = deleted_name_to_tid_.find(std::string(name));
+    const auto       it = deleted_name_to_tid_.find(name);  // transparent: no temporary std::string
     if (it != deleted_name_to_tid_.end()) {
       const auto reused_tid = it->second;
       deleted_name_to_tid_.erase(it);
@@ -1864,7 +1868,7 @@ private:
       return nullptr;
     }
 
-    const auto it = tree_name_to_tid_.find(std::string(name));
+    const auto it = tree_name_to_tid_.find(name);  // transparent: no temporary std::string
     if (it == tree_name_to_tid_.end()) {
       return nullptr;
     }
@@ -2070,7 +2074,7 @@ private:
       return;
     }
 
-    const auto it = tree_name_to_tid_.find(std::string(name));
+    const auto it = tree_name_to_tid_.find(name);  // transparent: no temporary std::string
     if (it == tree_name_to_tid_.end() || it->second == self_tid) {
       return;
     }
@@ -2728,17 +2732,15 @@ inline void Tree::delete_subtree(const Tree_pos& subtree_root) {
   dirty_            = true;
   subs_cache_valid_ = false;
 
+  // The result vector doubles as the BFS worklist: index i is the cursor, and
+  // children are appended past the end. Same visitation set/order as a
+  // std::queue, without the separate deque allocation.
   std::vector<Tree_pos> nodes_to_delete;
-  std::queue<Tree_pos>  q;
-  q.push(subtree_root);
-
-  while (!q.empty()) {
-    Tree_pos node = q.front();
-    q.pop();
-    nodes_to_delete.push_back(node);
-
+  nodes_to_delete.push_back(subtree_root);
+  for (size_t i = 0; i < nodes_to_delete.size(); ++i) {
+    const Tree_pos node = nodes_to_delete[i];
     for (auto child = get_first_child(node); child != INVALID; child = get_sibling_next(child)) {
-      q.push(child);
+      nodes_to_delete.push_back(child);
     }
   }
 

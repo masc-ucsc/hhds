@@ -414,7 +414,7 @@ TEST(SourceLocatorPersist, SaveLoadRoundTrip) {
 }
 
 TEST(SourceLocatorPersist, LoadFileContentValidatesHash) {
-  const auto dir = fresh_dir("hhds_srcloc_content");
+  const auto        dir = fresh_dir("hhds_srcloc_content");
   // The "workspace": a real source file under `root`, ingested whole.
   const std::string rel = "a.prp";
   {
@@ -644,7 +644,13 @@ TEST(SourceLocatorPersist, MalformedTablesAreRejectedWhole) {
   EXPECT_FALSE(try_load("hhds_srcmap 1\nfile 0 a.prp\nfilelines 0 3 0 10\n"));               // short offset list
   EXPECT_FALSE(try_load("hhds_srcmap 1\nfile 0 a.prp\nfilelines 0 3 0 25 10\n"));            // non-ascending
   EXPECT_FALSE(try_load("hhds_srcmap 1\nfile 0 a.prp\nwhatever 1 2 3\n"));                   // unknown record
-  EXPECT_TRUE(try_load("hhds_srcmap 1\nfile 0 a.prp\nspan 7 0 0 4 1\ncombine 9 2 7 7\n"));   // valid control
+  // Untrusted-count/id guards: these must degrade to "rejected", never wrap an
+  // index out of bounds or attempt a multi-GB allocation.
+  EXPECT_FALSE(try_load("hhds_srcmap 1\nfile 4294967295 a.prp\n"));                                // fid wrap / OOB resize
+  EXPECT_FALSE(try_load("hhds_srcmap 1\nfile 0 a.prp\nfilelines 0 18446744073709551615 0 10\n"));  // huge filelines count
+  EXPECT_FALSE(
+      try_load("hhds_srcmap 1\nfile 0 a.prp\nspan 7 0 0 4 1\ncombine 9 18446744073709551615 7 7\n"));  // huge combine count
+  EXPECT_TRUE(try_load("hhds_srcmap 1\nfile 0 a.prp\nspan 7 0 0 4 1\ncombine 9 2 7 7\n"));             // valid control
 
   fs::remove_all(dir);
 }

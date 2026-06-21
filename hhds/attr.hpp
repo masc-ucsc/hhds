@@ -583,10 +583,13 @@ public:
 
   template <Attribute Tag>
   auto& attr_store(Tag = {}) {
-    const auto& desc = detail::Attr_tag_registry::instance().ensure_tag<Tag>();
-    const auto  key  = std::type_index(typeid(Tag));
-    auto        it   = attr_stores_.find(key);
+    const auto key = std::type_index(typeid(Tag));
+    auto       it  = attr_stores_.find(key);
     if (it == attr_stores_.end()) {
+      // Cold path only: consult the global tag registry to mint the store the
+      // first time this Tag is seen. The steady-state set/del path (store
+      // already present) skips the registry lookup entirely.
+      const auto& desc        = detail::Attr_tag_registry::instance().ensure_tag<Tag>();
       auto [new_it, inserted] = attr_stores_.emplace(key, desc.factory());
       assert(inserted && "attr_store: failed to create store");
       it = new_it;

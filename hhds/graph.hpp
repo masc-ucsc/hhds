@@ -259,8 +259,8 @@ public:
   // get_hier_name() / hier_local_name() read. LiveHD stamps the RTL instance
   // name (or a flop's register name) here via set_name() so that get_hier_name()
   // yields the Verilog-style hierarchical path instead of the "n<id>" fallback.
-  void                                                         set_name(std::string_view name) const;
-  [[nodiscard]] std::string_view                              get_name() const;
+  void                           set_name(std::string_view name) const;
+  [[nodiscard]] std::string_view get_name() const;
 
   // Opaque, hashable keys for use in user-owned maps. See hhds/index.hpp for
   // semantics. Prefer these over using Node_class directly as a map key.
@@ -423,6 +423,14 @@ class Graph : public Attr_host {
       using iterator                     = EdgeIterator;
 
       EdgeRange(const PinEntry* pin, Pid pid, const OverflowVec& overflow) noexcept;
+      // begin()/end() hand out iterators into inline_buf_, which lives inside
+      // this object. Copying/moving an EdgeRange would dangle those iterators,
+      // so forbid it — range-for and `auto r = get_edges(...)` still compile via
+      // guaranteed copy elision (get_edges returns a prvalue).
+      EdgeRange(const EdgeRange&)            = delete;
+      EdgeRange& operator=(const EdgeRange&) = delete;
+      EdgeRange(EdgeRange&&)                 = delete;
+      EdgeRange& operator=(EdgeRange&&)      = delete;
 
       iterator begin() const noexcept { return overflow_set_ ? iterator(overflow_set_->begin()) : iterator(inline_buf_.data()); }
       iterator end() const noexcept {
@@ -487,6 +495,12 @@ class Graph : public Attr_host {
       using iterator                     = EdgeIterator;
 
       EdgeRange(const NodeEntry* node, Nid nid, const OverflowVec& overflow) noexcept;
+      // See PinEntry::EdgeRange: iterators point into inline_buf_, so copy/move
+      // would dangle. Prvalue return + copy elision keep all callers valid.
+      EdgeRange(const EdgeRange&)            = delete;
+      EdgeRange& operator=(const EdgeRange&) = delete;
+      EdgeRange(EdgeRange&&)                 = delete;
+      EdgeRange& operator=(EdgeRange&&)      = delete;
 
       iterator begin() const noexcept { return overflow_set_ ? iterator(overflow_set_->begin()) : iterator(inline_buf_.data()); }
       iterator end() const noexcept {
@@ -685,9 +699,8 @@ private:
   void              delete_node(Nid nid);
   [[nodiscard]] Pid materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
                                                 ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq>& pins_by_name);
-  void              erase_declared_io_pin(std::string_view name,
-                                          ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq>& pins_by_name);
-  void              delete_pin(Pid pin_pid);
+  void erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq>& pins_by_name);
+  void delete_pin(Pid pin_pid);
   [[nodiscard]] Pin_class        create_pin(Node_class node, Port_id port_id);
   [[nodiscard]] Pid              create_pin(Nid nid, Port_id port_id);
   [[nodiscard]] Pin_class        find_pin(Node_class node, Port_id port_id, bool driver) const;
@@ -792,50 +805,50 @@ private:
   [[nodiscard]] static std::string build_hier_name(Graph* graph, Gid root_gid, const std::shared_ptr<const std::vector<Nid>>& path,
                                                    Nid raw_nid);
 
-  std::vector<NodeEntry>                         node_table;
-  std::vector<PinEntry>                          pin_table;
-  OverflowVec                                    overflow_sets_;
-  std::vector<uint32_t>                          overflow_free_;
+  std::vector<NodeEntry>                                         node_table;
+  std::vector<PinEntry>                                          pin_table;
+  OverflowVec                                                    overflow_sets_;
+  std::vector<uint32_t>                                          overflow_free_;
   // Persistent hierarchy: one Tree per Graph, populated by set_subnode and
   // torn down in clear()/load_body rebuild. The tree's children correspond
   // 1:1 with live subnode NodeEntries. `subnode_tree_pos_` maps a subnode
   // Nid back to its Tree_pos so del_node / debug cycle checks can find it.
-  std::shared_ptr<Tree>                          tree_;
-  ankerl::unordered_dense::map<Nid, Tree_pos>    subnode_tree_pos_;
+  std::shared_ptr<Tree>                                          tree_;
+  ankerl::unordered_dense::map<Nid, Tree_pos>                    subnode_tree_pos_;
   // Reverse map so hier_range can resolve a Tree_pos back to its owning Nid
   // in O(1) during tree-pre-order iteration. Kept in lockstep with
   // subnode_tree_pos_ — every set_subnode / load_body insertion updates
   // both, and all three clear sites (release_storage, clear_graph, clear)
   // clear both.
-  ankerl::unordered_dense::map<Tree_pos, Nid>    tree_pos_to_nid_;
+  ankerl::unordered_dense::map<Tree_pos, Nid>                    tree_pos_to_nid_;
   // Forward-traversal caches, shared across forward_class / forward_flat /
   // forward_hier for this graph body. Only the Pass-2 deferral list and the
   // initial in-edge counts are kept — the Pass-1 emission order is replayed
   // from storage order and the Tail from alive-but-unemitted survivors. No
   // Node_class objects are cached, so memory is O(Pass2) + O(N × 4 bytes)
   // rather than O(N × sizeof(Node_class)).
-  mutable std::vector<Nid>                       forward_pass2_cache_;
-  mutable std::vector<uint32_t>                  forward_remaining_in_cache_;
-  mutable bool                                   forward_caches_valid_ = false;
-  mutable std::vector<Nid>                       backward_pass2_cache_;
-  mutable std::vector<uint32_t>                  backward_remaining_out_cache_;
-  mutable bool                                   backward_caches_valid_ = false;
+  mutable std::vector<Nid>                                       forward_pass2_cache_;
+  mutable std::vector<uint32_t>                                  forward_remaining_in_cache_;
+  mutable bool                                                   forward_caches_valid_ = false;
+  mutable std::vector<Nid>                                       backward_pass2_cache_;
+  mutable std::vector<uint32_t>                                  backward_remaining_out_cache_;
+  mutable bool                                                   backward_caches_valid_ = false;
   ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq> input_pins_;
   ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq> output_pins_;
-  const GraphLibrary*                            owner_lib_ = nullptr;
-  std::weak_ptr<GraphIO>                         graphio_owner_;
-  Gid                                            self_gid_ = Gid_invalid;
-  bool                                           deleted_  = false;
-  mutable bool                                   dirty_    = true;
+  const GraphLibrary*                                            owner_lib_ = nullptr;
+  std::weak_ptr<GraphIO>                                         graphio_owner_;
+  Gid                                                            self_gid_ = Gid_invalid;
+  bool                                                           deleted_  = false;
+  mutable bool                                                   dirty_    = true;
   // Set by commit(). When true, the writer asked to publish the graph;
   // single-threaded — only the writer has a writable handle.
-  bool                                           frozen_   = false;
-  std::string                                    name_;
+  bool                                                           frozen_   = false;
+  std::string                                                    name_;
   // Source-provenance delta (hhds-srcloc). Provenance is body content, so it
   // is cleared with the attr stores (clear()/clear_graph()/
   // invalidate_from_library()); the base pointer to the owning library's
   // srcmap_ (set in bind_library) survives everything but detach.
-  Source_locator                                 srcloc_;
+  Source_locator                                                 srcloc_;
 
   friend class Node_class;
   friend class Pin_class;
@@ -1475,8 +1488,8 @@ private:
   Gid           gid_       = Gid_invalid;
   std::string   name_;
 
-  std::vector<DeclaredIoPin>                                  input_pin_decls_;
-  std::vector<DeclaredIoPin>                                  output_pin_decls_;
+  std::vector<DeclaredIoPin>                                                  input_pin_decls_;
+  std::vector<DeclaredIoPin>                                                  output_pin_decls_;
   ankerl::unordered_dense::map<std::string, DeclaredIoPinRef, Ci_hash, Ci_eq> declared_io_pins_;
 
   GraphIO(GraphLibrary* owner_lib, Gid gid, std::string name) : owner_lib_(owner_lib), gid_(gid), name_(std::move(name)) {}
@@ -1829,7 +1842,7 @@ private:
       return {};
     }
 
-    const auto it = graph_name_to_id_.find(std::string(name));
+    const auto it = graph_name_to_id_.find(name);  // transparent Ci_hash/Ci_eq: no std::string alloc
     if (it == graph_name_to_id_.end()) {
       return {};
     }
@@ -1978,7 +1991,7 @@ private:
       return;
     }
 
-    assert(graph_name_to_id_.find(std::string(name)) == graph_name_to_id_.end() && "create_graph: graph name already exists");
+    assert(graph_name_to_id_.find(name) == graph_name_to_id_.end() && "create_graph: graph name already exists");
   }
 
   void note_graph_mutation() const noexcept { mutation_epoch_.fetch_add(1, std::memory_order_acq_rel); }
@@ -2038,23 +2051,23 @@ private:
   // Graph bodies remain single-threaded per pointer; this lock protects only
   // the slot vectors and name maps so concurrent find_io / find_graph callers
   // from different threads can proceed in parallel.
-  mutable std::shared_mutex                          registry_mu_;
+  mutable std::shared_mutex                                      registry_mu_;
   // gid-keyed maps (Task 1m / hhds gid refactor): gids are a deterministic hash
   // of the graph name (see pick_gid_for_name_unlocked) rather than a positional
   // counter, so two libraries assign the SAME gid to the SAME name — making a
   // future cross-library merge a no-op for matching names (only true hash
   // collisions need remapping). The map storage tolerates the resulting sparse,
   // large gids that a vector could not. gid 0 (Gid_invalid) is never a key.
-  absl::flat_hash_map<Gid, std::shared_ptr<GraphIO>> graph_ios_;
-  absl::flat_hash_map<Gid, std::shared_ptr<Graph>>   graphs_;
+  absl::flat_hash_map<Gid, std::shared_ptr<GraphIO>>             graph_ios_;
+  absl::flat_hash_map<Gid, std::shared_ptr<Graph>>               graphs_;
   ankerl::unordered_dense::map<std::string, Gid, Ci_hash, Ci_eq> graph_name_to_id_;
   ankerl::unordered_dense::map<std::string, Gid, Ci_hash, Ci_eq> deleted_name_to_id_;
   // Source-provenance base (hhds-srcloc): see source_map(). mutable because
   // save() is const yet folds the per-graph deltas in (precedent: dirty_).
-  mutable Source_locator                             srcmap_;
+  mutable Source_locator                                         srcmap_;
   // count of live graphs
-  Gid                                                live_count_     = 0;
-  mutable std::atomic<uint64_t>                      mutation_epoch_ = 1;
+  Gid                                                            live_count_     = 0;
+  mutable std::atomic<uint64_t>                                  mutation_epoch_ = 1;
 
   // Per-slot state machine for the body in graphs_[idx]:
   //   Empty   -> no body; create_graph may CAS to Writing

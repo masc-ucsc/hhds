@@ -141,8 +141,7 @@ public:
 
   private:
     friend class Source_locator;
-    Span_minter(Source_locator* loc, uint32_t file_id, uint64_t path_seed)
-        : loc_(loc), file_id_(file_id), path_seed_(path_seed) {}
+    Span_minter(Source_locator* loc, uint32_t file_id, uint64_t path_seed) : loc_(loc), file_id_(file_id), path_seed_(path_seed) {}
     Source_locator* loc_       = nullptr;
     uint32_t        file_id_   = 0;
     uint64_t        path_seed_ = 0;
@@ -450,7 +449,7 @@ public:
     if (f->content_hash == 0) {
       return nullptr;  // nothing to validate against
     }
-    namespace fs = std::filesystem;
+    namespace fs       = std::filesystem;
     const auto    full = root.empty() ? fs::path(path) : fs::path(root) / path;
     std::ifstream ifs(full, std::ios::binary);
     if (!ifs) {
@@ -595,9 +594,9 @@ private:
   };
 
   struct File {
-    std::string           path;
-    uint64_t              content_hash = 0;
-    std::vector<uint64_t> line_offsets;  // ascending byte offsets of line starts
+    std::string                        path;
+    uint64_t                           content_hash = 0;
+    std::vector<uint64_t>              line_offsets;  // ascending byte offsets of line starts
     // In-memory source bytes (never persisted). shared_ptr: cross-locator
     // carries are pointer copies, and views into *content outlive clear().
     std::shared_ptr<const std::string> content;
@@ -680,7 +679,7 @@ private:
   }
 
   [[nodiscard]] const File* find_file(std::string_view path) const {
-    const auto it = path_to_fid_.find(std::string(path));
+    const auto it = path_to_fid_.find(path);  // transparent: no temporary std::string
     if (it != path_to_fid_.end()) {
       return &files_[it->second];
     }
@@ -688,7 +687,7 @@ private:
   }
 
   uint32_t intern_file(std::string_view path) {
-    const auto it = path_to_fid_.find(std::string(path));
+    const auto it = path_to_fid_.find(path);  // transparent: no temporary std::string
     if (it != path_to_fid_.end()) {
       return it->second;
     }
@@ -837,7 +836,15 @@ private:
     if (!std::getline(is, line) || line.rfind("hhds_srcmap ", 0) != 0) {
       return false;
     }
-    const auto valid_fid = [this](uint32_t fid) { return fid < files_.size() && !files_[fid].path.empty(); };
+    // Untrusted-input guard: a malformed table must degrade to "no provenance",
+    // never to UB or an OOM-sized allocation. File ids are sequential by
+    // construction (save_table), so an absurd id is rejected rather than used
+    // to size the deque. Count-driven lists (filelines/combine) read their
+    // tokens from the same line, so reserve+push_back bounds the allocation by
+    // the actual line content — a too-large declared count just fails the read.
+    constexpr uint32_t kMaxLoadFileId = 1u << 20;  // 1M files: far beyond any real design, bounds worst-case resize
+    constexpr size_t   kReserveCap    = 1u << 16;  // cap the speculative reserve; push_back still grows as needed
+    const auto         valid_fid      = [this](uint32_t fid) { return fid < files_.size() && !files_[fid].path.empty(); };
     while (std::getline(is, line)) {
       if (line.empty()) {
         continue;
@@ -855,7 +862,10 @@ private:
           return false;
         }
         if (fid >= files_.size()) {
-          files_.resize(fid + 1);
+          if (fid > kMaxLoadFileId) {
+            return false;  // reject absurd ids: avoids uint32 wrap and a giant deque resize
+          }
+          files_.resize(static_cast<size_t>(fid) + 1);
         }
         if (!files_[fid].path.empty()) {
           return false;  // duplicate file id
@@ -880,11 +890,14 @@ private:
           return false;
         }
         auto& offs = files_[fid].line_offsets;
-        offs.resize(count);
+        offs.clear();
+        offs.reserve(std::min(count, kReserveCap));
         for (size_t i = 0; i < count; ++i) {
-          if (!(ss >> offs[i]) || (i > 0 && offs[i] <= offs[i - 1])) {
+          uint64_t off = 0;
+          if (!(ss >> off) || (i > 0 && off <= offs[i - 1])) {
             return false;  // missing or non-ascending offsets
           }
+          offs.push_back(off);
         }
       } else if (line.rfind("span ", 0) == 0) {
         std::istringstream ss(line.substr(5));
@@ -917,11 +930,13 @@ private:
         }
         Entry e;
         e.kind = Anchor_kind::Combine;
-        e.parents.resize(count);
+        e.parents.reserve(std::min(count, kReserveCap));
         for (size_t i = 0; i < count; ++i) {
-          if (!(ss >> e.parents[i]) || find_local(e.parents[i]) == nullptr) {
+          SourceId parent = 0;
+          if (!(ss >> parent) || find_local(parent) == nullptr) {
             return false;  // missing or not-yet-defined parent
           }
+          e.parents.push_back(parent);
         }
         if (!append_loaded(id, std::move(e))) {
           return false;
@@ -988,18 +1003,25 @@ private:
     }
   }
 
-  std::vector<std::pair<SourceId, Entry>>   entries_;  // insertion order: parents precede combiners
-  std::unordered_map<SourceId, uint32_t>    index_;    // id -> entries_ index
+  std::vector<std::pair<SourceId, Entry>> entries_;  // insertion order: parents precede combiners
+  std::unordered_map<SourceId, uint32_t>  index_;    // id -> entries_ index
   // deque, NOT vector: Anchor.path is a string_view into File::path, and deque
   // push_back never moves existing elements (vector growth would dangle every
   // held Anchor whose path fits in the std::string SSO buffer).
-  std::deque<File>                          files_;
-  std::unordered_map<std::string, uint32_t> path_to_fid_;
-  const Source_locator*                     base_      = nullptr;
+  std::deque<File>                        files_;
+  // Transparent hash/eq so find(string_view) needs no temporary std::string.
+  // intern_file/find_file run per mint and twice per resolved span; workspace
+  // paths routinely exceed the SSO buffer, so the temporary was a heap churn.
+  struct Sv_hash {
+    using is_transparent = void;
+    [[nodiscard]] size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
+  };
+  std::unordered_map<std::string, uint32_t, Sv_hash, std::equal_to<>> path_to_fid_;
+  const Source_locator*                                               base_      = nullptr;
   // Test seam: narrows every minted hash so collision/probe/merge-convergence
   // paths become reachable (64-bit rapidhash collisions cannot be constructed
   // in a test). Production code never changes it.
-  uint64_t                                  hash_mask_ = ~uint64_t{0};
+  uint64_t                                                            hash_mask_ = ~uint64_t{0};
 
   friend class Source_locator_tester;
 };
