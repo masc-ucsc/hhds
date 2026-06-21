@@ -1358,6 +1358,291 @@ void test_hier_edges_three_levels_EXPECTED() {
   }
 }
 
+// Fan-out across a boundary + resolving DOWN from a root node: a top driver
+// feeding an instance input that fans out to two leaf nodes must resolve to
+// BOTH leaf sinks.
+//   top: src ─▶ r.a │ leaf: a ─┬▶ b1
+//                              └▶ b2
+void test_hier_edges_fanout_down_from_root_EXPECTED() {
+  hhds::GraphLibrary lib;
+
+  auto leaf_io = lib.create_io("leafF");
+  leaf_io->add_input("a", 1);
+  auto leaf = leaf_io->create_graph();
+  auto b1   = leaf->create_node();
+  auto b2   = leaf->create_node();
+  leaf->get_input_pin("a").connect_sink(b1.create_sink_pin());  // a -> b1
+  leaf->get_input_pin("a").connect_sink(b2.create_sink_pin());  // a -> b2 (fan-out)
+
+  auto top_io = lib.create_io("topF");
+  auto top    = top_io->create_graph();
+  auto src    = top->create_node();
+  auto r      = top->create_node();
+  r.set_subnode(leaf_io);
+  src.create_driver_pin().connect_sink(r.create_sink_pin(1));  // src -> r.a
+
+  const auto src_h = find_hier_node(top.get(), top->get_gid(), src.get_debug_nid());
+  const auto outs  = src_h.out_edges();
+  assert(outs.size() == 2);  // resolves down through r into both leaf sinks
+
+  std::vector<hhds::Nid> sinks;
+  for (const auto& e : outs) {
+    assert(e.sink.get_current_gid() == leaf->get_gid());
+    assert(e.sink.is_sink());
+    sinks.push_back(node_of(e.sink.get_master_node().get_debug_nid()));
+  }
+  const auto has = [&](hhds::Nid n) { return std::find(sinks.begin(), sinks.end(), n) != sinks.end(); };
+  assert(has(node_of(b1.get_debug_nid())));
+  assert(has(node_of(b2.get_debug_nid())));
+}
+
+// PROBE A: instance with TWO output ports; bufX drives y1, bufY drives y2.
+// top reads each instance output into a different sink. Each buf.out must
+// resolve to exactly the right top sink (port disambiguation across boundary).
+void probe_multi_output_port() {
+  hhds::GraphLibrary lib;
+  auto leaf_io = lib.create_io("leafM");
+  leaf_io->add_output("y1", 1);
+  leaf_io->add_output("y2", 2);
+  auto leaf = leaf_io->create_graph();
+  auto bufX = leaf->create_node();
+  auto bufY = leaf->create_node();
+  bufX.create_driver_pin().connect_sink(leaf->get_output_pin("y1"));
+  bufY.create_driver_pin().connect_sink(leaf->get_output_pin("y2"));
+
+  auto top_io = lib.create_io("topM");
+  auto top    = top_io->create_graph();
+  auto r      = top->create_node();
+  r.set_subnode(leaf_io);
+  auto d1 = top->create_node();
+  auto d2 = top->create_node();
+  r.create_driver_pin(1).connect_sink(d1.create_sink_pin());  // r.y1 -> d1
+  r.create_driver_pin(2).connect_sink(d2.create_sink_pin());  // r.y2 -> d2
+
+  const auto bufX_h = find_hier_node(top.get(), leaf->get_gid(), bufX.get_debug_nid());
+  const auto bufY_h = find_hier_node(top.get(), leaf->get_gid(), bufY.get_debug_nid());
+
+  const auto ox = bufX_h.out_edges();
+  std::cout << "PROBE A bufX out#=" << ox.size();
+  for (const auto& e : ox) {
+    std::cout << " sink_nid=" << node_of(e.sink.get_master_node().get_debug_nid()) << " gid=" << e.sink.get_current_gid();
+  }
+  std::cout << " (want d1=" << node_of(d1.get_debug_nid()) << " gid=" << top->get_gid() << ")\n";
+
+  const auto oy = bufY_h.out_edges();
+  std::cout << "PROBE A bufY out#=" << oy.size();
+  for (const auto& e : oy) {
+    std::cout << " sink_nid=" << node_of(e.sink.get_master_node().get_debug_nid()) << " gid=" << e.sink.get_current_gid();
+  }
+  std::cout << " (want d2=" << node_of(d2.get_debug_nid()) << ")\n";
+}
+
+// PROBE B: down-cross leaf hier_pos correctness. Resolve src.out_edges down
+// into leaf buf; then re-resolve from the resolved leaf sink back up. The
+// leaf pin must carry a hier_pos that makes get_master_node().is_hier() and
+// round-trips: its inp_edges must come back to src.
+void probe_downcross_hier_pos_roundtrip() {
+  hhds::GraphLibrary lib;
+  auto leaf_io = lib.create_io("leafRT");
+  leaf_io->add_input("a", 1);
+  auto leaf = leaf_io->create_graph();
+  auto buf  = leaf->create_node();
+  leaf->get_input_pin("a").connect_sink(buf.create_sink_pin());
+
+  auto top_io = lib.create_io("topRT");
+  auto top    = top_io->create_graph();
+  auto src    = top->create_node();
+  auto r      = top->create_node();
+  r.set_subnode(leaf_io);
+  src.create_driver_pin().connect_sink(r.create_sink_pin(1));
+
+  const auto src_h = find_hier_node(top.get(), top->get_gid(), src.get_debug_nid());
+  const auto outs  = src_h.out_edges();
+  std::cout << "PROBE B src out#=" << outs.size() << "\n";
+  for (const auto& e : outs) {
+    auto sink_node = e.sink.get_master_node();
+    std::cout << "  leaf sink gid=" << e.sink.get_current_gid() << " is_hier=" << sink_node.is_hier()
+              << " hier_pos=" << e.sink.get_hier_pos() << "\n";
+    // Round-trip: ask the resolved leaf node for its inp_edges in hier ctx.
+    auto back = sink_node.inp_edges();
+    std::cout << "    roundtrip inp#=" << back.size();
+    for (const auto& be : back) {
+      std::cout << " drv_gid=" << be.driver.get_current_gid()
+                << " drv_nid=" << node_of(be.driver.get_master_node().get_debug_nid());
+    }
+    std::cout << " (want src=" << node_of(src.get_debug_nid()) << " gid=" << top->get_gid() << ")\n";
+  }
+}
+
+// PROBE C: nested down-cross. top src -> mid.a ; mid: a -> inner.a ; inner: a -> buf.
+// Resolving src.out must go DOWN two boundaries (mid, then inner) to buf, and the
+// leaf hier_pos must identify the INNER instance (within mid), not the mid instance.
+void probe_nested_downcross() {
+  hhds::GraphLibrary lib;
+  auto inner_io = lib.create_io("innerN");
+  inner_io->add_input("a", 1);
+  auto inner = inner_io->create_graph();
+  auto buf   = inner->create_node();
+  inner->get_input_pin("a").connect_sink(buf.create_sink_pin());
+
+  auto mid_io = lib.create_io("midN");
+  mid_io->add_input("a", 1);
+  auto mid = mid_io->create_graph();
+  auto ii  = mid->create_node();
+  ii.set_subnode(inner_io);
+  mid->get_input_pin("a").connect_sink(ii.create_sink_pin(1));  // mid.a -> inner.a
+
+  auto top_io = lib.create_io("topN");
+  auto top    = top_io->create_graph();
+  auto src    = top->create_node();
+  auto mi     = top->create_node();
+  mi.set_subnode(mid_io);
+  src.create_driver_pin().connect_sink(mi.create_sink_pin(1));  // src -> mid.a
+
+  const auto src_h = find_hier_node(top.get(), top->get_gid(), src.get_debug_nid());
+  const auto outs  = src_h.out_edges();
+  std::cout << "PROBE C src out#=" << outs.size() << "\n";
+  for (const auto& e : outs) {
+    auto sn = e.sink.get_master_node();
+    std::cout << "  sink gid=" << e.sink.get_current_gid() << " nid=" << node_of(sn.get_debug_nid())
+              << " is_hier=" << sn.is_hier() << " hier_pos=" << e.sink.get_hier_pos() << "\n";
+    auto back = sn.inp_edges();
+    std::cout << "    roundtrip inp#=" << back.size();
+    for (const auto& be : back) {
+      std::cout << " drv_gid=" << be.driver.get_current_gid() << " drv_nid=" << node_of(be.driver.get_master_node().get_debug_nid());
+    }
+    std::cout << " (want buf=" << node_of(buf.get_debug_nid()) << " gid=" << inner->get_gid()
+              << ", roundtrip want src=" << node_of(src.get_debug_nid()) << ")\n";
+  }
+}
+
+// PROBE D: up-then-down where the destination instance fans into TWO leaves.
+// bufA.out crosses up out of leafA via ra.y, into rb, whose input fans to
+// bufB1 and bufB2. Expect TWO sinks, each with its own correct hier_pos.
+void probe_up_then_down_fanout() {
+  hhds::GraphLibrary lib;
+  auto leafA_io = lib.create_io("leafAD");
+  leafA_io->add_output("y", 2);
+  auto leafA = leafA_io->create_graph();
+  auto bufA  = leafA->create_node();
+  bufA.create_driver_pin().connect_sink(leafA->get_output_pin("y"));
+
+  auto leafB_io = lib.create_io("leafBD");
+  leafB_io->add_input("a", 1);
+  auto leafB = leafB_io->create_graph();
+  auto bufB1 = leafB->create_node();
+  auto bufB2 = leafB->create_node();
+  leafB->get_input_pin("a").connect_sink(bufB1.create_sink_pin());
+  leafB->get_input_pin("a").connect_sink(bufB2.create_sink_pin());
+
+  auto top_io = lib.create_io("topAD");
+  auto top    = top_io->create_graph();
+  auto ra     = top->create_node();
+  ra.set_subnode(leafA_io);
+  auto rb = top->create_node();
+  rb.set_subnode(leafB_io);
+  ra.create_driver_pin(2).connect_sink(rb.create_sink_pin(1));  // ra.y -> rb.a
+
+  const auto bufA_h = find_hier_node(top.get(), leafA->get_gid(), bufA.get_debug_nid());
+  const auto outs   = bufA_h.out_edges();
+  std::cout << "PROBE D bufA out#=" << outs.size() << " (want 2)\n";
+  for (const auto& e : outs) {
+    auto sn = e.sink.get_master_node();
+    std::cout << "  sink gid=" << e.sink.get_current_gid() << " nid=" << node_of(sn.get_debug_nid())
+              << " hier_pos=" << e.sink.get_hier_pos() << "\n";
+  }
+  std::cout << "  want bufB1=" << node_of(bufB1.get_debug_nid()) << " bufB2=" << node_of(bufB2.get_debug_nid())
+            << " gid=" << leafB->get_gid() << "\n";
+}
+
+// PROBE E: module input that is UNCONNECTED one level up. buf reads leaf.a, but
+// the instance r.a in top has no driver. What does buf.inp_edges report?
+void probe_unconnected_module_input() {
+  hhds::GraphLibrary lib;
+  auto leaf_io = lib.create_io("leafU");
+  leaf_io->add_input("a", 1);
+  auto leaf = leaf_io->create_graph();
+  auto buf  = leaf->create_node();
+  leaf->get_input_pin("a").connect_sink(buf.create_sink_pin());
+
+  auto top_io = lib.create_io("topU");
+  auto top    = top_io->create_graph();
+  auto r      = top->create_node();
+  r.set_subnode(leaf_io);
+  // NOTE: r.a is deliberately left undriven.
+
+  const auto buf_h = find_hier_node(top.get(), leaf->get_gid(), buf.get_debug_nid());
+  const auto ins   = buf_h.inp_edges();
+  std::cout << "PROBE E buf inp# (unconnected module input) =" << ins.size() << " (local would be 1: leaf.a)\n";
+}
+
+// PROBE F: CONST inside leaf driving the leaf output, crossing UP to top sink.
+// const -> leaf.y ; r.y -> dst. dst.inp_edges must resolve to the CONST leaf.
+void probe_const_crosses_up() {
+  hhds::GraphLibrary lib;
+  auto leaf_io = lib.create_io("leafC");
+  leaf_io->add_output("y", 2);
+  auto leaf = leaf_io->create_graph();
+  leaf->create_constant().connect_sink(leaf->get_output_pin("y"));  // CONST -> y
+
+  auto top_io = lib.create_io("topC");
+  auto top    = top_io->create_graph();
+  auto r      = top->create_node();
+  r.set_subnode(leaf_io);
+  auto dst = top->create_node();
+  r.create_driver_pin(2).connect_sink(dst.create_sink_pin());  // r.y -> dst
+
+  const auto dst_h = find_hier_node(top.get(), top->get_gid(), dst.get_debug_nid());
+  const auto ins   = dst_h.inp_edges();
+  std::cout << "PROBE F dst inp#=" << ins.size() << "\n";
+  for (const auto& e : ins) {
+    auto dn = e.driver.get_master_node();
+    std::cout << "  drv gid=" << e.driver.get_current_gid() << " nid=" << node_of(dn.get_debug_nid())
+              << " is_const_node=" << (node_of(dn.get_debug_nid()) == hhds::Graph::CONST_NODE)
+              << " leaf_gid=" << leaf->get_gid() << "\n";
+  }
+}
+
+// PROBE G: pure feed-through instance. leaf wires a -> y directly (no buf).
+// top: src -> r.a ; r.y -> dst. src.out must resolve THROUGH the feedthrough
+// instance to dst (down into r, hit INPUT_NODE driver of leaf.y's source, pop
+// back up to r's output, ... ) -- exercises push-then-pop on the same inst.
+void probe_feedthrough() {
+  hhds::GraphLibrary lib;
+  auto leaf_io = lib.create_io("leafG");
+  leaf_io->add_input("a", 1);
+  leaf_io->add_output("y", 2);
+  auto leaf = leaf_io->create_graph();
+  // direct wire a -> y (input pin drives output pin, no internal node)
+  leaf->get_input_pin("a").connect_sink(leaf->get_output_pin("y"));
+
+  auto top_io = lib.create_io("topG");
+  auto top    = top_io->create_graph();
+  auto src    = top->create_node();
+  auto r      = top->create_node();
+  r.set_subnode(leaf_io);
+  auto dst = top->create_node();
+  src.create_driver_pin().connect_sink(r.create_sink_pin(1));  // src -> r.a
+  r.create_driver_pin(2).connect_sink(dst.create_sink_pin());  // r.y -> dst
+
+  const auto src_h = find_hier_node(top.get(), top->get_gid(), src.get_debug_nid());
+  const auto outs  = src_h.out_edges();
+  std::cout << "PROBE G src out#=" << outs.size() << " (want 1 -> dst)\n";
+  for (const auto& e : outs) {
+    auto sn = e.sink.get_master_node();
+    std::cout << "  sink gid=" << e.sink.get_current_gid() << " nid=" << node_of(sn.get_debug_nid())
+              << " (want dst=" << node_of(dst.get_debug_nid()) << " gid=" << top->get_gid() << ")\n";
+  }
+  const auto dst_h = find_hier_node(top.get(), top->get_gid(), dst.get_debug_nid());
+  const auto ins   = dst_h.inp_edges();
+  std::cout << "PROBE G dst inp#=" << ins.size() << " (want 1 -> src)\n";
+  for (const auto& e : ins) {
+    auto dn = e.driver.get_master_node();
+    std::cout << "  drv gid=" << e.driver.get_current_gid() << " nid=" << node_of(dn.get_debug_nid())
+              << " (want src=" << node_of(src.get_debug_nid()) << ")\n";
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1413,6 +1698,14 @@ int main() {
   test_hier_edges_cross_one_boundary_EXPECTED();
   test_hier_edges_cross_up_then_down_EXPECTED();
   test_hier_edges_three_levels_EXPECTED();
+  test_hier_edges_fanout_down_from_root_EXPECTED();
+  probe_multi_output_port();
+  probe_downcross_hier_pos_roundtrip();
+  probe_nested_downcross();
+  probe_up_then_down_fanout();
+  probe_unconnected_module_input();
+  probe_const_crosses_up();
+  probe_feedthrough();
   std::cout << "graph_test passed\n";
   return 0;
 }
