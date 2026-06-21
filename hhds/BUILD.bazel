@@ -86,6 +86,7 @@ cc_library(
         "source_locator.hpp",
         "sourcemap_emit.hpp",
         "stl.h",
+        "str_ci.hpp",
         "tree.hpp",
         "tree_print.hpp",
         "unordered_dense.hpp",

@@ -1106,9 +1106,10 @@ auto Graph::create_pin(Nid nid, Port_id pid) -> Pid {
 auto Graph::make_pin_class(Pid pin_pid) const -> Pin_class { return Pin_class(const_cast<Graph*>(this), pin_pid); }
 
 void inherit_pin_context(Pin_class& pin, const Node_class& node) {
-  pin.context_  = node.context_;
-  pin.root_gid_ = node.root_gid_;
-  pin.hier_pos_ = node.hier_pos_;
+  pin.context_   = node.context_;
+  pin.root_gid_  = node.root_gid_;
+  pin.hier_pos_  = node.hier_pos_;
+  pin.hier_path_ = node.hier_path_;
 }
 
 auto Graph::find_pin(Node_class node, Port_id port_id, bool driver) const -> Pin_class {
@@ -1279,7 +1280,7 @@ auto Graph::get_output_pin(std::string_view name) const -> Pin_class {
 }
 
 auto Graph::materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
-                                        ankerl::unordered_dense::map<std::string, Pid>& pins_by_name) -> Pid {
+                                        ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq>& pins_by_name) -> Pid {
   assert_accessible();
   assert(!name.empty() && "materialize_declared_io_pin: name is required");
 
@@ -1293,7 +1294,8 @@ auto Graph::materialize_declared_io_pin(std::string_view name, Port_id port_id, 
   return pin_pid;
 }
 
-void Graph::erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid>& pins_by_name) {
+void Graph::erase_declared_io_pin(std::string_view name,
+                                  ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq>& pins_by_name) {
   assert_accessible();
   const auto it = pins_by_name.find(std::string(name));
   assert(it != pins_by_name.end() && "erase_declared_io_pin: declared pin name not found");
@@ -1534,7 +1536,7 @@ auto Pin_class::get_master_node() const -> Node_class {
     return Node_class(graph_, root_gid_, nid);
   }
   if (context_ == Handle_context::Hier) {
-    return Node_class(graph_, root_gid_, hier_pos_, nid);
+    return Node_class(graph_, root_gid_, hier_pos_, nid, hier_path_);  // keep the full instance chain
   }
   return Node_class(graph_, nid);
 }
@@ -1823,8 +1825,19 @@ void Graph::set_subnode(Nid nid, Gid gid) {
   }
 
   // Stamp node type so the forward iterator can O(1) tell whether this
-  // subnode contains any loop_break boundary (flop/register/clocked pin).
-  // Bit 0 of Type encodes is_loop_break (odd == loop_break, even == not).
+  // subnode is a loop_break boundary (a cut-point for forward/backward
+  // ordering). Bit 0 of Type encodes is_loop_break (odd == loop_break).
+  //
+  // The order is computed per-body from local edges and never descends, so a
+  // sub-instance of a sequential module (inputs -> internal flop -> outputs)
+  // is only cut if the *instance node itself* carries the bit. An instance is
+  // a loop_break iff:
+  //   (a) the subnode declares a loop_break boundary pin -- the only signal
+  //       available for an ABSENT body (true blackbox, e.g. a liberty cell), or
+  //   (b) the subnode's PRESENT body contains any loop_break cell (flop /
+  //       memory / latch, or a nested loop_break sub-instance). This realizes
+  //       "the flop inside the module is the loop break" without requiring the
+  //       producer to annotate boundary pins.
   if (subnode_gio != nullptr) {
     bool has_loop_break = false;
     for (const auto& decl : subnode_gio->input_pin_decls_) {
@@ -1838,6 +1851,21 @@ void Graph::set_subnode(Nid nid, Gid gid) {
         if (decl.loop_break) {
           has_loop_break = true;
           break;
+        }
+      }
+    }
+    if (!has_loop_break && subnode_gio->has_graph()) {
+      // Scan the present body. Built bottom-up (children stamped before parents),
+      // an already-stamped nested loop_break sub-instance is itself is_loop_break,
+      // so this composes through wrapper modules. A forward reference whose body
+      // is not yet materialized falls through to "not loop_break"; re-running
+      // set_subnode once the body exists corrects the stamp.
+      if (auto body = subnode_gio->get_graph(); body != nullptr) {
+        for (auto bn : body->fast_class()) {
+          if (bn.is_loop_break()) {
+            has_loop_break = true;
+            break;
+          }
         }
       }
     }
@@ -2041,8 +2069,12 @@ FastHierIterator::FastHierIterator(Graph* root_graph) {
     active_graphs_.insert(root_gid_);
   }
   // Root frame: top-level nodes share hier_pos = ROOT (the root graph's own
-  // structure-tree root).
-  stack_.push_back(Frame{root_graph, kFirstUserNodeIdx, root_graph->node_table.size(), static_cast<Tree_pos>(ROOT)});
+  // structure-tree root) and an empty instance chain.
+  stack_.push_back(Frame{root_graph,
+                         kFirstUserNodeIdx,
+                         root_graph->node_table.size(),
+                         static_cast<Tree_pos>(ROOT),
+                         std::make_shared<std::vector<Nid>>()});
   advance();
 }
 
@@ -2069,7 +2101,7 @@ void FastHierIterator::advance() {
 auto FastHierIterator::operator*() const -> Node_class {
   const Frame& frame   = stack_.back();
   const Nid    raw_nid = static_cast<Nid>(frame.node_idx) << 2;
-  return Node_class(frame.graph, root_gid_, frame.hier_pos, raw_nid);
+  return Node_class(frame.graph, root_gid_, frame.hier_pos, raw_nid, frame.path);
 }
 
 auto FastHierIterator::operator++() -> FastHierIterator& {
@@ -2084,9 +2116,11 @@ auto FastHierIterator::operator++() -> FastHierIterator& {
       // Stable Tree_pos from the structure tree that set_subnode built.
       auto           it          = frame.graph->subnode_tree_pos_.find(subnode_nid);
       const Tree_pos child_pos   = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
+      auto           child_path  = std::make_shared<std::vector<Nid>>(*frame.path);
+      child_path->push_back(subnode_nid);
       ++frame.node_idx;
       active_graphs_.insert(sub);
-      stack_.push_back(Frame{child_graph, kFirstUserNodeIdx, child_graph->node_table.size(), child_pos});
+      stack_.push_back(Frame{child_graph, kFirstUserNodeIdx, child_graph->node_table.size(), child_pos, std::move(child_path)});
       advance();
       return *this;
     }
@@ -2451,8 +2485,10 @@ ForwardHierIterator::ForwardHierIterator(Graph* root_graph, bool loop_break_firs
   if (root_gid_ != Gid_invalid) {
     active_graphs_.insert(root_gid_);
   }
-  stack_.push_back(
-      Frame{root_graph, ForwardClassIterator(root_graph, loop_break_first_, loop_break_last_), static_cast<Tree_pos>(ROOT)});
+  stack_.push_back(Frame{root_graph,
+                         ForwardClassIterator(root_graph, loop_break_first_, loop_break_last_),
+                         static_cast<Tree_pos>(ROOT),
+                         std::make_shared<std::vector<Nid>>()});
   advance();
 }
 
@@ -2474,7 +2510,7 @@ void ForwardHierIterator::advance() {
 Node_class ForwardHierIterator::operator*() const {
   const auto& frame   = stack_.back();
   const Nid   raw_nid = (*frame.it).get_debug_nid();
-  return Node_class(frame.graph, root_gid_, frame.hier_pos, raw_nid);
+  return Node_class(frame.graph, root_gid_, frame.hier_pos, raw_nid, frame.path);
 }
 
 ForwardHierIterator& ForwardHierIterator::operator++() {
@@ -2489,11 +2525,14 @@ ForwardHierIterator& ForwardHierIterator::operator++() {
   if (entry.has_subnode() && lib != nullptr && !skip_sub) {
     const Gid sub = entry.get_subnode();
     if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
-      Graph*         child     = const_cast<Graph*>(lib->get_graph(sub).get());
-      auto           it        = frame.graph->subnode_tree_pos_.find(cur_nid);
-      const Tree_pos child_pos = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
+      Graph*         child      = const_cast<Graph*>(lib->get_graph(sub).get());
+      auto           it         = frame.graph->subnode_tree_pos_.find(cur_nid);
+      const Tree_pos child_pos  = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
+      auto           child_path = std::make_shared<std::vector<Nid>>(*frame.path);
+      child_path->push_back(cur_nid & ~static_cast<Nid>(3));
       active_graphs_.insert(sub);
-      stack_.push_back(Frame{child, ForwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos});
+      stack_.push_back(
+          Frame{child, ForwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos, std::move(child_path)});
     }
   }
   advance();
@@ -2757,8 +2796,10 @@ BackwardHierIterator::BackwardHierIterator(Graph* root_graph, bool loop_break_fi
   if (root_gid_ != Gid_invalid) {
     active_graphs_.insert(root_gid_);
   }
-  stack_.push_back(
-      Frame{root_graph, BackwardClassIterator(root_graph, loop_break_first_, loop_break_last_), static_cast<Tree_pos>(ROOT)});
+  stack_.push_back(Frame{root_graph,
+                         BackwardClassIterator(root_graph, loop_break_first_, loop_break_last_),
+                         static_cast<Tree_pos>(ROOT),
+                         std::make_shared<std::vector<Nid>>()});
   advance();
 }
 
@@ -2780,7 +2821,7 @@ void BackwardHierIterator::advance() {
 Node_class BackwardHierIterator::operator*() const {
   const auto& frame   = stack_.back();
   const Nid   raw_nid = (*frame.it).get_debug_nid();
-  return Node_class(frame.graph, root_gid_, frame.hier_pos, raw_nid);
+  return Node_class(frame.graph, root_gid_, frame.hier_pos, raw_nid, frame.path);
 }
 
 BackwardHierIterator& BackwardHierIterator::operator++() {
@@ -2793,11 +2834,14 @@ BackwardHierIterator& BackwardHierIterator::operator++() {
   if (entry.has_subnode() && lib != nullptr && !skip_sub) {
     const Gid sub = entry.get_subnode();
     if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
-      Graph*         child     = const_cast<Graph*>(lib->get_graph(sub).get());
-      auto           it        = frame.graph->subnode_tree_pos_.find(cur_nid);
-      const Tree_pos child_pos = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
+      Graph*         child      = const_cast<Graph*>(lib->get_graph(sub).get());
+      auto           it         = frame.graph->subnode_tree_pos_.find(cur_nid);
+      const Tree_pos child_pos  = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
+      auto           child_path = std::make_shared<std::vector<Nid>>(*frame.path);
+      child_path->push_back(cur_nid & ~static_cast<Nid>(3));
       active_graphs_.insert(sub);
-      stack_.push_back(Frame{child, BackwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos});
+      stack_.push_back(
+          Frame{child, BackwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos, std::move(child_path)});
     }
   }
   advance();
@@ -3170,8 +3214,40 @@ Port_id Graph::port_of_pid(Pid pid) const {
   return 0;  // node-as-pin == port 0
 }
 
+Graph* Graph::hier_path_to_insts(Graph* root, const std::vector<Nid>& chain, std::vector<HierInst>& path) {
+  Graph* g = root;
+  for (const Nid raw : chain) {
+    if (g == nullptr || g->owner_lib_ == nullptr) {
+      return nullptr;
+    }
+    const Nid base = raw & ~static_cast<Nid>(3);
+    if (!g->is_node_valid(base)) {
+      return nullptr;
+    }
+    const auto*    entry = g->ref_node(base);
+    const auto     it    = g->subnode_tree_pos_.find(base);
+    const Tree_pos tp    = (it != g->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
+    if (!entry->has_subnode()) {
+      return nullptr;
+    }
+    const Gid child_gid = entry->get_subnode();
+    if (!g->owner_lib_->has_graph(child_gid)) {
+      return nullptr;
+    }
+    path.push_back(HierInst{g, base, tp});
+    g = const_cast<Graph*>(g->owner_lib_->get_graph(child_gid).get());
+  }
+  return g;  // body graph at the chain end
+}
+
 bool Graph::reconstruct_hier_path(Graph* root, Gid body_gid, Tree_pos body_hier_pos, std::vector<HierInst>& path) {
   if (root == nullptr || root->owner_lib_ == nullptr) {
+    return false;
+  }
+  // Structural cycles are only asserted-against in debug set_subnode and are not
+  // re-checked on load; bound the descent so a cyclic library cannot overflow
+  // the stack here (the streaming resolvers use kHierResolveMaxDepth likewise).
+  if (path.size() >= static_cast<size_t>(kHierResolveMaxDepth)) {
     return false;
   }
   const auto* lib = root->owner_lib_;
@@ -3200,12 +3276,21 @@ void Graph::resolve_hier_driver(Graph* g, std::vector<HierInst> path, Pid driver
   if (depth > kHierResolveMaxDepth) {
     return;
   }
+  // The leaf's own instance chain == the inst_nids currently on `path`.
+  const auto make_chain = [&path]() {
+    auto c = std::make_shared<std::vector<Nid>>();
+    c->reserve(path.size());
+    for (const auto& h : path) {
+      c->push_back(h.inst_nid);
+    }
+    return c;
+  };
   const Nid master = g->master_nid_of_pid(driver_pid);
 
   if (master == INPUT_NODE) {
     // Driver pin on this body's INPUT_NODE == a module input port.
     if (path.empty()) {
-      out.push_back(HierLeaf{g, driver_pid, static_cast<Tree_pos>(ROOT)});  // root primary input: visible
+      out.push_back(HierLeaf{g, driver_pid, static_cast<Tree_pos>(ROOT), make_chain()});  // root primary input: visible
       return;
     }
     const HierInst up = path.back();
@@ -3246,19 +3331,27 @@ void Graph::resolve_hier_driver(Graph* g, std::vector<HierInst> path, Pid driver
   }
 
   // Real leaf driver (ordinary node, CONST, or unresolvable boundary).
-  out.push_back(HierLeaf{g, driver_pid, path.empty() ? static_cast<Tree_pos>(ROOT) : path.back().inst_tree_pos});
+  out.push_back(HierLeaf{g, driver_pid, path.empty() ? static_cast<Tree_pos>(ROOT) : path.back().inst_tree_pos, make_chain()});
 }
 
 void Graph::resolve_hier_sink(Graph* g, std::vector<HierInst> path, Pid sink_pid, std::vector<HierLeaf>& out, int depth) {
   if (depth > kHierResolveMaxDepth) {
     return;
   }
+  const auto make_chain = [&path]() {
+    auto c = std::make_shared<std::vector<Nid>>();
+    c->reserve(path.size());
+    for (const auto& h : path) {
+      c->push_back(h.inst_nid);
+    }
+    return c;
+  };
   const Nid master = g->master_nid_of_pid(sink_pid);
 
   if (master == OUTPUT_NODE) {
     // Sink pin on this body's OUTPUT_NODE == a module output port.
     if (path.empty()) {
-      out.push_back(HierLeaf{g, sink_pid, static_cast<Tree_pos>(ROOT)});  // root primary output: visible
+      out.push_back(HierLeaf{g, sink_pid, static_cast<Tree_pos>(ROOT), make_chain()});  // root primary output: visible
       return;
     }
     const HierInst up = path.back();
@@ -3298,17 +3391,33 @@ void Graph::resolve_hier_sink(Graph* g, std::vector<HierInst> path, Pid sink_pid
     }
   }
 
-  out.push_back(HierLeaf{g, sink_pid, path.empty() ? static_cast<Tree_pos>(ROOT) : path.back().inst_tree_pos});
+  out.push_back(HierLeaf{g, sink_pid, path.empty() ? static_cast<Tree_pos>(ROOT) : path.back().inst_tree_pos, make_chain()});
+}
+
+// Build the root-to-body instance chain for `node` (the resolver's starting
+// path). Prefers the handle's stored full chain (unambiguous even for reused
+// sub-graphs); falls back to a DFS reconstruction for chain-less handles.
+// Returns false when the node cannot be located (caller degrades to local).
+bool Graph::hier_base_path(Node_class node, std::vector<HierInst>& base_path) {
+  const auto* lib = owner_lib_;
+  if (lib == nullptr || node.root_gid_ == Gid_invalid || !lib->has_graph(node.root_gid_)) {
+    return true;  // no hierarchy context: empty path, `this` acts as root
+  }
+  Graph* root = const_cast<Graph*>(lib->get_graph(node.root_gid_).get());
+  if (root == this) {
+    return true;  // node lives in the root graph: empty path
+  }
+  const auto& chain = node.hier_path_;
+  if (chain) {
+    return hier_path_to_insts(root, *chain, base_path) == this;
+  }
+  return reconstruct_hier_path(root, get_gid(), node.get_hier_pos(), base_path);
 }
 
 auto Graph::inp_edges_hier(Node_class node) -> std::vector<Edge_class> {
   std::vector<HierInst> base_path;
-  const auto*           lib = owner_lib_;
-  if (lib != nullptr && node.root_gid_ != Gid_invalid && lib->has_graph(node.root_gid_)) {
-    Graph* root = const_cast<Graph*>(lib->get_graph(node.root_gid_).get());
-    if (root != this && !reconstruct_hier_path(root, get_gid(), node.get_hier_pos(), base_path)) {
-      return inp_edges_local(node);  // handle not locatable in the hierarchy: degrade to local
-    }
+  if (!hier_base_path(node, base_path)) {
+    return inp_edges_local(node);  // not locatable in the hierarchy: degrade to local
   }
 
   std::vector<Edge_class> result;
@@ -3318,11 +3427,13 @@ auto Graph::inp_edges_hier(Node_class node) -> std::vector<Edge_class> {
     resolve_hier_driver(this, base_path, local.driver.get_debug_pid(), leaves, 0);
     for (const auto& leaf : leaves) {
       Edge_class e{};
-      e.sink             = local.sink;  // near side: node's pin, already hier context
-      e.driver           = Pin_class(leaf.graph, leaf.pid);
-      e.driver.context_  = node.context_;
-      e.driver.root_gid_ = node.root_gid_;
-      e.driver.hier_pos_ = leaf.hier_pos;
+      e.sink              = local.sink;  // near side: node's pin, already hier context
+      e.sink.hier_path_   = node.hier_path_;
+      e.driver            = Pin_class(leaf.graph, leaf.pid);
+      e.driver.context_   = node.context_;
+      e.driver.root_gid_  = node.root_gid_;
+      e.driver.hier_pos_  = leaf.hier_pos;
+      e.driver.hier_path_ = leaf.path;
       result.push_back(e);
     }
   }
@@ -3331,12 +3442,8 @@ auto Graph::inp_edges_hier(Node_class node) -> std::vector<Edge_class> {
 
 auto Graph::out_edges_hier(Node_class node) -> std::vector<Edge_class> {
   std::vector<HierInst> base_path;
-  const auto*           lib = owner_lib_;
-  if (lib != nullptr && node.root_gid_ != Gid_invalid && lib->has_graph(node.root_gid_)) {
-    Graph* root = const_cast<Graph*>(lib->get_graph(node.root_gid_).get());
-    if (root != this && !reconstruct_hier_path(root, get_gid(), node.get_hier_pos(), base_path)) {
-      return out_edges_local(node);  // handle not locatable in the hierarchy: degrade to local
-    }
+  if (!hier_base_path(node, base_path)) {
+    return out_edges_local(node);  // not locatable in the hierarchy: degrade to local
   }
 
   std::vector<Edge_class> result;
@@ -3346,15 +3453,96 @@ auto Graph::out_edges_hier(Node_class node) -> std::vector<Edge_class> {
     resolve_hier_sink(this, base_path, local.sink.get_debug_pid(), leaves, 0);
     for (const auto& leaf : leaves) {
       Edge_class e{};
-      e.driver         = local.driver;  // near side: node's pin, already hier context
-      e.sink           = Pin_class(leaf.graph, leaf.pid);
-      e.sink.context_  = node.context_;
-      e.sink.root_gid_ = node.root_gid_;
-      e.sink.hier_pos_ = leaf.hier_pos;
+      e.driver            = local.driver;  // near side: node's pin, already hier context
+      e.driver.hier_path_ = node.hier_path_;
+      e.sink              = Pin_class(leaf.graph, leaf.pid);
+      e.sink.context_     = node.context_;
+      e.sink.root_gid_    = node.root_gid_;
+      e.sink.hier_pos_    = leaf.hier_pos;
+      e.sink.hier_path_   = leaf.path;
       result.push_back(e);
     }
   }
   return result;
+}
+
+std::string Graph::hier_local_name(Graph* g, Nid nid) {
+  const Nid base = nid & ~static_cast<Nid>(3);
+  // Built-in singletons have no instance name. INPUT/OUTPUT contribute no node
+  // component (the pin's port name stands alone); CONST gets a stable label.
+  if (base == INPUT_NODE || base == OUTPUT_NODE) {
+    return {};
+  }
+  if (base == CONST_NODE) {
+    return "const";
+  }
+  if (g == nullptr || !g->is_node_valid(base)) {
+    return "n" + std::to_string(static_cast<uint64_t>(base) >> 2);
+  }
+  const Node_class n(g, base);  // class context: `name` is per-node (flat storage)
+  if (n.attr(attrs::name).has()) {
+    return std::string(n.attr(attrs::name).get());
+  }
+  if (const auto gio = n.get_subnode_io()) {
+    return std::string(gio->get_name());  // instantiated module (type) name
+  }
+  return "n" + std::to_string(static_cast<uint64_t>(base) >> 2);
+}
+
+std::string Graph::build_hier_name(Graph* graph, Gid root_gid, const std::shared_ptr<const std::vector<Nid>>& path, Nid raw_nid) {
+  std::string out;
+  if (graph == nullptr) {
+    return out;
+  }
+  if (path && !path->empty() && root_gid != Gid_invalid && graph->owner_lib_ != nullptr && graph->owner_lib_->has_graph(root_gid)) {
+    Graph*                root = const_cast<Graph*>(graph->owner_lib_->get_graph(root_gid).get());
+    std::vector<HierInst> insts;
+    if (hier_path_to_insts(root, *path, insts) != nullptr) {
+      for (const auto& h : insts) {
+        out += hier_local_name(h.parent, h.inst_nid);
+        out += '.';
+      }
+    }
+  }
+  out += hier_local_name(graph, raw_nid);
+  return out;
+}
+
+std::string Node_class::get_hier_name() const {
+  if (graph_ == nullptr) {
+    return {};
+  }
+  return Graph::build_hier_name(graph_, root_gid_, hier_path_, raw_nid);
+}
+
+void Node_class::set_name(std::string_view name) const {
+  assert(graph_ != nullptr && "set_name: node is not attached to a graph");
+  attr(attrs::name).set(std::string(name));
+}
+
+std::string_view Node_class::get_name() const {
+  if (graph_ == nullptr) {
+    return {};
+  }
+  const auto a = attr(attrs::name);
+  return a.has() ? std::string_view{a.get()} : std::string_view{};
+}
+
+std::string Pin_class::get_hier_name() const {
+  if (graph_ == nullptr) {
+    return {};
+  }
+  std::string out = Graph::build_hier_name(graph_, root_gid_, hier_path_, graph_->master_nid_of_pid(pin_pid));
+  if (get_port_id() != 0) {  // a real pin: append its port name; node-as-pin == the node itself
+    const auto pname = get_pin_name();
+    if (!pname.empty()) {
+      if (!out.empty()) {  // primary-IO leaf has no node component — port name stands alone
+        out += '.';
+      }
+      out += pname;
+    }
+  }
+  return out;
 }
 
 auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
@@ -3367,9 +3555,10 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
     auto*     self     = ref_node(self_nid);
     auto      edges    = self->get_edges(self_nid, overflow_sets_);
     Pin_class self_driver_pin(this, self_nid | static_cast<Pid>(2));
-    self_driver_pin.context_  = pin.context_;
-    self_driver_pin.root_gid_ = pin.root_gid_;
-    self_driver_pin.hier_pos_ = pin.hier_pos_;
+    self_driver_pin.context_   = pin.context_;
+    self_driver_pin.root_gid_  = pin.root_gid_;
+    self_driver_pin.hier_pos_  = pin.hier_pos_;
+    self_driver_pin.hier_path_ = pin.hier_path_;
 
     std::vector<Edge_class> out;
     for (auto vid : edges) {
@@ -3378,20 +3567,22 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
       }
       if (vid & 1) {
         Edge_class e{};
-        e.driver         = self_driver_pin;
-        e.sink           = make_pin_class(static_cast<Pid>(vid));
-        e.sink.context_  = pin.context_;
-        e.sink.root_gid_ = pin.root_gid_;
-        e.sink.hier_pos_ = pin.hier_pos_;
+        e.driver          = self_driver_pin;
+        e.sink            = make_pin_class(static_cast<Pid>(vid));
+        e.sink.context_   = pin.context_;
+        e.sink.root_gid_  = pin.root_gid_;
+        e.sink.hier_pos_  = pin.hier_pos_;
+        e.sink.hier_path_ = pin.hier_path_;
         out.push_back(e);
       } else {
         const Nid  sink_nid = static_cast<Nid>(vid);
         Edge_class e{};
-        e.driver         = self_driver_pin;
-        e.sink           = Pin_class(this, sink_nid & ~static_cast<Nid>(2));
-        e.sink.context_  = pin.context_;
-        e.sink.root_gid_ = pin.root_gid_;
-        e.sink.hier_pos_ = pin.hier_pos_;
+        e.driver          = self_driver_pin;
+        e.sink            = Pin_class(this, sink_nid & ~static_cast<Nid>(2));
+        e.sink.context_   = pin.context_;
+        e.sink.root_gid_  = pin.root_gid_;
+        e.sink.hier_pos_  = pin.hier_pos_;
+        e.sink.hier_path_ = pin.hier_path_;
         out.push_back(e);
       }
     }
@@ -3417,11 +3608,12 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
       const Pid sink_pid = static_cast<Pid>(vid);
 
       Edge_class e{};
-      e.driver         = context_driver_pin;
-      e.sink           = make_pin_class(sink_pid);
-      e.sink.context_  = pin.context_;
-      e.sink.root_gid_ = pin.root_gid_;
-      e.sink.hier_pos_ = pin.hier_pos_;
+      e.driver          = context_driver_pin;
+      e.sink            = make_pin_class(sink_pid);
+      e.sink.context_   = pin.context_;
+      e.sink.root_gid_  = pin.root_gid_;
+      e.sink.hier_pos_  = pin.hier_pos_;
+      e.sink.hier_path_ = pin.hier_path_;
       out.push_back(e);
       continue;
     }
@@ -3447,9 +3639,10 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
     auto*     self     = ref_node(self_nid);
     auto      edges    = self->get_edges(self_nid, overflow_sets_);
     Pin_class self_sink_pin(this, self_nid);
-    self_sink_pin.context_  = pin.context_;
-    self_sink_pin.root_gid_ = pin.root_gid_;
-    self_sink_pin.hier_pos_ = pin.hier_pos_;
+    self_sink_pin.context_   = pin.context_;
+    self_sink_pin.root_gid_  = pin.root_gid_;
+    self_sink_pin.hier_pos_  = pin.hier_pos_;
+    self_sink_pin.hier_path_ = pin.hier_path_;
 
     std::vector<Edge_class> out;
     for (auto vid : edges) {
@@ -3458,20 +3651,22 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
       }
       if (vid & 1) {
         Edge_class e{};
-        e.driver           = make_pin_class(static_cast<Pid>(vid));
-        e.driver.context_  = pin.context_;
-        e.driver.root_gid_ = pin.root_gid_;
-        e.driver.hier_pos_ = pin.hier_pos_;
-        e.sink             = self_sink_pin;
+        e.driver            = make_pin_class(static_cast<Pid>(vid));
+        e.driver.context_   = pin.context_;
+        e.driver.root_gid_  = pin.root_gid_;
+        e.driver.hier_pos_  = pin.hier_pos_;
+        e.driver.hier_path_ = pin.hier_path_;
+        e.sink              = self_sink_pin;
         out.push_back(e);
       } else {
         const Nid  driver_nid = static_cast<Nid>(vid);
         Edge_class e{};
-        e.driver           = Pin_class(this, driver_nid | static_cast<Nid>(2));
-        e.driver.context_  = pin.context_;
-        e.driver.root_gid_ = pin.root_gid_;
-        e.driver.hier_pos_ = pin.hier_pos_;
-        e.sink             = self_sink_pin;
+        e.driver            = Pin_class(this, driver_nid | static_cast<Nid>(2));
+        e.driver.context_   = pin.context_;
+        e.driver.root_gid_  = pin.root_gid_;
+        e.driver.hier_pos_  = pin.hier_pos_;
+        e.driver.hier_path_ = pin.hier_path_;
+        e.sink              = self_sink_pin;
         out.push_back(e);
       }
     }
@@ -3497,11 +3692,12 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
       const Pid driver_pid = static_cast<Pid>(vid);
 
       Edge_class e{};
-      e.driver           = make_pin_class(driver_pid);
-      e.driver.context_  = pin.context_;
-      e.driver.root_gid_ = pin.root_gid_;
-      e.driver.hier_pos_ = pin.hier_pos_;
-      e.sink             = context_sink_pin;
+      e.driver            = make_pin_class(driver_pid);
+      e.driver.context_   = pin.context_;
+      e.driver.root_gid_  = pin.root_gid_;
+      e.driver.hier_pos_  = pin.hier_pos_;
+      e.driver.hier_path_ = pin.hier_path_;
+      e.sink              = context_sink_pin;
       out.push_back(e);
       continue;
     }

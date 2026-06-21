@@ -28,6 +28,7 @@
 #include "index.hpp"
 #include "rapidhash.h"
 #include "source_locator.hpp"
+#include "str_ci.hpp"  // Ci_hash/Ci_eq: module + IO-pin names match case-insensitively
 #include "tree.hpp"
 #include "unordered_dense.hpp"
 
@@ -157,6 +158,14 @@ public:
   [[nodiscard]] Gid              get_root_gid() const noexcept;
   [[nodiscard]] Gid              get_current_gid() const noexcept;
   [[nodiscard]] Tree_pos         get_hier_pos() const noexcept { return hier_pos_; }
+  // Hier: full instance chain (subnode nids root..immediate-parent) that locates
+  // this handle's body unambiguously even when its graph is instantiated more
+  // than once. Empty/null for root-level or non-hier handles. Used by the
+  // cross-boundary edge resolver; see inp_edges/out_edges.
+  [[nodiscard]] const std::shared_ptr<const std::vector<Nid>>& get_hier_path() const noexcept { return hier_path_; }
+  // Verilog-style dotted hierarchical name: "inst.inst...node.pin" (the pin port
+  // name is appended only for non-zero ports). See Node_class::get_hier_name.
+  [[nodiscard]] std::string                                    get_hier_name() const;
 
   // Opaque, hashable keys for use in user-owned maps. See hhds/index.hpp for
   // semantics. Prefer these over using Pin_class directly as a map key.
@@ -198,11 +207,12 @@ public:
   }
 
 private:
-  Graph*         graph_    = nullptr;
-  Pid            pin_pid   = 0;
-  Handle_context context_  = Handle_context::Class;
-  Gid            root_gid_ = Gid_invalid;  // Flat & Hier: root graph of the traversal
-  Tree_pos       hier_pos_ = INVALID;      // Hier: per-instance token (parent's structure-tree pos)
+  Graph*                                  graph_    = nullptr;
+  Pid                                     pin_pid   = 0;
+  Handle_context                          context_  = Handle_context::Class;
+  Gid                                     root_gid_ = Gid_invalid;  // Flat & Hier: root graph of the traversal
+  Tree_pos                                hier_pos_ = INVALID;      // Hier: per-instance token (parent's structure-tree pos)
+  std::shared_ptr<const std::vector<Nid>> hier_path_;               // Hier: full root..parent instance chain
 
   friend class Graph;
   friend class GraphLibrary;
@@ -218,26 +228,39 @@ public:
   Node_class(Graph* graph_value, Nid raw_nid_value) : graph_(graph_value), raw_nid(raw_nid_value) {}
   Node_class(Graph* graph_value, Gid root_gid_value, Nid raw_nid_value)
       : graph_(graph_value), raw_nid(raw_nid_value), context_(Context::Flat), root_gid_(root_gid_value) {}
-  Node_class(Graph* graph_value, Gid root_gid_value, Tree_pos hier_pos_value, Nid raw_nid_value)
+  Node_class(Graph* graph_value, Gid root_gid_value, Tree_pos hier_pos_value, Nid raw_nid_value,
+             std::shared_ptr<const std::vector<Nid>> hier_path_value = nullptr)
       : graph_(graph_value)
       , raw_nid(raw_nid_value)
       , context_(Context::Hier)
       , root_gid_(root_gid_value)
-      , hier_pos_(hier_pos_value) {}
+      , hier_pos_(hier_pos_value)
+      , hier_path_(std::move(hier_path_value)) {}
   explicit Node_class(Nid raw_nid_value) : raw_nid(raw_nid_value) {}
 
-  [[nodiscard]] constexpr Port_id get_port_id() const noexcept { return 0; }
-  [[nodiscard]] constexpr Nid     get_debug_nid() const noexcept { return raw_nid; }
-  [[nodiscard]] Graph*            get_graph() const noexcept { return graph_; }
-  [[nodiscard]] bool              is_valid() const noexcept;
-  [[nodiscard]] bool              is_invalid() const noexcept { return !is_valid(); }
-  [[nodiscard]] bool              is_class() const noexcept { return context_ == Context::Class; }
-  [[nodiscard]] bool              is_flat() const noexcept { return context_ == Context::Flat; }
-  [[nodiscard]] bool              is_hier() const noexcept { return context_ == Context::Hier; }
-  [[nodiscard]] Context           get_context() const noexcept { return context_; }
-  [[nodiscard]] Gid               get_root_gid() const noexcept;
-  [[nodiscard]] Gid               get_current_gid() const noexcept;
-  [[nodiscard]] Tree_pos          get_hier_pos() const noexcept { return hier_pos_; }
+  [[nodiscard]] constexpr Port_id                              get_port_id() const noexcept { return 0; }
+  [[nodiscard]] constexpr Nid                                  get_debug_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] Graph*                                         get_graph() const noexcept { return graph_; }
+  [[nodiscard]] bool                                           is_valid() const noexcept;
+  [[nodiscard]] bool                                           is_invalid() const noexcept { return !is_valid(); }
+  [[nodiscard]] bool                                           is_class() const noexcept { return context_ == Context::Class; }
+  [[nodiscard]] bool                                           is_flat() const noexcept { return context_ == Context::Flat; }
+  [[nodiscard]] bool                                           is_hier() const noexcept { return context_ == Context::Hier; }
+  [[nodiscard]] Context                                        get_context() const noexcept { return context_; }
+  [[nodiscard]] Gid                                            get_root_gid() const noexcept;
+  [[nodiscard]] Gid                                            get_current_gid() const noexcept;
+  [[nodiscard]] Tree_pos                                       get_hier_pos() const noexcept { return hier_pos_; }
+  // See Pin_class::get_hier_path.
+  [[nodiscard]] const std::shared_ptr<const std::vector<Nid>>& get_hier_path() const noexcept { return hier_path_; }
+  // See class comment: "inst.inst...node" from the instance chain plus this node.
+  [[nodiscard]] std::string                                    get_hier_name() const;
+
+  // Convenience name accessors backed by hhds::attrs::name — the SAME attr that
+  // get_hier_name() / hier_local_name() read. LiveHD stamps the RTL instance
+  // name (or a flop's register name) here via set_name() so that get_hier_name()
+  // yields the Verilog-style hierarchical path instead of the "n<id>" fallback.
+  void                                                         set_name(std::string_view name) const;
+  [[nodiscard]] std::string_view                              get_name() const;
 
   // Opaque, hashable keys for use in user-owned maps. See hhds/index.hpp for
   // semantics. Prefer these over using Node_class directly as a map key.
@@ -300,11 +323,12 @@ public:
   }
 
 private:
-  Graph*   graph_    = nullptr;
-  Nid      raw_nid   = 0;
-  Context  context_  = Context::Class;
-  Gid      root_gid_ = Gid_invalid;  // Flat & Hier: root graph of the traversal
-  Tree_pos hier_pos_ = INVALID;      // Hier: per-instance token (parent's structure-tree pos)
+  Graph*                                  graph_    = nullptr;
+  Nid                                     raw_nid   = 0;
+  Context                                 context_  = Context::Class;
+  Gid                                     root_gid_ = Gid_invalid;  // Flat & Hier: root graph of the traversal
+  Tree_pos                                hier_pos_ = INVALID;      // Hier: per-instance token (parent's structure-tree pos)
+  std::shared_ptr<const std::vector<Nid>> hier_path_;               // Hier: full root..parent instance chain
 
   friend class Graph;
   friend void inherit_pin_context(Pin_class& pin, const Node_class& node);
@@ -660,8 +684,9 @@ private:
   void              load_body(const std::string& dir_path);
   void              delete_node(Nid nid);
   [[nodiscard]] Pid materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
-                                                ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
-  void              erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid>& pins_by_name);
+                                                ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq>& pins_by_name);
+  void              erase_declared_io_pin(std::string_view name,
+                                          ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq>& pins_by_name);
   void              delete_pin(Pid pin_pid);
   [[nodiscard]] Pin_class        create_pin(Node_class node, Port_id port_id);
   [[nodiscard]] Pid              create_pin(Nid nid, Port_id port_id);
@@ -724,15 +749,21 @@ private:
     Nid      inst_nid;       // subnode instance node within parent
     Tree_pos inst_tree_pos;  // inst_nid's structure-tree position in parent (== a child's hier_pos_)
   };
-  // A resolved leaf endpoint: a real pin in `graph`, reached through `path`.
+  // A resolved leaf endpoint: a real pin in `graph`, with its own root..parent
+  // instance chain (for stamping the result handle's hier_path_).
   struct HierLeaf {
-    Graph*   graph;
-    Pid      pid;
-    Tree_pos hier_pos;
+    Graph*                                  graph;
+    Pid                                     pid;
+    Tree_pos                                hier_pos;
+    std::shared_ptr<const std::vector<Nid>> path;
   };
-  // Reconstruct the instance chain root..(wrapper of body_gid reached at
-  // body_hier_pos). Returns false (empty path) when body_gid is the root itself.
-  [[nodiscard]] static bool reconstruct_hier_path(Graph* root, Gid body_gid, Tree_pos body_hier_pos, std::vector<HierInst>& path);
+  // Expand a stored instance-nid chain (Node/Pin::get_hier_path) into HierInst
+  // entries by walking down from root. Returns the body graph at the chain end,
+  // or nullptr if the chain is inconsistent with the library.
+  [[nodiscard]] static Graph* hier_path_to_insts(Graph* root, const std::vector<Nid>& chain, std::vector<HierInst>& path);
+  // Fallback DFS reconstruction for handles that carry no chain (e.g. hand-built).
+  // Ambiguous for reused sub-graphs — prefer the stored chain.
+  [[nodiscard]] static bool   reconstruct_hier_path(Graph* root, Gid body_gid, Tree_pos body_hier_pos, std::vector<HierInst>& path);
   // Follow a local driver (inp) / sink (out) pin across module boundaries until
   // real leaves are reached, appending each to `out`. `path` is the instance
   // chain from root to `g` (passed by value: pushed/popped per crossing).
@@ -752,6 +783,14 @@ private:
   // Hier readers: resolve each far endpoint across module boundaries.
   [[nodiscard]] std::vector<Edge_class> inp_edges_hier(Node_class node);
   [[nodiscard]] std::vector<Edge_class> out_edges_hier(Node_class node);
+  // Starting instance chain (root..node's body) for the hier resolvers.
+  [[nodiscard]] bool                    hier_base_path(Node_class node, std::vector<HierInst>& base_path);
+  // get_hier_name building blocks. hier_local_name: a node's `name` attr, else
+  // the instantiated module name, else "n<id>". build_hier_name: join the
+  // instance chain's local names with the body node's local name.
+  [[nodiscard]] static std::string      hier_local_name(Graph* g, Nid nid);
+  [[nodiscard]] static std::string build_hier_name(Graph* graph, Gid root_gid, const std::shared_ptr<const std::vector<Nid>>& path,
+                                                   Nid raw_nid);
 
   std::vector<NodeEntry>                         node_table;
   std::vector<PinEntry>                          pin_table;
@@ -781,8 +820,8 @@ private:
   mutable std::vector<Nid>                       backward_pass2_cache_;
   mutable std::vector<uint32_t>                  backward_remaining_out_cache_;
   mutable bool                                   backward_caches_valid_ = false;
-  ankerl::unordered_dense::map<std::string, Pid> input_pins_;
-  ankerl::unordered_dense::map<std::string, Pid> output_pins_;
+  ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq> input_pins_;
+  ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq> output_pins_;
   const GraphLibrary*                            owner_lib_ = nullptr;
   std::weak_ptr<GraphIO>                         graphio_owner_;
   Gid                                            self_gid_ = Gid_invalid;
@@ -946,10 +985,11 @@ public:
 
 private:
   struct Frame {
-    Graph*   graph;
-    size_t   node_idx;
-    size_t   end;
-    Tree_pos hier_pos;  // position in the parent graph's structure tree
+    Graph*                                  graph;
+    size_t                                  node_idx;
+    size_t                                  end;
+    Tree_pos                                hier_pos;  // position in the parent graph's structure tree
+    std::shared_ptr<const std::vector<Nid>> path;      // root..this-frame instance chain
   };
 
   explicit FastHierIterator(Graph* root_graph);
@@ -1137,9 +1177,10 @@ public:
 
 private:
   struct Frame {
-    Graph*               graph;
-    ForwardClassIterator it;
-    Tree_pos             hier_pos;
+    Graph*                                  graph;
+    ForwardClassIterator                    it;
+    Tree_pos                                hier_pos;
+    std::shared_ptr<const std::vector<Nid>> path;  // root..this-frame instance chain
   };
 
   explicit ForwardHierIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false);
@@ -1317,9 +1358,10 @@ public:
 
 private:
   struct Frame {
-    Graph*                graph;
-    BackwardClassIterator it;
-    Tree_pos              hier_pos;
+    Graph*                                  graph;
+    BackwardClassIterator                   it;
+    Tree_pos                                hier_pos;
+    std::shared_ptr<const std::vector<Nid>> path;  // root..this-frame instance chain
   };
 
   explicit BackwardHierIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false);
@@ -1435,7 +1477,7 @@ private:
 
   std::vector<DeclaredIoPin>                                  input_pin_decls_;
   std::vector<DeclaredIoPin>                                  output_pin_decls_;
-  ankerl::unordered_dense::map<std::string, DeclaredIoPinRef> declared_io_pins_;
+  ankerl::unordered_dense::map<std::string, DeclaredIoPinRef, Ci_hash, Ci_eq> declared_io_pins_;
 
   GraphIO(GraphLibrary* owner_lib, Gid gid, std::string name) : owner_lib_(owner_lib), gid_(gid), name_(std::move(name)) {}
   void reindex_declared_io_pins(IoDirection direction, size_t start_index);
@@ -1947,11 +1989,13 @@ private:
   // distinct names rarely collide, while leaving headroom below the 2^42 cap.
   static constexpr Gid kGidModulus = (Gid{1} << 40);
 
-  // Deterministic rapidhash over the name → a stable gid, identical across
-  // runs, platforms and libraries (std::hash is NONE of these, so it must not
-  // be used here — cross-library gid agreement is the whole point).
+  // Deterministic case-insensitive hash over the name → a stable gid, identical
+  // across runs, platforms and libraries (std::hash is NONE of these, so it must
+  // not be used here — cross-library gid agreement is the whole point). The hash
+  // folds ASCII case so `MODULE_FO` and `ModuLe_Fo` map to the same gid, matching
+  // the case-insensitive graph_name_to_id_ lookup.
   [[nodiscard]] static Gid hash_name_to_gid(std::string_view name) noexcept {
-    const uint64_t h = rapidhash(name.data(), name.size());
+    const uint64_t h = ci_str_hash(name);
     const Gid      g = static_cast<Gid>(h % (kGidModulus - 1)) + 1;  // ∈ [1, kGidModulus)
     return g;
   }
@@ -2003,8 +2047,8 @@ private:
   // large gids that a vector could not. gid 0 (Gid_invalid) is never a key.
   absl::flat_hash_map<Gid, std::shared_ptr<GraphIO>> graph_ios_;
   absl::flat_hash_map<Gid, std::shared_ptr<Graph>>   graphs_;
-  ankerl::unordered_dense::map<std::string, Gid>     graph_name_to_id_;
-  ankerl::unordered_dense::map<std::string, Gid>     deleted_name_to_id_;
+  ankerl::unordered_dense::map<std::string, Gid, Ci_hash, Ci_eq> graph_name_to_id_;
+  ankerl::unordered_dense::map<std::string, Gid, Ci_hash, Ci_eq> deleted_name_to_id_;
   // Source-provenance base (hhds-srcloc): see source_map(). mutable because
   // save() is const yet folds the per-graph deltas in (precedent: dirty_).
   mutable Source_locator                             srcmap_;
