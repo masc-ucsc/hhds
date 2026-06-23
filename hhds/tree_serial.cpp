@@ -451,7 +451,10 @@ void Forest::save(const std::string& db_path) const {
   }
 
   // --- source-provenance table (always rewritten in full, like forest.txt) ---
-  srcmap_.save(db_path);
+  // A borrower of a shared map defers srcmap.txt persistence to the owning sharer.
+  if (persist_srcmap_) {
+    srcmap_sp_->save(db_path);
+  }
 }
 
 void Forest::load(const std::string& db_path) {
@@ -467,7 +470,9 @@ void Forest::load(const std::string& db_path) {
   deleted_name_to_tid_.clear();
 
   // Source-provenance base: state = what's on disk (missing file -> empty).
-  (void)srcmap_.load(db_path);
+  if (persist_srcmap_) {
+    (void)srcmap_sp_->load(db_path);
+  }
 
   // --- Parse forest.txt ---
   {

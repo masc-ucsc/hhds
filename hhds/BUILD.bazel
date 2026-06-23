@@ -211,7 +211,10 @@ cc_binary(
 cc_test(
     name = "graph_test",
     srcs = ["tests/graph_test.cpp"],
-    deps = [":graph"],
+    deps = [
+        ":core",  # Forest::save/load for the shared source-map test
+        ":graph",
+    ],
 )
 
 cc_binary(

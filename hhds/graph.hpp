@@ -847,7 +847,7 @@ private:
   // Source-provenance delta (hhds-srcloc). Provenance is body content, so it
   // is cleared with the attr stores (clear()/clear_graph()/
   // invalidate_from_library()); the base pointer to the owning library's
-  // srcmap_ (set in bind_library) survives everything but detach.
+  // shared source map (*srcmap_sp_, set in bind_library) survives everything but detach.
   Source_locator                                                 srcloc_;
 
   friend class Node_class;
@@ -1804,13 +1804,40 @@ public:
   // Library-level source-provenance base (hhds-srcloc): the loaded srcmap.txt
   // table plus the save-time union of the per-graph locators. Graphs chain to
   // it for resolution; it is only mutated under the EXCLUSIVE registry lock by
-  // load(), load_merge() and save() (whose delta-fold is why the member is
-  // mutable, mirroring dirty_). Per-graph srcid resolution chains to it
+  // load(), load_merge() and save(). Per-graph srcid resolution chains to it
   // lock-free, so resolution must not run concurrently with those three.
-  [[nodiscard]] const Source_locator& source_map() const noexcept { return srcmap_; }
+  [[nodiscard]] const Source_locator& source_map() const noexcept { return *srcmap_sp_; }
   // Non-const access is for single-threaded setup/tests only — never while
   // other threads hold graphs from this library.
-  [[nodiscard]] Source_locator&       source_map() noexcept { return srcmap_; }
+  [[nodiscard]] Source_locator&       source_map() noexcept { return *srcmap_sp_; }
+
+  // Shared in-memory source map (hhds-srcloc). A Forest and a GraphLibrary that
+  // persist into the SAME db directory must share ONE table (LNAST and LGraph
+  // come from the same source, so their content-addressed ids coincide and a
+  // single srcmap.txt writer avoids the clobber). source_map_shared() hands out
+  // this library's table; share_source_map() adopts another's. Call BEFORE
+  // creating graphs in the typical flow; for safety any existing graphs are
+  // re-based here under the registry lock. `persist` selects whether THIS object
+  // writes/reads srcmap.txt on save()/load() — exactly one sharer should persist
+  // (single-process; save() remains a single-threaded barrier — do not save two
+  // sharers of one map concurrently). Prefer making the GraphLibrary the
+  // persister: its save() folds the per-graph deltas into the shared table, so
+  // letting it write srcmap.txt guarantees those deltas reach disk. If instead
+  // the Forest persists, save the library FIRST so its fold lands before the
+  // Forest writes the table (else graph bodies would reference srcids absent
+  // from srcmap.txt).
+  [[nodiscard]] std::shared_ptr<Source_locator> source_map_shared() const noexcept { return srcmap_sp_; }
+  void                                          share_source_map(std::shared_ptr<Source_locator> sp, bool persist) {
+    assert(sp != nullptr && "share_source_map: null source map");
+    std::unique_lock lock(registry_mu_);
+    srcmap_sp_      = std::move(sp);
+    persist_srcmap_ = persist;
+    for (auto& [gid, g] : graphs_) {
+      if (g) {
+        g->source_locator().set_base(srcmap_sp_.get());
+      }
+    }
+  }
 
   // Persistence — saves all declarations (text) and bodies (binary).
   // db_path is the root directory (e.g., "my_db/").
@@ -2062,9 +2089,15 @@ private:
   absl::flat_hash_map<Gid, std::shared_ptr<Graph>>               graphs_;
   ankerl::unordered_dense::map<std::string, Gid, Ci_hash, Ci_eq> graph_name_to_id_;
   ankerl::unordered_dense::map<std::string, Gid, Ci_hash, Ci_eq> deleted_name_to_id_;
-  // Source-provenance base (hhds-srcloc): see source_map(). mutable because
-  // save() is const yet folds the per-graph deltas in (precedent: dirty_).
-  mutable Source_locator                                         srcmap_;
+  // Source-provenance base (hhds-srcloc): see source_map(). Held by shared_ptr
+  // so a Forest and a GraphLibrary sharing a db directory can share ONE
+  // in-memory table (share_source_map); standalone libraries own a private one.
+  // The const save() folds the per-graph deltas into the pointee — allowed
+  // through the shared_ptr without `mutable`.
+  std::shared_ptr<Source_locator>                                srcmap_sp_      = std::make_shared<Source_locator>();
+  // false on a borrower of a shared map: its save()/load() skip srcmap.txt and
+  // defer persistence to the owning sharer.
+  bool                                                           persist_srcmap_ = true;
   // count of live graphs
   Gid                                                            live_count_     = 0;
   mutable std::atomic<uint64_t>                                  mutation_epoch_ = 1;

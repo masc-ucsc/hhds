@@ -1170,6 +1170,59 @@ void test_load_merge() {
   fs::remove_all(base);
 }
 
+// Shared in-memory source map: a Forest (LNAST) and a GraphLibrary (LGraph)
+// sharing one db directory must share ONE Source_locator and a single
+// srcmap.txt writer, so tree-side and graph-side provenance both survive a
+// co-save instead of clobbering each other (the old per-structure behavior).
+void test_shared_source_map() {
+  namespace fs   = std::filesystem;
+  const auto dir = (fs::temp_directory_path() / "hhds_shared_srcmap_test").string();
+  fs::remove_all(dir);
+
+  hhds::SourceId id_tree = 0, id_graph = 0;
+  {
+    auto               forest = hhds::Forest::create();
+    hhds::GraphLibrary lib;
+    // One shared table; the library is the sole srcmap.txt writer.
+    forest->share_source_map(lib.source_map_shared(), /*persist=*/false);
+    assert(&forest->source_map() == &lib.source_map() && "Forest and library share one table");
+
+    // Tree-side span minted directly into the shared map.
+    id_tree = forest->source_map().mint("tree_file.v", 0, 5, 1);
+
+    // Graph-side span minted into a graph's locator; folds into the shared map at save.
+    auto gio = lib.create_io("top");
+    {
+      auto g = gio->create_graph();
+      (void)g->create_node();
+      id_graph = g->source_locator().mint("graph_file.v", 10, 20, 2);
+    }
+
+    lib.save(dir);      // folds graph delta + writes srcmap.txt (+ library.txt, bodies)
+    forest->save(dir);  // borrower: writes forest.txt, but must NOT touch srcmap.txt
+  }
+
+  // The borrower's save must not clobber or empty-remove the shared table.
+  assert(fs::exists(fs::path(dir) / "srcmap.txt") && "shared srcmap.txt survives borrower save");
+
+  // Reload into a fresh shared map; BOTH spans must resolve (no clobber).
+  {
+    auto               forest2 = hhds::Forest::create();
+    hhds::GraphLibrary lib2;
+    forest2->share_source_map(lib2.source_map_shared(), /*persist=*/false);
+    lib2.load(dir);      // owner loads srcmap.txt into the shared table
+    forest2->load(dir);  // borrower shares the already-loaded table
+
+    const auto a_tree  = lib2.source_map().resolve(id_tree);
+    const auto a_graph = lib2.source_map().resolve(id_graph);
+    assert(a_tree && a_tree->path == "tree_file.v" && "tree-side provenance survived shared save");
+    assert(a_graph && a_graph->path == "graph_file.v" && "graph-side provenance survived shared save");
+    assert(forest2->source_map().resolve(id_tree) && "shared table visible from the forest side");
+  }
+
+  fs::remove_all(dir);
+}
+
 // ===========================================================================
 // EXPECTED-BEHAVIOR SPEC: cross-boundary inp_edges()/out_edges() in hier context
 // ===========================================================================
@@ -1611,6 +1664,7 @@ int main() {
   test_set_subnode_indirect_cycle_aborts();
 #endif
   test_load_merge();
+  test_shared_source_map();
   // Cross-boundary hier edge resolution: drivers/sinks hop module boundaries
   // until a real leaf (or the root's own IO) is reached.
   test_hier_edges_cross_one_boundary_EXPECTED();

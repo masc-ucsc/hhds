@@ -906,4 +906,135 @@ TEST(SourceLocator, ImportFromEdgeCases) {
   EXPECT_EQ(dst.import_from(dst, s), s);  // self-import is a no-op
 }
 
+// ---- R3: per-file re-run / incremental eviction --------------------------------
+
+TEST(SourceLocator, BeginFileShortCircuitsAndRefreshesInPlace) {
+  Source_locator sl;
+  sl.set_file_content("f.v", std::string("hello\nworld\n"));
+  const SourceId id = sl.mint("f.v", 0, 5, 1);
+
+  EXPECT_TRUE(sl.file_unchanged("f.v", "hello\nworld\n"));
+  EXPECT_FALSE(sl.file_unchanged("f.v", "hello\nWORLD\n"));
+
+  // Matching bytes => skip re-parse, mutate nothing.
+  const auto txn = sl.begin_file("f.v", std::string("hello\nworld\n"));
+  EXPECT_TRUE(txn.unchanged);
+  EXPECT_TRUE(sl.has(id));
+
+  // Changed bytes => the prior generation's own span is dropped and metadata refreshed.
+  const auto txn2 = sl.begin_file("f.v", std::string("HELLO\nworld\n"));
+  EXPECT_FALSE(txn2.unchanged);
+  EXPECT_FALSE(sl.has(id)) << "prior generation's span evicted in place";
+  EXPECT_EQ(sl.file_content_hash("f.v"), Source_locator::content_hash_of("HELLO\nworld\n"));
+}
+
+TEST(SourceLocator, AbortFileDropsEntriesAndMetadata) {
+  Source_locator sl;
+  const auto     txn = sl.begin_file("f.v", std::string("aaaa\n"));
+  ASSERT_FALSE(txn.unchanged);
+  const SourceId id = sl.mint("f.v", 0, 4, 1);
+  ASSERT_TRUE(sl.has(id));
+
+  sl.abort_file(txn.file_id);
+  EXPECT_FALSE(sl.has(id)) << "aborted file's spans dropped";
+  EXPECT_EQ(sl.file_content_hash("f.v"), 0u) << "aborted file's metadata cleared";
+}
+
+TEST(SourceLocator, RerunEditedFileEvictsStaleSpansViaMerge) {
+  // Base = the accumulated shared/library map after run 1 (two files).
+  Source_locator base;
+  base.set_file_content("f1.v", std::string("aaaa\nbbbb\n"));
+  base.set_file_content("f2.v", std::string("xx\n"));
+  const SourceId f1_old  = base.mint("f1.v", 0, 4, 1);
+  const SourceId f2_keep = base.mint("f2.v", 0, 2, 1);
+  const uint64_t h1      = base.file_content_hash("f1.v");
+
+  // Run 2: f1 edited (bytes + offsets shift), f2 untouched. The producer
+  // ingests the new bytes and re-mints f1 into a working locator, then folds.
+  Source_locator work;
+  work.set_base(&base);
+  const auto txn = work.begin_file("f1.v", std::string("HEADER\naaaa\nbbbb\n"));
+  EXPECT_FALSE(txn.unchanged);
+  const SourceId f1_new = work.mint("f1.v", 7, 11, 2);  // shifted -> a different id
+  EXPECT_NE(f1_new, f1_old);
+
+  (void)base.merge(work);
+
+  EXPECT_FALSE(base.has(f1_old)) << "stale span from the prior generation evicted on fold";
+  EXPECT_TRUE(base.has(f1_new));
+  EXPECT_TRUE(base.has(f2_keep)) << "an unrelated file is never touched by a re-run";
+  EXPECT_NE(base.file_content_hash("f1.v"), h1) << "file metadata refreshed, not pinned to first ingest";
+  EXPECT_EQ(base.file_content_hash("f1.v"), Source_locator::content_hash_of("HEADER\naaaa\nbbbb\n"));
+}
+
+TEST(SourceLocator, RerunEvictsDependentCombineViaMerge) {
+  Source_locator base;
+  base.set_file_content("f1.v", std::string("aaaa\n"));
+  base.set_file_content("f2.v", std::string("bbbb\n"));
+  const SourceId a = base.mint("f1.v", 0, 4, 1);
+  const SourceId b = base.mint("f2.v", 0, 4, 1);
+  const SourceId c = combine2(base, a, b);  // combine spanning BOTH files
+  ASSERT_TRUE(base.has(c));
+
+  Source_locator work;
+  work.set_base(&base);
+  (void)work.begin_file("f1.v", std::string("XXXX\naaaa\n"));
+  (void)work.mint("f1.v", 5, 9, 2);
+  (void)base.merge(work);
+
+  EXPECT_FALSE(base.has(a)) << "f1 old span evicted";
+  EXPECT_FALSE(base.has(c)) << "combine depending on the re-run file is cascade-evicted";
+  EXPECT_TRUE(base.has(b)) << "the combine's f2 parent (untouched file) survives";
+}
+
+TEST(SourceLocator, RerunDanglingCombineIsPurgedAndTableStaysLoadable) {
+  // A working locator declares f1 edited but builds a combine over the OLD
+  // base-resident f1 span (a cross-generation reference). The fold evicts that
+  // span; the incoming combine would dangle. It must be purged, not persisted —
+  // else load_table would reject the whole table on reload.
+  Source_locator base;
+  base.set_file_content("f1.v", std::string("aaaa\n"));
+  base.set_file_content("f2.v", std::string("bbbb\n"));
+  const SourceId a = base.mint("f1.v", 0, 4, 1);
+  const SourceId b = base.mint("f2.v", 0, 4, 1);
+
+  Source_locator work;
+  work.set_base(&base);
+  (void)work.begin_file("f1.v", std::string("XXXX\naaaa\n"));
+  const SourceId c = combine2(work, a, b);  // names the soon-to-be-evicted `a`
+  (void)base.merge(work);
+
+  EXPECT_FALSE(base.has(a)) << "edited file's old span evicted";
+  EXPECT_FALSE(base.has(c)) << "dangling combine purged, not persisted";
+  EXPECT_TRUE(base.has(b));
+
+  namespace fs   = std::filesystem;
+  const auto dir = (fs::temp_directory_path() / "hhds_dangling_combine_test").string();
+  fs::remove_all(dir);
+  base.save(dir);
+  Source_locator reloaded;
+  EXPECT_TRUE(reloaded.load(dir)) << "purged-combine table reloads cleanly (no whole-table reject)";
+  EXPECT_TRUE(reloaded.has(b));
+  fs::remove_all(dir);
+}
+
+TEST(SourceLocator, MergeKeepsLineOffsetsWhenIncomingCarriesHashOnly) {
+  Source_locator base;
+  base.set_file_content("f.v", std::string("ab\ncd\n"));  // offsets {0,3,6}
+  (void)base.mint("f.v", 0, 2, 1);
+  ASSERT_NE(base.file_line_offsets("f.v"), nullptr);
+
+  // Metadata-only carry: same file, same hash, but no line-offset table (the
+  // shape import_from produces for a hash-less file). It must not clobber base.
+  Source_locator carry;
+  carry.set_file_content_hash("f.v", Source_locator::content_hash_of("ab\ncd\n"));
+  (void)carry.mint("f.v", 4, 5, 2);
+
+  (void)base.merge(carry);
+
+  const auto* offs = base.file_line_offsets("f.v");
+  ASSERT_NE(offs, nullptr) << "merge must not drop valid line offsets";
+  EXPECT_EQ(*offs, (std::vector<uint64_t>{0, 3, 6}));
+}
+
 }  // namespace

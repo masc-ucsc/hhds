@@ -397,6 +397,56 @@ public:
     files_[intern_file(path)].line_offsets = std::move(offsets);
   }
 
+  // ---- incremental re-run (per-file generations) ------------------------------
+  // A producer that re-parses one file of a larger db (the file1->LG, file2->LG,
+  // file1-again loop) must REPLACE that file's provenance, not append to it.
+  // Identity is content-addressed, so a file's content hash IS its generation
+  // marker: begin_file refreshes it, and a fold/merge that sees a newer hash for
+  // a file drops the stale spans (and the combines built on them) instead of
+  // leaking them (see merge_into). file2's entries are never touched.
+
+  struct File_txn {
+    uint32_t file_id   = 0;      // valid only when !unchanged
+    bool     unchanged = false;  // true => bytes match the recorded hash; skip re-parse
+  };
+
+  // Open (or refresh) a file's generation. When `content` matches the recorded
+  // hash, returns unchanged=true so the caller can skip re-parsing entirely.
+  // Otherwise drops this locator's own entries for the file (the prior
+  // generation) and re-derives content_hash + line_offsets from the new bytes;
+  // the caller then re-mints spans, and the next fold/merge evicts the old
+  // generation from the base by the same hash-mismatch rule.
+  File_txn begin_file(std::string_view path, std::string_view content) {
+    const uint64_t h = content_hash_of(content);
+    if (const File* existing = find_file(path); existing != nullptr && existing->content_hash == h) {
+      const auto it = path_to_fid_.find(path);  // own fid if any; 0 when only the base has it
+      return File_txn{it == path_to_fid_.end() ? 0u : it->second, true};
+    }
+    const uint32_t fid = intern_file(path);
+    if (files_[fid].content_hash != 0 && files_[fid].content_hash != h) {
+      evict_file_entries(fid);  // own entries from the prior version
+    }
+    set_file_content(path, std::string(content));  // refresh hash + line_offsets
+    return File_txn{fid, false};
+  }
+
+  // Pure short-circuit query: true iff `path` is recorded with a hash that
+  // matches `content`. Lets a caller decide to skip begin_file/parse outright.
+  [[nodiscard]] bool file_unchanged(std::string_view path, std::string_view content) const {
+    const File* f = find_file(path);
+    return f != nullptr && f->content_hash != 0 && f->content_hash == content_hash_of(content);
+  }
+
+  // Roll back a file's generation (e.g. a parse failure): drop its own entries
+  // and forget its metadata. Other files are untouched.
+  void abort_file(uint32_t file_id) {
+    assert(file_id < files_.size() && "abort_file: bad file id");
+    evict_file_entries(file_id);
+    files_[file_id].content_hash = 0;
+    files_[file_id].line_offsets.clear();
+    files_[file_id].content = nullptr;
+  }
+
   // ---- file contents ---------------------------------------------------------
 
   // Deterministic hash of a file's bytes — the value content_hash records.
@@ -826,6 +876,88 @@ private:
     return id;
   }
 
+  // Rebuild entries_/index_ without the given ids, preserving the relative
+  // order of survivors (so parents still precede combiners). O(entries).
+  void remove_entries_by_id(const std::unordered_set<SourceId>& drop) {
+    if (drop.empty()) {
+      return;
+    }
+    std::vector<std::pair<SourceId, Entry>> kept;
+    kept.reserve(entries_.size() - std::min(drop.size(), entries_.size()));
+    for (auto& kv : entries_) {
+      if (drop.count(kv.first) == 0) {
+        kept.push_back(std::move(kv));
+      }
+    }
+    entries_ = std::move(kept);
+    index_.clear();
+    for (uint32_t i = 0; i < entries_.size(); ++i) {
+      index_.emplace(entries_[i].first, i);
+    }
+  }
+
+  // Drop this locator's OWN entries that belong to file `fid`: the file's
+  // Span/Line anchors, plus every Combine that (transitively) references one of
+  // them. Scan-based and run only on a file re-run / abort — never on the mint
+  // hot path — so it adds no per-mint state. The base chain is never modified
+  // (a borrower never owns the file's entries); cross-locator eviction happens
+  // in merge_into via the same hash-mismatch rule.
+  void evict_file_entries(uint32_t fid) {
+    std::unordered_set<SourceId> evicted;
+    for (const auto& [id, e] : entries_) {
+      if (e.kind != Anchor_kind::Combine && e.file_id == fid) {
+        evicted.insert(id);
+      }
+    }
+    if (evicted.empty()) {
+      return;
+    }
+    // Cascade to combines referencing an evicted id; fixpoint covers combine-of-combine.
+    for (bool grew = true; grew;) {
+      grew = false;
+      for (const auto& [id, e] : entries_) {
+        if (e.kind != Anchor_kind::Combine || evicted.count(id) != 0) {
+          continue;
+        }
+        for (const SourceId p : e.parents) {
+          if (evicted.count(p) != 0) {
+            evicted.insert(id);
+            grew = true;
+            break;
+          }
+        }
+      }
+    }
+    remove_entries_by_id(evicted);
+  }
+
+  // Drop any Combine whose parents do not all resolve (own or base). After a
+  // re-run eviction, an incoming combine may name a parent that referenced the
+  // OLD generation of an edited file (that parent was evicted, not remapped),
+  // leaving a dangling combine; persisting it would make load_table reject the
+  // whole table. Cascades so a combine-of-dangling-combine is also dropped.
+  // Only invoked when an eviction actually occurred, so the common no-evict
+  // merge pays nothing.
+  void purge_unresolved_combines() {
+    std::unordered_set<SourceId> dead;
+    for (bool grew = true; grew;) {
+      grew = false;
+      for (const auto& [id, e] : entries_) {
+        if (e.kind != Anchor_kind::Combine || dead.count(id) != 0) {
+          continue;
+        }
+        for (const SourceId p : e.parents) {
+          if (dead.count(p) != 0 || find_entry(p, nullptr) == nullptr) {
+            dead.insert(id);
+            grew = true;
+            break;
+          }
+        }
+      }
+    }
+    remove_entries_by_id(dead);
+  }
+
   // Structural validation of a loaded table: every record parses fully, file
   // ids reference declared files, line-offset tables ascend, SourceIds are
   // unique, and combine parents are already defined (parents precede
@@ -966,18 +1098,35 @@ private:
     if (other.base_ != nullptr && other.base_ != this) {
       merge_into(*other.base_, remap);
     }
-    // Per-file metadata (content hash, line offsets) survives the union.
+    // Per-file metadata + per-file generation. When the incoming table carries
+    // a NEWER version of a file (its content hash differs from ours), the spans
+    // we hold for that file were minted on the old bytes: drop them (and the
+    // combines built on them) so the incoming generation replaces them instead
+    // of leaking — the R3 re-run fix. A matching hash unions/dedups as before.
+    bool evicted_any = false;
     for (const File& f : other.files_) {
       const uint32_t fid  = intern_file(f.path);
       File&          mine = files_[fid];
-      if (mine.content_hash == 0) {
+      if (mine.content_hash != 0 && f.content_hash != 0 && mine.content_hash != f.content_hash) {
+        // Edited file: drop our stale generation and adopt the incoming
+        // metadata wholesale (this is what un-pins the old hash/line table).
+        evict_file_entries(fid);
+        evicted_any       = true;
         mine.content_hash = f.content_hash;
-      }
-      if (mine.line_offsets.empty() && !f.line_offsets.empty()) {
         mine.line_offsets = f.line_offsets;
-      }
-      if (mine.content == nullptr && f.content != nullptr) {
-        mine.content = f.content;
+        mine.content      = f.content;
+      } else {
+        // Same file (or one side lacks a hash): fill what we are missing, never
+        // overwrite good data with an incoming metadata-only carry's blanks.
+        if (mine.content_hash == 0 && f.content_hash != 0) {
+          mine.content_hash = f.content_hash;
+        }
+        if (mine.line_offsets.empty() && !f.line_offsets.empty()) {
+          mine.line_offsets = f.line_offsets;
+        }
+        if (mine.content == nullptr && f.content != nullptr) {
+          mine.content = f.content;
+        }
       }
     }
     for (const auto& [oid, oe] : other.entries_) {
@@ -1000,6 +1149,13 @@ private:
       if (nid != oid) {
         remap.emplace(oid, nid);
       }
+    }
+    // An eviction may have removed a span that an incoming combine still names
+    // (it referenced the OLD generation, so it was deleted not remapped). Drop
+    // such dangling combines so a save never produces a table load_table would
+    // reject wholesale.
+    if (evicted_any) {
+      purge_unresolved_combines();
     }
   }
 

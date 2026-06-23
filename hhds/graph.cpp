@@ -742,7 +742,7 @@ void Graph::bind_library(const GraphLibrary* owner, Gid self_gid) noexcept {
   // Resolution chains per-graph source-provenance mints to the library base
   // (mutable member: stable address for the library's lifetime, which outlives
   // every attached graph).
-  srcloc_.set_base(owner != nullptr ? &owner->srcmap_ : nullptr);
+  srcloc_.set_base(owner != nullptr ? owner->srcmap_sp_.get() : nullptr);
 }
 
 // Shared traversal constant: where iteration over user nodes begins in
@@ -3951,7 +3951,7 @@ void GraphLibrary::save(const std::string& db_path) const {
   namespace fs = std::filesystem;
   fs::create_directories(db_path);
 
-  // Exclusive: the source-map fold below mutates srcmap_ and the per-graph
+  // Exclusive: the source-map fold below mutates *srcmap_sp_ and the per-graph
   // locators/attr stores (load/load_merge already take the unique lock).
   std::unique_lock lock(registry_mu_);
 
@@ -3979,7 +3979,7 @@ void GraphLibrary::save(const std::string& db_path) const {
     if (g.srcloc_.empty()) {
       continue;
     }
-    const auto remap = srcmap_.merge(g.srcloc_);
+    const auto remap = srcmap_sp_->merge(g.srcloc_);
     if (!remap.empty() && g.has_attr(attrs::srcid)) {
       auto& ids     = g.attr_store(attrs::srcid);
       bool  changed = false;
@@ -3995,7 +3995,11 @@ void GraphLibrary::save(const std::string& db_path) const {
     }
     g.srcloc_.clear();  // entries now live in the base; resolution chains to it
   }
-  srcmap_.save(db_path);
+  // The fold above always runs (graph deltas must land in the shared base);
+  // only the write is deferred when a co-sharer owns srcmap.txt persistence.
+  if (persist_srcmap_) {
+    srcmap_sp_->save(db_path);
+  }
 
   // --- library.txt (declarations, text format) ---
   {
@@ -4075,7 +4079,10 @@ void GraphLibrary::load(const std::string& db_path) {
   // (gid-keyed maps need no slot-0 reservation)
 
   // Source-provenance base: state = what's on disk (missing file -> empty).
-  (void)srcmap_.load(db_path);
+  // A borrower of a shared map defers loading to the owning sharer.
+  if (persist_srcmap_) {
+    (void)srcmap_sp_->load(db_path);
+  }
 
   // --- Parse library.txt ---
   {
@@ -4230,7 +4237,7 @@ void GraphLibrary::load_merge(const std::string& db_path) {
   // probe-resolved differently by the two libraries.
   Source_locator incoming_srcmap;
   (void)incoming_srcmap.load(db_path);
-  const auto src_remap = srcmap_.merge(incoming_srcmap);
+  const auto src_remap = srcmap_sp_->merge(incoming_srcmap);
 
   // --- Assign each incoming graph a gid in THIS library + build the remap ---
   absl::flat_hash_map<Gid, Gid>    remap;           // src_gid -> dst_gid in this
