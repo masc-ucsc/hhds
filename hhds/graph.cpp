@@ -1997,9 +1997,15 @@ ForwardFlatRange Graph::forward_flat(bool loop_break_first, bool loop_break_last
   return ForwardFlatRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
 }
 
-ForwardHierRange Graph::forward_hier(bool loop_break_first, bool loop_break_last) const noexcept {
+ForwardHierRange Graph::forward_hier(bool loop_break_first, bool loop_break_last,
+                                     const ankerl::unordered_dense::set<Gid>* opaque) const noexcept {
   assert_accessible();
-  return ForwardHierRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
+  return ForwardHierRange(const_cast<Graph*>(this), loop_break_first, loop_break_last, opaque);
+}
+
+const ankerl::unordered_dense::set<Gid>*& hier_opaque_ref() noexcept {
+  thread_local const ankerl::unordered_dense::set<Gid>* p = nullptr;
+  return p;
 }
 
 BackwardFlatRange Graph::backward_flat(bool loop_break_first, bool loop_break_last) const noexcept {
@@ -2335,8 +2341,9 @@ ForwardFlatIterator ForwardFlatRange::begin() const { return ForwardFlatIterator
 
 // --- ForwardHierIterator ---
 
-ForwardHierIterator::ForwardHierIterator(Graph* root_graph, bool loop_break_first, bool loop_break_last)
-    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {
+ForwardHierIterator::ForwardHierIterator(Graph* root_graph, bool loop_break_first, bool loop_break_last,
+                                         const ankerl::unordered_dense::set<Gid>* opaque)
+    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last), opaque_(opaque) {
   if (root_graph == nullptr) {
     return;
   }
@@ -2384,7 +2391,11 @@ ForwardHierIterator& ForwardHierIterator::operator++() {
   ++frame.it;
   if (entry.has_subnode() && lib != nullptr && !skip_sub) {
     const Gid sub = entry.get_subnode();
-    if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
+    // `opaque_` (explicit) or the ambient Hier_opaque_scope subnodes are NOT
+    // descended into (yielded as leaf Sub nodes) — the caller (pass/lec --collapse)
+    // blackboxes them instead of flattening the body.
+    const bool is_opaque = (opaque_ != nullptr && opaque_->find(sub) != opaque_->end()) || hier_is_opaque(sub);
+    if (lib->has_graph(sub) && !is_opaque && active_graphs_.find(sub) == active_graphs_.end()) {
       Graph*         child      = const_cast<Graph*>(lib->get_graph(sub).get());
       auto           it         = frame.graph->subnode_tree_pos_.find(cur_nid);
       const Tree_pos child_pos  = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
@@ -2399,7 +2410,9 @@ ForwardHierIterator& ForwardHierIterator::operator++() {
   return *this;
 }
 
-ForwardHierIterator ForwardHierRange::begin() const { return ForwardHierIterator(graph_, loop_break_first_, loop_break_last_); }
+ForwardHierIterator ForwardHierRange::begin() const {
+  return ForwardHierIterator(graph_, loop_break_first_, loop_break_last_, opaque_);
+}
 
 // --- BackwardClassIterator ---
 //
@@ -3170,10 +3183,13 @@ void Graph::resolve_hier_driver(Graph* g, std::vector<HierInst> path, Pid driver
     const auto* entry = g->ref_node(master);
     if (entry->has_subnode() && g->owner_lib_ != nullptr) {
       // Driver pin on a sub-instance == the instance's output port. Cross down
-      // into the body's OUTPUT_NODE sink for the same port.
+      // into the body's OUTPUT_NODE sink for the same port — UNLESS the subnode is
+      // hierarchically opaque (pass/lec --collapse), in which case the read stops
+      // here at the instance boundary (the box's output IS the leaf driver), so it
+      // agrees with forward_hier leaving the body undescended.
       const Gid   child_gid = entry->get_subnode();
       const auto* lib       = g->owner_lib_;
-      if (lib->has_graph(child_gid)) {
+      if (lib->has_graph(child_gid) && !hier_is_opaque(child_gid)) {
         Graph*         child          = const_cast<Graph*>(lib->get_graph(child_gid).get());
         const Port_id  port           = g->port_of_pid(driver_pid);
         const auto     it             = g->subnode_tree_pos_.find(master);

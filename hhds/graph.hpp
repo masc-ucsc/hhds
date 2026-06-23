@@ -652,7 +652,13 @@ public:
   [[nodiscard]] FastFlatRange      fast_flat() const noexcept;
   [[nodiscard]] ForwardFlatRange   forward_flat(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
   [[nodiscard]] FastHierRange      fast_hier() const noexcept;
-  [[nodiscard]] ForwardHierRange   forward_hier(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
+  // `opaque` (optional): subnode Gids the hierarchical walk must NOT descend into
+  // — they are yielded as leaf Sub nodes even though their body lives in the
+  // library (a caller that wants to treat a proven/blackboxed instance as opaque,
+  // e.g. pass/lec's --collapse). nullptr keeps the default "descend into every
+  // resolvable subnode". The pointed-to set must outlive the returned range.
+  [[nodiscard]] ForwardHierRange   forward_hier(bool loop_break_first = true, bool loop_break_last = false,
+                                                const ankerl::unordered_dense::set<Gid>* opaque = nullptr) const noexcept;
   [[nodiscard]] BackwardClassRange backward_class(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
   [[nodiscard]] BackwardFlatRange  backward_flat(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
   [[nodiscard]] BackwardHierRange  backward_hier(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
@@ -1196,29 +1202,61 @@ private:
     std::shared_ptr<const std::vector<Nid>> path;  // root..this-frame instance chain
   };
 
-  explicit ForwardHierIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false);
+  explicit ForwardHierIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false,
+                               const ankerl::unordered_dense::set<Gid>* opaque = nullptr);
   void advance();
 
-  Gid                               root_gid_         = Gid_invalid;
-  bool                              loop_break_first_ = true;
-  bool                              loop_break_last_  = false;
-  std::vector<Frame>                stack_;
-  ankerl::unordered_dense::set<Gid> active_graphs_;
+  Gid                                      root_gid_         = Gid_invalid;
+  bool                                     loop_break_first_ = true;
+  bool                                     loop_break_last_  = false;
+  std::vector<Frame>                       stack_;
+  ankerl::unordered_dense::set<Gid>        active_graphs_;
+  const ankerl::unordered_dense::set<Gid>* opaque_ = nullptr;  // subnodes to NOT descend into
 
   friend class ForwardHierRange;
 };
 
 class ForwardHierRange {
 public:
-  explicit ForwardHierRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false) noexcept
-      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {}
+  explicit ForwardHierRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false,
+                            const ankerl::unordered_dense::set<Gid>* opaque = nullptr) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last), opaque_(opaque) {}
   [[nodiscard]] ForwardHierIterator begin() const;
   [[nodiscard]] ForwardHierIterator end() const noexcept { return ForwardHierIterator{}; }
 
 private:
-  Graph* graph_;
-  bool   loop_break_first_ = true;
-  bool   loop_break_last_  = false;
+  Graph*                                   graph_;
+  bool                                     loop_break_first_ = true;
+  bool                                     loop_break_last_  = false;
+  const ankerl::unordered_dense::set<Gid>* opaque_           = nullptr;
+};
+
+// ── Ambient hierarchical-walk opacity ───────────────────────────────────────
+// Subnode Gids in the thread-local opacity set are treated as LEAVES by BOTH the
+// hierarchical iterators (forward_hier — not descended into) AND the cross-
+// boundary edge resolver (a read of such a subnode's output stops at the
+// instance boundary instead of threading down to the real internal driver). The
+// two must agree, or a consumer would read an un-encoded internal pin. Used by
+// pass/lec --collapse to black-box a proven submodule that lives in the SAME
+// library as its parent (so it cannot simply be omitted from the library). Set
+// with the RAII Hier_opaque_scope; nullptr (default) = descend into everything.
+const ankerl::unordered_dense::set<Gid>*& hier_opaque_ref() noexcept;
+[[nodiscard]] inline bool                 hier_is_opaque(Gid g) noexcept {
+  const auto* s = hier_opaque_ref();
+  return s != nullptr && s->find(g) != s->end();
+}
+
+class Hier_opaque_scope {
+public:
+  explicit Hier_opaque_scope(const ankerl::unordered_dense::set<Gid>* s) noexcept : prev_(hier_opaque_ref()) {
+    hier_opaque_ref() = s;
+  }
+  Hier_opaque_scope(const Hier_opaque_scope&)            = delete;
+  Hier_opaque_scope& operator=(const Hier_opaque_scope&) = delete;
+  ~Hier_opaque_scope() { hier_opaque_ref() = prev_; }
+
+private:
+  const ankerl::unordered_dense::set<Gid>* prev_;
 };
 
 // Backward topological iterator for a single graph body. Emits sinks first,
