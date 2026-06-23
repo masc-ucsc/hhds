@@ -1445,14 +1445,28 @@ void Pin_class::del_pin() const {
   del_driver();
 }
 
-auto Pin_class::out_edges() const -> std::vector<Edge_class> {
+auto Pin_class::out_edges() const -> absl::InlinedVector<Edge_class, 4> {
   assert(graph_ != nullptr && "out_edges: pin is not attached to a graph");
   return graph_->out_edges(*this);
 }
 
-auto Pin_class::inp_edges() const -> std::vector<Edge_class> {
+auto Pin_class::inp_edges() const -> absl::InlinedVector<Edge_class, 4> {
   assert(graph_ != nullptr && "inp_edges: pin is not attached to a graph");
   return graph_->inp_edges(*this);
+}
+
+auto Pin_class::get_driver_pins() const -> absl::InlinedVector<Pin_class, 4> {
+  assert(graph_ != nullptr && "get_driver_pins: pin is not attached to a graph");
+  assert(is_sink() && "get_driver_pins: expects a sink pin");
+  // Built on inp_edges() (a Pin handle method, not a Graph entry point) so the
+  // driver pins inherit the exact same context/hier stamping as the edges. The
+  // discarded sink halves are cheap for a small fan-in; both vectors stay on
+  // the stack unless the sink is unusually high-degree.
+  absl::InlinedVector<Pin_class, 4> out;
+  for (const auto& edge : inp_edges()) {
+    out.push_back(edge.driver);
+  }
+  return out;
 }
 
 bool Node_class::is_valid() const noexcept { return graph_ != nullptr && graph_->is_node_valid(raw_nid); }
@@ -1575,12 +1589,12 @@ void Node_class::del_node() const {
   graph_->delete_node(raw_nid);
 }
 
-auto Node_class::out_edges() const -> std::vector<Edge_class> {
+auto Node_class::out_edges() const -> absl::InlinedVector<Edge_class, 4> {
   assert(graph_ != nullptr && "out_edges: node is not attached to a graph");
   return graph_->out_edges(*this);
 }
 
-auto Node_class::inp_edges() const -> std::vector<Edge_class> {
+auto Node_class::inp_edges() const -> absl::InlinedVector<Edge_class, 4> {
   assert(graph_ != nullptr && "inp_edges: node is not attached to a graph");
   return graph_->inp_edges(*this);
 }
@@ -2390,7 +2404,7 @@ ForwardHierIterator& ForwardHierIterator::operator++() {
   const bool  skip_sub = loop_break_first_ && frame.it.current_is_loop_break_replay();
   ++frame.it;
   if (entry.has_subnode() && lib != nullptr && !skip_sub) {
-    const Gid sub = entry.get_subnode();
+    const Gid  sub       = entry.get_subnode();
     // `opaque_` (explicit) or the ambient Hier_opaque_scope subnodes are NOT
     // descended into (yielded as leaf Sub nodes) — the caller (pass/lec --collapse)
     // blackboxes them instead of flattening the body.
@@ -2902,7 +2916,7 @@ void Graph::del_edge_int(Vid driver_id, Vid sink_id) {
   }
 }
 
-auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
+auto Graph::out_edges(Node_class node) -> absl::InlinedVector<Edge_class, 4> {
   assert_accessible();
   assert_node_exists(node);
   // In a HIER traversal, the reported sinks must cross module boundaries
@@ -2913,10 +2927,10 @@ auto Graph::out_edges(Node_class node) -> std::vector<Edge_class> {
   return out_edges_local(node);
 }
 
-auto Graph::out_edges_local(Node_class node) -> std::vector<Edge_class> {
-  std::vector<Edge_class> out;
-  const Nid               self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
-  auto*                   self     = ref_node(self_nid);
+auto Graph::out_edges_local(Node_class node) -> absl::InlinedVector<Edge_class, 4> {
+  absl::InlinedVector<Edge_class, 4> out;
+  const Nid                          self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
+  auto*                              self     = ref_node(self_nid);
 
   // Pre-build a "context template" Pin_class — every emitted pin inherits the
   // node's traversal context, so we set it once and copy.
@@ -2978,7 +2992,7 @@ auto Graph::out_edges_local(Node_class node) -> std::vector<Edge_class> {
   return out;
 }
 
-auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
+auto Graph::inp_edges(Node_class node) -> absl::InlinedVector<Edge_class, 4> {
   assert_accessible();
   assert_node_exists(node);
   if (node.is_hier() && owner_lib_ != nullptr) {
@@ -2987,10 +3001,10 @@ auto Graph::inp_edges(Node_class node) -> std::vector<Edge_class> {
   return inp_edges_local(node);
 }
 
-auto Graph::inp_edges_local(Node_class node) -> std::vector<Edge_class> {
-  std::vector<Edge_class> out;
-  const Nid               self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
-  auto*                   self     = ref_node(self_nid);
+auto Graph::inp_edges_local(Node_class node) -> absl::InlinedVector<Edge_class, 4> {
+  absl::InlinedVector<Edge_class, 4> out;
+  const Nid                          self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
+  auto*                              self     = ref_node(self_nid);
 
   Pin_class self_sink(this, self_nid & ~static_cast<Pid>(2));
   self_sink.context_  = node.context_;
@@ -3290,14 +3304,14 @@ bool Graph::hier_base_path(Node_class node, std::vector<HierInst>& base_path) {
   return reconstruct_hier_path(root, get_gid(), node.get_hier_pos(), base_path);
 }
 
-auto Graph::inp_edges_hier(Node_class node) -> std::vector<Edge_class> {
+auto Graph::inp_edges_hier(Node_class node) -> absl::InlinedVector<Edge_class, 4> {
   std::vector<HierInst> base_path;
   if (!hier_base_path(node, base_path)) {
     return inp_edges_local(node);  // not locatable in the hierarchy: degrade to local
   }
 
-  std::vector<Edge_class> result;
-  std::vector<HierLeaf>   leaves;
+  absl::InlinedVector<Edge_class, 4> result;
+  std::vector<HierLeaf>              leaves;
   for (const auto& local : inp_edges_local(node)) {
     leaves.clear();
     resolve_hier_driver(this, base_path, local.driver.get_debug_pid(), leaves, 0);
@@ -3316,14 +3330,14 @@ auto Graph::inp_edges_hier(Node_class node) -> std::vector<Edge_class> {
   return result;
 }
 
-auto Graph::out_edges_hier(Node_class node) -> std::vector<Edge_class> {
+auto Graph::out_edges_hier(Node_class node) -> absl::InlinedVector<Edge_class, 4> {
   std::vector<HierInst> base_path;
   if (!hier_base_path(node, base_path)) {
     return out_edges_local(node);  // not locatable in the hierarchy: degrade to local
   }
 
-  std::vector<Edge_class> result;
-  std::vector<HierLeaf>   leaves;
+  absl::InlinedVector<Edge_class, 4> result;
+  std::vector<HierLeaf>              leaves;
   for (const auto& local : out_edges_local(node)) {
     leaves.clear();
     resolve_hier_sink(this, base_path, local.sink.get_debug_pid(), leaves, 0);
@@ -3421,7 +3435,7 @@ std::string Pin_class::get_hier_name() const {
   return out;
 }
 
-auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
+auto Graph::out_edges(Pin_class pin) -> absl::InlinedVector<Edge_class, 4> {
   assert_accessible();
   assert_pin_exists(pin);
 
@@ -3436,7 +3450,7 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
     self_driver_pin.hier_pos_  = pin.hier_pos_;
     self_driver_pin.hier_path_ = pin.hier_path_;
 
-    std::vector<Edge_class> out;
+    absl::InlinedVector<Edge_class, 4> out;
     for (auto vid : edges) {
       if (vid & 2) {
         continue;  // skip back edges
@@ -3465,16 +3479,16 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
     return out;
   }
 
-  std::vector<Edge_class> out;
-  const Pid               self_pid           = pin.get_debug_pid();
-  const Pid               self_pid_lookup    = (self_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-  auto*                   self               = ref_pin(self_pid_lookup);
-  auto                    edges              = self->get_edges(self_pid_lookup, overflow_sets_);
-  const Pin_class         self_driver_pin    = make_pin_class(self_pid_lookup | static_cast<Pid>(2));
-  Pin_class               context_driver_pin = self_driver_pin;
-  context_driver_pin.context_                = pin.context_;
-  context_driver_pin.root_gid_               = pin.root_gid_;
-  context_driver_pin.hier_pos_               = pin.hier_pos_;
+  absl::InlinedVector<Edge_class, 4> out;
+  const Pid                          self_pid           = pin.get_debug_pid();
+  const Pid                          self_pid_lookup    = (self_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+  auto*                              self               = ref_pin(self_pid_lookup);
+  auto                               edges              = self->get_edges(self_pid_lookup, overflow_sets_);
+  const Pin_class                    self_driver_pin    = make_pin_class(self_pid_lookup | static_cast<Pid>(2));
+  Pin_class                          context_driver_pin = self_driver_pin;
+  context_driver_pin.context_                           = pin.context_;
+  context_driver_pin.root_gid_                          = pin.root_gid_;
+  context_driver_pin.hier_pos_                          = pin.hier_pos_;
 
   for (auto vid : edges) {
     if (vid & 2) {
@@ -3505,7 +3519,7 @@ auto Graph::out_edges(Pin_class pin) -> std::vector<Edge_class> {
   return out;
 }
 
-auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
+auto Graph::inp_edges(Pin_class pin) -> absl::InlinedVector<Edge_class, 4> {
   assert_accessible();
   assert_pin_exists(pin);
 
@@ -3520,7 +3534,7 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
     self_sink_pin.hier_pos_  = pin.hier_pos_;
     self_sink_pin.hier_path_ = pin.hier_path_;
 
-    std::vector<Edge_class> out;
+    absl::InlinedVector<Edge_class, 4> out;
     for (auto vid : edges) {
       if (!(vid & 2)) {
         continue;  // skip local/forward edges
@@ -3549,16 +3563,16 @@ auto Graph::inp_edges(Pin_class pin) -> std::vector<Edge_class> {
     return out;
   }
 
-  std::vector<Edge_class> out;
-  const Pid               self_pid         = pin.get_debug_pid();
-  const Pid               self_pid_sink    = (self_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-  auto*                   self             = ref_pin(self_pid_sink);
-  auto                    edges            = self->get_edges(self_pid_sink, overflow_sets_);
-  const Pin_class         self_sink_pin    = make_pin_class(self_pid_sink);
-  Pin_class               context_sink_pin = self_sink_pin;
-  context_sink_pin.context_                = pin.context_;
-  context_sink_pin.root_gid_               = pin.root_gid_;
-  context_sink_pin.hier_pos_               = pin.hier_pos_;
+  absl::InlinedVector<Edge_class, 4> out;
+  const Pid                          self_pid         = pin.get_debug_pid();
+  const Pid                          self_pid_sink    = (self_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+  auto*                              self             = ref_pin(self_pid_sink);
+  auto                               edges            = self->get_edges(self_pid_sink, overflow_sets_);
+  const Pin_class                    self_sink_pin    = make_pin_class(self_pid_sink);
+  Pin_class                          context_sink_pin = self_sink_pin;
+  context_sink_pin.context_                           = pin.context_;
+  context_sink_pin.root_gid_                          = pin.root_gid_;
+  context_sink_pin.hier_pos_                          = pin.hier_pos_;
 
   for (auto vid : edges) {
     if (!(vid & 2)) {

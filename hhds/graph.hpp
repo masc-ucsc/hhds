@@ -179,14 +179,23 @@ public:
     return Hier_index{get_current_gid(), hier_pos_, pin_pid};
   }
 
-  void                                  connect_driver(Pin_class driver_pin) const;
-  void                                  connect_sink(Pin_class sink_pin) const;
-  void                                  del_sink(Pin_class driver_pin) const;
-  void                                  del_sink() const;
-  void                                  del_driver() const;
-  void                                  del_pin() const;
-  [[nodiscard]] std::vector<Edge_class> out_edges() const;
-  [[nodiscard]] std::vector<Edge_class> inp_edges() const;
+  void                                             connect_driver(Pin_class driver_pin) const;
+  void                                             connect_sink(Pin_class sink_pin) const;
+  void                                             del_sink(Pin_class driver_pin) const;
+  void                                             del_sink() const;
+  void                                             del_driver() const;
+  void                                             del_pin() const;
+  // Small-buffer optimized: the inline capacity (4) covers the overwhelmingly
+  // common low-degree pin, so a typical query touches no heap. Higher-degree
+  // pins spill to the heap transparently.
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4> out_edges() const;
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges() const;
+  // Drivers feeding this sink pin (the far end of each inp edge). A sink's
+  // fan-in is small — usually a single driver in a well-formed net — so this
+  // materializes into the same heap-free InlinedVector the other pin/node
+  // accessors use. Asymmetric on purpose: a driver's fanout (out_edges) can be
+  // huge, so there is no eager get_sink_pins() companion here.
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4>  get_driver_pins() const;
 
   template <Attribute Tag>
   [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
@@ -274,35 +283,35 @@ public:
     return Hier_index{get_current_gid(), hier_pos_, raw_nid};
   }
 
-  void                                            set_subnode(const std::shared_ptr<GraphIO>& graphio) const;
+  void                                             set_subnode(const std::shared_ptr<GraphIO>& graphio) const;
   // Inverse accessors for set_subnode. All three return the "no subnode"
   // sentinel (nullptr / Gid_invalid) when the node has none.
-  [[nodiscard]] Gid                               get_subnode_gid() const;
-  [[nodiscard]] std::shared_ptr<GraphIO>          get_subnode_io() const;
-  [[nodiscard]] std::shared_ptr<Graph>            get_subnode_graph() const;
-  void                                            set_type(Type type) const;
-  [[nodiscard]] Type                              get_type() const;
-  [[nodiscard]] bool                              is_loop_break() const;
-  [[nodiscard]] Pin_class                         create_driver_pin() const;
-  [[nodiscard]] Pin_class                         create_driver_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class                         create_driver_pin(std::string_view name) const;
-  [[nodiscard]] Pin_class                         create_sink_pin() const;
-  [[nodiscard]] Pin_class                         create_sink_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class                         create_sink_pin(std::string_view name) const;
-  [[nodiscard]] Pin_class                         get_driver_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class                         get_driver_pin(std::string_view name) const;
-  [[nodiscard]] Pin_class                         get_sink_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class                         get_sink_pin(std::string_view name) const;
-  void                                            del_node() const;
-  [[nodiscard]] std::vector<Edge_class>           out_edges() const;
-  [[nodiscard]] std::vector<Edge_class>           inp_edges() const;
-  [[nodiscard]] absl::InlinedVector<Pin_class, 4> out_pins() const;
-  [[nodiscard]] absl::InlinedVector<Pin_class, 4> inp_pins() const;
+  [[nodiscard]] Gid                                get_subnode_gid() const;
+  [[nodiscard]] std::shared_ptr<GraphIO>           get_subnode_io() const;
+  [[nodiscard]] std::shared_ptr<Graph>             get_subnode_graph() const;
+  void                                             set_type(Type type) const;
+  [[nodiscard]] Type                               get_type() const;
+  [[nodiscard]] bool                               is_loop_break() const;
+  [[nodiscard]] Pin_class                          create_driver_pin() const;
+  [[nodiscard]] Pin_class                          create_driver_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class                          create_driver_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class                          create_sink_pin() const;
+  [[nodiscard]] Pin_class                          create_sink_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class                          create_sink_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class                          get_driver_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class                          get_driver_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class                          get_sink_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class                          get_sink_pin(std::string_view name) const;
+  void                                             del_node() const;
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4> out_edges() const;
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges() const;
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4>  out_pins() const;
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4>  inp_pins() const;
   // Fast boolean predicates — avoid materializing the full edge vector when
   // callers only need an "any?" answer (LiveHD's Lgraph::has_outputs /
   // has_inputs hot paths).
-  [[nodiscard]] bool                              has_out_edges() const;
-  [[nodiscard]] bool                              has_inp_edges() const;
+  [[nodiscard]] bool                               has_out_edges() const;
+  [[nodiscard]] bool                               has_inp_edges() const;
 
   template <Attribute Tag>
   [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
@@ -725,20 +734,20 @@ private:
   void                           add_edge(Pid driver_id, Pid sink_id);
   void add_edge(Pin_class driver_pin, Pin_class sink_pin) { add_edge(driver_pin.get_debug_pid(), sink_pin.get_debug_pid()); }
   void del_edge(Pin_class driver_pin, Pin_class sink_pin);
-  [[nodiscard]] std::vector<Edge_class>           out_edges(Node_class node);
-  [[nodiscard]] std::vector<Edge_class>           inp_edges(Node_class node);
-  [[nodiscard]] std::vector<Edge_class>           out_edges(Pin_class pin);
-  [[nodiscard]] std::vector<Edge_class>           inp_edges(Pin_class pin);
-  [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_pins(Node_class node);
-  [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_driver_pins(Node_class node);
-  [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_sink_pins(Node_class node);
-  void                                            del_edge_int(Vid driver_id, Vid sink_id);
-  void                                            add_edge_int(Pid self_id, Pid other_id);
-  void                                            set_next_pin(Nid nid, Pid next_pin);
-  [[nodiscard]] Pin_class                         make_pin_class(Pid pin_pid) const;
-  void                                            bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
-  void                                            set_name(std::string_view name) { name_ = name; }
-  void                                            invalidate_traversal_caches() noexcept;  // defined inline at end of header
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4> out_edges(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4> out_edges(Pin_class pin);
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges(Pin_class pin);
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4>  get_pins(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4>  get_driver_pins(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4>  get_sink_pins(Node_class node);
+  void                                             del_edge_int(Vid driver_id, Vid sink_id);
+  void                                             add_edge_int(Pid self_id, Pid other_id);
+  void                                             set_next_pin(Nid nid, Pid next_pin);
+  [[nodiscard]] Pin_class                          make_pin_class(Pid pin_pid) const;
+  void                                             bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
+  void                                             set_name(std::string_view name) { name_ = name; }
+  void                                             invalidate_traversal_caches() noexcept;  // defined inline at end of header
   // Incremental patch for a single edge add/delete. delta = +1 for add, -1 for
   // delete. Bumps forward_remaining_in_cache_[sink_idx] and
   // backward_remaining_out_cache_[driver_idx] using the same filters the cache
@@ -797,17 +806,17 @@ private:
 
   // Local (single-graph) edge readers — the historical behavior, used directly
   // for Class/Flat handles and as the per-graph primitive by the hier readers.
-  [[nodiscard]] std::vector<Edge_class> inp_edges_local(Node_class node);
-  [[nodiscard]] std::vector<Edge_class> out_edges_local(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges_local(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4> out_edges_local(Node_class node);
   // Hier readers: resolve each far endpoint across module boundaries.
-  [[nodiscard]] std::vector<Edge_class> inp_edges_hier(Node_class node);
-  [[nodiscard]] std::vector<Edge_class> out_edges_hier(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges_hier(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4> out_edges_hier(Node_class node);
   // Starting instance chain (root..node's body) for the hier resolvers.
-  [[nodiscard]] bool                    hier_base_path(Node_class node, std::vector<HierInst>& base_path);
+  [[nodiscard]] bool                               hier_base_path(Node_class node, std::vector<HierInst>& base_path);
   // get_hier_name building blocks. hier_local_name: a node's `name` attr, else
   // the instantiated module name, else "n<id>". build_hier_name: join the
   // instance chain's local names with the body node's local name.
-  [[nodiscard]] static std::string      hier_local_name(Graph* g, Nid nid);
+  [[nodiscard]] static std::string                 hier_local_name(Graph* g, Nid nid);
   [[nodiscard]] static std::string build_hier_name(Graph* graph, Gid root_gid, const std::shared_ptr<const std::vector<Nid>>& path,
                                                    Nid raw_nid);
 

@@ -219,6 +219,68 @@ void test_node_port0_self_loop_edge_survives() {
   assert(n.inp_edges().empty());
 }
 
+// Pin_class::get_driver_pins(): the drivers feeding a sink pin. Covers the
+// unconnected, single-driver, multi-driver, and node-as-pin(port 0) cases, and
+// checks it stays in lockstep with inp_edges()[].driver.
+void test_pin_get_driver_pins() {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_io("top");
+  auto               g   = gio->create_graph();
+
+  auto src1 = g->create_node();
+  auto src2 = g->create_node();
+  auto sink = g->create_node();
+
+  auto d1      = src1.create_driver_pin();   // port 0 driver (node-as-pin)
+  auto d2      = src2.create_driver_pin(3);  // non-zero port driver
+  auto s_named = sink.create_sink_pin(2);    // non-zero port sink
+  auto s_port0 = sink.create_sink_pin();     // node-as-pin sink (port 0)
+
+  // Unconnected sink -> no drivers.
+  assert(s_named.get_driver_pins().empty());
+
+  // Single driver.
+  s_named.connect_driver(d1);
+  {
+    auto drivers = s_named.get_driver_pins();
+    assert(drivers.size() == 1);
+    assert(drivers[0] == d1);
+  }
+
+  // Multi-driver sink (storage permits it; netlist single-driver is only a
+  // convention). get_driver_pins must surface every driver.
+  s_named.connect_driver(d2);
+  {
+    auto drivers = s_named.get_driver_pins();
+    assert(drivers.size() == 2);
+    bool saw_d1 = false;
+    bool saw_d2 = false;
+    for (const auto& p : drivers) {
+      saw_d1 |= (p == d1);
+      saw_d2 |= (p == d2);
+    }
+    assert(saw_d1 && saw_d2);
+  }
+
+  // Node-as-pin (port 0) sink path uses the NodeEntry edge list.
+  s_port0.connect_driver(d2);
+  {
+    auto drivers = s_port0.get_driver_pins();
+    assert(drivers.size() == 1);
+    assert(drivers[0] == d2);
+  }
+
+  // Stays in lockstep with inp_edges() (same drivers, same order).
+  {
+    auto edges   = s_named.inp_edges();
+    auto drivers = s_named.get_driver_pins();
+    assert(edges.size() == drivers.size());
+    for (size_t i = 0; i < edges.size(); ++i) {
+      assert(edges[i].driver == drivers[i]);
+    }
+  }
+}
+
 void test_forward_class_returns_wrappers() {
   hhds::GraphLibrary lib;
   auto               gio   = lib.create_io("top");
@@ -1622,6 +1684,7 @@ int main() {
   test_wrapper_pin_connect_api();
   test_same_index_pin_to_node_port0_edge_survives();
   test_node_port0_self_loop_edge_survives();
+  test_pin_get_driver_pins();
   test_forward_class_returns_wrappers();
   test_backward_class_returns_wrappers();
   test_traversal_contexts_use_one_node_type();
