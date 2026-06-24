@@ -1433,8 +1433,11 @@ void Pin_class::del_sink() const {
 
 void Pin_class::del_driver() const {
   assert(graph_ != nullptr && "del_driver: pin is not attached to a graph");
-  auto edges = graph_->out_edges(*this);
-  for (const auto& edge : edges) {
+  // out_edges() is a lazy view over live storage; del_edge() mutates that
+  // storage, so snapshot the edges first and then delete from the snapshot.
+  auto                               r = graph_->out_edges(*this);
+  absl::InlinedVector<Edge_class, 4> snap(r.begin(), r.end());
+  for (const auto& edge : snap) {
     edge.del_edge();
   }
 }
@@ -1445,7 +1448,7 @@ void Pin_class::del_pin() const {
   del_driver();
 }
 
-auto Pin_class::out_edges() const -> absl::InlinedVector<Edge_class, 4> {
+auto Pin_class::out_edges() const -> OutEdgeRange {
   assert(graph_ != nullptr && "out_edges: pin is not attached to a graph");
   return graph_->out_edges(*this);
 }
@@ -1589,7 +1592,7 @@ void Node_class::del_node() const {
   graph_->delete_node(raw_nid);
 }
 
-auto Node_class::out_edges() const -> absl::InlinedVector<Edge_class, 4> {
+auto Node_class::out_edges() const -> OutEdgeRange {
   assert(graph_ != nullptr && "out_edges: node is not attached to a graph");
   return graph_->out_edges(*this);
 }
@@ -2916,15 +2919,27 @@ void Graph::del_edge_int(Vid driver_id, Vid sink_id) {
   }
 }
 
-auto Graph::out_edges(Node_class node) -> absl::InlinedVector<Edge_class, 4> {
+auto Graph::out_edges(Node_class node) -> OutEdgeRange {
   assert_accessible();
   assert_node_exists(node);
-  // In a HIER traversal, the reported sinks must cross module boundaries
-  // (see inp_edges/out_edges resolution). Class/Flat keep the local view.
+  OutEdgeRange r;
+  r.graph_     = this;
+  r.context_   = node.context_;
+  r.root_gid_  = node.root_gid_;
+  r.hier_pos_  = node.hier_pos_;
+  r.hier_path_ = node.hier_path_;
+  // In a HIER traversal the reported sinks must cross module boundaries (one
+  // local edge can resolve to several leaves), so it has to materialize; wrap
+  // the snapshot in the same range type. Class/Flat keep the lazy local view.
   if (node.is_hier() && owner_lib_ != nullptr) {
-    return out_edges_hier(node);
+    r.mat_ = std::make_shared<absl::InlinedVector<Edge_class, 4>>(out_edges_hier(node));
+    return r;
   }
-  return out_edges_local(node);
+  r.is_node_src_  = true;
+  r.src_is_port0_ = false;
+  r.self_nid_     = node.get_debug_nid() & ~static_cast<Nid>(2);
+  r.src_pid_      = 0;
+  return r;
 }
 
 auto Graph::out_edges_local(Node_class node) -> absl::InlinedVector<Edge_class, 4> {
@@ -3435,88 +3450,225 @@ std::string Pin_class::get_hier_name() const {
   return out;
 }
 
-auto Graph::out_edges(Pin_class pin) -> absl::InlinedVector<Edge_class, 4> {
+auto Graph::out_edges(Pin_class pin) -> OutEdgeRange {
   assert_accessible();
   assert_pin_exists(pin);
-
-  // port_id == 0: read edges from NodeEntry, build pin-aware results
+  // A pin's out edges are always the local view (no cross-boundary resolution),
+  // so the range is fully lazy. The per-source context-stamping asymmetry that
+  // the old eager builder had (port0 pin stamps node-as-pin sinks and the
+  // driver's hier_path_; non-port0 does not) is reproduced in
+  // OutEdgeIterator::set_driver / build_edge via src_is_port0_.
+  OutEdgeRange r;
+  r.graph_       = this;
+  r.context_     = pin.context_;
+  r.root_gid_    = pin.root_gid_;
+  r.hier_pos_    = pin.hier_pos_;
+  r.hier_path_   = pin.hier_path_;
+  r.is_node_src_ = false;
   if (!(pin.get_debug_pid() & static_cast<Pid>(1))) {
-    const Nid self_nid = pin.get_debug_pid() & ~static_cast<Nid>(2);
-    auto*     self     = ref_node(self_nid);
-    auto      edges    = self->get_edges(self_nid, overflow_sets_);
-    Pin_class self_driver_pin(this, self_nid | static_cast<Pid>(2));
-    self_driver_pin.context_   = pin.context_;
-    self_driver_pin.root_gid_  = pin.root_gid_;
-    self_driver_pin.hier_pos_  = pin.hier_pos_;
-    self_driver_pin.hier_path_ = pin.hier_path_;
-
-    absl::InlinedVector<Edge_class, 4> out;
-    for (auto vid : edges) {
-      if (vid & 2) {
-        continue;  // skip back edges
-      }
-      if (vid & 1) {
-        Edge_class e{};
-        e.driver          = self_driver_pin;
-        e.sink            = make_pin_class(static_cast<Pid>(vid));
-        e.sink.context_   = pin.context_;
-        e.sink.root_gid_  = pin.root_gid_;
-        e.sink.hier_pos_  = pin.hier_pos_;
-        e.sink.hier_path_ = pin.hier_path_;
-        out.push_back(std::move(e));
-      } else {
-        const Nid  sink_nid = static_cast<Nid>(vid);
-        Edge_class e{};
-        e.driver          = self_driver_pin;
-        e.sink            = Pin_class(this, sink_nid & ~static_cast<Nid>(2));
-        e.sink.context_   = pin.context_;
-        e.sink.root_gid_  = pin.root_gid_;
-        e.sink.hier_pos_  = pin.hier_pos_;
-        e.sink.hier_path_ = pin.hier_path_;
-        out.push_back(std::move(e));
-      }
-    }
-    return out;
+    // port 0: node-as-pin; edges live in the NodeEntry.
+    r.src_is_port0_ = true;
+    r.self_nid_     = pin.get_debug_pid() & ~static_cast<Nid>(2);
+    r.src_pid_      = 0;
+  } else {
+    r.src_is_port0_ = false;
+    r.src_pid_      = (pin.get_debug_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    r.self_nid_     = 0;
   }
+  return r;
+}
 
-  absl::InlinedVector<Edge_class, 4> out;
-  const Pid                          self_pid           = pin.get_debug_pid();
-  const Pid                          self_pid_lookup    = (self_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-  auto*                              self               = ref_pin(self_pid_lookup);
-  auto                               edges              = self->get_edges(self_pid_lookup, overflow_sets_);
-  const Pin_class                    self_driver_pin    = make_pin_class(self_pid_lookup | static_cast<Pid>(2));
-  Pin_class                          context_driver_pin = self_driver_pin;
-  context_driver_pin.context_                           = pin.context_;
-  context_driver_pin.root_gid_                          = pin.root_gid_;
-  context_driver_pin.hier_pos_                          = pin.hier_pos_;
+// ---- OutEdgeRange / OutEdgeIterator (lazy out-edge view) ----------------
 
-  for (auto vid : edges) {
-    if (vid & 2) {
-      continue;
-    }
-    if (vid & 1) {
-      const Pid sink_pid = static_cast<Pid>(vid);
+OutEdgeIterator OutEdgeRange::begin() const {
+  OutEdgeIterator it;
+  it.graph_          = graph_;
+  it.is_node_src_    = is_node_src_;
+  it.src_is_port0_   = src_is_port0_;
+  it.self_nid_       = self_nid_;
+  it.cur_pin_lookup_ = src_pid_;  // used only for a non-port0 pin source
+  it.context_        = context_;
+  it.root_gid_       = root_gid_;
+  it.hier_pos_       = hier_pos_;
+  it.hier_path_      = hier_path_;
+  it.mat_            = mat_;
+  it.start();
+  return it;
+}
 
-      Edge_class e{};
-      e.driver          = context_driver_pin;
-      e.sink            = make_pin_class(sink_pid);
-      e.sink.context_   = pin.context_;
-      e.sink.root_gid_  = pin.root_gid_;
-      e.sink.hier_pos_  = pin.hier_pos_;
-      e.sink.hier_path_ = pin.hier_path_;
-      out.push_back(std::move(e));
-      continue;
-    }
-
-    const Nid sink_nid = static_cast<Nid>(vid);
-
-    Edge_class e{};
-    e.driver = context_driver_pin;
-    e.sink   = Pin_class(this, sink_nid & ~static_cast<Nid>(2));
-    out.push_back(std::move(e));
+size_t OutEdgeRange::size() const {
+  size_t n = 0;
+  for (auto it = begin(), e = end(); it != e; ++it) {
+    ++n;
   }
+  return n;
+}
 
-  return out;
+Edge_class OutEdgeRange::front() const {
+  assert(!empty() && "OutEdgeRange::front called on an empty range");
+  return *begin();
+}
+
+void OutEdgeIterator::start() {
+  if (mat_) {
+    mat_idx_ = 0;
+    phase_   = mat_->empty() ? Phase::End : Phase::Materialized;
+    return;
+  }
+  if (is_node_src_) {
+    phase_       = Phase::NodeAsPin;
+    node_entry_  = graph_->ref_node(self_nid_);
+    next_pin_id_ = node_entry_->get_next_pin_id();
+    bind_node_as_pin();
+  } else if (src_is_port0_) {
+    phase_       = Phase::NodeAsPin;
+    node_entry_  = graph_->ref_node(self_nid_);
+    next_pin_id_ = 0;  // pin source: only this one entry, no pin-list walk
+    bind_node_as_pin();
+  } else {
+    phase_       = Phase::PinList;
+    pin_entry_   = graph_->ref_pin(cur_pin_lookup_);  // cur_pin_lookup_ seeded from src_pid_
+    next_pin_id_ = 0;
+    bind_pin();
+  }
+  skip_and_position();
+}
+
+void OutEdgeIterator::skip_and_position() {
+  while (true) {
+    while (!entry_at_end()) {
+      const Vid vid = entry_cur_vid();
+      if ((vid & static_cast<Vid>(2)) == 0) {
+        return;  // positioned on an outgoing edge
+      }
+      entry_step();  // skip an incoming/back edge
+    }
+    if (!open_next_entry()) {
+      phase_ = Phase::End;
+      return;
+    }
+  }
+}
+
+bool OutEdgeIterator::open_next_entry() {
+  if (phase_ == Phase::NodeAsPin) {
+    if (!is_node_src_) {
+      return false;  // port0 pin source: only the node-as-pin entry
+    }
+    phase_ = Phase::PinList;
+    return load_next_pin();
+  }
+  if (phase_ == Phase::PinList) {
+    if (!is_node_src_) {
+      return false;  // non-port0 pin source: single entry
+    }
+    return load_next_pin();
+  }
+  return false;
+}
+
+bool OutEdgeIterator::load_next_pin() {
+  if (next_pin_id_ == 0) {
+    return false;
+  }
+  cur_pin_lookup_ = (next_pin_id_ & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+  pin_entry_      = graph_->ref_pin(cur_pin_lookup_);
+  next_pin_id_    = pin_entry_->get_next_pin_id();  // capture before the next rebind
+  bind_pin();
+  return true;
+}
+
+void OutEdgeIterator::bind_node_as_pin() {
+  static_assert(Graph::NodeEntry::EdgeRange::kInlineMax <= kBufCap, "buf_ too small for NodeEntry inline edges");
+  set_driver(self_nid_ | static_cast<Pid>(2));
+  if (node_entry_->check_overflow()) {
+    ovf_         = &graph_->overflow_sets_[node_entry_->get_overflow_idx()];
+    ovf_it_      = ovf_->begin();
+    ovf_end_     = ovf_->end();
+    is_overflow_ = true;
+  } else {
+    n_ = 0;
+    for (const Vid v : node_entry_->get_edges(self_nid_, graph_->overflow_sets_)) {
+      buf_[n_++] = v;
+    }
+    idx_         = 0;
+    is_overflow_ = false;
+  }
+}
+
+void OutEdgeIterator::bind_pin() {
+  static_assert(Graph::PinEntry::EdgeRange::kInlineMax <= kBufCap, "buf_ too small for PinEntry inline edges");
+  set_driver(cur_pin_lookup_ | static_cast<Pid>(2));
+  if (pin_entry_->check_overflow()) {
+    ovf_         = &graph_->overflow_sets_[pin_entry_->get_overflow_idx()];
+    ovf_it_      = ovf_->begin();
+    ovf_end_     = ovf_->end();
+    is_overflow_ = true;
+  } else {
+    n_ = 0;
+    for (const Vid v : pin_entry_->get_edges(cur_pin_lookup_, graph_->overflow_sets_)) {
+      buf_[n_++] = v;
+    }
+    idx_         = 0;
+    is_overflow_ = false;
+  }
+}
+
+void OutEdgeIterator::set_driver(Pid driver_pid) {
+  cur_driver_           = Pin_class(graph_, driver_pid);
+  cur_driver_.context_  = context_;
+  cur_driver_.root_gid_ = root_gid_;
+  cur_driver_.hier_pos_ = hier_pos_;
+  // Only a port0 pin source stamped the driver's hier_path_ in the old builder.
+  if (!is_node_src_ && src_is_port0_) {
+    cur_driver_.hier_path_ = hier_path_;
+  }
+}
+
+Edge_class OutEdgeIterator::build_edge(Vid vid) const {
+  Edge_class e{};
+  e.driver = cur_driver_;
+  if (vid & static_cast<Vid>(1)) {  // real-pin sink
+    e.sink           = Pin_class(graph_, static_cast<Pid>(vid));
+    e.sink.context_  = context_;
+    e.sink.root_gid_ = root_gid_;
+    e.sink.hier_pos_ = hier_pos_;
+    // Pin sources (port0 and non-port0) stamped hier_path_ on real-pin sinks;
+    // node sources did not.
+    if (!is_node_src_) {
+      e.sink.hier_path_ = hier_path_;
+    }
+  } else {  // node-as-pin sink
+    e.sink = Pin_class(graph_, static_cast<Nid>(vid) & ~static_cast<Nid>(2));
+    // Only a port0 pin source stamped context onto a node-as-pin sink.
+    if (!is_node_src_ && src_is_port0_) {
+      e.sink.context_   = context_;
+      e.sink.root_gid_  = root_gid_;
+      e.sink.hier_pos_  = hier_pos_;
+      e.sink.hier_path_ = hier_path_;
+    }
+  }
+  return e;
+}
+
+Edge_class OutEdgeIterator::operator*() const {
+  if (phase_ == Phase::Materialized) {
+    return (*mat_)[mat_idx_];
+  }
+  return build_edge(entry_cur_vid());
+}
+
+OutEdgeIterator& OutEdgeIterator::operator++() {
+  if (phase_ == Phase::Materialized) {
+    ++mat_idx_;
+    if (mat_idx_ >= mat_->size()) {
+      phase_ = Phase::End;
+    }
+    return *this;
+  }
+  entry_step();
+  skip_and_position();
+  return *this;
 }
 
 auto Graph::inp_edges(Pin_class pin) -> absl::InlinedVector<Edge_class, 4> {

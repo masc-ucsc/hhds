@@ -296,8 +296,10 @@ TEST(GraphApiContract, PinConnectPinApi) {
 
   auto src1_outp = src1_out.out_edges();
   ASSERT_EQ(src1_outp.size(), 1u);
-  EXPECT_EQ(src1_outp[0].driver, src1_out);
-  EXPECT_EQ(src1_outp[0].sink, dst1_in);
+  // out_edges() is a lazy range (not randomly indexable); front() is the edge.
+  const auto src1_edge = src1_outp.front();
+  EXPECT_EQ(src1_edge.driver, src1_out);
+  EXPECT_EQ(src1_edge.sink, dst1_in);
 }
 
 // Sample Example 3: declaring custom attributes. Flat vs hier storage

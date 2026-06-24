@@ -129,6 +129,8 @@ class BackwardHierRange;
 class Hier_instance;
 class HierIterator;
 class HierRange;
+class OutEdgeIterator;
+class OutEdgeRange;
 
 enum class Handle_context : uint8_t { Class, Flat, Hier };
 
@@ -185,10 +187,16 @@ public:
   void                                             del_sink() const;
   void                                             del_driver() const;
   void                                             del_pin() const;
-  // Small-buffer optimized: the inline capacity (4) covers the overwhelmingly
-  // common low-degree pin, so a typical query touches no heap. Higher-degree
-  // pins spill to the heap transparently.
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4> out_edges() const;
+  // out_edges() is a LAZY, auto-scaling view (see OutEdgeRange). ~90% of pins
+  // have a handful of out edges, but a few (clock/reset/enable) fan out to
+  // 100K+; the range walks live storage on demand — inline edges decode cheaply
+  // into a small stack buffer, huge overflow sets are iterated in place with no
+  // copy — so the *same* call is efficient for both and supports early `break`.
+  // It is a view over live storage: snapshot before mutating during iteration
+  // (see OutEdgeRange docs).
+  [[nodiscard]] OutEdgeRange                       out_edges() const;
+  // inp_edges() stays eager: a sink's fan-in is small (usually a single driver),
+  // so the heap-free InlinedVector is the right shape; [4] inline covers it.
   [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges() const;
   // Drivers feeding this sink pin (the far end of each inp edge). A sink's
   // fan-in is small — usually a single driver in a well-formed net — so this
@@ -226,6 +234,7 @@ private:
   friend class Graph;
   friend class GraphLibrary;
   friend class Node_class;
+  friend class OutEdgeIterator;  // builds/stamps driver+sink pins while walking out edges
   friend void inherit_pin_context(Pin_class& pin, const Node_class& node);
 };
 
@@ -303,7 +312,10 @@ public:
   [[nodiscard]] Pin_class                          get_sink_pin(Port_id port_id) const;
   [[nodiscard]] Pin_class                          get_sink_pin(std::string_view name) const;
   void                                             del_node() const;
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4> out_edges() const;
+  // Lazy, auto-scaling out-edge view (see OutEdgeRange / Pin_class::out_edges).
+  // In Class/Flat context this walks live storage on demand; in Hier context it
+  // resolves cross-boundary edges (materialized) behind the same range type.
+  [[nodiscard]] OutEdgeRange                       out_edges() const;
   [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges() const;
   [[nodiscard]] absl::InlinedVector<Pin_class, 4>  out_pins() const;
   [[nodiscard]] absl::InlinedVector<Pin_class, 4>  inp_pins() const;
@@ -734,9 +746,9 @@ private:
   void                           add_edge(Pid driver_id, Pid sink_id);
   void add_edge(Pin_class driver_pin, Pin_class sink_pin) { add_edge(driver_pin.get_debug_pid(), sink_pin.get_debug_pid()); }
   void del_edge(Pin_class driver_pin, Pin_class sink_pin);
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4> out_edges(Node_class node);
+  [[nodiscard]] OutEdgeRange                       out_edges(Node_class node);
   [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges(Node_class node);
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4> out_edges(Pin_class pin);
+  [[nodiscard]] OutEdgeRange                       out_edges(Pin_class pin);
   [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges(Pin_class pin);
   [[nodiscard]] absl::InlinedVector<Pin_class, 4>  get_pins(Node_class node);
   [[nodiscard]] absl::InlinedVector<Pin_class, 4>  get_driver_pins(Node_class node);
@@ -891,6 +903,136 @@ private:
   friend class HierIterator;
   friend class HierRange;
   friend class Hier_instance;
+  friend class OutEdgeIterator;
+  friend class OutEdgeRange;
+};
+
+// Lazy, auto-scaling view over the OUT edges of a pin or node. Yields Edge_class
+// on demand instead of materializing a vector: a pin with a huge fanout
+// (clock/reset/enable -> 100K+ sinks) is walked in place over its overflow set
+// with NO copy and supports early `break`, while the common small case decodes a
+// handful of inline edges into a tiny stack buffer. For a node in Hier context
+// the range is backed by the cross-boundary-resolved snapshot behind the same API.
+//
+// LIFETIME / MUTATION: this is a VIEW over live edge storage. Any graph mutation
+// (add_edge/del_edge/del_pin/del_node) invalidates an in-flight iterator. To
+// iterate-and-mutate, snapshot first:
+//     auto r = pin.out_edges();
+//     absl::InlinedVector<Edge_class, 4> snap(r.begin(), r.end());
+//     for (auto& e : snap) e.del_edge();
+// size() is O(n) and front()/empty() each re-walk from begin(); do not call
+// size() per-pin in hot loops.
+class OutEdgeIterator {
+public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type        = Edge_class;
+  using reference         = Edge_class;
+  using pointer           = void;
+  using difference_type   = std::ptrdiff_t;
+
+  OutEdgeIterator() = default;  // End sentinel (phase_ == End)
+
+  [[nodiscard]] Edge_class operator*() const;
+  OutEdgeIterator&         operator++();
+  OutEdgeIterator          operator++(int) {
+    OutEdgeIterator tmp = *this;
+    ++*this;
+    return tmp;
+  }
+  [[nodiscard]] bool operator==(const OutEdgeIterator& o) const noexcept { return phase_ == Phase::End && o.phase_ == Phase::End; }
+  [[nodiscard]] bool operator!=(const OutEdgeIterator& o) const noexcept { return !(*this == o); }
+
+private:
+  enum class Phase : uint8_t { NodeAsPin, PinList, Materialized, End };
+
+  void                     start();              // seed -> first outgoing edge (or End)
+  void                     skip_and_position();  // advance to next outgoing edge across entries
+  bool                     open_next_entry();    // node-as-pin -> pin list -> next pins; false when done
+  bool                     load_next_pin();
+  void                     bind_node_as_pin();
+  void                     bind_pin();
+  void                     set_driver(Pid driver_pid);
+  [[nodiscard]] Edge_class build_edge(Vid vid) const;
+
+  [[nodiscard]] bool entry_at_end() const noexcept { return is_overflow_ ? (ovf_it_ == ovf_end_) : (idx_ >= n_); }
+  [[nodiscard]] Vid  entry_cur_vid() const noexcept { return is_overflow_ ? *ovf_it_ : buf_[idx_]; }
+  void               entry_step() noexcept {
+    if (is_overflow_) {
+      ++ovf_it_;
+    } else {
+      ++idx_;
+    }
+  }
+
+  Graph* graph_        = nullptr;
+  Phase  phase_        = Phase::End;
+  bool   is_node_src_  = false;  // true: node source (walk node-as-pin then pin list)
+  bool   src_is_port0_ = false;  // pin source whose single entry is the node-as-pin(0)
+  bool   is_overflow_  = false;  // current entry uses the overflow set (the 100K case)
+
+  // Source identity + context template (copied from the range; stamped onto
+  // every emitted driver/sink to reproduce the eager out_edges behavior exactly).
+  Nid                                     self_nid_ = 0;  // node base (& ~2)
+  Handle_context                          context_  = Handle_context::Class;
+  Gid                                     root_gid_ = Gid_invalid;
+  Tree_pos                                hier_pos_ = INVALID;
+  std::shared_ptr<const std::vector<Nid>> hier_path_;
+
+  // Current entry being walked.
+  const Graph::NodeEntry* node_entry_     = nullptr;
+  const Graph::PinEntry*  pin_entry_      = nullptr;
+  Pid                     cur_pin_lookup_ = 0;  // canonical ((pid&~2)|1) of pin_entry_
+  Pid                     next_pin_id_    = 0;  // next pin in the node's linked list
+
+  // Inline cursor: the entry's small decoded edge set, copied out of its
+  // EdgeRange. Sized for the larger entry kind (NodeEntry kInlineMax 9 >=
+  // PinEntry 6); bind_node_as_pin/bind_pin static_assert this stays valid.
+  static constexpr size_t  kBufCap = 9;
+  std::array<Vid, kBufCap> buf_{};
+  uint8_t                  n_   = 0;
+  uint8_t                  idx_ = 0;
+
+  // Overflow cursor: borrowed live set, iterated in place (no copy).
+  const OverflowSet*          ovf_ = nullptr;
+  OverflowSet::const_iterator ovf_it_{};
+  OverflowSet::const_iterator ovf_end_{};
+
+  // Hier-materialized backing (node in Hier context).
+  std::shared_ptr<absl::InlinedVector<Edge_class, 4>> mat_;
+  size_t                                              mat_idx_ = 0;
+
+  // Driver pin for the active entry (built once per entry, already stamped).
+  Pin_class cur_driver_{};
+
+  friend class OutEdgeRange;
+  friend class Graph;
+};
+
+// Movable handle returned by out_edges(); begin() seeds a fresh iterator.
+class OutEdgeRange {
+public:
+  using iterator = OutEdgeIterator;
+
+  [[nodiscard]] OutEdgeIterator begin() const;
+  [[nodiscard]] OutEdgeIterator end() const noexcept { return OutEdgeIterator{}; }
+  [[nodiscard]] bool            empty() const { return begin() == end(); }
+  [[nodiscard]] size_t          size() const;   // O(n): walks the range
+  [[nodiscard]] Edge_class      front() const;  // precondition: !empty()
+
+private:
+  Graph*                                              graph_        = nullptr;
+  bool                                                is_node_src_  = false;
+  bool                                                src_is_port0_ = false;
+  Nid                                                 self_nid_     = 0;  // node base, or pin-port0 node base
+  Pid                                                 src_pid_      = 0;  // non-port0 pin source canonical pid (else 0)
+  Handle_context                                      context_      = Handle_context::Class;
+  Gid                                                 root_gid_     = Gid_invalid;
+  Tree_pos                                            hier_pos_     = INVALID;
+  std::shared_ptr<const std::vector<Nid>>             hier_path_;
+  std::shared_ptr<absl::InlinedVector<Edge_class, 4>> mat_;  // non-null => hier-materialized
+
+  friend class Graph;
+  friend class OutEdgeIterator;
 };
 
 // Lazy, single-pass iterator over a graph's live nodes (node_table scan,

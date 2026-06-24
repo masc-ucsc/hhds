@@ -281,6 +281,109 @@ void test_pin_get_driver_pins() {
   }
 }
 
+// out_edges() is a lazy, auto-scaling range. Covers: small inline fanout,
+// node-composite ordering (node-as-pin edges before pin-list edges), a huge
+// overflow fanout (lazy walk + early break), del_driver snapshot-then-delete on
+// a high-degree pin, and empty ranges.
+void test_out_edges_lazy_range() {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_io("top");
+  auto               g   = gio->create_graph();
+
+  const auto contains = [](const std::vector<hhds::Pid>& v, hhds::Pid p) { return std::find(v.begin(), v.end(), p) != v.end(); };
+
+  // --- small inline fanout from a port-0 driver pin ---
+  {
+    auto                   drv = g->create_node().create_driver_pin();
+    std::vector<hhds::Pid> sink_pids;
+    for (int i = 0; i < 3; ++i) {
+      auto s = g->create_node().create_sink_pin();
+      drv.connect_sink(s);
+      sink_pids.push_back(s.get_debug_pid());
+    }
+    auto outs = drv.out_edges();
+    assert(!outs.empty());
+    assert(outs.size() == 3);
+    assert(outs.front().driver == drv);
+    int                    count = 0;
+    std::vector<hhds::Pid> seen;
+    for (const auto& e : outs) {
+      assert(e.driver == drv);
+      seen.push_back(e.sink.get_debug_pid());
+      ++count;
+    }
+    assert(count == 3);
+    for (auto p : sink_pids) {
+      assert(contains(seen, p));
+    }
+  }
+
+  // --- node-composite ordering: node-as-pin (port 0) edges, then pin-list ---
+  {
+    auto n   = g->create_node();
+    auto d0  = n.create_driver_pin();   // port 0 -> stored on the NodeEntry
+    auto d2  = n.create_driver_pin(2);  // named pin -> stored on its PinEntry
+    auto s_a = g->create_node().create_sink_pin();
+    auto s_b = g->create_node().create_sink_pin();
+    d0.connect_sink(s_a);
+    d2.connect_sink(s_b);
+    std::vector<hhds::Pid> drivers;
+    for (const auto& e : n.out_edges()) {
+      drivers.push_back(e.driver.get_debug_pid());
+    }
+    assert(drivers.size() == 2);
+    assert(drivers[0] == d0.get_debug_pid());  // node-as-pin first
+    assert(drivers[1] == d2.get_debug_pid());  // pin-list second
+  }
+
+  // --- huge fanout (forces the overflow set): lazy walk, early break, del ---
+  {
+    auto      drv = g->create_node().create_driver_pin();
+    const int kN  = 1000;
+    for (int i = 0; i < kN; ++i) {
+      drv.connect_sink(g->create_node().create_sink_pin());
+    }
+    assert(!drv.out_edges().empty());
+    assert(drv.out_edges().size() == static_cast<size_t>(kN));
+
+    int count = 0;
+    for (const auto& e : drv.out_edges()) {
+      assert(e.driver == drv);
+      assert(e.sink.is_sink());
+      ++count;
+    }
+    assert(count == kN);
+
+    // Early break must not require walking the whole fanout (laziness).
+    int seen = 0;
+    for (const auto& e : drv.out_edges()) {
+      (void)e;
+      if (++seen == 5) {
+        break;
+      }
+    }
+    assert(seen == 5);
+
+    // del_driver snapshots first, then deletes — safe on a high-degree pin.
+    drv.del_driver();
+    assert(drv.out_edges().empty());
+    assert(drv.out_edges().size() == 0);
+  }
+
+  // --- empty range on an unconnected driver pin ---
+  {
+    auto drv = g->create_node().create_driver_pin();
+    assert(drv.out_edges().empty());
+    assert(drv.out_edges().size() == 0);
+    int count = 0;
+    for (const auto& e : drv.out_edges()) {
+      (void)e;
+      ++count;
+    }
+    assert(count == 0);
+  }
+}
+
 void test_forward_class_returns_wrappers() {
   hhds::GraphLibrary lib;
   auto               gio   = lib.create_io("top");
@@ -1336,7 +1439,7 @@ void test_hier_edges_cross_one_boundary_EXPECTED() {
   // out_edges: sink resolves up to dst (top), NOT leaf's output pin "y".
   const auto outs = buf_h.out_edges();
   assert(outs.size() == 1);
-  const auto snk = outs[0].sink;
+  const auto snk = outs.front().sink;
   assert(snk.get_current_gid() == top->get_gid());
   assert(node_of(snk.get_master_node().get_debug_nid()) == node_of(dst.get_debug_nid()));
   assert(snk.is_sink());
@@ -1388,7 +1491,7 @@ void test_hier_edges_cross_up_then_down_EXPECTED() {
   {
     const auto outs = bufA_h.out_edges();
     assert(outs.size() == 1);
-    const auto snk = outs[0].sink;
+    const auto snk = outs.front().sink;
     assert(snk.get_current_gid() == leafB->get_gid());
     assert(node_of(snk.get_master_node().get_debug_nid()) == node_of(bufB.get_debug_nid()));
     assert(snk.is_sink());
@@ -1416,7 +1519,7 @@ void test_hier_edges_cross_up_then_down_EXPECTED() {
   {
     const auto outs = bufB_h.out_edges();
     assert(outs.size() == 1);
-    const auto snk = outs[0].sink;
+    const auto snk = outs.front().sink;
     assert(snk.get_current_gid() == top->get_gid());
     assert(node_of(snk.get_master_node().get_debug_nid()) == node_of(top->get_output_node().get_debug_nid()));
     assert(snk.get_pin_name() == "po");
@@ -1473,7 +1576,7 @@ void test_hier_edges_three_levels_EXPECTED() {
   {
     const auto outs = bufL_h.out_edges();
     assert(outs.size() == 1);
-    const auto snk = outs[0].sink;
+    const auto snk = outs.front().sink;
     assert(snk.get_current_gid() == top->get_gid());
     assert(node_of(snk.get_master_node().get_debug_nid()) == node_of(top->get_output_node().get_debug_nid()));
     assert(snk.get_pin_name() == "po");
@@ -1685,6 +1788,7 @@ int main() {
   test_same_index_pin_to_node_port0_edge_survives();
   test_node_port0_self_loop_edge_survives();
   test_pin_get_driver_pins();
+  test_out_edges_lazy_range();
   test_forward_class_returns_wrappers();
   test_backward_class_returns_wrappers();
   test_traversal_contexts_use_one_node_type();
