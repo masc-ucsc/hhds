@@ -11,7 +11,9 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <span>
 #include <string>
@@ -36,6 +38,68 @@ namespace hhds {
 
 using OverflowVec = std::vector<ankerl::unordered_dense::set<Vid>>;
 using OverflowSet = ankerl::unordered_dense::set<Vid>;
+
+// Writer-preferring shared mutex.
+//
+// libstdc++'s std::shared_mutex wraps a glibc pthread_rwlock with the default
+// PTHREAD_RWLOCK_PREFER_READER policy, under which a continuous stream of
+// readers can starve a waiting writer INDEFINITELY. The GraphLibrary registry
+// is read on essentially every traversal and written by create_io /
+// create_graph / commit; a tight reader poll loop (e.g. find_io in a hot loop,
+// or many concurrent readers on a high-core host) then blocks every writer
+// forever — observed as a hang in create_io/create_graph_body. (It "works" on
+// low-core machines only because readers don't overlap enough to keep the lock
+// continuously held.)
+//
+// This variant gates NEW readers as soon as a writer is waiting, so a waiting
+// writer always drains the current readers and makes progress. It exposes the
+// BasicLockable + SharedLockable surface, so std::unique_lock / std::shared_lock
+// keep working unchanged. It is NOT recursive: a thread must not re-acquire it
+// while already holding it (GraphLibrary always takes the registry lock once per
+// public call and delegates to *_unlocked helpers, so this invariant holds).
+class Prefer_writer_shared_mutex {
+public:
+  void lock() {  // exclusive
+    std::unique_lock<std::mutex> lk(mu_);
+    ++writers_waiting_;
+    gate_.wait(lk, [this] { return !writer_active_ && readers_ == 0; });
+    --writers_waiting_;
+    writer_active_ = true;
+  }
+
+  void unlock() {
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      writer_active_ = false;
+    }
+    gate_.notify_all();
+  }
+
+  void lock_shared() {
+    std::unique_lock<std::mutex> lk(mu_);
+    // Prefer writers: a reader waits while a writer is active OR queued.
+    gate_.wait(lk, [this] { return !writer_active_ && writers_waiting_ == 0; });
+    ++readers_;
+  }
+
+  void unlock_shared() {
+    bool last = false;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      last = (--readers_ == 0);
+    }
+    if (last) {
+      gate_.notify_all();  // wake a queued writer once the last reader leaves
+    }
+  }
+
+private:
+  std::mutex              mu_;
+  std::condition_variable gate_;
+  unsigned                readers_         = 0;
+  unsigned                writers_waiting_ = 0;
+  bool                    writer_active_   = false;
+};
 
 // Forward iterator over the edges of a node or pin. Two modes:
 //   - Inline: walks a contiguous buffer owned by the EdgeRange (decoded sedges + ledges).
@@ -2267,7 +2331,7 @@ private:
   // Graph bodies remain single-threaded per pointer; this lock protects only
   // the slot vectors and name maps so concurrent find_io / find_graph callers
   // from different threads can proceed in parallel.
-  mutable std::shared_mutex                                      registry_mu_;
+  mutable Prefer_writer_shared_mutex                             registry_mu_;
   // gid-keyed maps (Task 1m / hhds gid refactor): gids are a deterministic hash
   // of the graph name (see pick_gid_for_name_unlocked) rather than a positional
   // counter, so two libraries assign the SAME gid to the SAME name — making a
