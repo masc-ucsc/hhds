@@ -132,6 +132,10 @@ struct Attr_tag_registry_entry {
   std::type_index                                   type_key{typeid(void)};
   Attr_storage_kind                                 storage_kind = Attr_storage_kind::Flat;
   std::string                                       persistent_id;
+  // Dense, process-wide index assigned at first registration. Attr_host stores
+  // its per-tag stores in a vector indexed by this slot, so a store lookup is a
+  // vector index (no std::type_index hashing) — see attr_tag_slot() / attr_store().
+  uint32_t                                          slot = 0;
   std::function<std::unique_ptr<Attr_store_base>()> factory;
 };
 
@@ -167,6 +171,7 @@ public:
 private:
   std::unordered_map<std::type_index, Attr_tag_registry_entry> by_type_;
   std::unordered_map<std::string, std::type_index>             by_id_;
+  uint32_t                                                     next_slot_ = 0;
 };
 
 template <typename T>
@@ -535,6 +540,7 @@ const Attr_tag_registry_entry& Attr_tag_registry::register_tag(std::string_view 
   entry.type_key      = type_key;
   entry.storage_kind  = attr_storage_kind<Tag>();
   entry.persistent_id = id;
+  entry.slot          = next_slot_++;  // dense, stable for this process's lifetime
   entry.factory       = [id]() { return std::make_unique<Attr_store_impl<Tag>>(id); };
 
   by_id_.emplace(entry.persistent_id, type_key);
@@ -548,6 +554,18 @@ const Attr_tag_registry_entry& Attr_tag_registry::register_tag(std::string_view 
 template <Attribute Tag>
 inline void register_attr_tag(std::string_view persistent_id) {
   (void)detail::Attr_tag_registry::instance().register_tag<Tag>(persistent_id);
+}
+
+// The dense store slot for a Tag, resolved ONCE per Tag per process (the
+// function-local static) and cached thereafter. After the first call this is
+// just a cached integer, so an Attr_host store lookup is a vector index — no
+// per-access std::type_index hash. The first call registers the tag if needed
+// (cold path); tags used on a hot path are registered eagerly at static-init
+// (register_attr_tag), so even the first lookup only reads the registry.
+template <Attribute Tag>
+[[nodiscard]] inline uint32_t attr_tag_slot() {
+  static const uint32_t slot = detail::Attr_tag_registry::instance().ensure_tag<Tag>().slot;
+  return slot;
 }
 
 class Attr_host;
@@ -564,6 +582,11 @@ public:
 
   [[nodiscard]] bool               has() const;
   [[nodiscard]] attr_result_t<Tag> get() const;
+  // Single-lookup accessors — avoid the has()+get() double (store + map) probe.
+  //   try_get(): pointer to the stored value, or nullptr when absent.
+  //   get_or():  the stored value, or `fallback` when absent.
+  [[nodiscard]] const value_type* try_get() const;
+  [[nodiscard]] value_type        get_or(value_type fallback) const;
   void                             set(const value_type& value);
   void                             set(value_type&& value);
   void                             del();
@@ -583,28 +606,27 @@ public:
 
   template <Attribute Tag>
   auto& attr_store(Tag = {}) {
-    const auto key = std::type_index(typeid(Tag));
-    auto       it  = attr_stores_.find(key);
-    if (it == attr_stores_.end()) {
-      // Cold path only: consult the global tag registry to mint the store the
-      // first time this Tag is seen. The steady-state set/del path (store
-      // already present) skips the registry lookup entirely.
-      const auto& desc        = detail::Attr_tag_registry::instance().ensure_tag<Tag>();
-      auto [new_it, inserted] = attr_stores_.emplace(key, desc.factory());
-      assert(inserted && "attr_store: failed to create store");
-      it = new_it;
+    const auto slot = attr_tag_slot<Tag>();  // cached integer; no type_index hashing
+    if (slot >= attr_stores_.size()) {
+      attr_stores_.resize(static_cast<std::size_t>(slot) + 1);
     }
-    auto* typed = static_cast<detail::Attr_store_impl<Tag>*>(it->second.get());
+    auto& store = attr_stores_[slot];
+    if (!store) {
+      // Cold path only: mint the store the first time this Tag is written on
+      // this host. The steady-state set/del path finds it already present.
+      store = detail::Attr_tag_registry::instance().ensure_tag<Tag>().factory();
+    }
+    auto* typed = static_cast<detail::Attr_store_impl<Tag>*>(store.get());
     return typed->map();
   }
 
   template <Attribute Tag>
   [[nodiscard]] const auto* find_attr_store(Tag = {}) const {
-    const auto it = attr_stores_.find(std::type_index(typeid(Tag)));
-    if (it == attr_stores_.end()) {
+    const auto slot = attr_tag_slot<Tag>();
+    if (slot >= attr_stores_.size() || !attr_stores_[slot]) {
       return static_cast<const typename detail::Attr_store_impl<Tag>::map_type*>(nullptr);
     }
-    const auto* typed = static_cast<const detail::Attr_store_impl<Tag>*>(it->second.get());
+    const auto* typed = static_cast<const detail::Attr_store_impl<Tag>*>(attr_stores_[slot].get());
     return &typed->map();
   }
 
@@ -617,13 +639,16 @@ public:
 
   template <Attribute Tag>
   [[nodiscard]] bool has_attr(Tag = {}) const {
-    return attr_stores_.find(std::type_index(typeid(Tag))) != attr_stores_.end();
+    const auto slot = attr_tag_slot<Tag>();
+    return slot < attr_stores_.size() && attr_stores_[slot] != nullptr;
   }
 
 protected:
   void erase_attr_object(Attr_key key) noexcept {
-    for (auto& [_, store] : attr_stores_) {
-      store->erase_object(key);
+    for (auto& store : attr_stores_) {
+      if (store) {
+        store->erase_object(key);
+      }
     }
   }
 
@@ -631,22 +656,25 @@ protected:
 
   void clone_attr_stores_from(const Attr_host& other) {
     discard_attr_stores();
-    for (const auto& [key, store] : other.attr_stores_) {
-      attr_stores_.emplace(key, store->clone());
+    attr_stores_.resize(other.attr_stores_.size());
+    for (std::size_t i = 0; i < other.attr_stores_.size(); ++i) {
+      if (other.attr_stores_[i]) {
+        attr_stores_[i] = other.attr_stores_[i]->clone();
+      }
     }
   }
 
   void save_attr_stores(std::ostream& os) const {
     uint64_t store_count = 0;
-    for (const auto& [_, store] : attr_stores_) {
-      if (!store->empty()) {
+    for (const auto& store : attr_stores_) {
+      if (store && !store->empty()) {
         ++store_count;
       }
     }
 
     os.write(reinterpret_cast<const char*>(&store_count), sizeof(store_count));
-    for (const auto& [_, store] : attr_stores_) {
-      if (store->empty()) {
+    for (const auto& store : attr_stores_) {
+      if (!store || store->empty()) {
         continue;
       }
 
@@ -689,14 +717,20 @@ protected:
 
       auto store = desc->factory();
       store->load_entries(is, entry_count);
-      attr_stores_[desc->type_key] = std::move(store);
+      if (desc->slot >= attr_stores_.size()) {
+        attr_stores_.resize(static_cast<std::size_t>(desc->slot) + 1);
+      }
+      attr_stores_[desc->slot] = std::move(store);
     }
   }
 
 private:
   virtual void attr_note_modified() noexcept = 0;
 
-  std::unordered_map<std::type_index, std::unique_ptr<detail::Attr_store_base>> attr_stores_;
+  // Per-tag stores indexed by attr_tag_slot<Tag>() — a vector, not a hash map,
+  // so a store lookup is a bounds-checked index with no std::type_index hashing.
+  // Sparse: a slot stays null until that Tag is first written on this host.
+  std::vector<std::unique_ptr<detail::Attr_store_base>> attr_stores_;
 
   template <Attribute Tag>
   friend class AttrRef;
@@ -736,6 +770,22 @@ inline attr_result_t<Tag> AttrRef<Tag>::get() const {
   } else {
     return it->second;
   }
+}
+
+template <Attribute Tag>
+inline const typename AttrRef<Tag>::value_type* AttrRef<Tag>::try_get() const {
+  const auto* map = host_ != nullptr ? host_->find_attr_store(Tag{}) : nullptr;
+  if (map == nullptr) {
+    return nullptr;
+  }
+  const auto it = map->find(key());
+  return it != map->end() ? &it->second : nullptr;
+}
+
+template <Attribute Tag>
+inline typename AttrRef<Tag>::value_type AttrRef<Tag>::get_or(typename AttrRef<Tag>::value_type fallback) const {
+  const auto* p = try_get();
+  return p != nullptr ? *p : std::move(fallback);
 }
 
 template <Attribute Tag>
