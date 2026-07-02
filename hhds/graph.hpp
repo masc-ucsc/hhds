@@ -30,7 +30,7 @@
 #include "index.hpp"
 #include "rapidhash.h"
 #include "source_locator.hpp"
-#include "str_ci.hpp"  // Ci_hash/Ci_eq: module + IO-pin names match case-insensitively
+#include "str_hash.hpp"  // Name_hash/Name_eq: module + IO-pin names match case-sensitively
 #include "tree.hpp"
 #include "unordered_dense.hpp"
 
@@ -789,8 +789,8 @@ private:
   void              load_body(const std::string& dir_path);
   void              delete_node(Nid nid);
   [[nodiscard]] Pid materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
-                                                ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq>& pins_by_name);
-  void erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq>& pins_by_name);
+                                                ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq>& pins_by_name);
+  void erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq>& pins_by_name);
   void delete_pin(Pid pin_pid);
   [[nodiscard]] Pin_class        create_pin(Node_class node, Port_id port_id);
   [[nodiscard]] Pid              create_pin(Nid nid, Port_id port_id);
@@ -924,8 +924,8 @@ private:
   mutable std::vector<Nid>                                       backward_pass2_cache_;
   mutable std::vector<uint32_t>                                  backward_remaining_out_cache_;
   mutable bool                                                   backward_caches_valid_ = false;
-  ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq> input_pins_;
-  ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq> output_pins_;
+  ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq> input_pins_;
+  ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq> output_pins_;
   const GraphLibrary*                                            owner_lib_ = nullptr;
   std::weak_ptr<GraphIO>                                         graphio_owner_;
   Gid                                                            self_gid_ = Gid_invalid;
@@ -1743,7 +1743,7 @@ private:
 
   std::vector<DeclaredIoPin>                                                  input_pin_decls_;
   std::vector<DeclaredIoPin>                                                  output_pin_decls_;
-  ankerl::unordered_dense::map<std::string, DeclaredIoPinRef, Ci_hash, Ci_eq> declared_io_pins_;
+  ankerl::unordered_dense::map<std::string, DeclaredIoPinRef, Name_hash, Name_eq> declared_io_pins_;
 
   GraphIO(GraphLibrary* owner_lib, Gid gid, std::string name) : owner_lib_(owner_lib), gid_(gid), name_(std::move(name)) {}
   void reindex_declared_io_pins(IoDirection direction, size_t start_index);
@@ -2122,7 +2122,7 @@ private:
       return {};
     }
 
-    const auto it = graph_name_to_id_.find(name);  // transparent Ci_hash/Ci_eq: no std::string alloc
+    const auto it = graph_name_to_id_.find(name);  // transparent Name_hash/Name_eq: no std::string alloc
     if (it == graph_name_to_id_.end()) {
       return {};
     }
@@ -2282,13 +2282,13 @@ private:
   // distinct names rarely collide, while leaving headroom below the 2^42 cap.
   static constexpr Gid kGidModulus = (Gid{1} << 40);
 
-  // Deterministic case-insensitive hash over the name → a stable gid, identical
-  // across runs, platforms and libraries (std::hash is NONE of these, so it must
-  // not be used here — cross-library gid agreement is the whole point). The hash
-  // folds ASCII case so `MODULE_FO` and `ModuLe_Fo` map to the same gid, matching
-  // the case-insensitive graph_name_to_id_ lookup.
+  // Deterministic hash over the name → a stable gid, identical across runs,
+  // platforms and libraries (std::hash is NONE of these, so it must not be used
+  // here — cross-library gid agreement is the whole point). Names are
+  // case-sensitive, so `MODULE_FO` and `ModuLe_Fo` are DISTINCT and map to
+  // different gids, matching the case-sensitive graph_name_to_id_ lookup.
   [[nodiscard]] static Gid hash_name_to_gid(std::string_view name) noexcept {
-    const uint64_t h = ci_str_hash(name);
+    const uint64_t h = name_hash(name);
     const Gid      g = static_cast<Gid>(h % (kGidModulus - 1)) + 1;  // ∈ [1, kGidModulus)
     return g;
   }
@@ -2340,8 +2340,8 @@ private:
   // large gids that a vector could not. gid 0 (Gid_invalid) is never a key.
   absl::flat_hash_map<Gid, std::shared_ptr<GraphIO>>             graph_ios_;
   absl::flat_hash_map<Gid, std::shared_ptr<Graph>>               graphs_;
-  ankerl::unordered_dense::map<std::string, Gid, Ci_hash, Ci_eq> graph_name_to_id_;
-  ankerl::unordered_dense::map<std::string, Gid, Ci_hash, Ci_eq> deleted_name_to_id_;
+  ankerl::unordered_dense::map<std::string, Gid, Name_hash, Name_eq> graph_name_to_id_;
+  ankerl::unordered_dense::map<std::string, Gid, Name_hash, Name_eq> deleted_name_to_id_;
   // Source-provenance base (hhds-srcloc): see source_map(). Held by shared_ptr
   // so a Forest and a GraphLibrary sharing a db directory can share ONE
   // in-memory table (share_source_map); standalone libraries own a private one.

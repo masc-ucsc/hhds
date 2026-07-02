@@ -1266,7 +1266,7 @@ auto Graph::pin_name(Pin_class pin) const -> std::string_view {
 
 auto Graph::get_input_pin(std::string_view name) const -> Pin_class {
   assert_accessible();
-  const auto it = input_pins_.find(name);  // transparent Ci_hash/Ci_eq: no std::string alloc
+  const auto it = input_pins_.find(name);  // transparent Name_hash/Name_eq: no std::string alloc
   assert(it != input_pins_.end() && "get_input_pin: declared input name not found");
   if (it == input_pins_.end()) {
     return {};
@@ -1276,7 +1276,7 @@ auto Graph::get_input_pin(std::string_view name) const -> Pin_class {
 
 auto Graph::get_output_pin(std::string_view name) const -> Pin_class {
   assert_accessible();
-  const auto it = output_pins_.find(name);  // transparent Ci_hash/Ci_eq: no std::string alloc
+  const auto it = output_pins_.find(name);  // transparent Name_hash/Name_eq: no std::string alloc
   assert(it != output_pins_.end() && "get_output_pin: declared output name not found");
   if (it == output_pins_.end()) {
     return {};
@@ -1285,11 +1285,11 @@ auto Graph::get_output_pin(std::string_view name) const -> Pin_class {
 }
 
 auto Graph::materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
-                                        ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq>& pins_by_name) -> Pid {
+                                        ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq>& pins_by_name) -> Pid {
   assert_accessible();
   assert(!name.empty() && "materialize_declared_io_pin: name is required");
 
-  const auto it = pins_by_name.find(name);  // transparent Ci_hash/Ci_eq: no std::string alloc
+  const auto it = pins_by_name.find(name);  // transparent Name_hash/Name_eq: no std::string alloc
   if (it != pins_by_name.end()) {
     return it->second;
   }
@@ -1300,9 +1300,9 @@ auto Graph::materialize_declared_io_pin(std::string_view name, Port_id port_id, 
 }
 
 void Graph::erase_declared_io_pin(std::string_view                                                name,
-                                  ankerl::unordered_dense::map<std::string, Pid, Ci_hash, Ci_eq>& pins_by_name) {
+                                  ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq>& pins_by_name) {
   assert_accessible();
-  const auto it = pins_by_name.find(name);  // transparent Ci_hash/Ci_eq: no std::string alloc
+  const auto it = pins_by_name.find(name);  // transparent Name_hash/Name_eq: no std::string alloc
   assert(it != pins_by_name.end() && "erase_declared_io_pin: declared pin name not found");
   if (it == pins_by_name.end()) {
     return;
