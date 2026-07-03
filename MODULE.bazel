@@ -23,7 +23,7 @@ bazel_dep(name = "boost.graph", version = "1.90.0.bcr.1")
 http_archive(
     name = "com_google_perfetto",
     url = "https://github.com/google/perfetto/archive/refs/tags/v49.0.tar.gz",
-    #build_file = "//:perfetto.BUILD",
+    build_file = "//tools:perfetto.BUILD",
     sha256 = "0871a92a162ac5655b7d724f9359b15a75c4e92472716edbc4227a64a4680be4",
     strip_prefix = "perfetto-49.0/sdk",
 )

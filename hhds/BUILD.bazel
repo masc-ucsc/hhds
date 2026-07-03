@@ -6,9 +6,15 @@ load("//tools:copt_default.bzl", "COPTS")
 
 exports_files(["tree.hpp"])
 
+# NOTE: keyed on `hhds_profiling`, NOT the `profiling` define LiveHD uses for
+# its own perfetto build: nothing in hhds reads HHDS_PROFILING today, and
+# flipping this from a LiveHD `--define profiling=1` build would link a second
+# perfetto SDK copy (v49 here, v50.1 in LiveHD) into one binary — duplicate
+# symbols. The @com_google_perfetto http_archive in MODULE.bazel builds with
+# //tools:perfetto.BUILD so this arm resolves standalone.
 config_setting(
     name = "use_profiling",
-    values = {"define": "profiling=1"},
+    values = {"define": "hhds_profiling=1"},
 )
 
 cc_library(
