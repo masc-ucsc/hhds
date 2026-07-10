@@ -622,8 +622,9 @@ void Graph::assert_pin_exists(const Pin_class& pin) const noexcept {
 }
 
 void Graph::release_storage() noexcept {
-  overflow_sets_.clear();
+  overflow_storage_.clear();  // raw: tearing down, do not trigger a deferred read
   overflow_free_.clear();
+  overflow_deferred_ = false;
 }
 
 void Graph::invalidate_from_library() noexcept {
@@ -681,8 +682,9 @@ void Graph::clear_graph() {
 void Graph::clear() {
   assert_accessible();
 
-  overflow_sets_.clear();
+  overflow_storage_.clear();  // raw: tearing down, do not trigger a deferred read
   overflow_free_.clear();
+  overflow_deferred_ = false;
   discard_attr_stores();
   srcloc_.clear();  // provenance is body content: dropped with the attrs (base kept)
 
@@ -799,7 +801,7 @@ void Graph::ensure_forward_caches() const {
   // edges and its pin edges); drop in-edges and out-of-range sinks.
   auto for_each_out_sink = [&](size_t driver_idx, auto&& f) {
     const Nid driver_nid = static_cast<Nid>(driver_idx) << 2;
-    auto      node_edges = node_table[driver_idx].get_edges(driver_nid, overflow_sets_);
+    auto      node_edges = node_table[driver_idx].get_edges(driver_nid, overflow_sets());
     for (auto vid : node_edges) {
       if (vid & static_cast<Vid>(2)) {
         continue;
@@ -811,7 +813,7 @@ void Graph::ensure_forward_caches() const {
     }
     for (Pid pin_vid = node_table[driver_idx].get_next_pin_id(); pin_vid != 0;) {
       const Pid canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-      auto      pin_edges     = ref_pin(canonical_pin)->get_edges(canonical_pin, overflow_sets_);
+      auto      pin_edges     = ref_pin(canonical_pin)->get_edges(canonical_pin, overflow_sets());
       for (auto edge_vid : pin_edges) {
         if (edge_vid & static_cast<Vid>(2)) {
           continue;
@@ -930,7 +932,7 @@ void Graph::ensure_backward_caches() const {
   // Enumerate every upstream driver idx reachable from sink_idx
   auto for_each_in_driver = [&](size_t sink_idx, auto&& f) {
     const Nid sink_nid   = static_cast<Nid>(sink_idx) << 2;
-    auto      node_edges = node_table[sink_idx].get_edges(sink_nid, overflow_sets_);
+    auto      node_edges = node_table[sink_idx].get_edges(sink_nid, overflow_sets());
     for (auto vid : node_edges) {
       if (!(vid & static_cast<Vid>(2))) {
         continue;
@@ -942,7 +944,7 @@ void Graph::ensure_backward_caches() const {
     }
     for (Pid pin_vid = node_table[sink_idx].get_next_pin_id(); pin_vid != 0;) {
       const Pid canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-      auto      pin_edges     = ref_pin(canonical_pin)->get_edges(canonical_pin, overflow_sets_);
+      auto      pin_edges     = ref_pin(canonical_pin)->get_edges(canonical_pin, overflow_sets());
       for (auto edge_vid : pin_edges) {
         if (!(edge_vid & static_cast<Vid>(2))) {
           continue;
@@ -1327,7 +1329,7 @@ void Graph::delete_pin(Pid pin_pid) {
   assert(pin->get_master_nid() != 0 && "delete_pin: pin already deleted");
 
   std::vector<Vid> edges_to_remove;
-  for (auto edge : pin->get_edges(pin_lookup, overflow_sets_)) {
+  for (auto edge : pin->get_edges(pin_lookup, overflow_sets())) {
     edges_to_remove.push_back(edge);
   }
 
@@ -1368,7 +1370,7 @@ void Graph::delete_pin(Pid pin_pid) {
 
   if (pin->check_overflow()) {
     overflow_free_.push_back(pin->get_overflow_idx());
-    overflow_sets_[pin->get_overflow_idx()].clear();
+    overflow_sets()[pin->get_overflow_idx()].clear();
   }
   erase_attr_object(make_pin_attr_key(static_cast<uint64_t>(pin_lookup)));
 
@@ -1617,7 +1619,7 @@ bool Node_class::has_out_edges() const {
   const Nid self_nid = raw_nid & ~static_cast<Nid>(2);
   auto*     self     = graph_->ref_node(self_nid);
   // Node-as-pin (port 0): scan node-entry edges, skip back-edges (bit 1 = sink).
-  for (auto vid : self->get_edges(self_nid, graph_->overflow_sets_)) {
+  for (auto vid : self->get_edges(self_nid, graph_->overflow_sets())) {
     if (!(vid & static_cast<Vid>(2))) {
       return true;
     }
@@ -1626,7 +1628,7 @@ bool Node_class::has_out_edges() const {
   for (Pid cur_pin = self->get_next_pin_id(); cur_pin != 0;) {
     const Pid canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
     auto*     pin_entry     = graph_->ref_pin(canonical_pin);
-    for (auto vid : pin_entry->get_edges(canonical_pin, graph_->overflow_sets_)) {
+    for (auto vid : pin_entry->get_edges(canonical_pin, graph_->overflow_sets())) {
       if (!(vid & static_cast<Vid>(2))) {
         return true;
       }
@@ -1641,7 +1643,7 @@ bool Node_class::has_inp_edges() const {
   const Nid self_nid = raw_nid & ~static_cast<Nid>(2);
   auto*     self     = graph_->ref_node(self_nid);
   // Node-as-pin (port 0): scan node-entry edges, keep back-edges (bit 1 = sink).
-  for (auto vid : self->get_edges(self_nid, graph_->overflow_sets_)) {
+  for (auto vid : self->get_edges(self_nid, graph_->overflow_sets())) {
     if (vid & static_cast<Vid>(2)) {
       return true;
     }
@@ -1650,7 +1652,7 @@ bool Node_class::has_inp_edges() const {
   for (Pid cur_pin = self->get_next_pin_id(); cur_pin != 0;) {
     const Pid canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
     auto*     pin_entry     = graph_->ref_pin(canonical_pin);
-    for (auto vid : pin_entry->get_edges(canonical_pin, graph_->overflow_sets_)) {
+    for (auto vid : pin_entry->get_edges(canonical_pin, graph_->overflow_sets())) {
       if (vid & static_cast<Vid>(2)) {
         return true;
       }
@@ -2079,7 +2081,7 @@ void ForwardClassIterator::propagate(size_t driver_idx, size_t /*cursor*/) {
   }
   const Nid driver_nid = static_cast<Nid>(driver_idx) << 2;
   auto&     node_table = graph_->node_table;
-  auto&     overflow   = graph_->overflow_sets_;
+  auto&     overflow   = graph_->overflow_sets();
 
   auto sink_idx_of = [&](Vid vid) -> size_t {
     Nid sink_nid;
@@ -2495,7 +2497,7 @@ void BackwardClassIterator::propagate(size_t sink_idx, size_t /*cursor*/) {
   };
 
   const Nid sink_nid   = static_cast<Nid>(sink_idx) << 2;
-  auto      node_edges = graph_->node_table[sink_idx].get_edges(sink_nid, graph_->overflow_sets_);
+  auto      node_edges = graph_->node_table[sink_idx].get_edges(sink_nid, graph_->overflow_sets());
   for (auto vid : node_edges) {
     if (!(vid & static_cast<Vid>(2))) {
       continue;
@@ -2505,7 +2507,7 @@ void BackwardClassIterator::propagate(size_t sink_idx, size_t /*cursor*/) {
   for (Pid pin_vid = graph_->node_table[sink_idx].get_next_pin_id(); pin_vid != 0;) {
     const Pid   canonical_pin = (pin_vid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
     const auto* pin           = graph_->ref_pin(canonical_pin);  // hoist: one lookup per list step (was two)
-    for (auto edge_vid : pin->get_edges(canonical_pin, graph_->overflow_sets_)) {
+    for (auto edge_vid : pin->get_edges(canonical_pin, graph_->overflow_sets())) {
       if (!(edge_vid & static_cast<Vid>(2))) {
         continue;
       }
@@ -2955,7 +2957,7 @@ auto Graph::out_edges_local(Node_class node) -> absl::InlinedVector<Edge_class, 
   self_driver.hier_pos_ = node.hier_pos_;
 
   // 1) NodeEntry-level out edges (driver pin == node-as-pin(0))
-  for (auto vid : self->get_edges(self_nid, overflow_sets_)) {
+  for (auto vid : self->get_edges(self_nid, overflow_sets())) {
     if (vid & static_cast<Vid>(2)) {
       continue;
     }
@@ -2985,7 +2987,7 @@ auto Graph::out_edges_local(Node_class node) -> absl::InlinedVector<Edge_class, 
     pin_driver.root_gid_ = node.root_gid_;
     pin_driver.hier_pos_ = node.hier_pos_;
 
-    for (auto vid : pin_entry->get_edges(canonical_pin, overflow_sets_)) {
+    for (auto vid : pin_entry->get_edges(canonical_pin, overflow_sets())) {
       if (vid & static_cast<Vid>(2)) {
         continue;  // back edge (inp_edge)
       }
@@ -3027,7 +3029,7 @@ auto Graph::inp_edges_local(Node_class node) -> absl::InlinedVector<Edge_class, 
   self_sink.hier_pos_ = node.hier_pos_;
 
   // 1) NodeEntry-level inp edges (sink pin == node-as-pin(0))
-  for (auto vid : self->get_edges(self_nid, overflow_sets_)) {
+  for (auto vid : self->get_edges(self_nid, overflow_sets())) {
     if (!(vid & static_cast<Vid>(2))) {
       continue;
     }
@@ -3055,7 +3057,7 @@ auto Graph::inp_edges_local(Node_class node) -> absl::InlinedVector<Edge_class, 
     pin_sink.root_gid_ = node.root_gid_;
     pin_sink.hier_pos_ = node.hier_pos_;
 
-    for (auto vid : pin_entry->get_edges(canonical_pin, overflow_sets_)) {
+    for (auto vid : pin_entry->get_edges(canonical_pin, overflow_sets())) {
       if (!(vid & static_cast<Vid>(2))) {
         continue;  // forward edge (out_edge)
       }
@@ -3582,13 +3584,13 @@ void OutEdgeIterator::bind_node_as_pin() {
   static_assert(Graph::NodeEntry::EdgeRange::kInlineMax <= kBufCap, "buf_ too small for NodeEntry inline edges");
   set_driver(self_nid_ | static_cast<Pid>(2));
   if (node_entry_->check_overflow()) {
-    ovf_         = &graph_->overflow_sets_[node_entry_->get_overflow_idx()];
+    ovf_         = &graph_->overflow_sets()[node_entry_->get_overflow_idx()];
     ovf_it_      = ovf_->begin();
     ovf_end_     = ovf_->end();
     is_overflow_ = true;
   } else {
     n_ = 0;
-    for (const Vid v : node_entry_->get_edges(self_nid_, graph_->overflow_sets_)) {
+    for (const Vid v : node_entry_->get_edges(self_nid_, graph_->overflow_sets())) {
       buf_[n_++] = v;
     }
     idx_         = 0;
@@ -3600,13 +3602,13 @@ void OutEdgeIterator::bind_pin() {
   static_assert(Graph::PinEntry::EdgeRange::kInlineMax <= kBufCap, "buf_ too small for PinEntry inline edges");
   set_driver(cur_pin_lookup_ | static_cast<Pid>(2));
   if (pin_entry_->check_overflow()) {
-    ovf_         = &graph_->overflow_sets_[pin_entry_->get_overflow_idx()];
+    ovf_         = &graph_->overflow_sets()[pin_entry_->get_overflow_idx()];
     ovf_it_      = ovf_->begin();
     ovf_end_     = ovf_->end();
     is_overflow_ = true;
   } else {
     n_ = 0;
-    for (const Vid v : pin_entry_->get_edges(cur_pin_lookup_, graph_->overflow_sets_)) {
+    for (const Vid v : pin_entry_->get_edges(cur_pin_lookup_, graph_->overflow_sets())) {
       buf_[n_++] = v;
     }
     idx_         = 0;
@@ -3679,7 +3681,7 @@ auto Graph::inp_edges(Pin_class pin) -> absl::InlinedVector<Edge_class, 4> {
   if (!(pin.get_debug_pid() & static_cast<Pid>(1))) {
     const Nid self_nid = pin.get_debug_pid() & ~static_cast<Nid>(2);
     auto*     self     = ref_node(self_nid);
-    auto      edges    = self->get_edges(self_nid, overflow_sets_);
+    auto      edges    = self->get_edges(self_nid, overflow_sets());
     Pin_class self_sink_pin(this, self_nid);
     self_sink_pin.context_   = pin.context_;
     self_sink_pin.root_gid_  = pin.root_gid_;
@@ -3719,7 +3721,7 @@ auto Graph::inp_edges(Pin_class pin) -> absl::InlinedVector<Edge_class, 4> {
   const Pid                          self_pid         = pin.get_debug_pid();
   const Pid                          self_pid_sink    = (self_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
   auto*                              self             = ref_pin(self_pid_sink);
-  auto                               edges            = self->get_edges(self_pid_sink, overflow_sets_);
+  auto                               edges            = self->get_edges(self_pid_sink, overflow_sets());
   const Pin_class                    self_sink_pin    = make_pin_class(self_pid_sink);
   Pin_class                          context_sink_pin = self_sink_pin;
   context_sink_pin.context_                           = pin.context_;
@@ -3779,7 +3781,7 @@ auto Graph::get_driver_pins(Node_class node) -> absl::InlinedVector<Pin_class, 4
   for (const auto& pin : get_pins(node)) {
     const Pid pid_lookup = (pin.get_debug_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
     auto*     self       = ref_pin(pid_lookup);
-    auto      edges      = self->get_edges(pid_lookup, overflow_sets_);
+    auto      edges      = self->get_edges(pid_lookup, overflow_sets());
 
     for (auto vid : edges) {
       // Driver pin: edge is outgoing (bit1=0) and target is a pin (bit0=1).
@@ -3799,7 +3801,7 @@ auto Graph::get_sink_pins(Node_class node) -> absl::InlinedVector<Pin_class, 4> 
   for (const auto& pin : get_pins(node)) {
     const Pid pid_lookup = (pin.get_debug_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
     auto*     self       = ref_pin(pid_lookup);
-    auto      edges      = self->get_edges(pid_lookup, overflow_sets_);
+    auto      edges      = self->get_edges(pid_lookup, overflow_sets());
 
     for (auto vid : edges) {
       // Sink pin: edge is incoming (bit1=1) and source is a pin (bit0=1).
@@ -3829,7 +3831,7 @@ void Graph::delete_node(Nid nid) {
   }
 
   std::vector<std::pair<Vid, Vid>> edges_to_remove;
-  for (auto edge : node->get_edges(nid, overflow_sets_)) {
+  for (auto edge : node->get_edges(nid, overflow_sets())) {
     if (edge & static_cast<Vid>(2)) {
       edges_to_remove.emplace_back(edge, nid);
     } else {
@@ -3837,7 +3839,7 @@ void Graph::delete_node(Nid nid) {
     }
   }
   for (auto pin_pid : pins_to_delete) {
-    for (auto edge : ref_pin(pin_pid)->get_edges(pin_pid, overflow_sets_)) {
+    for (auto edge : ref_pin(pin_pid)->get_edges(pin_pid, overflow_sets())) {
       if (edge & static_cast<Vid>(2)) {
         edges_to_remove.emplace_back(edge, pin_pid);
       } else {
@@ -3857,7 +3859,7 @@ void Graph::delete_node(Nid nid) {
     auto*     pin           = &pin_table[actual_pin_id];
     if (pin->use_overflow) {
       overflow_free_.push_back(pin->get_overflow_idx());
-      overflow_sets_[pin->get_overflow_idx()].clear();
+      overflow_sets()[pin->get_overflow_idx()].clear();
     }
     erase_attr_object(make_pin_attr_key(static_cast<uint64_t>(pin_pid)));
     pin_table[actual_pin_id] = PinEntry();
@@ -3865,7 +3867,7 @@ void Graph::delete_node(Nid nid) {
 
   if (node->use_overflow) {
     overflow_free_.push_back(node->get_overflow_idx());
-    overflow_sets_[node->get_overflow_idx()].clear();
+    overflow_sets()[node->get_overflow_idx()].clear();
   }
   node_table[actual_id] = NodeEntry();
   invalidate_traversal_caches();
@@ -3929,7 +3931,7 @@ void Graph::display_graph() const {
     auto      p    = ref_pin(cpid);
     std::cout << "PinEntry " << pid << "  node=" << p->get_master_nid() << " port=" << p->get_port_id() << "\n";
     if (p->has_edges()) {
-      auto sed = p->get_edges(cpid, overflow_sets_);
+      auto sed = p->get_edges(cpid, overflow_sets());
       std::cout << "  edges:";
       for (auto e : sed) {
         if (e) {
@@ -4007,6 +4009,12 @@ void Graph::save_body(const std::string& dir_path) const {
   namespace fs = std::filesystem;
   fs::create_directories(dir_path);
 
+  // A body whose overflow was loaded lazily and never touched still has its sets
+  // deferred — read them in now, BEFORE the cleanup below deletes the very
+  // overflow_<i>.bin files an in-place legacy re-save would read from. (No-op for
+  // a graph whose edges were already materialized.)
+  ensure_overflow_loaded();
+
   // Drop any legacy per-set overflow_<i>.bin left by a pre-consolidation save of
   // this dir; the overflow sets are rewritten into a single overflow.bin below.
   // This is what lets an in-place re-save of an old library actually reclaim the
@@ -4035,7 +4043,7 @@ void Graph::save_body(const std::string& dir_path) const {
 
     const uint64_t node_count     = node_table.size();
     const uint64_t pin_count      = pin_table.size();
-    const uint64_t overflow_count = overflow_sets_.size();
+    const uint64_t overflow_count = overflow_sets().size();
 
     ofs.write(reinterpret_cast<const char*>(&GRAPH_BODY_MAGIC), sizeof(GRAPH_BODY_MAGIC));
     ofs.write(reinterpret_cast<const char*>(&GRAPH_BODY_VERSION), sizeof(GRAPH_BODY_VERSION));
@@ -4059,13 +4067,13 @@ void Graph::save_body(const std::string& dir_path) const {
   // ~700x. Each set is [u64 count][count x Vid], concatenated in overflow_idx
   // order; the number of sets is overflow_count (already in body.bin), so no index
   // is needed. An empty-overflow graph writes no overflow.bin at all.
-  if (!overflow_sets_.empty()) {
+  if (!overflow_sets().empty()) {
     const auto    path = fs::path(dir_path) / "overflow.bin";
     std::ofstream ofs(path, std::ios::binary);
     assert(ofs.good() && "save_body: cannot open overflow.bin for writing");
-    for (uint32_t i = 0; i < overflow_sets_.size(); ++i) {
+    for (uint32_t i = 0; i < overflow_sets().size(); ++i) {
       // Use the values() API — contiguous Vid vector, no bucket data needed.
-      const auto&    vals  = overflow_sets_[i].values();
+      const auto&    vals  = overflow_sets()[i].values();
       const uint64_t count = vals.size();
       ofs.write(reinterpret_cast<const char*>(&count), sizeof(count));
       if (count > 0) {
@@ -4075,6 +4083,48 @@ void Graph::save_body(const std::string& dir_path) const {
   }
 
   dirty_ = false;
+}
+
+// Read the deferred overflow (edge-adjacency) sets that load_body left unread.
+// Idempotent; a no-op once loaded (or when the body was built in memory rather
+// than loaded from disk). Runs on the first edge traversal via overflow_sets().
+void Graph::ensure_overflow_loaded() const {
+  if (!overflow_deferred_) {
+    return;
+  }
+  namespace fs = std::filesystem;
+  auto* self = const_cast<Graph*>(this);
+  // Clear the flag FIRST so overflow_storage_ accesses below (and any re-entry
+  // through overflow_sets()) do not recurse back into this read.
+  self->overflow_deferred_ = false;
+
+  auto read_set = [self](std::istream& ifs, uint32_t i) {
+    uint64_t count = 0;
+    ifs.read(reinterpret_cast<char*>(&count), sizeof(count));
+    if (count > 0) {
+      std::vector<Vid> vals(count);
+      ifs.read(reinterpret_cast<char*>(vals.data()), static_cast<std::streamsize>(count * sizeof(Vid)));
+      self->overflow_storage_[i].replace(std::move(vals));
+    }
+  };
+  // Current format: one overflow.bin holding every set back to back (see
+  // save_body). Legacy: one overflow_<i>.bin per set. Presence of overflow.bin
+  // picks the format; both encode each set as [u64 count][count x Vid].
+  const auto consolidated = fs::path(overflow_src_dir_) / "overflow.bin";
+  if (!overflow_storage_.empty() && fs::exists(consolidated)) {
+    std::ifstream ifs(consolidated, std::ios::binary);
+    assert(ifs.good() && "ensure_overflow_loaded: cannot open overflow.bin for reading");
+    for (uint32_t i = 0; i < overflow_storage_.size(); ++i) {
+      read_set(ifs, i);
+    }
+  } else {
+    for (uint32_t i = 0; i < overflow_storage_.size(); ++i) {  // legacy per-file fallback
+      const auto    path = fs::path(overflow_src_dir_) / ("overflow_" + std::to_string(i) + ".bin");
+      std::ifstream ifs(path, std::ios::binary);
+      assert(ifs.good() && "ensure_overflow_loaded: cannot open overflow file for reading");
+      read_set(ifs, i);
+    }
+  }
 }
 
 void Graph::load_body(const std::string& dir_path) {
@@ -4106,42 +4156,24 @@ void Graph::load_body(const std::string& dir_path) {
     pin_table.resize(pin_count);
     ifs.read(reinterpret_cast<char*>(pin_table.data()), static_cast<std::streamsize>(pin_count * sizeof(PinEntry)));
 
-    // Prepare overflow_sets_ vector.
-    overflow_sets_.resize(overflow_count);
+    // Size the overflow vector (holes included) but DEFER reading the set
+    // contents — see below.
+    overflow_storage_.resize(overflow_count);
     overflow_free_.clear();
 
     load_attr_stores(ifs);
   }
 
-  // --- overflow sets ---
-  // Current format: a single overflow.bin holding every set back to back (see
-  // save_body). Legacy format: one overflow_<i>.bin per set — still read for
-  // directories written before the consolidation. Presence of overflow.bin picks
-  // the format; both encode each set identically as [u64 count][count x Vid].
-  auto read_set = [this](std::istream& ifs, uint32_t i) {
-    uint64_t count = 0;
-    ifs.read(reinterpret_cast<char*>(&count), sizeof(count));
-    if (count > 0) {
-      std::vector<Vid> vals(count);
-      ifs.read(reinterpret_cast<char*>(vals.data()), static_cast<std::streamsize>(count * sizeof(Vid)));
-      overflow_sets_[i].replace(std::move(vals));
-    }
-  };
-  const auto consolidated = fs::path(dir_path) / "overflow.bin";
-  if (!overflow_sets_.empty() && fs::exists(consolidated)) {
-    std::ifstream ifs(consolidated, std::ios::binary);
-    assert(ifs.good() && "load_body: cannot open overflow.bin for reading");
-    for (uint32_t i = 0; i < overflow_sets_.size(); ++i) {
-      read_set(ifs, i);
-    }
-  } else {
-    for (uint32_t i = 0; i < overflow_sets_.size(); ++i) {  // legacy per-file fallback
-      const auto    path = fs::path(dir_path) / ("overflow_" + std::to_string(i) + ".bin");
-      std::ifstream ifs(path, std::ios::binary);
-      assert(ifs.good() && "load_body: cannot open overflow file for reading");
-      read_set(ifs, i);
-    }
-  }
+  // --- overflow sets: DEFERRED ---
+  // The edge-adjacency contents (overflow.bin, or legacy overflow_<i>.bin) are
+  // NOT read here. overflow_storage_ is sized above; the actual read happens on
+  // the first edge traversal via ensure_overflow_loaded() (reached through
+  // overflow_sets()). A structure-only walk — fast_class + subnode + node count,
+  // e.g. `lhd tools tree` — never traverses edges, so it never opens these files.
+  // On a legacy library that alone is the difference between ~1.2M file opens and
+  // none. overflow_count==0 => nothing to defer.
+  overflow_src_dir_  = dir_path;
+  overflow_deferred_ = (overflow_storage_.size() > 0);
 
   // Rebuild structure tree: save/load only persists node_table (which holds
   // each subnode's target Gid in ledge0). Walk the live entries and

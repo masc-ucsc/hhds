@@ -762,7 +762,23 @@ public:
 
 private:
   void                       attr_note_modified() noexcept override { dirty_ = true; }
-  [[nodiscard]] OverflowPool get_overflow_pool() { return {overflow_sets_, overflow_free_}; }
+  [[nodiscard]] OverflowPool get_overflow_pool() { return {overflow_sets(), overflow_free_}; }
+  // Overflow-set CONTENTS accessor: materializes the deferred overflow read on
+  // first use, so every edge path (get_edges / EdgeRange / has_edges) sees full
+  // adjacency. The raw member is overflow_storage_ (load/save/clear only).
+  [[nodiscard]] OverflowVec&       overflow_sets() {
+    if (overflow_deferred_) {
+      ensure_overflow_loaded();
+    }
+    return overflow_storage_;
+  }
+  [[nodiscard]] const OverflowVec& overflow_sets() const {
+    if (overflow_deferred_) {
+      ensure_overflow_loaded();
+    }
+    return overflow_storage_;
+  }
+  void ensure_overflow_loaded() const;  // reads the deferred overflow.bin / overflow_<i>.bin
   void                       assert_accessible() const noexcept { assert(!deleted_ && "graph is no longer valid"); }
   void                       assert_node_exists(const Node_class& node) const noexcept;
   void                       assert_pin_exists(const Pin_class& pin) const noexcept;
@@ -898,8 +914,17 @@ private:
 
   std::vector<NodeEntry>                                         node_table;
   std::vector<PinEntry>                                          pin_table;
-  OverflowVec                                                    overflow_sets_;
+  // Edge-adjacency overflow sets. LAZY: load_body sizes this vector but defers
+  // reading the set CONTENTS (the overflow.bin / overflow_<i>.bin files) until an
+  // edge is actually traversed — a pure structure walk (fast_class + subnode +
+  // node count, e.g. `lhd tools tree`) never touches edges, so it never pays to
+  // read them. Access the CONTENTS only via overflow_sets() (which ensures the
+  // deferred read has happened); overflow_storage_ is the raw backing store used
+  // by load/save/clear, which must NOT trigger a re-read.
+  OverflowVec                                                    overflow_storage_;
   std::vector<uint32_t>                                          overflow_free_;
+  mutable bool                                                   overflow_deferred_ = false;
+  std::string                                                    overflow_src_dir_;
   // Persistent hierarchy: one Tree per Graph, populated by set_subnode and
   // torn down in clear()/load_body rebuild. The tree's children correspond
   // 1:1 with live subnode NodeEntries. `subnode_tree_pos_` maps a subnode
