@@ -4196,6 +4196,49 @@ void Graph::load_body(const std::string& dir_path) {
     tree_pos_to_nid_.emplace(child_pos, subnode_nid);
   }
 
+  // Reconcile the name->Pid IO maps against the LOADED pin table. The maps were
+  // filled by pre-materializing the GraphIO decls on a fresh empty body (slots
+  // assigned in decl-list order), but the saved table may hold an IO pin at a
+  // DIFFERENT slot — e.g. a port declared only after the body already carried
+  // other pins, or a decl delete+re-add reorder. Without this, get_input_pin /
+  // get_output_pin / pin_name silently resolve to the wrong pin (or none) after
+  // reload. Match by (IO node, port_id), which is layout-independent. A decl
+  // with no pin in the saved table (declared while the body sat on disk) is
+  // materialized fresh onto the loaded table.
+  if (auto graphio = get_io()) {
+    ankerl::unordered_dense::map<Port_id, Pid> in_by_port;
+    ankerl::unordered_dense::map<Port_id, Pid> out_by_port;
+    for (size_t i = 1; i < pin_table.size(); ++i) {
+      const auto& pe = pin_table[i];
+      if (pe.get_master_nid() == 0) {
+        continue;  // dead slot
+      }
+      const Nid owner = pe.get_master_nid() & ~static_cast<Nid>(3);
+      const Pid pid   = (static_cast<Pid>(i) << 2) | static_cast<Pid>(1);  // create_pin's canonical form
+      if (owner == INPUT_NODE) {
+        in_by_port.emplace(pe.get_port_id(), pid);
+      } else if (owner == OUTPUT_NODE) {
+        out_by_port.emplace(pe.get_port_id(), pid);
+      }
+    }
+    input_pins_.clear();
+    output_pins_.clear();
+    for (const auto& d : graphio->input_pin_decls_) {
+      if (auto it = in_by_port.find(d.port_id); it != in_by_port.end()) {
+        input_pins_.emplace(d.name, it->second);
+      } else {
+        (void)materialize_declared_io_pin(d.name, d.port_id, INPUT_NODE, input_pins_);
+      }
+    }
+    for (const auto& d : graphio->output_pin_decls_) {
+      if (auto it = out_by_port.find(d.port_id); it != out_by_port.end()) {
+        output_pins_.emplace(d.name, it->second);
+      } else {
+        (void)materialize_declared_io_pin(d.name, d.port_id, OUTPUT_NODE, output_pins_);
+      }
+    }
+  }
+
   invalidate_traversal_caches();
   dirty_ = false;
 }

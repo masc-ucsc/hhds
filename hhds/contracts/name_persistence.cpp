@@ -244,3 +244,60 @@ TEST(NamePersistence, IoDeclarationDeleteRequiresDisconnectedPinAndPreservesName
   EXPECT_FALSE(top_gio->has_output("used_out"));
   EXPECT_TRUE(used_out.is_invalid());
 }
+
+// A port declared AFTER the body already carries other pins materializes at a
+// late pin_table slot. On reload, the IO name->Pid maps are pre-filled by
+// materializing the decls in decl-list order onto a fresh empty body, so
+// without load_body's reconcile pass they would point at the WRONG slots of
+// the loaded table (the late input's map entry would land on an internal pin).
+// Contract: after save+load, every declared IO name resolves — get_input_pin /
+// get_output_pin / get_pin_name — to the pin at its SAVED slot, identified by
+// its surviving edges.
+TEST(NamePersistence, IoMapsReconcileAgainstLoadedBodyAfterLateDecl) {
+  namespace fs               = std::filesystem;
+  const std::string test_dir = "/tmp/hhds_name_persistence_late_io";
+  fs::remove_all(test_dir);
+
+  {
+    hhds::GraphLibrary lib;
+    auto               gio = lib.create_io("late_io_top");
+    gio->add_input("a", 1);
+    gio->add_output("y", 1);
+    auto g = gio->create_graph();
+
+    // Grow the pin table past the IO pins before declaring the late port.
+    auto n1     = g->create_node();
+    auto n1_in  = n1.create_sink_pin(3);
+    auto n1_out = n1.create_driver_pin(4);
+    g->get_input_pin("a").connect_sink(n1_in);
+    n1_out.connect_sink(g->get_output_pin("y"));
+
+    gio->add_input("late_in", 2);  // materializes at a slot AFTER n1's pins
+    auto n1_in2 = n1.create_sink_pin(5);
+    g->get_input_pin("late_in").connect_sink(n1_in2);
+
+    lib.save(test_dir);
+  }
+
+  {
+    hhds::GraphLibrary lib;
+    lib.load(test_dir);
+    auto gio = lib.find_io("late_io_top");
+    ASSERT_NE(gio, nullptr);
+    auto g = gio->get_graph();
+    ASSERT_NE(g, nullptr);
+
+    auto late = g->get_input_pin("late_in");
+    EXPECT_EQ(late.get_pin_name(), "late_in");
+    EXPECT_EQ(late.out_edges().size(), 1u);  // still drives n1's port-5 sink
+
+    auto a = g->get_input_pin("a");
+    EXPECT_EQ(a.get_pin_name(), "a");
+    EXPECT_EQ(a.out_edges().size(), 1u);
+
+    EXPECT_EQ(g->get_output_pin("y").get_pin_name(), "y");
+    EXPECT_EQ(g->get_output_pin("y").inp_edges().size(), 1u);
+  }
+
+  fs::remove_all(test_dir);
+}
