@@ -1866,19 +1866,30 @@ public:
 
   [[nodiscard]] bool has_graph(Gid id) const noexcept {
     std::shared_lock lock(registry_mu_);
-    return has_graph_unlocked(id);
+    // A pending body exists on disk even though it is not yet materialized.
+    return has_graph_unlocked(id) || pending_body_dir_.find(id) != pending_body_dir_.end();
   }
 
   [[nodiscard]] std::shared_ptr<Graph> get_graph(Gid id) {
-    std::shared_lock lock(registry_mu_);
-    assert(has_graph_unlocked(id));
-    return graph_at_unlocked(id);
+    {
+      std::shared_lock lock(registry_mu_);
+      if (has_graph_unlocked(id)) {
+        return graph_at_unlocked(id);  // already materialized (fast reader path)
+      }
+      if (pending_body_dir_.find(id) == pending_body_dir_.end()) {
+        assert(has_graph_unlocked(id) && "get_graph: unknown gid");
+        return graph_at_unlocked(id);  // unknown / deleted (preserve old contract)
+      }
+    }
+    // Pending: read the body under the writer lock. The registry mutex is
+    // non-recursive and non-upgradeable, so we released the reader lock above
+    // before taking the writer lock; materialize_body_unlocked re-checks the race.
+    std::unique_lock lock(registry_mu_);
+    return materialize_body_unlocked(id);
   }
 
   [[nodiscard]] std::shared_ptr<const Graph> get_graph(Gid id) const {
-    std::shared_lock lock(registry_mu_);
-    assert(has_graph_unlocked(id));
-    return graph_at_unlocked(id);
+    return const_cast<GraphLibrary*>(this)->get_graph(id);  // lazy-load cache fill
   }
 
   // Read-only handle lookup. Returns nullptr unless the slot is Public —
@@ -2015,13 +2026,13 @@ public:
   // use all_gids() / all_io_gids() instead.
   [[nodiscard]] size_t capacity() const noexcept {
     std::shared_lock lock(registry_mu_);
-    return graphs_.size();
+    return graphs_.size() + pending_body_dir_.size();  // materialized + pending-on-disk
   }
 
   // Count of live graphs.
   [[nodiscard]] Gid live_count() const noexcept {
     std::shared_lock lock(registry_mu_);
-    return live_count_;
+    return live_count_ + static_cast<Gid>(pending_body_dir_.size());  // materialized + pending
   }
 
   // gids of all live graph BODIES, ascending. Gids are sparse name-hashes now,
@@ -2029,11 +2040,14 @@ public:
   [[nodiscard]] std::vector<Gid> all_gids() const {
     std::shared_lock lock(registry_mu_);
     std::vector<Gid> out;
-    out.reserve(graphs_.size());
+    out.reserve(graphs_.size() + pending_body_dir_.size());
     for (const auto& [gid, g] : graphs_) {
       if (g && !g->deleted_) {
         out.push_back(gid);
       }
+    }
+    for (const auto& [gid, dir] : pending_body_dir_) {  // persisted, not yet materialized
+      out.push_back(gid);                               // (a gid is never in both maps)
     }
     std::sort(out.begin(), out.end());
     return out;
@@ -2179,6 +2193,9 @@ private:
       return {};
     }
     graph_slot_abort_pending_.at(gid)->store(false, std::memory_order_relaxed);
+    // A fresh body supersedes any lazily-pending on-disk body for this gid (e.g.
+    // emit-dir reuse: delete_graph then create_graph over a persisted library).
+    pending_body_dir_.erase(gid);
 
     if (auto existing = graph_at_unlocked(gid); !existing || existing->deleted_) {
       std::shared_ptr<Graph> graph = std::make_shared<Graph>();
@@ -2209,6 +2226,7 @@ private:
     const Gid gid = graphio->get_gid();
     assert(io_at_unlocked(gid) == graphio && "create_graph_body_loaded: GraphIO is not owned by this library");
     ensure_slot_atomics_unlocked(gid);
+    pending_body_dir_.erase(gid);  // this body is now (being) materialized in memory
 
     if (auto existing = graph_at_unlocked(gid); !existing || existing->deleted_) {
       std::shared_ptr<Graph> graph = std::make_shared<Graph>();
@@ -2230,7 +2248,34 @@ private:
     return graph_at_unlocked(gid);
   }
 
+  // Read a pending (persisted-but-unloaded) body into memory. Caller MUST hold
+  // the UNIQUE (writer) lock — this mutates graphs_/live_count_/slot state. Safe
+  // to call after swapping a reader lock for the writer lock: it double-checks
+  // whether another thread materialized the gid in the gap before doing the read.
+  // Returns the (now materialized) body, or the existing body / nullptr if the
+  // gid was not actually pending.
+  [[nodiscard]] std::shared_ptr<Graph> materialize_body_unlocked(Gid id) {
+    if (auto g = graph_at_unlocked(id); g && !g->deleted_) {
+      return g;  // materialized by a racing thread while we swapped locks
+    }
+    const auto pit = pending_body_dir_.find(id);
+    if (pit == pending_body_dir_.end()) {
+      return graph_at_unlocked(id);  // not pending (raced-and-erased, or unknown)
+    }
+    const std::string dir = pit->second;  // copy before the map is mutated
+    const auto        gio = io_at_unlocked(id);
+    assert(gio && "materialize_body: pending gid without a GraphIO");
+    auto graph = create_graph_body_loaded_unlocked(gio);
+    graph->load_body(dir);
+    pending_body_dir_.erase(id);
+    return graph;
+  }
+
   void delete_graph_unlocked(Gid id) noexcept {
+    // Drop any lazily-pending on-disk body too, else it would still resolve via
+    // get_graph() after the delete (e.g. emit-dir reuse deletes a persisted graph
+    // before recreating it).
+    pending_body_dir_.erase(id);
     if (auto it = graphs_.find(id); it != graphs_.end() && it->second && !it->second->deleted_) {
       it->second->invalidate_from_library();
       it->second.reset();
@@ -2340,6 +2385,12 @@ private:
   // large gids that a vector could not. gid 0 (Gid_invalid) is never a key.
   absl::flat_hash_map<Gid, std::shared_ptr<GraphIO>>             graph_ios_;
   absl::flat_hash_map<Gid, std::shared_ptr<Graph>>               graphs_;
+  // Lazy body materialization (hhds lazy-load): load() records every persisted
+  // graph_<gid>/ dir here instead of eagerly reading its body. The body is read
+  // on first get_graph(id) / GraphIO::get_graph() and the gid is erased. A gid is
+  // NEVER simultaneously in `graphs_` (materialized) and here (pending). Consumers
+  // that touch only a sub-hierarchy pay for just the graphs they visit.
+  absl::flat_hash_map<Gid, std::string>                          pending_body_dir_;
   ankerl::unordered_dense::map<std::string, Gid, Name_hash, Name_eq> graph_name_to_id_;
   ankerl::unordered_dense::map<std::string, Gid, Name_hash, Name_eq> deleted_name_to_id_;
   // Source-provenance base (hhds-srcloc): see source_map(). Held by shared_ptr
@@ -2413,24 +2464,24 @@ inline std::shared_ptr<Graph> GraphIO::get_graph() {
   if (owner_lib_ == nullptr) {
     return {};
   }
-  std::shared_lock lock(owner_lib_->registry_mu_);
-  const auto       graph = owner_lib_->graph_at_unlocked(gid_);
-  if (!graph || graph->deleted_) {
-    return {};
+  {
+    std::shared_lock lock(owner_lib_->registry_mu_);
+    const auto       graph = owner_lib_->graph_at_unlocked(gid_);
+    if (graph) {
+      return graph->deleted_ ? std::shared_ptr<Graph>{} : graph;  // already materialized
+    }
+    if (owner_lib_->pending_body_dir_.find(gid_) == owner_lib_->pending_body_dir_.end()) {
+      return {};  // no body materialized and none pending on disk
+    }
   }
-  return graph;
+  // Pending: read the body under the writer lock (see GraphLibrary::get_graph).
+  auto*            lib = const_cast<GraphLibrary*>(owner_lib_);
+  std::unique_lock lock(lib->registry_mu_);
+  return lib->materialize_body_unlocked(gid_);
 }
 
 inline std::shared_ptr<const Graph> GraphIO::get_graph() const {
-  if (owner_lib_ == nullptr) {
-    return {};
-  }
-  std::shared_lock lock(owner_lib_->registry_mu_);
-  const auto       graph = owner_lib_->graph_at_unlocked(gid_);
-  if (!graph || graph->deleted_) {
-    return {};
-  }
-  return graph;
+  return const_cast<GraphIO*>(this)->get_graph();  // lazy-load cache fill
 }
 
 inline std::shared_ptr<Graph> GraphIO::create_graph() {

@@ -703,6 +703,147 @@ TEST(GraphPersistence, OverflowSetRoundTrip) {
   fs::remove_all(test_dir);
 }
 
+// Build a graph named `nm` in `lib` whose single hub node spills into an
+// overflow set (>inline fanout); returns {gid, hub debug-nid} for later checks.
+static std::pair<hhds::Gid, hhds::Nid> make_overflow_graph(hhds::GraphLibrary& lib, const char* nm) {
+  auto gio   = lib.create_io(nm);
+  auto graph = gio->create_graph();
+  auto hub   = graph->create_node();
+  for (size_t i = 0; i < 20; ++i) {
+    auto t = graph->create_node();
+    auto d = hub.create_driver_pin(0);
+    auto s = t.create_sink_pin(0);
+    d.connect_sink(s);
+  }
+  return {gio->get_gid(), hub.get_debug_nid()};
+}
+
+// The overflow sets of a graph persist to ONE overflow.bin, not a file per set.
+TEST(GraphPersistence, OverflowConsolidatedIntoSingleFile) {
+  namespace fs               = std::filesystem;
+  const std::string test_dir = "/tmp/hhds_test_overflow_consolidated";
+  fs::remove_all(test_dir);
+
+  hhds::GraphLibrary lib;
+  const auto [gid, hub_nid] = make_overflow_graph(lib, "top");
+  lib.save(test_dir);
+
+  const auto gdir = fs::path(test_dir) / ("graph_" + std::to_string(gid));
+  EXPECT_TRUE(fs::exists(gdir / "overflow.bin"));     // consolidated file present
+  EXPECT_FALSE(fs::exists(gdir / "overflow_0.bin"));  // legacy per-set files gone
+
+  fs::remove_all(test_dir);
+}
+
+// load() defers bodies: they materialize on first get_graph(), yet all_gids /
+// has_graph / live_count still report every persisted graph beforehand.
+TEST(GraphPersistence, LazyLoadMaterializesOnDemand) {
+  namespace fs               = std::filesystem;
+  const std::string test_dir = "/tmp/hhds_test_lazy_load";
+  fs::remove_all(test_dir);
+
+  hhds::GraphLibrary            lib;
+  std::vector<hhds::Gid>        gids;
+  std::vector<hhds::Nid>        hub_nids;
+  for (const char* nm : {"g0", "g1"}) {
+    auto [gid, hub_nid] = make_overflow_graph(lib, nm);
+    gids.push_back(gid);
+    hub_nids.push_back(hub_nid);
+  }
+  lib.save(test_dir);
+
+  hhds::GraphLibrary lib2;
+  lib2.load(test_dir);
+  // Nothing materialized yet, but the whole library is visible.
+  EXPECT_EQ(lib2.all_gids().size(), 2u);
+  EXPECT_EQ(lib2.live_count(), 2u);
+  EXPECT_TRUE(lib2.has_graph(gids[0]));
+  EXPECT_TRUE(lib2.has_graph(gids[1]));
+
+  // Materialize on demand and confirm overflow edges round-trip.
+  auto g0 = lib2.get_graph(gids[0]);
+  ASSERT_NE(g0, nullptr);
+  EXPECT_EQ(hhds::Node_class(g0.get(), hub_nids[0]).out_edges().size(), 20u);
+
+  auto gio1 = lib2.find_io("g1");  // by-name path also triggers lazy load
+  ASSERT_NE(gio1, nullptr);
+  auto g1 = gio1->get_graph();
+  ASSERT_NE(g1, nullptr);
+  EXPECT_EQ(hhds::Node_class(g1.get(), hub_nids[1]).out_edges().size(), 20u);
+
+  fs::remove_all(test_dir);
+}
+
+// Lazy load then save-as to a DIFFERENT directory must not drop the bodies the
+// caller never materialized (the pending-body copy in GraphLibrary::save).
+TEST(GraphPersistence, LazyLoadSaveAsPreservesUntouchedBodies) {
+  namespace fs              = std::filesystem;
+  const std::string src_dir = "/tmp/hhds_test_lazy_src";
+  const std::string dst_dir = "/tmp/hhds_test_lazy_dst";
+  fs::remove_all(src_dir);
+  fs::remove_all(dst_dir);
+
+  hhds::GraphLibrary     lib;
+  std::vector<hhds::Gid> gids;
+  std::vector<hhds::Nid> hub_nids;
+  for (const char* nm : {"g0", "g1"}) {
+    auto [gid, hub_nid] = make_overflow_graph(lib, nm);
+    gids.push_back(gid);
+    hub_nids.push_back(hub_nid);
+  }
+  lib.save(src_dir);
+
+  hhds::GraphLibrary lib2;
+  lib2.load(src_dir);   // lazy
+  lib2.save(dst_dir);   // both bodies still pending -> copied verbatim
+
+  hhds::GraphLibrary lib3;
+  lib3.load(dst_dir);
+  for (size_t k = 0; k < 2; ++k) {
+    auto g = lib3.get_graph(gids[k]);
+    ASSERT_NE(g, nullptr);
+    EXPECT_EQ(hhds::Node_class(g.get(), hub_nids[k]).out_edges().size(), 20u);
+  }
+
+  fs::remove_all(src_dir);
+  fs::remove_all(dst_dir);
+}
+
+// Deleting / recreating a still-pending graph must clear the pending marker, so
+// it neither resolves after delete nor double-counts in all_gids (this is the
+// emit-dir-reuse path: delete_graph then create_graph over a persisted library).
+TEST(GraphPersistence, LazyLoadDeleteAndRecreatePending) {
+  namespace fs               = std::filesystem;
+  const std::string test_dir = "/tmp/hhds_test_lazy_delete";
+  fs::remove_all(test_dir);
+
+  hhds::GraphLibrary     lib;
+  std::vector<hhds::Gid> gids;
+  for (const char* nm : {"g0", "g1"}) {
+    gids.push_back(make_overflow_graph(lib, nm).first);
+  }
+  lib.save(test_dir);
+
+  hhds::GraphLibrary lib2;
+  lib2.load(test_dir);
+  ASSERT_EQ(lib2.all_gids().size(), 2u);
+
+  lib2.delete_graph(gids[0]);  // delete a still-pending body
+  EXPECT_FALSE(lib2.has_graph(gids[0]));
+  EXPECT_EQ(lib2.all_gids().size(), 1u);
+  EXPECT_TRUE(lib2.has_graph(gids[1]));  // the other pending graph is unaffected
+
+  // Recreate a fresh body on the same declared IO: no lingering pending dup.
+  auto gio0 = lib2.find_io("g0");
+  ASSERT_NE(gio0, nullptr);
+  auto fresh = gio0->create_graph();
+  ASSERT_NE(fresh, nullptr);
+  EXPECT_TRUE(lib2.has_graph(gids[0]));
+  EXPECT_EQ(lib2.all_gids().size(), 2u);  // g0 (fresh) + g1 (pending), not 3
+
+  fs::remove_all(test_dir);
+}
+
 TEST(TreePersistence, SaveLoadRoundTrip) {
   namespace fs               = std::filesystem;
   const std::string test_dir = "/tmp/hhds_test_tree_persist";

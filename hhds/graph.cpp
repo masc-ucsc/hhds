@@ -4007,6 +4007,26 @@ void Graph::save_body(const std::string& dir_path) const {
   namespace fs = std::filesystem;
   fs::create_directories(dir_path);
 
+  // Drop any legacy per-set overflow_<i>.bin left by a pre-consolidation save of
+  // this dir; the overflow sets are rewritten into a single overflow.bin below.
+  // This is what lets an in-place re-save of an old library actually reclaim the
+  // ~1 file/set inodes. Fresh dirs have none, so the compile/save hot path pays
+  // only one (already-empty) directory scan. Collect-then-remove: never mutate a
+  // directory while iterating it.
+  {
+    std::error_code       ec;
+    std::vector<fs::path> stale;
+    for (const auto& entry : fs::directory_iterator(dir_path, ec)) {
+      if (entry.path().filename().string().rfind("overflow_", 0) == 0) {  // "overflow.bin" is NOT matched
+        stale.push_back(entry.path());
+      }
+    }
+    for (const auto& p : stale) {
+      std::error_code rm_ec;
+      fs::remove(p, rm_ec);
+    }
+  }
+
   // --- body.bin ---
   {
     const auto    path = fs::path(dir_path) / "body.bin";
@@ -4030,19 +4050,27 @@ void Graph::save_body(const std::string& dir_path) const {
     save_attr_stores(ofs);
   }
 
-  // --- overflow_<idx>.bin (one per overflow set) ---
-  for (uint32_t i = 0; i < overflow_sets_.size(); ++i) {
-    const auto&   oset = overflow_sets_[i];
-    const auto    path = fs::path(dir_path) / ("overflow_" + std::to_string(i) + ".bin");
+  // --- overflow.bin (ALL overflow sets in ONE file) ---
+  // Historically each set was one tiny overflow_<i>.bin file. On a large design
+  // that is ~1 file per spilled-edge set — e.g. an XiangShan core persisted 1.17M
+  // of them, and reloading it spent ~half its time just in open() (one syscall per
+  // file). They are 147 bytes on average, so per-file open/close dwarfs the read.
+  // Consolidating into a single overflow.bin cuts the file count (and open()s) by
+  // ~700x. Each set is [u64 count][count x Vid], concatenated in overflow_idx
+  // order; the number of sets is overflow_count (already in body.bin), so no index
+  // is needed. An empty-overflow graph writes no overflow.bin at all.
+  if (!overflow_sets_.empty()) {
+    const auto    path = fs::path(dir_path) / "overflow.bin";
     std::ofstream ofs(path, std::ios::binary);
-    assert(ofs.good() && "save_body: cannot open overflow file for writing");
-
-    // Use the values() API — contiguous Vid vector, no bucket data needed.
-    const auto&    vals  = oset.values();
-    const uint64_t count = vals.size();
-    ofs.write(reinterpret_cast<const char*>(&count), sizeof(count));
-    if (count > 0) {
-      ofs.write(reinterpret_cast<const char*>(vals.data()), static_cast<std::streamsize>(count * sizeof(Vid)));
+    assert(ofs.good() && "save_body: cannot open overflow.bin for writing");
+    for (uint32_t i = 0; i < overflow_sets_.size(); ++i) {
+      // Use the values() API — contiguous Vid vector, no bucket data needed.
+      const auto&    vals  = overflow_sets_[i].values();
+      const uint64_t count = vals.size();
+      ofs.write(reinterpret_cast<const char*>(&count), sizeof(count));
+      if (count > 0) {
+        ofs.write(reinterpret_cast<const char*>(vals.data()), static_cast<std::streamsize>(count * sizeof(Vid)));
+      }
     }
   }
 
@@ -4085,18 +4113,33 @@ void Graph::load_body(const std::string& dir_path) {
     load_attr_stores(ifs);
   }
 
-  // --- overflow_<idx>.bin ---
-  for (uint32_t i = 0; i < overflow_sets_.size(); ++i) {
-    const auto    path = std::filesystem::path(dir_path) / ("overflow_" + std::to_string(i) + ".bin");
-    std::ifstream ifs(path, std::ios::binary);
-    assert(ifs.good() && "load_body: cannot open overflow file for reading");
-
+  // --- overflow sets ---
+  // Current format: a single overflow.bin holding every set back to back (see
+  // save_body). Legacy format: one overflow_<i>.bin per set — still read for
+  // directories written before the consolidation. Presence of overflow.bin picks
+  // the format; both encode each set identically as [u64 count][count x Vid].
+  auto read_set = [this](std::istream& ifs, uint32_t i) {
     uint64_t count = 0;
     ifs.read(reinterpret_cast<char*>(&count), sizeof(count));
     if (count > 0) {
       std::vector<Vid> vals(count);
       ifs.read(reinterpret_cast<char*>(vals.data()), static_cast<std::streamsize>(count * sizeof(Vid)));
       overflow_sets_[i].replace(std::move(vals));
+    }
+  };
+  const auto consolidated = fs::path(dir_path) / "overflow.bin";
+  if (!overflow_sets_.empty() && fs::exists(consolidated)) {
+    std::ifstream ifs(consolidated, std::ios::binary);
+    assert(ifs.good() && "load_body: cannot open overflow.bin for reading");
+    for (uint32_t i = 0; i < overflow_sets_.size(); ++i) {
+      read_set(ifs, i);
+    }
+  } else {
+    for (uint32_t i = 0; i < overflow_sets_.size(); ++i) {  // legacy per-file fallback
+      const auto    path = fs::path(dir_path) / ("overflow_" + std::to_string(i) + ".bin");
+      std::ifstream ifs(path, std::ios::binary);
+      assert(ifs.good() && "load_body: cannot open overflow file for reading");
+      read_set(ifs, i);
     }
   }
 
@@ -4237,6 +4280,23 @@ void GraphLibrary::save(const std::string& db_path) const {
     const auto dir = fs::path(db_path) / ("graph_" + std::to_string(gid));
     it->second->save_body(dir.string());
   }
+
+  // --- pending (never-materialized) bodies (hhds lazy-load) ---
+  // A body still in pending_body_dir_ was loaded lazily and never read into
+  // memory, so the loop above skipped it (no graphs_ entry). For an IN-PLACE save
+  // its files already sit at db_path — nothing to do. For a save to a DIFFERENT
+  // directory they must be copied verbatim, otherwise a lazy load followed by
+  // save-as would silently drop every graph the caller did not happen to touch.
+  for (const auto& [gid, src_dir] : pending_body_dir_) {
+    const auto      dst_dir = fs::path(db_path) / ("graph_" + std::to_string(gid));
+    std::error_code ec1, ec2;
+    if (fs::weakly_canonical(src_dir, ec1) == fs::weakly_canonical(dst_dir, ec2)) {
+      continue;  // in-place: the body is already at the destination
+    }
+    std::error_code ec;
+    fs::create_directories(dst_dir, ec);
+    fs::copy(src_dir, dst_dir, fs::copy_options::overwrite_existing | fs::copy_options::recursive, ec);
+  }
 }
 
 void GraphLibrary::load(const std::string& db_path) {
@@ -4252,6 +4312,7 @@ void GraphLibrary::load(const std::string& db_path) {
   }
   graph_ios_.clear();
   graphs_.clear();
+  pending_body_dir_.clear();
   graph_slot_states_.clear();
   graph_slot_abort_pending_.clear();
   graph_name_to_id_.clear();
@@ -4336,7 +4397,13 @@ void GraphLibrary::load(const std::string& db_path) {
     }
   }
 
-  // --- Load graph bodies (deterministic gid order) ---
+  // --- Record graph bodies for LAZY materialization (deterministic gid order) ---
+  // Bodies are NOT read here. Each is materialized on first get_graph(id) /
+  // GraphIO::get_graph() (see materialize_body_unlocked). A consumer that only
+  // walks a sub-hierarchy — e.g. `lhd tools tree --top X` — then reads just the
+  // graphs it visits instead of the whole library (an XiangShan core persists
+  // 1630 graphs but its top instantiates ~79). all_gids()/has_graph()/live_count()
+  // already fold in pending_body_dir_ so eager-iterating callers still see them.
   std::vector<Gid> io_gids;
   io_gids.reserve(graph_ios_.size());
   for (const auto& [gid, gio] : graph_ios_) {
@@ -4346,11 +4413,9 @@ void GraphLibrary::load(const std::string& db_path) {
   }
   std::sort(io_gids.begin(), io_gids.end());
   for (const Gid gid : io_gids) {
-    const auto& gio = graph_ios_.at(gid);
-    const auto  dir = fs::path(db_path) / ("graph_" + std::to_string(gid));
+    const auto dir = fs::path(db_path) / ("graph_" + std::to_string(gid));
     if (fs::exists(dir / "body.bin")) {
-      auto graph = create_graph_body_loaded_unlocked(gio);
-      graph->load_body(dir.string());
+      pending_body_dir_.emplace(gid, dir.string());
     }
   }
 }
