@@ -630,3 +630,23 @@ TEST(GraphApiContract, HierAttributesAreKeyedByHierPosition) {
   EXPECT_EQ(leaf_instances[0].attr(hbits).get(), 11);
   EXPECT_EQ(leaf_instances[1].attr(hbits).get(), 22);
 }
+
+// A node reached via Pin_class::get_master_node() must expose the same edges as
+// one yielded by forward_class iteration — never a silently-empty range
+// (small_todo.md). Build a -> b -> c, reach node b through a driver pin (not by
+// iterating), and confirm inp_edges()/out_edges() still see b's fan-in/fan-out.
+TEST(GraphApiContract, GetMasterNodeResolvesEdges) {
+  hhds::GraphLibrary lib;
+  auto               g = lib.create_io("top")->create_graph();
+  auto               a = g->create_node();
+  auto               b = g->create_node();
+  auto               c = g->create_node();
+  a.create_driver_pin(1).connect_sink(b.create_sink_pin(1));  // a -> b
+  b.create_driver_pin(1).connect_sink(c.create_sink_pin(1));  // b -> c
+
+  // The reported footgun: take a driver pin off an edge and walk ITS master node.
+  auto b_via_master = c.inp_edges().at(0).driver.get_master_node();
+  EXPECT_EQ(b_via_master.get_debug_nid(), b.get_debug_nid());
+  EXPECT_EQ(b_via_master.inp_edges().size(), 1u);  // a -> b
+  EXPECT_EQ(b_via_master.out_edges().size(), 1u);  // b -> c
+}
