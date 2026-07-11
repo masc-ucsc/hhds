@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "hhds/graph.hpp"
@@ -409,6 +410,163 @@ TEST(SourceLocatorPersist, SaveLoadRoundTrip) {
   Source_locator empty;
   empty.save(dir.string());
   EXPECT_FALSE(fs::exists(dir / "srcmap.txt"));
+
+  fs::remove_all(dir);
+}
+
+TEST(SourceLocatorPersist, LoadLazyDefersParseToFirstUse) {
+  const auto dir = fresh_dir("hhds_srcloc_lazy");
+
+  Source_locator sl;
+  const SourceId a = sl.mint("src/a.prp", 0, 4, 1);
+  const SourceId b = sl.mint_line("src/b.v", 42);
+  sl.set_file_content_hash("src/a.prp", 0x1234u);
+  sl.save(dir.string());
+
+  // Resolution materializes transparently.
+  Source_locator lazy;
+  ASSERT_TRUE(lazy.load_lazy(dir.string()));
+  const auto la = lazy.resolve(a);
+  ASSERT_TRUE(la.has_value());
+  EXPECT_EQ(la->path, "src/a.prp");
+  EXPECT_TRUE(lazy.has(b));
+  EXPECT_EQ(lazy.file_content_hash("src/a.prp"), 0x1234u);
+
+  // load_lazy on a dir without a table reports false, like load().
+  Source_locator none;
+  EXPECT_FALSE(none.load_lazy((dir / "nosuch").string()));
+  EXPECT_TRUE(none.empty());
+
+  // The data-loss trap: save() while the parse is still deferred must fold
+  // the on-disk table into the rewrite, not clobber it with emptiness.
+  const auto dir2 = fresh_dir("hhds_srcloc_lazy_resave");
+  Source_locator untouched;
+  ASSERT_TRUE(untouched.load_lazy(dir.string()));
+  untouched.save(dir2.string());
+  Source_locator check;
+  ASSERT_TRUE(check.load(dir2.string()));
+  EXPECT_EQ(check.size(), sl.size());
+  EXPECT_TRUE(check.has(a));
+
+  // Minting into a still-deferred locator lands on top of the disk table.
+  Source_locator minter;
+  ASSERT_TRUE(minter.load_lazy(dir.string()));
+  const SourceId c = minter.mint("src/c.prp", 8, 12, 3);
+  EXPECT_TRUE(minter.has(a));
+  EXPECT_TRUE(minter.has(c));
+
+  // Serving as another locator's base materializes through the base chain.
+  Source_locator base_side;
+  ASSERT_TRUE(base_side.load_lazy(dir.string()));
+  Source_locator worker;
+  worker.set_base(&base_side);
+  EXPECT_TRUE(worker.has(a));
+
+  // merge() of a still-deferred source sees the disk entries.
+  Source_locator merged;
+  Source_locator pending;
+  ASSERT_TRUE(pending.load_lazy(dir.string()));
+  (void)merged.merge(pending);
+  EXPECT_TRUE(merged.has(a));
+  EXPECT_EQ(merged.size(), sl.size());
+
+  // A malformed table degrades to "no provenance" at first use (load_lazy
+  // itself only checks existence), leaving the locator empty, not partial.
+  const auto dir3 = fresh_dir("hhds_srcloc_lazy_corrupt");
+  {
+    std::ofstream ofs(dir3 / "srcmap.txt");
+    ofs << "not_a_srcmap 1\n";
+  }
+  Source_locator corrupt;
+  EXPECT_TRUE(corrupt.load_lazy(dir3.string()));
+  EXPECT_FALSE(corrupt.has(a));
+  EXPECT_TRUE(corrupt.empty());
+
+  // clear() drops a still-deferred table: nothing resurrects afterwards.
+  Source_locator cleared;
+  ASSERT_TRUE(cleared.load_lazy(dir.string()));
+  cleared.clear();
+  EXPECT_TRUE(cleared.empty());
+  EXPECT_FALSE(cleared.has(a));
+
+  fs::remove_all(dir);
+  fs::remove_all(dir2);
+  fs::remove_all(dir3);
+}
+
+TEST(SourceLocatorPersist, LoadLazyMergeMaterializesBaseChain) {
+  const auto dir = fresh_dir("hhds_srcloc_lazy_basechain");
+
+  Source_locator sl;
+  const SourceId x = sl.mint("src/x.prp", 0, 4, 1);
+  const SourceId y = sl.mint("src/x.prp", 8, 12, 2);
+  sl.save(dir.string());
+
+  // worker chains to a still-deferred base and mints a combine over base ids;
+  // merging the worker must union the base's ON-DISK entries (merge_into
+  // iterates the base chain's raw tables), or the combine lands dangling and
+  // the next save/load rejects the whole table.
+  Source_locator base;
+  ASSERT_TRUE(base.load_lazy(dir.string()));
+  Source_locator worker;
+  worker.set_base(&base);
+  const SourceId c = worker.combine({x, y});
+
+  Source_locator dst;
+  (void)dst.merge(worker);
+  EXPECT_TRUE(dst.has(x));
+  EXPECT_TRUE(dst.has(y));
+  ASSERT_TRUE(dst.has(c));
+  const auto all = dst.resolve_all(c);
+  EXPECT_EQ(all.anchors.size(), 2u);
+
+  // The merged table must round-trip (no dangling combine parents).
+  const auto dir2 = fresh_dir("hhds_srcloc_lazy_basechain_rt");
+  dst.save(dir2.string());
+  Source_locator rt;
+  ASSERT_TRUE(rt.load(dir2.string()));
+  EXPECT_TRUE(rt.has(c));
+
+  fs::remove_all(dir);
+  fs::remove_all(dir2);
+}
+
+TEST(SourceLocatorPersist, LoadLazyConcurrentFirstTouch) {
+  const auto dir = fresh_dir("hhds_srcloc_lazy_race");
+
+  // A table big enough that the parse has a real window.
+  Source_locator        sl;
+  std::vector<SourceId> ids;
+  auto                  minter = sl.span_minter("src/big.prp");
+  ids.reserve(20000);
+  for (uint32_t i = 0; i < 20000; ++i) {
+    ids.push_back(minter.mint(i * 4, i * 4 + 3, i + 1));
+  }
+  sl.save(dir.string());
+
+  // A shared library base is read lock-free by concurrent resolutions (the
+  // lec taskflow shape): every thread may race into the first touch, and the
+  // one-time materialization must self-serialize (no torn table, no double
+  // parse) with every id resolving afterwards.
+  Source_locator base;
+  ASSERT_TRUE(base.load_lazy(dir.string()));
+  std::vector<std::thread> threads;
+  std::atomic<int>         miss{0};
+  threads.reserve(8);
+  for (int t = 0; t < 8; ++t) {
+    threads.emplace_back([&base, &ids, &miss, t]() {
+      for (size_t i = static_cast<size_t>(t); i < ids.size(); i += 8) {
+        if (!base.has(ids[i])) {
+          miss.fetch_add(1);
+        }
+      }
+    });
+  }
+  for (auto& th : threads) {
+    th.join();
+  }
+  EXPECT_EQ(miss.load(), 0);
+  EXPECT_EQ(base.size(), sl.size());
 
   fs::remove_all(dir);
 }

@@ -43,6 +43,7 @@
 // excerpts) never see bytes that drifted from what the spans were minted on.
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <deque>
@@ -52,6 +53,7 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -361,6 +363,7 @@ public:
   // ---- file table -----------------------------------------------------------
 
   [[nodiscard]] std::string_view file_path(uint32_t file_id) const {
+    materialize_lazy();
     assert(file_id < files_.size() && "Source_locator::file_path: bad file id");
     return files_[file_id].path;
   }
@@ -368,7 +371,10 @@ public:
   // Own files only (the base is not counted): with file_path this lets a
   // consumer enumerate the files this locator actually minted from — e.g. a
   // build-system depfile listing the sources a compile read.
-  [[nodiscard]] uint32_t file_count() const noexcept { return static_cast<uint32_t>(files_.size()); }
+  [[nodiscard]] uint32_t file_count() const {
+    materialize_lazy();
+    return static_cast<uint32_t>(files_.size());
+  }
 
   // The per-file line-offset table (nullptr when absent), so a consumer
   // re-minting anchors into another locator can carry the line:col metadata
@@ -547,6 +553,12 @@ public:
     if (&other == this) {
       return remap;  // self-merge is a no-op (and would otherwise mutate entries_ mid-iteration)
     }
+    materialize_lazy();
+    // merge_into iterates raw tables of other AND its whole base chain
+    // (recursing base-first), so every level must be materialized.
+    for (const Source_locator* b = &other; b != nullptr; b = b->base_) {
+      b->materialize_lazy();
+    }
     merge_into(other, remap);
     return remap;
   }
@@ -554,6 +566,7 @@ public:
   // ---- persistence: <db_path>/srcmap.txt ------------------------------------
 
   void save(const std::string& db_path) const {
+    materialize_lazy();  // a still-deferred table must fold into the rewrite, not vanish
     namespace fs    = std::filesystem;
     const auto path = fs::path(db_path) / "srcmap.txt";
     if (empty()) {
@@ -618,15 +631,48 @@ public:
     return true;
   }
 
+  // Like load(), but defers the table parse to first use: only the path is
+  // recorded here (the return value answers "does srcmap.txt exist"). Many
+  // consumers open a library and never resolve a span, and a whole-design
+  // table parse (100+MB) must not tax them at open time. The first access —
+  // any lookup, mint, merge, save, or state query — materializes the table.
+  // Contract differences vs load(): a malformed table is only detected (and
+  // degraded to "no provenance", same stderr note) at that first access, and
+  // — unlike every other mutation — the materialization itself is
+  // thread-safe, so lock-free concurrent READERS (a shared library base) may
+  // race each other into the first touch. Concurrent mutations remain the
+  // caller's to serialize, as everywhere else in this class.
+  bool load_lazy(const std::string& db_path) {
+    namespace fs    = std::filesystem;
+    const auto path = fs::path(db_path) / "srcmap.txt";
+    clear();
+    std::error_code ec;
+    if (!fs::exists(path, ec) || ec) {
+      return false;
+    }
+    lazy_db_path_ = db_path;
+    lazy_pending_.store(true, std::memory_order_release);
+    return true;
+  }
+
   // ---- state ------------------------------------------------------------------
 
   // Own data only — a non-empty base does not count.
-  [[nodiscard]] bool empty() const noexcept { return entries_.empty() && files_.empty(); }
+  [[nodiscard]] bool empty() const {
+    materialize_lazy();
+    return entries_.empty() && files_.empty();
+  }
 
-  [[nodiscard]] size_t size() const noexcept { return entries_.size(); }
+  [[nodiscard]] size_t size() const {
+    materialize_lazy();
+    return entries_.size();
+  }
 
-  // Drops own entries and files; keeps the base pointer.
+  // Drops own entries and files (parsed or still load_lazy-deferred); keeps
+  // the base pointer.
   void clear() noexcept {
+    lazy_pending_.store(false, std::memory_order_relaxed);
+    lazy_db_path_.clear();
     entries_.clear();
     index_.clear();
     files_.clear();
@@ -711,9 +757,49 @@ private:
 
   // ---- lookup -------------------------------------------------------------------
 
-  [[nodiscard]] const Entry* find_local(SourceId id) const {
+  // load_lazy() deferral: parse the recorded on-disk table on first access.
+  // Called from every path that reads or writes the own tables (find_local /
+  // find_file / intern_file cover lookups and mints — including this locator
+  // serving as another's base — merge/save/state queries hook explicitly).
+  // Const because resolution paths are const. THREAD-SAFE (unlike every other
+  // mutation, which keeps the single-writer contract): a library base is read
+  // lock-free by concurrent per-graph resolutions (e.g. lec's taskflow
+  // workers), so the one-time parse double-checks under lazy_mu_ and only
+  // publishes lazy_pending_=false (release, pairing with the fast-path
+  // acquire) after the table is complete.
+  void materialize_lazy() const {
+    if (!lazy_pending_.load(std::memory_order_acquire)) {
+      return;  // fast path: nothing deferred (the overwhelmingly common case)
+    }
+    std::lock_guard<std::mutex> guard(lazy_mu_);
+    if (lazy_db_path_.empty()) {
+      return;  // lost the race: another thread parsed while we waited
+    }
+    namespace fs    = std::filesystem;
+    const auto path = fs::path(lazy_db_path_) / "srcmap.txt";
+    auto*      self = const_cast<Source_locator*>(this);
+    self->lazy_db_path_.clear();
+    std::ifstream ifs(path);
+    if (ifs) {
+      if (!self->load_table(ifs)) {
+        std::cerr << "Source_locator::load: malformed srcmap table at " << path.string() << " -- ignoring it\n";
+        self->clear();
+      }
+    }  // vanished since load_lazy(): degrade to "no provenance"
+    lazy_pending_.store(false, std::memory_order_release);
+  }
+
+  // Raw own-table lookup with NO lazy materialization: load_table's combine
+  // parent validation runs mid-parse (parents precede their combines in the
+  // table), and re-entering materialize_lazy from there would self-deadlock.
+  [[nodiscard]] const Entry* find_local_raw(SourceId id) const {
     const auto it = index_.find(id);
     return it == index_.end() ? nullptr : &entries_[it->second].second;
+  }
+
+  [[nodiscard]] const Entry* find_local(SourceId id) const {
+    materialize_lazy();
+    return find_local_raw(id);
   }
 
   // Own entries first, then the base chain. `owner` (optional) receives the
@@ -729,6 +815,7 @@ private:
   }
 
   [[nodiscard]] const File* find_file(std::string_view path) const {
+    materialize_lazy();
     const auto it = path_to_fid_.find(path);  // transparent: no temporary std::string
     if (it != path_to_fid_.end()) {
       return &files_[it->second];
@@ -737,6 +824,7 @@ private:
   }
 
   uint32_t intern_file(std::string_view path) {
+    materialize_lazy();
     const auto it = path_to_fid_.find(path);  // transparent: no temporary std::string
     if (it != path_to_fid_.end()) {
       return it->second;
@@ -1065,7 +1153,7 @@ private:
         e.parents.reserve(std::min(count, kReserveCap));
         for (size_t i = 0; i < count; ++i) {
           SourceId parent = 0;
-          if (!(ss >> parent) || find_local(parent) == nullptr) {
+          if (!(ss >> parent) || find_local_raw(parent) == nullptr) {  // _raw: we ARE the materialize
             return false;  // missing or not-yet-defined parent
           }
           e.parents.push_back(parent);
@@ -1173,6 +1261,14 @@ private:
     [[nodiscard]] size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
   };
   std::unordered_map<std::string, uint32_t, Sv_hash, std::equal_to<>> path_to_fid_;
+  // load_lazy() state: lazy_pending_ is the lock-free fast-path gate (true
+  // while an on-disk table is recorded but not yet parsed); lazy_db_path_ and
+  // the parse itself are guarded by lazy_mu_ (see materialize_lazy). Mutable
+  // so const lookups can trigger materialization. These make the class
+  // non-copyable, which it always was in spirit (one table per artifact).
+  mutable std::string                                                 lazy_db_path_;
+  mutable std::atomic<bool>                                           lazy_pending_{false};
+  mutable std::mutex                                                  lazy_mu_;
   const Source_locator*                                               base_      = nullptr;
   // Test seam: narrows every minted hash so collision/probe/merge-convergence
   // paths become reachable (64-bit rapidhash collisions cannot be constructed
