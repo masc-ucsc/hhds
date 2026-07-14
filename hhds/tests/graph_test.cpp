@@ -636,6 +636,92 @@ void test_forward_hier_loop_break_both_descends_once() {
   assert(collect_gid_nids(top->forward_hier(/*loop_break_first=*/true, /*loop_break_last=*/true)) == expected);
 }
 
+void test_forward_hier_globally_topological_across_stateful_sub() {
+  // Regression: forward_hier must be a flat-module TOPOLOGICAL order — a driver
+  // precedes its consumer even ACROSS a module boundary. The old per-body DFS
+  // emitted a stateful (loop_break) submodule's whole subtree at the
+  // loop_break_first slot, so the submodule's INPUT-side combinational logic came
+  // out BEFORE the parent node that drives that input. Loop breaks belong at the
+  // LEAF flop/mem, not the submodule instance.
+  hhds::GraphLibrary lib;
+
+  // reg_mod: din -> cs (comb) -> dout(loop_break). The loop_break OUTPUT makes an
+  // instance of reg_mod a loop_break node at its parent; `cs` reads the module
+  // input, so once flattened it depends on whatever drives the instance's `din`.
+  auto reg_gio = lib.create_io("reg_mod_f");
+  reg_gio->add_input("din", 0);
+  reg_gio->add_output("dout", 0, /*loop_break=*/true);
+  auto reg = reg_gio->create_graph();
+  auto cs  = reg->create_node();
+  cs.create_sink_pin().connect_driver(reg->get_input_pin("din"));  // cs reads din
+  cs.create_driver_pin().connect_sink(reg->get_output_pin("dout"));
+
+  // top: top_in -> g (comb) -> S.din ; S is the stateful submodule. Create S
+  // BEFORE g so the DFS reaches the loop_break instance first (both are Pass-1
+  // sources, tie-broken by storage order) — that is exactly the case the old
+  // walk mis-ordered: it drained S's subtree (cs) before emitting g.
+  auto top_gio = lib.create_io("top_f");
+  top_gio->add_input("top_in", 0);
+  auto top = top_gio->create_graph();
+  auto s   = top->create_node();
+  s.set_subnode(reg_gio);
+  assert(s.is_loop_break() && "a submodule with internal state is loop_break at the parent");
+  auto g = top->create_node();
+  g.create_sink_pin().connect_driver(top->get_input_pin("top_in"));
+  s.create_sink_pin("din").connect_driver(g.create_driver_pin());  // g drives S.din
+
+  const auto order = collect_gid_nids(top->forward_hier());
+  auto       pos   = [&](hhds::Gid gid, hhds::Nid nid) -> size_t {
+    for (size_t i = 0; i < order.size(); ++i) {
+      if (order[i].first == gid && node_of(order[i].second) == node_of(nid)) {
+        return i;
+      }
+    }
+    assert(false && "node not found in forward_hier walk");
+    return 0;
+  };
+  // g (drives S.din) must precede cs (reads S.din), though cs lives inside the
+  // loop_break submodule. The buggy DFS yielded [S, cs, g] (cs before g).
+  assert(pos(top->get_gid(), g.get_debug_nid()) < pos(reg->get_gid(), cs.get_debug_nid())
+         && "forward_hier: cross-boundary driver must precede its consumer");
+}
+
+void test_backward_hier_globally_topological_across_stateful_sub() {
+  // Symmetric regression for backward_hier: a flat-module REVERSE topological
+  // order, so a CONSUMER precedes its driver even across a module boundary. The
+  // old DFS emitted a stateful submodule's OUTPUT-side logic before the parent
+  // node that consumes the submodule output.
+  hhds::GraphLibrary lib;
+
+  auto reg_gio = lib.create_io("reg_mod_b");
+  reg_gio->add_output("dout", 0, /*loop_break=*/true);
+  auto reg = reg_gio->create_graph();
+  auto cs  = reg->create_node();
+  cs.create_driver_pin().connect_sink(reg->get_output_pin("dout"));  // cs drives dout
+
+  auto top_gio = lib.create_io("top_b");
+  auto top     = top_gio->create_graph();
+  auto s       = top->create_node();
+  s.set_subnode(reg_gio);
+  assert(s.is_loop_break());
+  auto g = top->create_node();
+  g.create_sink_pin().connect_driver(s.create_driver_pin("dout"));  // g reads S.dout
+
+  const auto order = collect_gid_nids(top->backward_hier());
+  auto       pos   = [&](hhds::Gid gid, hhds::Nid nid) -> size_t {
+    for (size_t i = 0; i < order.size(); ++i) {
+      if (order[i].first == gid && node_of(order[i].second) == node_of(nid)) {
+        return i;
+      }
+    }
+    assert(false && "node not found in backward_hier walk");
+    return 0;
+  };
+  // g (reads S.dout) must precede cs (drives S.dout inside the submodule).
+  assert(pos(top->get_gid(), g.get_debug_nid()) < pos(reg->get_gid(), cs.get_debug_nid())
+         && "backward_hier: cross-boundary consumer must precede its driver");
+}
+
 void test_forward_out_of_order_uses_pending_list() {
   // Exercises Pass 2: a driver created AFTER its sink in storage order.
   // Pass 1 skips the sink (count > 0), emits the driver, decrements the
@@ -1827,201 +1913,6 @@ struct IoFixture {
   }
 };
 
-void test_forward_hier_visit_io_root_and_subnode() {
-  IoFixture                 f;
-  // visit_io brackets every body with its INPUT (enter) then OUTPUT (leave),
-  // the root body included. The instance node is emitted by the parent body
-  // BEFORE the walk descends into the leaf.
-  const std::vector<IoStep> expected{
-      { f.top->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // enter root
-      { f.top->get_gid(),   f.inst.get_debug_nid(), '.'}, // top body: the instance node
-      {f.leaf->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // descend into leaf
-      {f.leaf->get_gid(), f.leaf_n.get_debug_nid(), '.'}, // leaf body
-      {f.leaf->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // ascend out of leaf
-      { f.top->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // leave root
-  };
-  assert(collect_gid_nid_kind(f.top->forward_hier(/*loop_break_first=*/true,
-                                                  /*loop_break_last=*/false,
-                                                  /*opaque=*/nullptr,
-                                                  /*visit_io=*/true))
-         == expected);
-
-  // Default (visit_io off) is unchanged: only the two body nodes, no boundary IO.
-  const std::vector<IoStep> expected_default{
-      { f.top->get_gid(),   f.inst.get_debug_nid(), '.'},
-      {f.leaf->get_gid(), f.leaf_n.get_debug_nid(), '.'},
-  };
-  assert(collect_gid_nid_kind(f.top->forward_hier()) == expected_default);
-
-  // The emitted boundary handles resolve port names like any hier handle — the
-  // motivating use case. A body input is a driver pin inside the body; a body
-  // output is a sink pin.
-  bool saw_leaf_input = false, saw_leaf_output = false;
-  for (auto n : f.top->forward_hier(true, false, nullptr, /*visit_io=*/true)) {
-    if (n.get_current_gid() != f.leaf->get_gid()) {
-      continue;
-    }
-    if (n.is_input_node()) {
-      const auto pins = n.out_pins();
-      assert(pins.size() == 1 && pins[0].get_pin_name() == "a");
-      saw_leaf_input = true;
-    } else if (n.is_output_node()) {
-      const auto pins = n.inp_pins();
-      assert(pins.size() == 1 && pins[0].get_pin_name() == "z");
-      saw_leaf_output = true;
-    }
-  }
-  assert(saw_leaf_input && saw_leaf_output);
-}
-
-void test_backward_hier_visit_io_mirror() {
-  IoFixture                 f;
-  // Backward mirrors forward: a body is entered on its OUTPUT (sink) boundary
-  // and left on its INPUT.
-  const std::vector<IoStep> expected{
-      { f.top->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // enter root (sink side)
-      { f.top->get_gid(),   f.inst.get_debug_nid(), '.'},
-      {f.leaf->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // descend into leaf
-      {f.leaf->get_gid(), f.leaf_n.get_debug_nid(), '.'},
-      {f.leaf->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // ascend out of leaf
-      { f.top->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // leave root
-  };
-  assert(collect_gid_nid_kind(f.top->backward_hier(/*loop_break_first=*/true,
-                                                   /*loop_break_last=*/false,
-                                                   /*visit_io=*/true))
-         == expected);
-
-  // Boundary handles resolve port names in the backward direction too: a body is
-  // entered on its OUTPUT (sink pin "z") and left on its INPUT (driver pin "a").
-  bool saw_leaf_output = false, saw_leaf_input = false;
-  for (auto n : f.top->backward_hier(true, false, /*visit_io=*/true)) {
-    if (n.get_current_gid() != f.leaf->get_gid()) {
-      continue;
-    }
-    if (n.is_output_node()) {
-      const auto pins = n.inp_pins();
-      assert(pins.size() == 1 && pins[0].get_pin_name() == "z");
-      saw_leaf_output = true;
-    } else if (n.is_input_node()) {
-      const auto pins = n.out_pins();
-      assert(pins.size() == 1 && pins[0].get_pin_name() == "a");
-      saw_leaf_input = true;
-    }
-  }
-  assert(saw_leaf_output && saw_leaf_input);
-}
-
-void test_backward_hier_visit_io_shared_body_per_instance() {
-  // Backward mirror of the forward shared-body test: each instance of the shared
-  // leaf gets its own OUTPUT(enter)/INPUT(leave) bracket with a distinct
-  // per-instance hier_pos (active_graphs_ released between siblings).
-  hhds::GraphLibrary lib;
-
-  auto leaf_io = lib.create_io("leaf");
-  auto leaf    = leaf_io->create_graph();
-  auto leaf_n  = leaf->create_node();
-
-  auto top_io = lib.create_io("top");
-  auto top    = top_io->create_graph();
-  auto inst1  = top->create_node();
-  auto inst2  = top->create_node();
-  inst1.set_subnode(leaf_io);
-  inst2.set_subnode(leaf_io);
-
-  // Backward emits sinks in reverse storage order: inst2 before inst1.
-  const std::vector<IoStep> expected{
-      { top->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // enter top
-      { top->get_gid(),    inst2.get_debug_nid(), '.'},
-      {leaf->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // enter leaf (inst2)
-      {leaf->get_gid(),   leaf_n.get_debug_nid(), '.'},
-      {leaf->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // leave leaf (inst2)
-      { top->get_gid(),    inst1.get_debug_nid(), '.'},
-      {leaf->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // enter leaf (inst1)
-      {leaf->get_gid(),   leaf_n.get_debug_nid(), '.'},
-      {leaf->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // leave leaf (inst1)
-      { top->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // leave top
-  };
-  assert(collect_gid_nid_kind(top->backward_hier(true, false, /*visit_io=*/true)) == expected);
-
-  hhds::Tree_pos first_leaf_output_pos = hhds::INVALID;
-  bool           saw_two               = false;
-  for (auto n : top->backward_hier(true, false, /*visit_io=*/true)) {
-    if (n.get_current_gid() == leaf->get_gid() && n.is_output_node()) {
-      if (first_leaf_output_pos == hhds::INVALID) {
-        first_leaf_output_pos = n.get_hier_pos();
-      } else {
-        assert(n.get_hier_pos() != first_leaf_output_pos);
-        saw_two = true;
-      }
-    }
-  }
-  assert(saw_two);
-}
-
-void test_backward_hier_visit_io_loop_break_descends_once() {
-  // Backward mirror of the forward loop_break test: a loop_break instance emitted
-  // both first and last descends — and so brackets its child body — only once, on
-  // the first emission. Guards the separate BackwardHierIterator skip_sub path
-  // against the new Enter/Leave phases perturbing replay detection.
-  hhds::GraphLibrary lib;
-
-  auto leaf_io = lib.create_io("leaf");
-  leaf_io->add_output("Q", 0, /*loop_break=*/true);
-  auto leaf   = leaf_io->create_graph();
-  auto leaf_n = leaf->create_node();
-
-  auto top_io    = lib.create_io("top");
-  auto top       = top_io->create_graph();
-  auto flop_inst = top->create_node();
-  flop_inst.set_subnode(leaf_io);
-  assert(flop_inst.is_loop_break());
-
-  const std::vector<IoStep> expected{
-      { top->get_gid(),  hhds::Graph::OUTPUT_NODE, 'O'}, // enter top (sink side)
-      { top->get_gid(), flop_inst.get_debug_nid(), '.'}, // loop_break, first emission (sink)
-      {leaf->get_gid(),  hhds::Graph::OUTPUT_NODE, 'O'}, // descend (first emission only)
-      {leaf->get_gid(),    leaf_n.get_debug_nid(), '.'},
-      {leaf->get_gid(),   hhds::Graph::INPUT_NODE, 'I'},
-      { top->get_gid(), flop_inst.get_debug_nid(), '.'}, // LoopLast replay: no descent
-      { top->get_gid(),   hhds::Graph::INPUT_NODE, 'I'}, // leave top
-  };
-  assert(collect_gid_nid_kind(top->backward_hier(/*loop_break_first=*/true,
-                                                 /*loop_break_last=*/true,
-                                                 /*visit_io=*/true))
-         == expected);
-}
-
-void test_backward_hier_visit_io_nested_and_empty_body() {
-  // Backward mirror of the nested/empty-body forward test: every level brackets
-  // (OUTPUT enter / INPUT leave), and the deepest empty leaf still brackets.
-  hhds::GraphLibrary lib;
-
-  auto leaf_io = lib.create_io("leaf");  // empty body
-  auto leaf    = leaf_io->create_graph();
-
-  auto mid_io   = lib.create_io("mid");
-  auto mid      = mid_io->create_graph();
-  auto mid_inst = mid->create_node();
-  mid_inst.set_subnode(leaf_io);
-
-  auto top_io   = lib.create_io("top");
-  auto top      = top_io->create_graph();
-  auto top_inst = top->create_node();
-  top_inst.set_subnode(mid_io);
-
-  const std::vector<IoStep> expected{
-      { top->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // enter top
-      { top->get_gid(), top_inst.get_debug_nid(), '.'},
-      { mid->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // enter mid
-      { mid->get_gid(), mid_inst.get_debug_nid(), '.'},
-      {leaf->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // enter (empty) leaf
-      {leaf->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // leave leaf
-      { mid->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // leave mid
-      { top->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // leave top
-  };
-  assert(collect_gid_nid_kind(top->backward_hier(true, false, /*visit_io=*/true)) == expected);
-}
-
 void test_fast_hier_visit_io_storage_order() {
   IoFixture                 f;
   const std::vector<IoStep> expected{
@@ -2033,38 +1924,6 @@ void test_fast_hier_visit_io_storage_order() {
       { f.top->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'},
   };
   assert(collect_gid_nid_kind(f.top->fast_hier(/*visit_io=*/true)) == expected);
-}
-
-void test_forward_hier_visit_io_nested_and_empty_body() {
-  // 3-level nesting where the deepest leaf has an EMPTY body: visit_io must
-  // still bracket it with INPUT then OUTPUT (an empty body is still entered and
-  // left), and every level must nest correctly.
-  hhds::GraphLibrary lib;
-
-  auto leaf_io = lib.create_io("leaf");  // empty body
-  auto leaf    = leaf_io->create_graph();
-
-  auto mid_io   = lib.create_io("mid");
-  auto mid      = mid_io->create_graph();
-  auto mid_inst = mid->create_node();
-  mid_inst.set_subnode(leaf_io);
-
-  auto top_io   = lib.create_io("top");
-  auto top      = top_io->create_graph();
-  auto top_inst = top->create_node();
-  top_inst.set_subnode(mid_io);
-
-  const std::vector<IoStep> expected{
-      { top->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // enter top
-      { top->get_gid(), top_inst.get_debug_nid(), '.'}, // top body: mid instance
-      { mid->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // enter mid
-      { mid->get_gid(), mid_inst.get_debug_nid(), '.'}, // mid body: leaf instance
-      {leaf->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // enter (empty) leaf
-      {leaf->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // leave leaf
-      { mid->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // leave mid
-      { top->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // leave top
-  };
-  assert(collect_gid_nid_kind(top->forward_hier(true, false, nullptr, /*visit_io=*/true)) == expected);
 }
 
 void test_hier_visit_io_flat_top_only() {
@@ -2079,114 +1938,7 @@ void test_hier_visit_io_flat_top_only() {
       {top->get_gid(),       n1.get_debug_nid(), '.'},
       {top->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'},
   };
-  assert(collect_gid_nid_kind(top->forward_hier(true, false, nullptr, true)) == expected);
   assert(collect_gid_nid_kind(top->fast_hier(true)) == expected);
-}
-
-void test_forward_hier_visit_io_shared_body_per_instance() {
-  // Two instances of the SAME leaf body: visit_io must bracket EACH instance
-  // with its own INPUT/OUTPUT (the active_graphs_ cycle guard must be released
-  // between siblings), and the two boundary handles must carry distinct
-  // per-instance hier_pos.
-  hhds::GraphLibrary lib;
-
-  auto leaf_io = lib.create_io("leaf");
-  auto leaf    = leaf_io->create_graph();
-  auto leaf_n  = leaf->create_node();
-
-  auto top_io = lib.create_io("top");
-  auto top    = top_io->create_graph();
-  auto inst1  = top->create_node();
-  auto inst2  = top->create_node();
-  inst1.set_subnode(leaf_io);
-  inst2.set_subnode(leaf_io);
-
-  const std::vector<IoStep> expected{
-      { top->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // enter top
-      { top->get_gid(),    inst1.get_debug_nid(), '.'},
-      {leaf->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // enter leaf (inst1)
-      {leaf->get_gid(),   leaf_n.get_debug_nid(), '.'},
-      {leaf->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // leave leaf (inst1)
-      { top->get_gid(),    inst2.get_debug_nid(), '.'},
-      {leaf->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // enter leaf (inst2)
-      {leaf->get_gid(),   leaf_n.get_debug_nid(), '.'},
-      {leaf->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // leave leaf (inst2)
-      { top->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // leave top
-  };
-  assert(collect_gid_nid_kind(top->forward_hier(true, false, nullptr, /*visit_io=*/true)) == expected);
-
-  // The two leaf INPUT boundary handles are distinct instances (distinct hier_pos).
-  hhds::Tree_pos first_leaf_input_pos = hhds::INVALID;
-  bool           saw_two              = false;
-  for (auto n : top->forward_hier(true, false, nullptr, /*visit_io=*/true)) {
-    if (n.get_current_gid() == leaf->get_gid() && n.is_input_node()) {
-      if (first_leaf_input_pos == hhds::INVALID) {
-        first_leaf_input_pos = n.get_hier_pos();
-      } else {
-        assert(n.get_hier_pos() != first_leaf_input_pos);
-        saw_two = true;
-      }
-    }
-  }
-  assert(saw_two);
-}
-
-void test_forward_hier_visit_io_opaque_no_boundary() {
-  // An opaque subnode is yielded as a leaf and NOT descended into, so it
-  // contributes no boundary IO even under visit_io.
-  hhds::GraphLibrary lib;
-
-  auto leaf_io = lib.create_io("leaf");
-  auto leaf    = leaf_io->create_graph();
-  (void)leaf->create_node();
-
-  auto top_io = lib.create_io("top");
-  auto top    = top_io->create_graph();
-  auto inst   = top->create_node();
-  inst.set_subnode(leaf_io);
-
-  ankerl::unordered_dense::set<hhds::Gid> opaque;
-  opaque.insert(leaf->get_gid());
-
-  const std::vector<IoStep> expected{
-      {top->get_gid(),  hhds::Graph::INPUT_NODE, 'I'}, // enter top
-      {top->get_gid(),     inst.get_debug_nid(), '.'}, // opaque instance: leaf, not descended
-      {top->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'}, // leave top (no leaf IO)
-  };
-  assert(collect_gid_nid_kind(top->forward_hier(true, false, &opaque, /*visit_io=*/true)) == expected);
-}
-
-void test_forward_hier_visit_io_loop_break_descends_once() {
-  // A loop_break instance emitted both first and last (loop_break_first &&
-  // loop_break_last) descends — and so emits its boundary IO — only once, on the
-  // first emission, not the LoopLast replay.
-  hhds::GraphLibrary lib;
-
-  auto leaf_io = lib.create_io("leaf");
-  leaf_io->add_output("Q", 0, /*loop_break=*/true);  // makes the instance a loop_break
-  auto leaf   = leaf_io->create_graph();
-  auto leaf_n = leaf->create_node();
-
-  auto top_io    = lib.create_io("top");
-  auto top       = top_io->create_graph();
-  auto flop_inst = top->create_node();
-  flop_inst.set_subnode(leaf_io);
-  assert(flop_inst.is_loop_break());
-
-  const std::vector<IoStep> expected{
-      { top->get_gid(),   hhds::Graph::INPUT_NODE, 'I'}, // enter top
-      { top->get_gid(), flop_inst.get_debug_nid(), '.'}, // loop_break, first emission
-      {leaf->get_gid(),   hhds::Graph::INPUT_NODE, 'I'}, // descend (first emission only)
-      {leaf->get_gid(),    leaf_n.get_debug_nid(), '.'},
-      {leaf->get_gid(),  hhds::Graph::OUTPUT_NODE, 'O'},
-      { top->get_gid(), flop_inst.get_debug_nid(), '.'}, // LoopLast replay: no descent
-      { top->get_gid(),  hhds::Graph::OUTPUT_NODE, 'O'}, // leave top
-  };
-  assert(collect_gid_nid_kind(top->forward_hier(/*loop_break_first=*/true,
-                                                /*loop_break_last=*/true,
-                                                /*opaque=*/nullptr,
-                                                /*visit_io=*/true))
-         == expected);
 }
 
 }  // namespace
@@ -2207,6 +1959,8 @@ int main() {
   test_forward_loop_break_visit_flags();
   test_backward_loop_break_visit_flags();
   test_forward_hier_loop_break_both_descends_once();
+  test_forward_hier_globally_topological_across_stateful_sub();
+  test_backward_hier_globally_topological_across_stateful_sub();
   test_forward_out_of_order_uses_pending_list();
   test_backward_out_of_order_uses_pending_list();
   test_backward_cache_invalidates_after_set_type();
@@ -2251,17 +2005,8 @@ int main() {
   test_hier_edges_reused_cell_distinct_paths_EXPECTED();
   test_get_hier_name_EXPECTED();
   test_get_hier_name_resolved_leaves_EXPECTED();
-  test_forward_hier_visit_io_root_and_subnode();
-  test_backward_hier_visit_io_mirror();
   test_fast_hier_visit_io_storage_order();
-  test_forward_hier_visit_io_nested_and_empty_body();
   test_hier_visit_io_flat_top_only();
-  test_forward_hier_visit_io_shared_body_per_instance();
-  test_forward_hier_visit_io_opaque_no_boundary();
-  test_forward_hier_visit_io_loop_break_descends_once();
-  test_backward_hier_visit_io_shared_body_per_instance();
-  test_backward_hier_visit_io_loop_break_descends_once();
-  test_backward_hier_visit_io_nested_and_empty_body();
   std::cout << "graph_test passed\n";
   return 0;
 }

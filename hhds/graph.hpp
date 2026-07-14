@@ -757,15 +757,18 @@ public:
   // — they are yielded as leaf Sub nodes even though their body lives in the
   // library (a caller that wants to treat a proven/blackboxed instance as opaque,
   // e.g. pass/lec's --collapse). nullptr keeps the default "descend into every
-  // resolvable subnode". The pointed-to set must outlive the returned range. An
-  // opaque (non-descended) subnode contributes no boundary IO under visit_io.
+  // resolvable subnode". The pointed-to set must outlive the returned range.
+  //
+  // forward_hier/backward_hier ALWAYS yield a flat-module (reverse-)TOPOLOGICAL
+  // order — drivers precede consumers across module boundaries, loops broken at
+  // the leaf flops/mems. That is their whole contract; a caller that only needs
+  // to enumerate nodes (any order, cheaper, lazy) or wants the per-body IO
+  // boundary markers uses fast_hier instead.
   [[nodiscard]] ForwardHierRange   forward_hier(bool loop_break_first = true, bool loop_break_last = false,
-                                                const ankerl::unordered_dense::set<Gid>* opaque   = nullptr,
-                                                bool                                     visit_io = false) const noexcept;
+                                                const ankerl::unordered_dense::set<Gid>* opaque = nullptr) const noexcept;
   [[nodiscard]] BackwardClassRange backward_class(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
   [[nodiscard]] BackwardFlatRange  backward_flat(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
-  [[nodiscard]] BackwardHierRange  backward_hier(bool loop_break_first = true, bool loop_break_last = false,
-                                                 bool visit_io = false) const noexcept;
+  [[nodiscard]] BackwardHierRange  backward_hier(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
   // Hierarchy-only traversal: yields one Hier_instance per subnode in the
   // structure tree, recursing into each instance's target graph (cycle-
   // guarded by active_graphs). Walks tree_ alone — it never iterates
@@ -1462,7 +1465,7 @@ public:
 
   [[nodiscard]] Node_class operator*() const;
   ForwardHierIterator&     operator++();
-  [[nodiscard]] bool       operator==(const ForwardHierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool       operator==(const ForwardHierIterator& o) const noexcept { return at_end() && o.at_end(); }
   [[nodiscard]] bool       operator!=(const ForwardHierIterator& o) const noexcept { return !(*this == o); }
 
 private:
@@ -1470,22 +1473,29 @@ private:
     Graph*                                  graph;
     ForwardClassIterator                    it;
     Tree_pos                                hier_pos;
-    std::shared_ptr<const std::vector<Nid>> path;                            // root..this-frame instance chain
-    Hier_io_phase                           io_phase = Hier_io_phase::Body;  // visit_io: Enter/Body/Leave
+    std::shared_ptr<const std::vector<Nid>> path;  // root..this-frame instance chain
   };
 
   explicit ForwardHierIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false,
-                               const ankerl::unordered_dense::set<Gid>* opaque = nullptr, bool visit_io = false);
-  void advance();
-  void pop_frame();
+                               const ankerl::unordered_dense::set<Gid>* opaque = nullptr);
+  void       advance();
+  void       pop_frame();
+  Node_class descend_deref() const;  // per-body DFS deref, used only to collect the walk
+  void       descend_step();         // per-body DFS step,  used only to collect the walk
+  [[nodiscard]] bool at_end() const noexcept { return topo_pos_ >= topo_.size(); }
 
   Gid                                      root_gid_         = Gid_invalid;
   bool                                     loop_break_first_ = true;
   bool                                     loop_break_last_  = false;
-  bool                                     visit_io_         = false;
   std::vector<Frame>                       stack_;
   ankerl::unordered_dense::set<Gid>        active_graphs_;
   const ankerl::unordered_dense::set<Gid>* opaque_ = nullptr;  // subnodes to NOT descend into
+
+  // The walk is materialized once (via the DFS above) and reordered so drivers
+  // precede consumers ACROSS module boundaries (loop-breaks at the leaf
+  // flops/mems) — a genuine flat-module topological order, always.
+  std::vector<Node_class> topo_;
+  std::size_t             topo_pos_ = 0;
 
   friend class ForwardHierRange;
 };
@@ -1493,12 +1503,8 @@ private:
 class ForwardHierRange {
 public:
   explicit ForwardHierRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false,
-                            const ankerl::unordered_dense::set<Gid>* opaque = nullptr, bool visit_io = false) noexcept
-      : graph_(graph)
-      , loop_break_first_(loop_break_first)
-      , loop_break_last_(loop_break_last)
-      , opaque_(opaque)
-      , visit_io_(visit_io) {}
+                            const ankerl::unordered_dense::set<Gid>* opaque = nullptr) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last), opaque_(opaque) {}
   [[nodiscard]] ForwardHierIterator begin() const;
   [[nodiscard]] ForwardHierIterator end() const noexcept { return ForwardHierIterator{}; }
 
@@ -1507,7 +1513,6 @@ private:
   bool                                     loop_break_first_ = true;
   bool                                     loop_break_last_  = false;
   const ankerl::unordered_dense::set<Gid>* opaque_           = nullptr;
-  bool                                     visit_io_         = false;
 };
 
 // ── Ambient hierarchical-walk opacity ───────────────────────────────────────
@@ -1683,7 +1688,7 @@ public:
 
   [[nodiscard]] Node_class operator*() const;
   BackwardHierIterator&    operator++();
-  [[nodiscard]] bool       operator==(const BackwardHierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
+  [[nodiscard]] bool       operator==(const BackwardHierIterator& o) const noexcept { return at_end() && o.at_end(); }
   [[nodiscard]] bool       operator!=(const BackwardHierIterator& o) const noexcept { return !(*this == o); }
 
 private:
@@ -1691,30 +1696,34 @@ private:
     Graph*                                  graph;
     BackwardClassIterator                   it;
     Tree_pos                                hier_pos;
-    std::shared_ptr<const std::vector<Nid>> path;                            // root..this-frame instance chain
-    Hier_io_phase                           io_phase = Hier_io_phase::Body;  // visit_io: Enter/Body/Leave
+    std::shared_ptr<const std::vector<Nid>> path;  // root..this-frame instance chain
   };
 
-  explicit BackwardHierIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false,
-                                bool visit_io = false);
-  void advance();
-  void pop_frame();
+  explicit BackwardHierIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false);
+  void       advance();
+  void       pop_frame();
+  Node_class descend_deref() const;  // per-body DFS deref, used only to collect the walk
+  void       descend_step();         // per-body DFS step,  used only to collect the walk
+  [[nodiscard]] bool at_end() const noexcept { return topo_pos_ >= topo_.size(); }
 
   Gid                               root_gid_         = Gid_invalid;
   bool                              loop_break_first_ = true;
   bool                              loop_break_last_  = false;
-  bool                              visit_io_         = false;
   std::vector<Frame>                stack_;
   ankerl::unordered_dense::set<Gid> active_graphs_;
+
+  // Materialized once and reordered into a flat-module REVERSE topological order
+  // (consumers before drivers; loop-breaks at leaf flops/mems), always.
+  std::vector<Node_class> topo_;
+  std::size_t             topo_pos_ = 0;
 
   friend class BackwardHierRange;
 };
 
 class BackwardHierRange {
 public:
-  explicit BackwardHierRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false,
-                             bool visit_io = false) noexcept
-      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last), visit_io_(visit_io) {}
+  explicit BackwardHierRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {}
   [[nodiscard]] BackwardHierIterator begin() const;
   [[nodiscard]] BackwardHierIterator end() const noexcept { return BackwardHierIterator{}; }
 
@@ -1722,7 +1731,6 @@ private:
   Graph* graph_;
   bool   loop_break_first_ = true;
   bool   loop_break_last_  = false;
-  bool   visit_io_         = false;
 };
 
 // Structure-tree pre-order iterator. Walks tree_ (skipping ROOT) and, when

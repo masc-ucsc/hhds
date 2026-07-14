@@ -2055,10 +2055,10 @@ ForwardFlatRange Graph::forward_flat(bool loop_break_first, bool loop_break_last
   return ForwardFlatRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
 }
 
-ForwardHierRange Graph::forward_hier(bool loop_break_first, bool loop_break_last, const ankerl::unordered_dense::set<Gid>* opaque,
-                                     bool visit_io) const noexcept {
+ForwardHierRange Graph::forward_hier(bool loop_break_first, bool loop_break_last,
+                                     const ankerl::unordered_dense::set<Gid>* opaque) const noexcept {
   assert_accessible();
-  return ForwardHierRange(const_cast<Graph*>(this), loop_break_first, loop_break_last, opaque, visit_io);
+  return ForwardHierRange(const_cast<Graph*>(this), loop_break_first, loop_break_last, opaque);
 }
 
 const ankerl::unordered_dense::set<Gid>*& hier_opaque_ref() noexcept {
@@ -2071,9 +2071,9 @@ BackwardFlatRange Graph::backward_flat(bool loop_break_first, bool loop_break_la
   return BackwardFlatRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
 }
 
-BackwardHierRange Graph::backward_hier(bool loop_break_first, bool loop_break_last, bool visit_io) const noexcept {
+BackwardHierRange Graph::backward_hier(bool loop_break_first, bool loop_break_last) const noexcept {
   assert_accessible();
-  return BackwardHierRange(const_cast<Graph*>(this), loop_break_first, loop_break_last, visit_io);
+  return BackwardHierRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
 }
 
 // --- ForwardClassIterator ---
@@ -2397,11 +2397,130 @@ ForwardFlatIterator& ForwardFlatIterator::operator++() {
 
 ForwardFlatIterator ForwardFlatRange::begin() const { return ForwardFlatIterator(graph_, loop_break_first_, loop_break_last_); }
 
+// Reorder a hier walk's collected leaf nodes into a flat-module (reverse-)
+// topological order. forward=true: drivers before consumers (like a single
+// forward_class); forward=false: consumers before drivers (backward_class).
+// Loops are broken at the LEAF loop_break nodes (flops/memories, wherever they
+// sit in the hierarchy) — so a stateful submodule no longer drags its whole
+// subtree to a single loop_break slot, and the din-cone of a deep flop is
+// ordered after its drivers. Dependencies use the hier-resolved edges
+// (inp_edges/out_edges), which honor the ambient Hier_opaque_scope, so the same
+// opaque set that shaped the walk also shapes the ordering graph.
+static std::vector<Node_class> hier_topo_reorder(std::vector<Node_class> raw, bool forward, bool loop_break_first,
+                                                 bool loop_break_last) {
+  // Hier identity key: the instance nid-path plus the node's own nid. NOT
+  // get_hier_name — that collapses to the subnode's TYPE name for unnamed
+  // instances, so two instances of the same module would collide; the nid-path
+  // distinguishes them and is identical between a DFS-collected node and the
+  // same node reached as a resolved edge endpoint. (root_gid is constant across
+  // one walk, so it is omitted.)
+  const auto key_of = [](const Node_class& nd) {
+    std::string k;
+    if (const auto& path = nd.get_hier_path()) {
+      for (const auto pnid : *path) {
+        k += std::to_string(static_cast<uint64_t>(pnid));
+        k += '.';
+      }
+    }
+    k += '#';
+    k += std::to_string(static_cast<uint64_t>(nd.get_debug_nid()));
+    return k;
+  };
+
+  // Dedup by hier identity, building the key->index map in the same pass. The
+  // collected DFS already contains any loop_break LoopLast replays (a cut node
+  // twice); keep the first occurrence and re-apply loop_break_last at the end so
+  // the emitted multiset matches the flat class iterator.
+  ankerl::unordered_dense::map<std::string, uint32_t> key2idx;
+  key2idx.reserve(raw.size());
+  std::vector<Node_class> nodes;
+  nodes.reserve(raw.size());
+  for (auto& nd : raw) {
+    if (key2idx.emplace(key_of(nd), static_cast<uint32_t>(nodes.size())).second) {
+      nodes.push_back(std::move(nd));
+    }
+  }
+  const size_t n = nodes.size();
+  if (n == 0) {
+    return nodes;
+  }
+
+  std::vector<uint32_t>              indeg(n, 0);
+  std::vector<std::vector<uint32_t>> succ(n);
+  for (uint32_t i = 0; i < static_cast<uint32_t>(n); ++i) {
+    if (nodes[i].is_loop_break()) {
+      continue;  // cut point: no ordering edges lead INTO it (it is a source)
+    }
+    const auto add_dep = [&](const std::string& dep_key) {
+      auto it = key2idx.find(dep_key);
+      if (it == key2idx.end() || it->second == i) {
+        return;  // a boundary (primary IO) or a self-edge — not an intra-set order
+      }
+      succ[it->second].push_back(i);
+      ++indeg[i];
+    };
+    if (forward) {
+      for (const auto& e : nodes[i].inp_edges()) {
+        add_dep(key_of(e.driver.get_master_node()));
+      }
+    } else {
+      for (const auto& e : nodes[i].out_edges()) {
+        add_dep(key_of(e.sink.get_master_node()));
+      }
+    }
+  }
+
+  std::vector<Node_class> out;
+  out.reserve(n);
+  std::vector<char> emitted(n, 0);
+  // STABLE Kahn: a min-heap keyed by the original (DFS-collected) index, so an
+  // input that is already topological is reproduced verbatim and only nodes that
+  // genuinely violate the order (a driver emitted after its consumer across a
+  // module boundary) are moved. Keeps the per-body grouping the class iterators
+  // produce while guaranteeing drivers precede consumers.
+  std::priority_queue<uint32_t, std::vector<uint32_t>, std::greater<>> ready;
+  for (uint32_t i = 0; i < static_cast<uint32_t>(n); ++i) {
+    if (indeg[i] == 0 && (loop_break_first || !nodes[i].is_loop_break())) {
+      ready.push(i);  // sources: primary-IO-fed nodes and (loop_break_first) the cut nodes
+    }
+  }
+  while (!ready.empty()) {
+    const uint32_t i = ready.top();
+    ready.pop();
+    if (emitted[i]) {
+      continue;
+    }
+    emitted[i] = 1;
+    out.push_back(nodes[i]);
+    for (const uint32_t s : succ[i]) {
+      if (indeg[s] > 0 && --indeg[s] == 0) {
+        ready.push(s);
+      }
+    }
+  }
+  // Residual — cycle-tails (should not occur once loops are flop-broken) and, when
+  // !loop_break_first, the deferred cut nodes and their cones. Emit them in the
+  // collected (DFS) order so the result is deterministic.
+  for (uint32_t i = 0; i < static_cast<uint32_t>(n); ++i) {
+    if (!emitted[i]) {
+      out.push_back(nodes[i]);
+    }
+  }
+  if (loop_break_last) {  // class-iterator parity: replay the cut nodes at the tail
+    for (uint32_t i = 0; i < static_cast<uint32_t>(n); ++i) {
+      if (nodes[i].is_loop_break()) {
+        out.push_back(nodes[i]);
+      }
+    }
+  }
+  return out;
+}
+
 // --- ForwardHierIterator ---
 
 ForwardHierIterator::ForwardHierIterator(Graph* root_graph, bool loop_break_first, bool loop_break_last,
-                                         const ankerl::unordered_dense::set<Gid>* opaque, bool visit_io)
-    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last), visit_io_(visit_io), opaque_(opaque) {
+                                         const ankerl::unordered_dense::set<Gid>* opaque)
+    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last), opaque_(opaque) {
   if (root_graph == nullptr) {
     return;
   }
@@ -2410,14 +2529,22 @@ ForwardHierIterator::ForwardHierIterator(Graph* root_graph, bool loop_break_firs
   if (root_gid_ != Gid_invalid) {
     active_graphs_.insert(root_gid_);
   }
-  // Under visit_io the frame opens in Enter so the body's INPUT_NODE (its
-  // topological source boundary) is emitted before its nodes.
   stack_.push_back(Frame{root_graph,
                          ForwardClassIterator(root_graph, loop_break_first_, loop_break_last_),
                          static_cast<Tree_pos>(ROOT),
-                         std::make_shared<std::vector<Nid>>(),
-                         visit_io_ ? Hier_io_phase::Enter : Hier_io_phase::Body});
+                         std::make_shared<std::vector<Nid>>()});
   advance();
+
+  // Flat-module TOPOLOGICAL order: drain the per-body DFS once, then reorder so
+  // drivers precede consumers across module boundaries (loop-breaks at the leaf
+  // flops/mems). This is forward_hier's whole contract — always on.
+  std::vector<Node_class> dfs;
+  while (!stack_.empty()) {
+    dfs.push_back(descend_deref());
+    descend_step();
+  }
+  topo_     = hier_topo_reorder(std::move(dfs), /*forward=*/true, loop_break_first_, loop_break_last_);
+  topo_pos_ = 0;
 }
 
 void ForwardHierIterator::pop_frame() {
@@ -2431,15 +2558,7 @@ void ForwardHierIterator::pop_frame() {
 void ForwardHierIterator::advance() {
   while (!stack_.empty()) {
     auto& frame = stack_.back();
-    // Enter/Leave are already positioned on a boundary IO node (visit_io only).
-    if (frame.io_phase == Hier_io_phase::Enter || frame.io_phase == Hier_io_phase::Leave) {
-      return;
-    }
     if (frame.it == ForwardClassIterator{}) {
-      if (visit_io_) {  // body drained -> emit this frame's OUTPUT_NODE, then pop
-        frame.io_phase = Hier_io_phase::Leave;
-        return;
-      }
       pop_frame();
       continue;
     }
@@ -2447,31 +2566,20 @@ void ForwardHierIterator::advance() {
   }
 }
 
-Node_class ForwardHierIterator::operator*() const {
-  const auto& frame = stack_.back();
-  Nid         raw_nid;
-  if (frame.io_phase == Hier_io_phase::Enter) {
-    raw_nid = Graph::INPUT_NODE;
-  } else if (frame.io_phase == Hier_io_phase::Leave) {
-    raw_nid = Graph::OUTPUT_NODE;
-  } else {
-    raw_nid = (*frame.it).get_debug_nid();
-  }
-  return Node_class(frame.graph, root_gid_, frame.hier_pos, raw_nid, frame.path);
-}
+Node_class ForwardHierIterator::operator*() const { return topo_[topo_pos_]; }
 
 ForwardHierIterator& ForwardHierIterator::operator++() {
-  auto& frame = stack_.back();
-  if (frame.io_phase == Hier_io_phase::Enter) {  // INPUT emitted -> start the body
-    frame.io_phase = Hier_io_phase::Body;
-    advance();
-    return *this;
-  }
-  if (frame.io_phase == Hier_io_phase::Leave) {  // OUTPUT emitted -> this body is done
-    pop_frame();
-    advance();
-    return *this;
-  }
+  ++topo_pos_;
+  return *this;
+}
+
+Node_class ForwardHierIterator::descend_deref() const {
+  const auto& frame = stack_.back();
+  return Node_class(frame.graph, root_gid_, frame.hier_pos, (*frame.it).get_debug_nid(), frame.path);
+}
+
+void ForwardHierIterator::descend_step() {
+  auto&       frame    = stack_.back();
   const Nid   cur_nid  = (*frame.it).get_debug_nid();
   const auto& entry    = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
   const auto* lib      = frame.graph->owner_lib_;
@@ -2493,19 +2601,16 @@ ForwardHierIterator& ForwardHierIterator::operator++() {
       auto           child_path = std::make_shared<std::vector<Nid>>(*frame.path);
       child_path->push_back(cur_nid & ~static_cast<Nid>(3));
       active_graphs_.insert(sub);
-      stack_.push_back(Frame{child,
-                             ForwardClassIterator(child, loop_break_first_, loop_break_last_),
-                             child_pos,
-                             std::move(child_path),
-                             visit_io_ ? Hier_io_phase::Enter : Hier_io_phase::Body});
+      stack_.push_back(Frame{child, ForwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos,
+                             std::move(child_path)});
     }
   }
   advance();
-  return *this;
+  return;
 }
 
 ForwardHierIterator ForwardHierRange::begin() const {
-  return ForwardHierIterator(graph_, loop_break_first_, loop_break_last_, opaque_, visit_io_);
+  return ForwardHierIterator(graph_, loop_break_first_, loop_break_last_, opaque_);
 }
 
 // --- BackwardClassIterator ---
@@ -2753,8 +2858,8 @@ BackwardFlatIterator BackwardFlatRange::begin() const { return BackwardFlatItera
 
 // --- BackwardHierIterator ---
 
-BackwardHierIterator::BackwardHierIterator(Graph* root_graph, bool loop_break_first, bool loop_break_last, bool visit_io)
-    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last), visit_io_(visit_io) {
+BackwardHierIterator::BackwardHierIterator(Graph* root_graph, bool loop_break_first, bool loop_break_last)
+    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {
   if (root_graph == nullptr) {
     return;
   }
@@ -2763,15 +2868,21 @@ BackwardHierIterator::BackwardHierIterator(Graph* root_graph, bool loop_break_fi
   if (root_gid_ != Gid_invalid) {
     active_graphs_.insert(root_gid_);
   }
-  // Backward mirrors forward: a body's OUTPUT_NODE is its topological sink
-  // boundary, so under visit_io the frame opens in Enter on OUTPUT and leaves
-  // on INPUT.
   stack_.push_back(Frame{root_graph,
                          BackwardClassIterator(root_graph, loop_break_first_, loop_break_last_),
                          static_cast<Tree_pos>(ROOT),
-                         std::make_shared<std::vector<Nid>>(),
-                         visit_io_ ? Hier_io_phase::Enter : Hier_io_phase::Body});
+                         std::make_shared<std::vector<Nid>>()});
   advance();
+
+  // Flat-module REVERSE topological order (mirrors forward): drain the per-body
+  // DFS once, then reorder so consumers precede drivers across module boundaries.
+  std::vector<Node_class> dfs;
+  while (!stack_.empty()) {
+    dfs.push_back(descend_deref());
+    descend_step();
+  }
+  topo_     = hier_topo_reorder(std::move(dfs), /*forward=*/false, loop_break_first_, loop_break_last_);
+  topo_pos_ = 0;
 }
 
 void BackwardHierIterator::pop_frame() {
@@ -2785,15 +2896,7 @@ void BackwardHierIterator::pop_frame() {
 void BackwardHierIterator::advance() {
   while (!stack_.empty()) {
     auto& frame = stack_.back();
-    // Enter/Leave are already positioned on a boundary IO node (visit_io only).
-    if (frame.io_phase == Hier_io_phase::Enter || frame.io_phase == Hier_io_phase::Leave) {
-      return;
-    }
     if (frame.it == BackwardClassIterator{}) {
-      if (visit_io_) {  // body drained -> emit this frame's INPUT_NODE, then pop
-        frame.io_phase = Hier_io_phase::Leave;
-        return;
-      }
       pop_frame();
       continue;
     }
@@ -2801,31 +2904,20 @@ void BackwardHierIterator::advance() {
   }
 }
 
-Node_class BackwardHierIterator::operator*() const {
-  const auto& frame = stack_.back();
-  Nid         raw_nid;
-  if (frame.io_phase == Hier_io_phase::Enter) {
-    raw_nid = Graph::OUTPUT_NODE;  // backward enters a body on its sink boundary
-  } else if (frame.io_phase == Hier_io_phase::Leave) {
-    raw_nid = Graph::INPUT_NODE;
-  } else {
-    raw_nid = (*frame.it).get_debug_nid();
-  }
-  return Node_class(frame.graph, root_gid_, frame.hier_pos, raw_nid, frame.path);
-}
+Node_class BackwardHierIterator::operator*() const { return topo_[topo_pos_]; }
 
 BackwardHierIterator& BackwardHierIterator::operator++() {
-  auto& frame = stack_.back();
-  if (frame.io_phase == Hier_io_phase::Enter) {  // OUTPUT emitted -> start the body
-    frame.io_phase = Hier_io_phase::Body;
-    advance();
-    return *this;
-  }
-  if (frame.io_phase == Hier_io_phase::Leave) {  // INPUT emitted -> this body is done
-    pop_frame();
-    advance();
-    return *this;
-  }
+  ++topo_pos_;
+  return *this;
+}
+
+Node_class BackwardHierIterator::descend_deref() const {
+  const auto& frame = stack_.back();
+  return Node_class(frame.graph, root_gid_, frame.hier_pos, (*frame.it).get_debug_nid(), frame.path);
+}
+
+void BackwardHierIterator::descend_step() {
+  auto&       frame    = stack_.back();
   const Nid   cur_nid  = (*frame.it).get_debug_nid();
   const auto& entry    = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
   const auto* lib      = frame.graph->owner_lib_;
@@ -2840,19 +2932,15 @@ BackwardHierIterator& BackwardHierIterator::operator++() {
       auto           child_path = std::make_shared<std::vector<Nid>>(*frame.path);
       child_path->push_back(cur_nid & ~static_cast<Nid>(3));
       active_graphs_.insert(sub);
-      stack_.push_back(Frame{child,
-                             BackwardClassIterator(child, loop_break_first_, loop_break_last_),
-                             child_pos,
-                             std::move(child_path),
-                             visit_io_ ? Hier_io_phase::Enter : Hier_io_phase::Body});
+      stack_.push_back(Frame{child, BackwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos,
+                             std::move(child_path)});
     }
   }
   advance();
-  return *this;
 }
 
 BackwardHierIterator BackwardHierRange::begin() const {
-  return BackwardHierIterator(graph_, loop_break_first_, loop_break_last_, visit_io_);
+  return BackwardHierIterator(graph_, loop_break_first_, loop_break_last_);
 }
 
 // --- Hier_instance members ---
