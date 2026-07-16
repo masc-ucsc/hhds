@@ -1842,7 +1842,9 @@ BackwardClassRange Graph::backward_class(bool loop_break_first, bool loop_break_
 
 FastFlatRange Graph::fast_flat() const noexcept { return FastFlatRange(const_cast<Graph*>(this)); }
 
-FastHierRange Graph::fast_hier(bool visit_io) const noexcept { return FastHierRange(const_cast<Graph*>(this), visit_io); }
+FastHierRange Graph::fast_hier(bool visit_io, const ankerl::unordered_dense::set<Gid>* opaque) const noexcept {
+  return FastHierRange(const_cast<Graph*>(this), visit_io, opaque);
+}
 
 // --- FastClassIterator ---
 
@@ -1940,7 +1942,8 @@ FastFlatIterator FastFlatRange::begin() const { return FastFlatIterator(graph_);
 
 // --- FastHierIterator ---
 
-FastHierIterator::FastHierIterator(Graph* root_graph, bool visit_io) : visit_io_(visit_io) {
+FastHierIterator::FastHierIterator(Graph* root_graph, bool visit_io, const ankerl::unordered_dense::set<Gid>* opaque)
+    : visit_io_(visit_io), opaque_(opaque) {
   if (root_graph == nullptr) {
     return;
   }
@@ -2023,7 +2026,15 @@ auto FastHierIterator::operator++() -> FastHierIterator& {
   if (entry.has_subnode() && frame.graph->owner_lib_ != nullptr) {
     const Gid   sub = entry.get_subnode();
     const auto* lib = frame.graph->owner_lib_;
-    if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
+    // `opaque_` (explicit) or the ambient Hier_opaque_scope subnodes are NOT
+    // descended into (yielded as leaf Sub nodes) — the SAME rule as
+    // ForwardHierIterator and the cross-boundary edge resolver. All three must
+    // agree: if this walk descended into a sub the edge resolver black-boxes, a
+    // caller would cut state inside an instance whose boundary it models as free
+    // (pass/lec --collapse => false PROVEN). They contribute no boundary IO under
+    // visit_io (we never enter the body).
+    const bool is_opaque = (opaque_ != nullptr && opaque_->find(sub) != opaque_->end()) || hier_is_opaque(sub);
+    if (lib->has_graph(sub) && !is_opaque && active_graphs_.find(sub) == active_graphs_.end()) {
       Graph*         child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
       const Nid      subnode_nid = static_cast<Nid>(frame.node_idx) << 2;
       // Stable Tree_pos from the structure tree that set_subnode built.
@@ -2048,7 +2059,7 @@ auto FastHierIterator::operator++() -> FastHierIterator& {
   return *this;
 }
 
-FastHierIterator FastHierRange::begin() const { return FastHierIterator(graph_, visit_io_); }
+FastHierIterator FastHierRange::begin() const { return FastHierIterator(graph_, visit_io_, opaque_); }
 
 ForwardFlatRange Graph::forward_flat(bool loop_break_first, bool loop_break_last) const noexcept {
   assert_accessible();

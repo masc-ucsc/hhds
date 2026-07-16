@@ -1926,6 +1926,87 @@ void test_fast_hier_visit_io_storage_order() {
   assert(collect_gid_nid_kind(f.top->fast_hier(/*visit_io=*/true)) == expected);
 }
 
+// ── fast_hier opacity ───────────────────────────────────────────────────────
+// An opaque subnode is yielded as a LEAF Sub: the instance node itself is still
+// emitted, but its body is NOT descended into. fast_hier MUST agree with
+// forward_hier and the cross-boundary edge resolver here — if it descended into a
+// sub the resolver black-boxes, a caller that blackboxes an instance (pass/lec
+// --collapse) would still cut the state inside it while modelling its boundary as
+// free => false PROVEN.
+
+void test_fast_hier_opaque_explicit_not_descended() {
+  IoFixture                               f;
+  ankerl::unordered_dense::set<hhds::Gid> opaque{f.inst.get_subnode_gid()};
+
+  // Opaque: the Sub instance is still yielded, its body is not.
+  const std::vector<IoStep> expected{
+      {f.top->get_gid(), f.inst.get_debug_nid(), '.'},
+  };
+  assert(collect_gid_nid_kind(f.top->fast_hier(/*visit_io=*/false, &opaque)) == expected);
+
+  // Control: with no opacity the SAME walk descends into the leaf body.
+  const std::vector<IoStep> expected_open{
+      { f.top->get_gid(),   f.inst.get_debug_nid(), '.'},
+      {f.leaf->get_gid(), f.leaf_n.get_debug_nid(), '.'},
+  };
+  assert(collect_gid_nid_kind(f.top->fast_hier()) == expected_open);
+}
+
+void test_fast_hier_honors_ambient_opaque_scope() {
+  IoFixture                               f;
+  ankerl::unordered_dense::set<hhds::Gid> opaque{f.inst.get_subnode_gid()};
+  const std::vector<IoStep>               expected{
+      {f.top->get_gid(), f.inst.get_debug_nid(), '.'},
+  };
+  {
+    hhds::Hier_opaque_scope sc(&opaque);  // ambient, no explicit argument
+    assert(collect_gid_nid_kind(f.top->fast_hier()) == expected);
+  }
+  // Scope popped => descends again (the RAII really restores).
+  assert(collect_gid_nid_kind(f.top->fast_hier()).size() == 2);
+}
+
+void test_fast_hier_opaque_matches_forward_hier_node_set() {
+  // The contract fast_hier documents: ordering is the ONLY difference from
+  // forward_hier — the node SET is identical, opacity included.
+  IoFixture                                     f;
+  const ankerl::unordered_dense::set<hhds::Gid> opaque{f.inst.get_subnode_gid()};
+  const ankerl::unordered_dense::set<hhds::Gid>* cases[] = {nullptr, &opaque};
+  for (const auto* opq : cases) {
+    auto fast = collect_gid_nid_kind(f.top->fast_hier(false, opq));
+    auto fwd  = collect_gid_nid_kind(f.top->forward_hier(true, false, opq));
+    std::sort(fast.begin(), fast.end());
+    std::sort(fwd.begin(), fwd.end());
+    assert(fast == fwd);
+  }
+}
+
+void test_fast_hier_opaque_emits_no_boundary_io() {
+  // Documented: an opaque sub contributes no boundary IO under visit_io, because
+  // the body is never entered. Only the ROOT bracket remains.
+  IoFixture                               f;
+  ankerl::unordered_dense::set<hhds::Gid> opaque{f.inst.get_subnode_gid()};
+  const std::vector<IoStep>               expected{
+      {f.top->get_gid(),  hhds::Graph::INPUT_NODE, 'I'},
+      {f.top->get_gid(),   f.inst.get_debug_nid(), '.'},
+      {f.top->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'},
+  };
+  assert(collect_gid_nid_kind(f.top->fast_hier(/*visit_io=*/true, &opaque)) == expected);
+}
+
+void test_fast_hier_opaque_explicit_unions_with_ambient() {
+  // forward_hier's rule, mirrored: explicit OR ambient (never an override).
+  IoFixture                               f;
+  ankerl::unordered_dense::set<hhds::Gid> ambient{f.inst.get_subnode_gid()};
+  ankerl::unordered_dense::set<hhds::Gid> unrelated;  // explicit set that matches nothing
+  const std::vector<IoStep>               expected{
+      {f.top->get_gid(), f.inst.get_debug_nid(), '.'},
+  };
+  hhds::Hier_opaque_scope sc(&ambient);
+  // An explicit set that does NOT list the sub must not re-enable descent.
+  assert(collect_gid_nid_kind(f.top->fast_hier(false, &unrelated)) == expected);
+}
+
 void test_hier_visit_io_flat_top_only() {
   // A flat top (no subnodes) still emits its own root IO bracket around its body.
   hhds::GraphLibrary lib;
@@ -1998,6 +2079,12 @@ int main() {
   test_shared_source_map();
   // Cross-boundary hier edge resolution: drivers/sinks hop module boundaries
   // until a real leaf (or the root's own IO) is reached.
+  // fast_hier opacity: opaque subs are leaves, matching forward_hier + the resolver.
+  test_fast_hier_opaque_explicit_not_descended();
+  test_fast_hier_honors_ambient_opaque_scope();
+  test_fast_hier_opaque_matches_forward_hier_node_set();
+  test_fast_hier_opaque_emits_no_boundary_io();
+  test_fast_hier_opaque_explicit_unions_with_ambient();
   test_hier_edges_cross_one_boundary_EXPECTED();
   test_hier_edges_cross_up_then_down_EXPECTED();
   test_hier_edges_three_levels_EXPECTED();

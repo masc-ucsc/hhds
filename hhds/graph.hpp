@@ -752,18 +752,24 @@ public:
   // it (enter on OUTPUT, leave on INPUT). Detect these handles with
   // Node_class::is_input_node()/is_output_node(). Default false keeps the
   // historical "boundary IO never yielded" behaviour.
-  [[nodiscard]] FastHierRange      fast_hier(bool visit_io = false) const noexcept;
-  // `opaque` (optional): subnode Gids the hierarchical walk must NOT descend into
-  // — they are yielded as leaf Sub nodes even though their body lives in the
-  // library (a caller that wants to treat a proven/blackboxed instance as opaque,
-  // e.g. pass/lec's --collapse). nullptr keeps the default "descend into every
-  // resolvable subnode". The pointed-to set must outlive the returned range.
   //
+  // `opaque` (fast_hier and forward_hier): subnode Gids the hierarchical walk must
+  // NOT descend into — they are yielded as leaf Sub nodes even though their body
+  // lives in the library (a caller that wants to treat a proven/blackboxed instance
+  // as opaque, e.g. pass/lec's --collapse). nullptr keeps the default "descend into
+  // every resolvable subnode". The pointed-to set must outlive the returned range.
+  // BOTH iterators additionally honor the ambient RAII Hier_opaque_scope (see
+  // hier_opaque_ref below), and the explicit set is a UNION with it. Opaque subnodes
+  // contribute no boundary IO under visit_io (the body is never entered).
+  [[nodiscard]] FastHierRange      fast_hier(bool visit_io = false,
+                                             const ankerl::unordered_dense::set<Gid>* opaque = nullptr) const noexcept;
   // forward_hier/backward_hier ALWAYS yield a flat-module (reverse-)TOPOLOGICAL
   // order — drivers precede consumers across module boundaries, loops broken at
   // the leaf flops/mems. That is their whole contract; a caller that only needs
   // to enumerate nodes (any order, cheaper, lazy) or wants the per-body IO
-  // boundary markers uses fast_hier instead.
+  // boundary markers uses fast_hier instead. Ordering is the ONLY difference:
+  // fast_hier and forward_hier yield the same node SET (same opacity rules, same
+  // cycle guard) for the default loop_break_first=true, loop_break_last=false.
   [[nodiscard]] ForwardHierRange   forward_hier(bool loop_break_first = true, bool loop_break_last = false,
                                                 const ankerl::unordered_dense::set<Gid>* opaque = nullptr) const noexcept;
   [[nodiscard]] BackwardClassRange backward_class(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
@@ -1282,27 +1288,32 @@ private:
     Hier_io_phase                           io_phase = Hier_io_phase::Body;  // visit_io: Enter/Body/Leave
   };
 
-  explicit FastHierIterator(Graph* root_graph, bool visit_io = false);
+  explicit FastHierIterator(Graph* root_graph, bool visit_io = false,
+                            const ankerl::unordered_dense::set<Gid>* opaque = nullptr);
   void advance();
   void pop_frame();
 
-  Gid                               root_gid_ = Gid_invalid;
-  bool                              visit_io_ = false;
-  std::vector<Frame>                stack_;
-  ankerl::unordered_dense::set<Gid> active_graphs_;
+  Gid                                      root_gid_ = Gid_invalid;
+  bool                                     visit_io_ = false;
+  const ankerl::unordered_dense::set<Gid>* opaque_   = nullptr;  // subnodes to NOT descend into
+  std::vector<Frame>                       stack_;
+  ankerl::unordered_dense::set<Gid>        active_graphs_;
 
   friend class FastHierRange;
 };
 
 class FastHierRange {
 public:
-  explicit FastHierRange(Graph* graph, bool visit_io = false) noexcept : graph_(graph), visit_io_(visit_io) {}
+  explicit FastHierRange(Graph* graph, bool visit_io = false,
+                         const ankerl::unordered_dense::set<Gid>* opaque = nullptr) noexcept
+      : graph_(graph), visit_io_(visit_io), opaque_(opaque) {}
   [[nodiscard]] FastHierIterator begin() const;
   [[nodiscard]] FastHierIterator end() const noexcept { return FastHierIterator{}; }
 
 private:
-  Graph* graph_;
-  bool   visit_io_ = false;
+  Graph*                                   graph_;
+  bool                                     visit_io_ = false;
+  const ankerl::unordered_dense::set<Gid>* opaque_   = nullptr;
 };
 
 // Forward topological iterator for a single graph body. Emits sources first,
@@ -1516,11 +1527,11 @@ private:
 };
 
 // ── Ambient hierarchical-walk opacity ───────────────────────────────────────
-// Subnode Gids in the thread-local opacity set are treated as LEAVES by BOTH the
-// hierarchical iterators (forward_hier — not descended into) AND the cross-
-// boundary edge resolver (a read of such a subnode's output stops at the
-// instance boundary instead of threading down to the real internal driver). The
-// two must agree, or a consumer would read an un-encoded internal pin. Used by
+// Subnode Gids in the thread-local opacity set are treated as LEAVES by ALL the
+// hierarchical iterators (forward_hier AND fast_hier — not descended into) AND the
+// cross-boundary edge resolver (a read of such a subnode's output stops at the
+// instance boundary instead of threading down to the real internal driver). All
+// must agree, or a consumer would read an un-encoded internal pin. Used by
 // pass/lec --collapse to black-box a proven submodule that lives in the SAME
 // library as its parent (so it cannot simply be omitted from the library). Set
 // with the RAII Hier_opaque_scope; nullptr (default) = descend into everything.
