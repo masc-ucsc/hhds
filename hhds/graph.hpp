@@ -933,9 +933,11 @@ private:
   [[nodiscard]] absl::InlinedVector<Edge_class, 4> out_edges_hier(Node_class node);
   // Starting instance chain (root..node's body) for the hier resolvers.
   [[nodiscard]] bool                               hier_base_path(Node_class node, std::vector<HierInst>& base_path);
-  // get_hier_name building blocks. hier_local_name: a node's `name` attr, else
-  // the instantiated module name, else "n<id>". build_hier_name: join the
-  // instance chain's local names with the body node's local name.
+  // get_hier_name building blocks. hier_local_name (the LEAF): a node's `name`
+  // attr, else the instantiated module name, else "n<id>". build_hier_name: join
+  // the instance chain with the body node's local name -- but a path instance is
+  // TRANSPARENT when it has no `name` attr (contributes no component), so an
+  // anonymous re-partition wrapper does not perturb any leaf's hier name.
   [[nodiscard]] static std::string                 hier_local_name(Graph* g, Nid nid);
   [[nodiscard]] static std::string build_hier_name(Graph* graph, Gid root_gid, const std::shared_ptr<const std::vector<Nid>>& path,
                                                    Nid raw_nid);

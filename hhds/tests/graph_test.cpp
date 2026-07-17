@@ -1819,13 +1819,20 @@ void test_get_hier_name_EXPECTED() {
   // Pin (node-as-pin == the node, no port suffix); carries the same chain.
   assert(buf_h.create_driver_pin().get_hier_name() == "u_mi.u_li.u_buf");
 
-  // Fallback when no `name` attr is set: the instantiated module name, then "n<id>".
+  // Transparent path level: an UNNAMED path instance contributes NO component
+  // (not the module name, not "n<id>"), so a re-partition wrapper with anonymous
+  // instances never perturbs a deeper leaf's hier name.
   auto top2 = lib.create_io("top2")->create_graph();
   auto inst = top2->create_node();
-  inst.set_subnode(m_io);  // unnamed instance -> module name "M"
+  inst.set_subnode(m_io);  // unnamed instance of module "M": transparent
   const auto li2_h = find_hier_node(top2.get(), m->get_gid(), li.get_debug_nid());
-  // top2 -> M(u_li) -> L : inst unnamed (module "M"), li named "u_li"
-  assert(li2_h.get_hier_name() == "M.u_li");
+  // top2 -> (unnamed M) -> L : the unnamed level vanishes, li named "u_li"
+  assert(li2_h.get_hier_name() == "u_li");
+
+  // The LEAF keeps its fallback: an unnamed leaf instance still shows its module
+  // name (only PATH components are transparent, a leaf needs an identity).
+  const auto inst_leaf = find_hier_node(top2.get(), top2->get_gid(), inst.get_debug_nid());
+  assert(inst_leaf.get_hier_name() == "M");
 }
 
 // Resolved-leaf names must NOT leak the reserved-singleton ids: a root primary

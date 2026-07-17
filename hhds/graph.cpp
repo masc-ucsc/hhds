@@ -3618,8 +3618,21 @@ std::string Graph::build_hier_name(Graph* graph, Gid root_gid, const std::shared
     std::vector<HierInst> insts;
     if (hier_path_to_insts(root, *path, insts) != nullptr) {
       for (const auto& h : insts) {
-        out += hier_local_name(h.parent, h.inst_nid);
-        out += '.';
+        // Transparent levels: a path instance with NO `name` attr contributes no
+        // component -- not the module type name, not n<id>. So a hierarchy created
+        // by re-partitioning with ANONYMOUS wrapper instances leaves every leaf's
+        // hier name unchanged (foo.bar.x with an unnamed `bar` stays foo.x, never
+        // foo..x), which lec name-pairing, opentimer, and VCD scoping depend on. A
+        // NAMED instance contributes its name and the dot as before.
+        const Nid inst_base = h.inst_nid & ~static_cast<Nid>(3);
+        if (h.parent == nullptr || !h.parent->is_node_valid(inst_base)) {
+          continue;
+        }
+        const Node_class in(h.parent, inst_base);
+        if (in.attr(attrs::name).has()) {
+          out += std::string(in.attr(attrs::name).get());
+          out += '.';
+        }
       }
     }
   }
