@@ -4400,6 +4400,11 @@ void Graph::load_body(const std::string& dir_path) {
   overflow_src_dir_  = dir_path;
   overflow_deferred_ = (overflow_storage_.size() > 0);
 
+  rebuild_derived_after_body();
+  dirty_ = false;
+}
+
+void Graph::rebuild_derived_after_body() {
   // Rebuild structure tree: save/load only persists node_table (which holds
   // each subnode's target Gid in ledge0). Walk the live entries and
   // reconstruct tree_ + subnode_tree_pos_ so hier traversal works.
@@ -4465,7 +4470,21 @@ void Graph::load_body(const std::string& dir_path) {
   }
 
   invalidate_traversal_caches();
-  dirty_ = false;
+}
+
+void Graph::copy_body_from(const Graph& src) {
+  // src's edge-adjacency sets may still be lazily deferred on disk; force them in
+  // before the raw vector copy or spilled overflow edges would be silently lost.
+  src.ensure_overflow_loaded();
+  node_table         = src.node_table;
+  pin_table          = src.pin_table;
+  overflow_storage_  = src.overflow_storage_;
+  overflow_free_     = src.overflow_free_;
+  overflow_deferred_ = false;
+  overflow_src_dir_.clear();
+  clone_attr_stores_from(src);  // deep-copy every attr store (srcid/name/lut/pin_*)
+  rebuild_derived_after_body();
+  dirty_ = true;
 }
 
 // --------------------------------------------------------------------------
@@ -4853,6 +4872,66 @@ void GraphLibrary::load_merge(const std::string& db_path) {
       }
     }
   }
+}
+
+bool GraphLibrary::copy_from(const GraphLibrary& src, std::string_view module_name) {
+  // Resolve the source module and force its body materialized (lazy load) BEFORE
+  // taking our lock — src has its own independent mutex.
+  auto src_gio = src.find_io(module_name);
+  if (!src_gio) {
+    return false;
+  }
+  auto src_graph = src.get_graph(src_gio->get_gid());
+  if (!src_graph || src_graph->deleted_) {
+    return false;
+  }
+
+  std::unique_lock lock(registry_mu_);
+
+  // Replace-stale: drop any existing module of this name, then recreate it at the
+  // SAME name-hash gid (mirrors create_io's deleted-gid reuse) so a parent body's
+  // Sub reference keeps resolving across the swap.
+  if (auto existing = find_io_unlocked(module_name)) {
+    delete_graphio_unlocked(existing);
+  }
+  Gid dst_gid;
+  if (auto it = deleted_name_to_id_.find(std::string(module_name));
+      it != deleted_name_to_id_.end() && graph_ios_.find(it->second) == graph_ios_.end()) {
+    dst_gid = it->second;
+    deleted_name_to_id_.erase(it);
+  } else {
+    dst_gid = pick_gid_for_name_unlocked(module_name);
+  }
+  auto dst_gio = create_io_impl_unlocked(dst_gid, module_name);
+
+  // Copy the IO declarations (mirrors load_merge's new-entry decl copy at the
+  // name-new branch).
+  for (const auto& d : src_gio->input_pin_decls_) {
+    dst_gio->input_pin_decls_.push_back(d);
+    dst_gio->declared_io_pins_.emplace(dst_gio->input_pin_decls_.back().name,
+                                       GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Input, dst_gio->input_pin_decls_.size() - 1});
+  }
+  for (const auto& d : src_gio->output_pin_decls_) {
+    dst_gio->output_pin_decls_.push_back(d);
+    dst_gio->declared_io_pins_.emplace(dst_gio->output_pin_decls_.back().name,
+                                       GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Output, dst_gio->output_pin_decls_.size() - 1});
+  }
+
+  // Materialize a fresh body and deep-copy the source body in-memory (no disk).
+  auto dst_graph = create_graph_body_loaded_unlocked(dst_gio);
+  dst_graph->copy_body_from(*src_graph);
+
+  // Re-mint the srcids the copied body references into THIS library's source map
+  // (the single-module analogue of load_merge's bulk srcmap merge).
+  if (dst_graph->has_attr(attrs::srcid)) {
+    auto& ids = dst_graph->attr_store(attrs::srcid);
+    for (auto& [key, value] : ids) {
+      if (value != 0) {
+        value = dst_graph->source_locator().import_from(src_graph->source_locator(), value);
+      }
+    }
+  }
+  return true;
 }
 
 }  // namespace hhds

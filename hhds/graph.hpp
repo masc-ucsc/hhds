@@ -831,6 +831,16 @@ private:
   // dir_path is the graph-specific directory (e.g., "db/graph_1/").
   void              save_body(const std::string& dir_path) const;
   void              load_body(const std::string& dir_path);
+  // In-memory sibling of load_body: replace this body's contents with a deep copy
+  // of `src`'s (node/pin tables, overflow sets, every attr store), then rebuild
+  // the derived structures. No disk I/O; marks the body dirty. Used by
+  // GraphLibrary::copy_from for a single-module cross-library copy.
+  void              copy_body_from(const Graph& src);
+  // Rebuild the tree_ / subnode / name->Pid derived structures from node_table +
+  // pin_table + the GraphIO decls. Shared by load_body (after a disk read) and
+  // copy_body_from (after an in-memory table copy) so both paths produce identical
+  // derived state. Does NOT set dirty_ — each caller sets it.
+  void              rebuild_derived_after_body();
   void              delete_node(Nid nid);
   [[nodiscard]] Pid materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
                                                 ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq>& pins_by_name);
@@ -2213,6 +2223,34 @@ public:
   //     remapped and every Sub (subnode) reference in the loaded bodies is
   //     rewritten through the remap table.
   void load_merge(const std::string& db_path);
+
+  // Copy ONE named module (its IO decls + body + the srcids it references) from a
+  // live in-memory `src` library into this one, fully in-memory (no library.txt
+  // parse, no dst serialize/reload). REPLACE-stale: an existing module of the same
+  // name is dropped first, but its name-hash gid is preserved so a parent body's
+  // Sub reference keeps resolving across the swap. Returns false if `src` has no
+  // such module. The single-module, in-memory sibling of load_merge (which is
+  // whole-library, from disk, and keep-ours/fill-stub).
+  [[nodiscard]] bool copy_from(const GraphLibrary& src, std::string_view module_name);
+
+  // Replace an EXISTING module's body in place with a deep copy of `src` (no
+  // module delete/recreate, so an open writer handle and the name-hash gid both
+  // stay valid). Returns false if the module is absent from this library. Used by
+  // abc incremental reuse to fill a freshly-partitioned region shell from a
+  // cached mapped body without a node-by-node clone or a port stitch.
+  [[nodiscard]] bool replace_body_from(std::string_view module_name, const Graph& src) {
+    std::unique_lock lock(registry_mu_);
+    auto             gio = find_io_unlocked(module_name);
+    if (!gio) {
+      return false;
+    }
+    auto g = graph_at_unlocked(gio->get_gid());
+    if (!g || g->deleted_) {
+      return false;
+    }
+    g->copy_body_from(src);
+    return true;
+  }
 
 private:
   [[nodiscard]] std::shared_ptr<GraphIO> find_io_unlocked(Gid id) const {

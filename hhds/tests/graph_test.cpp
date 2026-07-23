@@ -1422,6 +1422,80 @@ void test_load_merge() {
   fs::remove_all(base);
 }
 
+// GraphLibrary::copy_from — single-module, in-memory cross-library copy. The
+// abc-incremental reuse primitive: `outlib.copy_from(cache, "mod")` drops in a
+// cached module by name, preserving the name-hash gid a wrapper's Sub references.
+void test_copy_from() {
+  auto count_nodes = [](hhds::GraphLibrary& lib, const char* name) -> size_t {
+    auto gio = lib.find_io(name);
+    if (!gio) {
+      return 0;
+    }
+    auto   g = lib.get_graph(gio->get_gid());
+    size_t c = 0;
+    for (auto n : g->fast_class()) {
+      (void)n;
+      ++c;
+    }
+    return c;
+  };
+
+  // Source library with a real module "mod": 2 inputs, 1 output, one internal node.
+  hhds::GraphLibrary a;
+  auto               mod_gio = a.create_io("mod");
+  mod_gio->add_input("x", 1);
+  mod_gio->add_input("w", 2);
+  mod_gio->add_output("y", 3);
+  const hhds::Gid a_gid = mod_gio->get_gid();
+  {
+    auto g      = mod_gio->create_graph();
+    auto n1     = g->create_node();
+    auto n1_in0 = n1.create_sink_pin(0);
+    auto n1_in1 = n1.create_sink_pin(1);
+    auto n1_out = n1.create_driver_pin(0);
+    n1_in0.connect_driver(g->get_input_pin("x"));
+    n1_in1.connect_driver(g->get_input_pin("w"));
+    n1_out.connect_sink(g->get_output_pin("y"));
+  }  // publish
+  const size_t src_nodes = count_nodes(a, "mod");
+  assert(src_nodes > 0);
+
+  // 1. Copy into an empty destination.
+  hhds::GraphLibrary b;
+  assert(b.copy_from(a, "mod") && "copy_from a present module returns true");
+  auto b_mod = b.find_io("mod");
+  assert(b_mod && "module present after copy_from");
+  assert(b_mod->get_gid() == a_gid && "name-hash gid preserved (a wrapper's Sub still resolves)");
+  assert(b.has_graph(b_mod->get_gid()));
+  assert(count_nodes(b, "mod") == src_nodes && "body structure deep-copied");
+  assert(b_mod->get_input_pin_decls().size() == 2 && b_mod->get_output_pin_decls().size() == 1);
+
+  // 2. Missing module -> false, no side effect.
+  assert(!b.copy_from(a, "nope") && "copy_from a missing module returns false");
+  assert(b.all_gids().size() == 1);
+
+  // 3. Replace-stale: a destination already holding a DIFFERENT "mod" is replaced,
+  //    and the gid is preserved (so parent Sub refs survive the swap).
+  hhds::GraphLibrary d;
+  auto               stale = d.create_io("mod");
+  stale->add_input("p", 0);
+  stale->add_output("q", 0);
+  {
+    auto g = stale->create_graph();
+    g->create_node();
+    g->create_node();
+    g->create_node();
+  }
+  const hhds::Gid d_gid = stale->get_gid();
+  assert(count_nodes(d, "mod") != src_nodes && "stale body differs from source");
+  assert(d.copy_from(a, "mod") && "replace returns true");
+  auto d_mod = d.find_io("mod");
+  assert(d_mod && d_mod->get_gid() == d_gid && "gid preserved on replace");
+  assert(count_nodes(d, "mod") == src_nodes && "stale body replaced by the source body");
+  assert(d_mod->get_input_pin_decls().size() == 2 && "stale IO decls replaced by the source decls");
+  assert(d.all_gids().size() == 1);
+}
+
 // Shared in-memory source map: a Forest (LNAST) and a GraphLibrary (LGraph)
 // sharing one db directory must share ONE Source_locator and a single
 // srcmap.txt writer, so tree-side and graph-side provenance both survive a
@@ -2083,6 +2157,7 @@ int main() {
   test_set_subnode_indirect_cycle_aborts();
 #endif
   test_load_merge();
+  test_copy_from();
   test_shared_source_map();
   // Cross-boundary hier edge resolution: drivers/sinks hop module boundaries
   // until a real leaf (or the root's own IO) is reached.
