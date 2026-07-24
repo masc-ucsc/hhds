@@ -2249,6 +2249,18 @@ public:
       return false;
     }
     g->copy_body_from(src);
+    // Re-mint the srcids the copied body references into THIS library's source map
+    // (copy_body_from deep-copies the srcid VALUES, which index `src`'s map; without
+    // this they dangle here and the emitted source map comes out empty). The
+    // in-place analogue of copy_from's srcid re-mint.
+    if (g->has_attr(attrs::srcid)) {
+      auto& ids = g->attr_store(attrs::srcid);
+      for (auto& [key, value] : ids) {
+        if (value != 0) {
+          value = g->source_locator().import_from(src.source_locator(), value);
+        }
+      }
+    }
     return true;
   }
 
