@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -262,4 +264,58 @@ TEST(ForestCorrectness, DuplicateNamesRejected) {
   (void)forest->create_io("parser");
 
   EXPECT_THROW(static_cast<void>(forest->create_io("parser")), std::runtime_error);
+}
+
+// Forest::save prunes body directories the forest no longer holds. forest.txt
+// is authoritative, and tree indices are POSITIONAL, so a `tree_<idx>/` left
+// behind by a larger previous save is both dead weight and a hazard: a later
+// save that grows the forest can reuse that index and find a stale body already
+// sitting there.
+TEST(ForestCorrectness, SavePrunesStaleTreeBodies) {
+  namespace fs    = std::filesystem;
+  const auto base = fs::temp_directory_path() / "hhds_forest_prune_test";
+  fs::remove_all(base);
+  const auto dir = (base / "forest").string();
+
+  auto body_dirs = [&dir]() {
+    size_t n = 0;
+    for (const auto& e : fs::directory_iterator(dir)) {
+      if (e.is_directory() && e.path().filename().string().starts_with("tree_")) {
+        ++n;
+      }
+    }
+    return n;
+  };
+
+  {
+    auto forest = hhds::Forest::create();
+    for (const char* name : {"a", "b", "c"}) {
+      create_rooted_tree(forest, name);
+    }
+    forest->save(dir);
+  }
+  EXPECT_EQ(body_dirs(), 3u);
+
+  // An entry that is not a `tree_<digits>` directory must survive untouched.
+  {
+    std::ofstream notes(fs::path(dir) / "notes.txt");
+    notes << "keep me\n";
+  }
+
+  {
+    auto forest = hhds::Forest::create();  // smaller, entirely different forest
+    create_rooted_tree(forest, "solo");
+    forest->save(dir);
+  }
+
+  EXPECT_EQ(body_dirs(), 1u) << "stale a/b/c tree bodies pruned";
+  EXPECT_TRUE(fs::exists(fs::path(dir) / "notes.txt")) << "non-body entries untouched";
+  EXPECT_FALSE(fs::exists(fs::path(dir) / ".hhds_pruned")) << "trash directory removed";
+
+  auto reloaded = hhds::Forest::create();
+  reloaded->load(dir);
+  EXPECT_NE(reloaded->find_io("solo"), nullptr);
+  EXPECT_EQ(reloaded->find_io("a"), nullptr);
+
+  fs::remove_all(base);
 }

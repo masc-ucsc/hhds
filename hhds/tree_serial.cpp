@@ -4,6 +4,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "serial_prune.hpp"
 #include "tree.hpp"
 
 namespace hhds {
@@ -449,6 +450,18 @@ void Forest::save(const std::string& db_path) const {
     const auto dir = fs::path(db_path) / ("tree_" + std::to_string(i));
     trees[i]->save_body(dir.string());
   }
+
+  // --- drop body directories this forest no longer holds ---
+  // forest.txt above is authoritative, so a `tree_<idx>/` left over from a
+  // previous save of a DIFFERENT (or larger) forest must go: re-emitting into a
+  // populated directory otherwise keeps the old bodies, and tree indices are
+  // positional, so a later save that grows the forest could find a stale body
+  // already sitting at a reused index. Keep exactly what this save writes —
+  // every declared tree_io, plus any index that still owns a body.
+  serial::prune_body_dirs(db_path, "tree_", [&](uint64_t id) {
+    const auto idx = static_cast<size_t>(id);
+    return (idx < tree_ios_.size() && tree_ios_[idx]) || (idx < trees.size() && trees[idx]);
+  });
 
   // --- source-provenance table (always rewritten in full, like forest.txt) ---
   // A borrower of a shared map defers srcmap.txt persistence to the owning sharer.

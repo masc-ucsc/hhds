@@ -10,6 +10,7 @@
 #include <sstream>
 #include <vector>
 
+#include "serial_prune.hpp"
 #include "tree.hpp"
 
 // TODO:
@@ -4616,6 +4617,18 @@ void GraphLibrary::save(const std::string& db_path) const {
     fs::create_directories(dst_dir, ec);
     fs::copy(src_dir, dst_dir, fs::copy_options::overwrite_existing | fs::copy_options::recursive, ec);
   }
+
+  // --- drop body directories this library no longer holds ---
+  // library.txt above is authoritative, so a `graph_<gid>/` left over from a
+  // previous save of a DIFFERENT (or larger) library must go: saving into a
+  // populated directory otherwise silently keeps the old bodies, and recreating
+  // that gid later would lazily load the stale one instead of the fresh body.
+  // Keep exactly what the two loops above write — the declared gids (io_gids is
+  // sorted) plus any body still pending on disk.
+  serial::prune_body_dirs(db_path, "graph_", [&](uint64_t id) {
+    const auto gid = static_cast<Gid>(id);
+    return std::binary_search(io_gids.begin(), io_gids.end(), gid) || pending_body_dir_.find(gid) != pending_body_dir_.end();
+  });
 }
 
 void GraphLibrary::load(const std::string& db_path) {

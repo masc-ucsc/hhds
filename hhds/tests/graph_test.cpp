@@ -8,9 +8,11 @@
 #include <cassert>
 #include <csignal>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -1422,6 +1424,80 @@ void test_load_merge() {
   fs::remove_all(base);
 }
 
+// GraphLibrary::save prunes body directories the library no longer holds.
+// library.txt is authoritative, so re-emitting a DIFFERENT (or smaller) library
+// over a populated directory must not leave the previous run's `graph_<gid>/`
+// behind: that is dead weight, and once the gid is recreated a lazy body load
+// would find the stale body sitting where the fresh one belongs.
+void test_save_prunes_stale_bodies() {
+  namespace fs    = std::filesystem;
+  const auto base = fs::temp_directory_path() / "hhds_save_prune_test";
+  fs::remove_all(base);
+  const auto dir = (base / "lib").string();
+
+  auto body_dirs = [&dir]() {
+    size_t n = 0;
+    for (const auto& e : fs::directory_iterator(dir)) {
+      if (e.is_directory() && e.path().filename().string().starts_with("graph_")) {
+        ++n;
+      }
+    }
+    return n;
+  };
+
+  hhds::Gid foo_gid = hhds::Gid_invalid;
+  {
+    hhds::GraphLibrary a;
+    for (const char* name : {"foo", "bar"}) {
+      auto gio = a.create_io(name);
+      gio->add_input("x", 0);
+      gio->add_output("y", 0);
+      {
+        auto g = gio->create_graph();
+        g->create_node();
+      }  // publish on scope-exit
+      if (std::string_view{name} == "foo") {
+        foo_gid = gio->get_gid();
+      }
+    }
+    a.save(dir);
+  }
+  assert(body_dirs() == 2);
+  assert(fs::exists(fs::path(dir) / ("graph_" + std::to_string(foo_gid))));
+
+  // A file that is not a `graph_<digits>` directory must survive untouched.
+  {
+    std::ofstream notes(fs::path(dir) / "notes.txt");
+    notes << "keep me\n";
+  }
+
+  {
+    hhds::GraphLibrary b;  // an entirely different library, same directory
+    auto               gio = b.create_io("baz");
+    gio->add_input("p", 0);
+    gio->add_output("q", 0);
+    {
+      auto g = gio->create_graph();
+      g->create_node();
+    }
+    b.save(dir);
+  }
+
+  assert(body_dirs() == 1 && "stale foo/bar bodies pruned");
+  assert(!fs::exists(fs::path(dir) / ("graph_" + std::to_string(foo_gid))));
+  assert(fs::exists(fs::path(dir) / "notes.txt") && "non-body entries untouched");
+  assert(!fs::exists(fs::path(dir) / ".hhds_pruned") && "trash directory removed");
+
+  // The reload sees exactly the second library — no resurrected foo/bar.
+  hhds::GraphLibrary c;
+  c.load(dir);
+  assert(c.all_gids().size() == 1);
+  assert(c.find_io("baz"));
+  assert(!c.find_io("foo") && !c.find_io("bar"));
+
+  fs::remove_all(base);
+}
+
 // GraphLibrary::copy_from — single-module, in-memory cross-library copy. The
 // abc-incremental reuse primitive: `outlib.copy_from(cache, "mod")` drops in a
 // cached module by name, preserving the name-hash gid a wrapper's Sub references.
@@ -2157,6 +2233,7 @@ int main() {
   test_set_subnode_indirect_cycle_aborts();
 #endif
   test_load_merge();
+  test_save_prunes_stale_bodies();
   test_copy_from();
   test_shared_source_map();
   // Cross-boundary hier edge resolution: drivers/sinks hop module boundaries
