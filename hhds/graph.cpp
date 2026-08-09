@@ -6,8 +6,12 @@
 #include <ctime>
 #include <functional>
 #include <iostream>
+#include <limits>
+#include <map>
 #include <queue>
 #include <sstream>
+#include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #include "serial_prune.hpp"
@@ -29,6 +33,1212 @@
 // 7_Add inter-graph connections (set_subnode)
 
 namespace hhds {
+
+namespace detail {
+
+struct Occurrence_path_storage {
+  struct Entry {
+    uint32_t                             parent = 0;
+    Occurrence_step                      step;
+    mutable std::vector<Occurrence_step> flattened;
+    size_t                               structural_hash = 0;
+  };
+
+  std::vector<Entry> entries{{}};  // handle 0 is the root path
+  mutable std::mutex flattened_mutex;
+
+  [[nodiscard]] std::span<const Occurrence_step> steps(uint32_t handle) const {
+    if (handle == 0 || handle >= entries.size()) {
+      return {};
+    }
+
+    std::lock_guard lock(flattened_mutex);
+    auto&           flattened = entries[handle].flattened;
+    if (flattened.empty()) {
+      size_t   depth  = 0;
+      uint32_t cursor = handle;
+      while (cursor != 0) {
+        ++depth;
+        cursor = entries[cursor].parent;
+      }
+      flattened.resize(depth);
+      cursor = handle;
+      while (cursor != 0) {
+        flattened[--depth] = entries[cursor].step;
+        cursor             = entries[cursor].parent;
+      }
+    }
+    return flattened;
+  }
+};
+
+[[nodiscard]] size_t occurrence_path_root_hash(Gid root_gid) noexcept { return std::hash<Gid>{}(root_gid); }
+
+[[nodiscard]] size_t occurrence_path_extend_hash(size_t parent_hash, const Occurrence_step& step) noexcept {
+  const auto mix
+      = [&parent_hash](size_t value) { parent_hash ^= value + 0x9e3779b97f4a7c15ULL + (parent_hash << 6U) + (parent_hash >> 2U); };
+  mix(std::hash<Definition_index>{}(step.subnode));
+  mix(step.ordinal ? std::hash<uint64_t>{}(*step.ordinal) : 0x6a09e667f3bcc909ULL);
+  return parent_hash;
+}
+
+struct Hierarchy_view_state : public std::enable_shared_from_this<Hierarchy_view_state> {
+  struct Path_key {
+    uint32_t                parent = 0;
+    Definition_index        site;
+    std::optional<uint64_t> ordinal;
+
+    [[nodiscard]] bool operator==(const Path_key&) const noexcept = default;
+  };
+
+  struct Path_key_hash {
+    [[nodiscard]] size_t operator()(const Path_key& key) const noexcept {
+      size_t     h   = std::hash<uint32_t>{}(key.parent);
+      const auto mix = [&h](size_t value) { h ^= value + 0x9e3779b97f4a7c15ULL + (h << 6U) + (h >> 2U); };
+      mix(std::hash<Definition_index>{}(key.site));
+      mix(key.ordinal ? std::hash<uint64_t>{}(*key.ordinal) : 0x6a09e667f3bcc909ULL);
+      return h;
+    }
+  };
+
+  struct Body_context {
+    uint32_t                parent_handle = 0;
+    Node_class              site;
+    std::optional<uint64_t> ordinal;
+  };
+
+  Graph*                                                root         = nullptr;
+  bool                                                  expand_loops = false;
+  Hierarchy_policy                                      policy;
+  const ankerl::unordered_dense::set<Gid>*              opaque = nullptr;
+  std::shared_ptr<Occurrence_path_storage>              paths  = std::make_shared<Occurrence_path_storage>();
+  std::unordered_map<Path_key, uint32_t, Path_key_hash> interned;
+  std::vector<Body_context>                             contexts;
+  std::unordered_map<Occurrence_index, Instance_action> verdicts;
+  const GraphLibrary*                                   library        = nullptr;
+  uint64_t                                              mutation_epoch = 0;
+
+  Hierarchy_view_state(Graph* root_value, bool expand_value, Hierarchy_policy policy_value,
+                       const ankerl::unordered_dense::set<Gid>* opaque_value)
+      : root(root_value), expand_loops(expand_value), policy(policy_value), opaque(opaque_value) {
+    contexts.push_back(Body_context{0, Node_class(), std::nullopt});
+    paths->entries.front().structural_hash = occurrence_path_root_hash(root_gid());
+    if (root != nullptr) {
+      if (const auto io = root->get_io()) {
+        library = io->get_library();
+        if (library != nullptr) {
+          mutation_epoch = library->mutation_epoch();
+        }
+      }
+    }
+  }
+
+  void assert_unmutated() const noexcept {
+    assert((library == nullptr || library->mutation_epoch() == mutation_epoch)
+           && "structural mutation during a hierarchical traversal");
+  }
+
+  void refresh_epoch() noexcept {
+    if (library != nullptr) {
+      mutation_epoch = library->mutation_epoch();
+    }
+  }
+
+  [[nodiscard]] std::shared_ptr<Graph> subgraph(Node_class site) {
+    auto child = site.get_subnode_graph();
+    // Lazy body materialization publishes already-persisted structure and may
+    // advance the library epoch. It is part of constructing this view, not a
+    // caller mutation during the walk.
+    refresh_epoch();
+    return child;
+  }
+
+  [[nodiscard]] Gid root_gid() const noexcept { return root != nullptr ? root->get_gid() : Gid_invalid; }
+
+  [[nodiscard]] Occurrence_path path(uint32_t handle) const { return Occurrence_path(root_gid(), paths, handle); }
+
+  [[nodiscard]] uint32_t append_path(uint32_t parent, Node_class site, std::optional<uint64_t> ordinal) {
+    const Path_key key{parent, site.get_definition_index(), ordinal};
+    if (const auto it = interned.find(key); it != interned.end()) {
+      return it->second;
+    }
+    Occurrence_path_storage::Entry entry;
+    entry.parent          = parent;
+    entry.step.subnode    = key.site;
+    entry.step.ordinal    = ordinal;
+    entry.structural_hash = occurrence_path_extend_hash(paths->entries[parent].structural_hash, entry.step);
+    paths->entries.push_back(std::move(entry));
+    const uint32_t handle = static_cast<uint32_t>(paths->entries.size() - 1);
+    interned.emplace(key, handle);
+    contexts.push_back(Body_context{parent, site, ordinal});
+    assert(contexts.size() == paths->entries.size());
+    return handle;
+  }
+
+  [[nodiscard]] Instance_action action(uint32_t parent_handle, Node_class site) {
+    const Occurrence_index key{path(parent_handle), site.get_definition_index()};
+    if (const auto it = verdicts.find(key); it != verdicts.end()) {
+      return it->second;
+    }
+    Instance_action result = Instance_action::descend;
+    if (opaque != nullptr && opaque->contains(site.get_subnode_gid())) {
+      result = Instance_action::opaque;
+    } else if (policy) {
+      const Instance_site instance(path(parent_handle), site.subnode_group());
+      result = policy(instance);
+    }
+    verdicts.emplace(key, result);
+    return result;
+  }
+
+  [[nodiscard]] Occurrence_node make_node(Node_class node, uint32_t identity_handle, uint32_t container_handle) {
+    return Occurrence_node(node, path(identity_handle), path(container_handle), shared_from_this());
+  }
+
+  [[nodiscard]] Occurrence_pin make_pin(Pin_class pin, uint32_t identity_handle, uint32_t container_handle) {
+    return Occurrence_pin(pin, path(identity_handle), path(container_handle), shared_from_this());
+  }
+
+  [[nodiscard]] std::vector<Occurrence_node> storage_nodes() {
+    assert_unmutated();
+    std::vector<Occurrence_node> out;
+    if (root == nullptr) {
+      return out;
+    }
+    ankerl::unordered_dense::set<Gid> active;
+    visit_body(root, 0, active, out);
+    refresh_epoch();
+    return out;
+  }
+
+  [[nodiscard]] std::vector<Hier_instance> instance_groups() {
+    assert_unmutated();
+    std::vector<Hier_instance> out;
+    if (root == nullptr) {
+      return out;
+    }
+    ankerl::unordered_dense::set<Gid> active;
+    visit_instances(root, 0, static_cast<Tree_pos>(ROOT), 1, active, out);
+    refresh_epoch();
+    return out;
+  }
+
+  void visit_instances(Graph* graph, uint32_t body_handle, Tree_pos parent_tree_pos, uint64_t parent_multiplicity,
+                       ankerl::unordered_dense::set<Gid>& active, std::vector<Hier_instance>& out) {
+    if (graph == nullptr || active.contains(graph->get_gid())) {
+      return;
+    }
+    active.insert(graph->get_gid());
+    for (const auto node : graph->body().nodes()) {
+      if (!node.get_subnode_io()) {
+        continue;
+      }
+      const auto verdict = action(body_handle, node);
+      if (verdict == Instance_action::prune) {
+        continue;
+      }
+      const auto group = node.subnode_group();
+      if (group.is_loop()) {
+        group.validate();
+      }
+      const uint32_t handle       = append_path(body_handle, node, std::nullopt);
+      const uint64_t factor       = group.size();
+      uint64_t       multiplicity = 0;
+      if (factor != 0 && parent_multiplicity > std::numeric_limits<uint64_t>::max() / factor) {
+        multiplicity = std::numeric_limits<uint64_t>::max();
+      } else {
+        multiplicity = parent_multiplicity * factor;
+      }
+      // Real structure-tree positions, not ROOT placeholders: Hier_instance's
+      // operator==/AbslHashValue key on (parent_graph, tree_pos, hier_pos), so
+      // hardcoding ROOT made every instance in a body compare equal — two
+      // distinct sites collided, and so did the same site reached through two
+      // different parents. Same semantics HierIterator uses: tree_pos is this
+      // site's own position, hier_pos is the parent site's.
+      const auto     tp_it    = graph->subnode_tree_pos_.find(node.get_debug_nid() & ~static_cast<Nid>(3));
+      const Tree_pos tree_pos = tp_it != graph->subnode_tree_pos_.end() ? tp_it->second : static_cast<Tree_pos>(ROOT);
+      out.emplace_back(graph, root_gid(), parent_tree_pos, tree_pos, node.get_debug_nid(), path(handle), multiplicity);
+      if (verdict == Instance_action::descend) {
+        if (auto child = subgraph(node)) {
+          visit_instances(child.get(), handle, tree_pos, multiplicity, active, out);
+        }
+      }
+    }
+    active.erase(graph->get_gid());
+  }
+
+  [[nodiscard]] std::optional<uint64_t> count_nodes(bool physical) {
+    assert_unmutated();
+    if (root == nullptr) {
+      return uint64_t{0};
+    }
+    ankerl::unordered_dense::set<Gid> active;
+    auto                              result = count_body(root, 0, physical, active);
+    refresh_epoch();
+    return result;
+  }
+
+  [[nodiscard]] std::optional<uint64_t> count_body(Graph* graph, uint32_t body_handle, bool physical,
+                                                   ankerl::unordered_dense::set<Gid>& active) {
+    if (graph == nullptr || active.contains(graph->get_gid())) {
+      return uint64_t{0};
+    }
+    active.insert(graph->get_gid());
+    uint64_t total = 0;
+    for (const auto node : graph->body().nodes()) {
+      if (!node.get_subnode_io()) {
+        if (total == std::numeric_limits<uint64_t>::max()) {
+          active.erase(graph->get_gid());
+          return std::nullopt;
+        }
+        ++total;
+        continue;
+      }
+      const auto verdict = action(body_handle, node);
+      if (verdict == Instance_action::prune) {
+        continue;
+      }
+      const auto     group        = node.subnode_group();
+      const uint64_t factor       = physical ? group.size() : 1;
+      const uint32_t child_handle = append_path(body_handle, node, std::nullopt);
+      uint64_t       per_call     = 1;
+      if (verdict == Instance_action::descend) {
+        if (auto child = subgraph(node)) {
+          const auto child_count = count_body(child.get(), child_handle, physical, active);
+          if (!child_count || per_call > std::numeric_limits<uint64_t>::max() - *child_count) {
+            active.erase(graph->get_gid());
+            return std::nullopt;
+          }
+          per_call += *child_count;
+        }
+      }
+      if (factor != 0 && per_call > std::numeric_limits<uint64_t>::max() / factor) {
+        active.erase(graph->get_gid());
+        return std::nullopt;
+      }
+      const uint64_t contribution = per_call * factor;
+      if (total > std::numeric_limits<uint64_t>::max() - contribution) {
+        active.erase(graph->get_gid());
+        return std::nullopt;
+      }
+      total += contribution;
+    }
+    active.erase(graph->get_gid());
+    return total;
+  }
+
+  void visit_body(Graph* graph, uint32_t body_handle, ankerl::unordered_dense::set<Gid>& active,
+                  std::vector<Occurrence_node>& out) {
+    if (graph == nullptr || active.contains(graph->get_gid())) {
+      return;
+    }
+    active.insert(graph->get_gid());
+    for (const auto node : graph->body().nodes()) {
+      const auto sub_io = node.get_subnode_io();
+      if (!sub_io) {
+        out.push_back(make_node(node, body_handle, body_handle));
+        continue;
+      }
+
+      const auto verdict = action(body_handle, node);
+      if (verdict == Instance_action::prune) {
+        continue;
+      }
+      const auto group = node.subnode_group();
+      if (group.is_loop()) {
+        group.validate();
+      }
+      const bool     loop_expanded = expand_loops && group.is_loop();
+      const uint64_t count         = loop_expanded ? group.size() : 1;
+      for (uint64_t ordinal = 0; ordinal < count; ++ordinal) {
+        const std::optional<uint64_t> path_ordinal = loop_expanded ? std::optional<uint64_t>(ordinal) : std::nullopt;
+        const uint32_t                call_handle  = append_path(body_handle, node, path_ordinal);
+        out.push_back(make_node(node, call_handle, body_handle));
+        if (verdict == Instance_action::descend) {
+          if (auto child = subgraph(node)) {
+            visit_body(child.get(), call_handle, active, out);
+          }
+        }
+      }
+    }
+    active.erase(graph->get_gid());
+  }
+
+  [[nodiscard]] std::vector<uint32_t> site_handles(uint32_t parent_handle, Node_class site) {
+    const auto group = site.subnode_group();
+    if (expand_loops && group.is_loop()) {
+      std::vector<uint32_t> result;
+      result.reserve(static_cast<size_t>(group.size()));
+      for (uint64_t ordinal = 0; ordinal < group.size(); ++ordinal) {
+        result.push_back(append_path(parent_handle, site, ordinal));
+      }
+      return result;
+    }
+    return {append_path(parent_handle, site, std::nullopt)};
+  }
+
+  [[nodiscard]] std::optional<uint64_t> ordinal_of(uint32_t handle) const {
+    return handle < contexts.size() ? contexts[handle].ordinal : std::nullopt;
+  }
+
+  [[nodiscard]] uint32_t handle_of(const Occurrence_path& value) const noexcept { return value.interned_handle(); }
+
+  [[nodiscard]] std::vector<Occurrence_pin>  resolve_driver(Pin_class driver, uint32_t body_handle, int depth = 0);
+  [[nodiscard]] std::vector<Occurrence_pin>  resolve_sink(Pin_class sink, uint32_t body_handle, int depth = 0);
+  [[nodiscard]] std::vector<Occurrence_edge> pin_in_edges(const Occurrence_pin& pin);
+  [[nodiscard]] std::vector<Occurrence_edge> pin_out_edges(const Occurrence_pin& pin);
+};
+
+struct Occurrence_node_cursor {
+  struct Frame {
+    Graph*            graph       = nullptr;
+    uint32_t          body_handle = 0;
+    FastClassIterator current;
+    FastClassIterator end;
+    Node_class        site;
+    Instance_action   verdict      = Instance_action::prune;
+    uint64_t          next_ordinal = 0;
+    uint64_t          count        = 0;
+    bool              has_site     = false;
+  };
+
+  struct Pending_descent {
+    Node_class site;
+    uint32_t   body_handle = 0;
+  };
+
+  explicit Occurrence_node_cursor(std::shared_ptr<Hierarchy_view_state> state_value) : state(std::move(state_value)) {
+    if (state && state->root != nullptr) {
+      push_body(state->root, 0);
+      advance();
+    } else {
+      done = true;
+    }
+  }
+
+  void push_body(Graph* graph, uint32_t body_handle) {
+    if (graph == nullptr || active.contains(graph->get_gid())) {
+      return;
+    }
+    active.insert(graph->get_gid());
+    const auto body = graph->body().nodes();
+    stack.push_back(Frame{graph, body_handle, body.begin(), body.end(), Node_class{}, Instance_action::prune, 0, 0, false});
+  }
+
+  void advance() {
+    state->assert_unmutated();
+    current = {};
+
+    if (pending) {
+      const auto descent = *pending;
+      pending.reset();
+      if (auto child = state->subgraph(descent.site)) {
+        push_body(child.get(), descent.body_handle);
+      }
+    }
+
+    while (!stack.empty()) {
+      auto& frame = stack.back();
+      if (frame.has_site) {
+        if (frame.next_ordinal < frame.count) {
+          const uint64_t ordinal       = frame.next_ordinal++;
+          const bool     expanded_loop = state->expand_loops && frame.site.is_loop_subnode();
+          const auto     path_ordinal  = expanded_loop ? std::optional<uint64_t>(ordinal) : std::nullopt;
+          const uint32_t call_handle   = state->append_path(frame.body_handle, frame.site, path_ordinal);
+          current                      = state->make_node(frame.site, call_handle, frame.body_handle);
+          if (frame.verdict == Instance_action::descend) {
+            pending = Pending_descent{frame.site, call_handle};
+          }
+          ++position;
+          return;
+        }
+        frame.has_site = false;
+      }
+
+      if (frame.current == frame.end) {
+        active.erase(frame.graph->get_gid());
+        stack.pop_back();
+        continue;
+      }
+
+      const auto node = *frame.current;
+      ++frame.current;
+      if (!node.get_subnode_io()) {
+        current = state->make_node(node, frame.body_handle, frame.body_handle);
+        ++position;
+        return;
+      }
+
+      const auto verdict = state->action(frame.body_handle, node);
+      if (verdict == Instance_action::prune) {
+        continue;
+      }
+      const auto group = node.subnode_group();
+      if (group.is_loop()) {
+        group.validate();
+      }
+      frame.site         = node;
+      frame.verdict      = verdict;
+      frame.next_ordinal = 0;
+      frame.count        = state->expand_loops && group.is_loop() ? group.size() : 1;
+      frame.has_site     = true;
+    }
+    done = true;
+  }
+
+  std::shared_ptr<Hierarchy_view_state> state;
+  std::vector<Frame>                    stack;
+  ankerl::unordered_dense::set<Gid>     active;
+  std::optional<Pending_descent>        pending;
+  Occurrence_node                       current;
+  uint64_t                              position = 0;
+  bool                                  done     = false;
+};
+
+}  // namespace detail
+
+std::span<const Occurrence_step> Occurrence_path::steps() const {
+  if (!storage_ || handle_ >= storage_->entries.size()) {
+    return {};
+  }
+  return storage_->steps(handle_);
+}
+
+size_t Occurrence_path::hash() const noexcept {
+  if (storage_ && handle_ < storage_->entries.size()) {
+    return storage_->entries[handle_].structural_hash;
+  }
+  return std::hash<Gid>{}(root_gid_);
+}
+
+bool Occurrence_path::operator==(const Occurrence_path& other) const noexcept {
+  if (root_gid_ != other.root_gid_) {
+    return false;
+  }
+  if (storage_ == other.storage_ && handle_ == other.handle_) {
+    return true;
+  }
+  uint32_t lhs_handle = handle_;
+  uint32_t rhs_handle = other.handle_;
+  while (lhs_handle != 0 && rhs_handle != 0) {
+    if (!storage_ || !other.storage_ || lhs_handle >= storage_->entries.size() || rhs_handle >= other.storage_->entries.size()) {
+      return false;
+    }
+    const auto& lhs = storage_->entries[lhs_handle];
+    const auto& rhs = other.storage_->entries[rhs_handle];
+    if (lhs.step != rhs.step) {
+      return false;
+    }
+    lhs_handle = lhs.parent;
+    rhs_handle = rhs.parent;
+  }
+  return lhs_handle == rhs_handle;
+}
+
+namespace {
+
+std::string occurrence_escape_segment(std::string_view value, const Occurrence_name_policy& policy) {
+  if (!policy.escape_embedded_separators) {
+    return std::string(value);
+  }
+  std::string result;
+  result.reserve(value.size());
+  for (const char ch : value) {
+    if (ch == '.' || ch == '[' || ch == ']' || ch == '\\') {
+      result.push_back('\\');
+    }
+    result.push_back(ch);
+  }
+  return result;
+}
+
+std::string occurrence_local_name(Node_class node, const Occurrence_name_policy& policy) {
+  const Nid base = node.get_debug_nid() & ~static_cast<Nid>(3);
+  if (base == Graph::INPUT_NODE || base == Graph::OUTPUT_NODE) {
+    return {};
+  }
+  if (base == Graph::CONST_NODE) {
+    return "const";
+  }
+  if (node.is_invalid()) {
+    return "n" + std::to_string(static_cast<uint64_t>(base) >> 2);
+  }
+  if (!node.get_name().empty()) {
+    return occurrence_escape_segment(node.get_name(), policy);
+  }
+  if (const auto io = node.get_subnode_io()) {
+    return occurrence_escape_segment(io->get_name(), policy);
+  }
+  return "n" + std::to_string(static_cast<uint64_t>(base) >> 2);
+}
+
+}  // namespace
+
+std::string format_occurrence_path(const GraphLibrary& lib, const Occurrence_path& path, const Occurrence_name_policy& policy) {
+  std::string result;
+  for (const auto& step : path.steps()) {
+    auto parent = lib.get_graph(step.subnode.gid);
+    if (!parent) {
+      continue;
+    }
+    auto site = parent->get_node(Class_index{step.subnode.value});
+    if (site.is_invalid()) {
+      continue;
+    }
+    std::string segment;
+    if (!site.get_name().empty()) {
+      segment = occurrence_escape_segment(site.get_name(), policy);
+    }
+    if (step.ordinal) {
+      uint64_t ordinal_base = 0;
+      for (const auto candidate : parent->body().nodes()) {
+        if (candidate.get_debug_nid() >= site.get_debug_nid()) {
+          break;
+        }
+        if (const auto loop = candidate.subnode_loop()) {
+          if (ordinal_base > std::numeric_limits<uint64_t>::max() - loop->count) {
+            ordinal_base = std::numeric_limits<uint64_t>::max();
+            break;
+          }
+          ordinal_base += loop->count;
+        }
+      }
+      const uint64_t ordinal  = ordinal_base > std::numeric_limits<uint64_t>::max() - *step.ordinal
+                                    ? std::numeric_limits<uint64_t>::max()
+                                    : ordinal_base + *step.ordinal;
+      segment                += std::string(policy.loop_prefix) + std::to_string(ordinal);
+    }
+    if (segment.empty()) {
+      continue;  // ordinary anonymous wrapper is hierarchy-transparent
+    }
+    if (!result.empty()) {
+      result += policy.separator;
+    }
+    result += segment;
+  }
+  return result;
+}
+
+namespace detail {
+
+std::vector<Occurrence_pin> Hierarchy_view_state::resolve_driver(Pin_class driver, uint32_t body_handle, int depth) {
+  assert_unmutated();
+  if (driver.is_invalid() || depth > 256) {
+    return {};
+  }
+  const auto master = driver.get_master_node();
+  if (master.get_debug_nid() == Graph::INPUT_NODE) {
+    if (body_handle == 0 || body_handle >= contexts.size()) {
+      return {make_pin(driver, body_handle, body_handle)};
+    }
+    const auto& context = contexts[body_handle];
+    const auto  site    = context.site;
+    const auto  group   = site.subnode_group();
+    const auto  loop    = group.loop();
+    const auto  port    = driver.get_port_id();
+    const auto  parent  = context.parent_handle;
+
+    if (loop && expand_loops && context.ordinal) {
+      const uint64_t ordinal = *context.ordinal;
+      if (loop->index_input && port == *loop->index_input) {
+        // Preserve a value-bearing boundary pin in the occurrence edge. It is
+        // not a stored dependency: value consumers resolve it through the
+        // call's domain_index Input_binding, while connectivity consumers can
+        // identify and cut it at the graph-input boundary.
+        return {make_pin(driver, body_handle, body_handle)};
+      }
+      for (const auto& carry : group.carries()) {
+        if (carry.input_port() != port) {
+          continue;
+        }
+        if (ordinal != 0) {
+          const uint32_t              previous = append_path(parent, site, ordinal - 1);
+          std::vector<Occurrence_pin> result;
+          // A descend verdict on a body-less callee has nothing to descend
+          // into; fall back to the opaque arm rather than dropping the carry.
+          auto                        child = action(parent, site) == Instance_action::descend ? subgraph(site) : nullptr;
+          if (child) {
+            const auto child_output = child->get_output_node().get_sink_pin(carry.output_port());
+            for (const auto& edge : child_output.inp_edges()) {
+              auto resolved = resolve_driver(edge.driver, previous, depth + 1);
+              result.insert(result.end(), resolved.begin(), resolved.end());
+            }
+          } else {
+            result.push_back(make_pin(site.get_driver_pin(carry.output_port()), previous, parent));
+          }
+          if (loop->activation_input) {
+            // Inactive carry bypass: input[r-1] is a conservative dependency
+            // of input[r] in addition to output[r-1].
+            result.push_back(make_pin(site.get_sink_pin(port), previous, parent));
+          }
+          return result;
+        }
+        break;  // ordinal zero uses the external initial driver below
+      }
+      if (loop->activation_input && port == *loop->activation_input && ordinal != 0) {
+        const uint32_t              previous = append_path(parent, site, ordinal - 1);
+        std::vector<Occurrence_pin> result{make_pin(site.get_sink_pin(port), previous, parent)};
+        if (loop->next_active_output) {
+          auto child = action(parent, site) == Instance_action::descend ? subgraph(site) : nullptr;
+          if (child) {
+            const auto child_output = child->get_output_node().get_sink_pin(*loop->next_active_output);
+            for (const auto& edge : child_output.inp_edges()) {
+              auto resolved = resolve_driver(edge.driver, previous, depth + 1);
+              result.insert(result.end(), resolved.begin(), resolved.end());
+            }
+          } else {
+            result.push_back(make_pin(site.get_driver_pin(*loop->next_active_output), previous, parent));
+          }
+        }
+        return result;
+      }
+    }
+
+    std::vector<Occurrence_pin> result;
+    const auto                  site_pin = site.get_sink_pin(port);
+    for (const auto& edge : site_pin.inp_edges()) {
+      if (edge.driver.get_master_node().get_debug_nid() == site.get_debug_nid()) {
+        // A compact carry self-edge is visible only in the grouped view. In
+        // the occurrence view it is replaced by the external initial driver
+        // for ordinal zero and by output[r-1] for every later ordinal. Keeping
+        // it here would give ordinal zero an extra dependency on its own Sub
+        // output and manufacture a combinational cycle.
+        if (expand_loops && loop) {
+          continue;
+        }
+        result.push_back(make_pin(edge.driver, body_handle, parent));
+      } else {
+        auto resolved = resolve_driver(edge.driver, parent, depth + 1);
+        result.insert(result.end(), resolved.begin(), resolved.end());
+      }
+    }
+    return result;
+  }
+
+  if (master.get_subnode_io()) {
+    const auto verdict = action(body_handle, master);
+    if (verdict == Instance_action::prune) {
+      return {};
+    }
+    const auto group   = master.subnode_group();
+    const auto handles = site_handles(body_handle, master);
+    if (handles.empty()) {
+      // count==0: carried outputs bypass to the corresponding external init.
+      for (const auto& carry : group.carries()) {
+        if (carry.output_port() != driver.get_port_id()) {
+          continue;
+        }
+        std::vector<Occurrence_pin> result;
+        for (const auto& edge : master.get_sink_pin(carry.input_port()).inp_edges()) {
+          if (edge.driver.get_master_node().get_debug_nid() == master.get_debug_nid()) {
+            continue;
+          }
+          auto resolved = resolve_driver(edge.driver, body_handle, depth + 1);
+          result.insert(result.end(), resolved.begin(), resolved.end());
+        }
+        return result;
+      }
+      return {};
+    }
+    const uint32_t selected = handles.back();
+    if (verdict == Instance_action::opaque) {
+      return {make_pin(driver, selected, body_handle)};
+    }
+    if (auto child = subgraph(master)) {
+      const auto                  child_output = child->get_output_node().get_sink_pin(driver.get_port_id());
+      std::vector<Occurrence_pin> result;
+      for (const auto& edge : child_output.inp_edges()) {
+        auto resolved = resolve_driver(edge.driver, selected, depth + 1);
+        result.insert(result.end(), resolved.begin(), resolved.end());
+      }
+      return result;
+    }
+    return {make_pin(driver, selected, body_handle)};
+  }
+
+  return {make_pin(driver, body_handle, body_handle)};
+}
+
+std::vector<Occurrence_pin> Hierarchy_view_state::resolve_sink(Pin_class sink, uint32_t body_handle, int depth) {
+  assert_unmutated();
+  if (sink.is_invalid() || depth > 256) {
+    return {};
+  }
+  const auto master = sink.get_master_node();
+  if (master.get_debug_nid() == Graph::OUTPUT_NODE) {
+    if (body_handle == 0 || body_handle >= contexts.size()) {
+      return {make_pin(sink, body_handle, body_handle)};
+    }
+    // Copy out of `contexts` BEFORE recursing: the recursive resolve_sink below
+    // can intern a new occurrence path (append_path -> contexts.push_back) and
+    // reallocate the vector, so a reference bound here would dangle on the
+    // second iteration. resolve_driver copies for the same reason.
+    const auto                  site     = contexts[body_handle].site;
+    const auto                  parent   = contexts[body_handle].parent_handle;
+    const auto                  site_nid = site.get_debug_nid();
+    std::vector<Occurrence_pin> result;
+    const auto                  site_driver = site.get_driver_pin(sink.get_port_id());
+    for (const auto& edge : site_driver.out_edges()) {
+      if (edge.sink.get_master_node().get_debug_nid() == site_nid) {
+        continue;
+      }
+      auto resolved = resolve_sink(edge.sink, parent, depth + 1);
+      result.insert(result.end(), resolved.begin(), resolved.end());
+    }
+    return result;
+  }
+
+  if (master.get_subnode_io()) {
+    if (action(body_handle, master) == Instance_action::prune) {
+      return {};
+    }
+    const auto group   = master.subnode_group();
+    const auto loop    = group.loop();
+    const auto port    = sink.get_port_id();
+    auto       handles = site_handles(body_handle, master);
+    if (loop && expand_loops) {
+      if (loop->index_input && port == *loop->index_input) {
+        return {};
+      }
+      bool first_only = loop->activation_input && port == *loop->activation_input;
+      for (const auto& carry : group.carries()) {
+        first_only = first_only || carry.input_port() == port;
+      }
+      if (first_only && handles.size() > 1) {
+        handles.resize(1);
+      }
+    }
+    std::vector<Occurrence_pin> result;
+    result.reserve(handles.size());
+    for (const uint32_t handle : handles) {
+      result.push_back(make_pin(sink, handle, body_handle));
+    }
+    return result;
+  }
+
+  return {make_pin(sink, body_handle, body_handle)};
+}
+
+std::vector<Occurrence_edge> Hierarchy_view_state::pin_in_edges(const Occurrence_pin& pin) {
+  assert_unmutated();
+  std::vector<Occurrence_edge> result;
+  if (pin.is_invalid()) {
+    return result;
+  }
+  const uint32_t identity  = handle_of(pin.path_);
+  const uint32_t container = handle_of(pin.container_path_);
+  const auto     master    = pin.pin_.get_master_node();
+  if (master.get_subnode_io() && expand_loops && master.is_loop_subnode()) {
+    const auto ordinal_opt = contexts[identity].ordinal;
+    if (ordinal_opt) {
+      // Reuse the child INPUT boundary resolver: it implements every loop
+      // binding kind, including the two-input activation recurrence and carry
+      // bypass. A temporary target INPUT pin has the same declared Port_id.
+      if (auto child = subgraph(master)) {
+        auto child_pin = child->get_input_node().get_driver_pin(pin.get_port_id());
+        for (auto& source : resolve_driver(child_pin, identity)) {
+          result.emplace_back(std::move(source), pin);
+        }
+        return result;
+      }
+      // Body-less callee (a pure declaration): there is no child boundary to
+      // bounce through, so bind the recurrence at the call site itself — the
+      // opaque arm of the same rules. Without this the generic path below
+      // resolves the stored carry self-edge to the LAST ordinal, so occurrence
+      // zero would appear to read the final occurrence's output and the
+      // forward order would disagree with pin_out_edges' virtual chain.
+      const auto     group   = master.subnode_group();
+      const auto     loop    = group.loop();
+      const uint64_t ordinal = *ordinal_opt;
+      const auto     port    = pin.get_port_id();
+      if (loop && loop->index_input && port == *loop->index_input) {
+        return result;  // domain index is supplied per occurrence, not stored
+      }
+      if (loop && ordinal != 0) {
+        for (const auto& carry : group.carries()) {
+          if (carry.input_port() != port) {
+            continue;
+          }
+          const uint32_t previous = append_path(container, master, ordinal - 1);
+          result.emplace_back(make_pin(master.get_driver_pin(carry.output_port()), previous, container), pin);
+          if (loop->activation_input) {
+            // Inactive-carry bypass: input[r-1] is a conservative dependency of
+            // input[r] in addition to output[r-1].
+            result.emplace_back(make_pin(master.get_sink_pin(port), previous, container), pin);
+          }
+          return result;
+        }
+        if (loop->activation_input && port == *loop->activation_input) {
+          const uint32_t previous = append_path(container, master, ordinal - 1);
+          result.emplace_back(make_pin(master.get_sink_pin(port), previous, container), pin);
+          if (loop->next_active_output) {
+            result.emplace_back(make_pin(master.get_driver_pin(*loop->next_active_output), previous, container), pin);
+          }
+          return result;
+        }
+      }
+      // ordinal zero (or a non-recurrent port) falls through: the external
+      // initial driver is the answer, with the stored carry self-edge skipped
+      // below exactly as pin_out_edges skips it.
+    }
+  }
+
+  for (const auto& edge : pin.pin_.inp_edges()) {
+    if (expand_loops && master.is_loop_subnode() && edge.driver.get_master_node().get_debug_nid() == master.get_debug_nid()) {
+      continue;  // stored carry self-edge is replaced by virtual chain edges
+    }
+    for (auto& source : resolve_driver(edge.driver, container)) {
+      result.emplace_back(std::move(source), pin);
+    }
+  }
+  return result;
+}
+
+std::vector<Occurrence_edge> Hierarchy_view_state::pin_out_edges(const Occurrence_pin& pin) {
+  assert_unmutated();
+  std::vector<Occurrence_edge> result;
+  if (pin.is_invalid()) {
+    return result;
+  }
+  const uint32_t identity  = handle_of(pin.path_);
+  const uint32_t container = handle_of(pin.container_path_);
+  const auto     master    = pin.pin_.get_master_node();
+
+  if (master.get_subnode_io() && expand_loops && master.is_loop_subnode()) {
+    const auto& context = contexts[identity];
+    const auto  loop    = master.subnode_loop();
+    if (loop && context.ordinal) {
+      const uint64_t ordinal = *context.ordinal;
+      const uint64_t count   = loop->count;
+      if (pin.is_driver() && ordinal + 1 < count) {
+        for (const auto& carry : master.subnode_group().carries()) {
+          if (carry.output_port() == pin.get_port_id()) {
+            const uint32_t next = append_path(container, master, ordinal + 1);
+            result.emplace_back(pin, make_pin(master.get_sink_pin(carry.input_port()), next, container));
+          }
+        }
+        if (loop->next_active_output && loop->activation_input && pin.get_port_id() == *loop->next_active_output) {
+          const uint32_t next = append_path(container, master, ordinal + 1);
+          result.emplace_back(pin, make_pin(master.get_sink_pin(*loop->activation_input), next, container));
+        }
+      }
+      if (pin.is_sink() && loop->activation_input && ordinal + 1 < count) {
+        for (const auto& carry : master.subnode_group().carries()) {
+          if (carry.input_port() == pin.get_port_id()) {
+            const uint32_t next = append_path(container, master, ordinal + 1);
+            result.emplace_back(pin, make_pin(master.get_sink_pin(carry.input_port()), next, container));
+          }
+        }
+        if (pin.get_port_id() == *loop->activation_input) {
+          const uint32_t next = append_path(container, master, ordinal + 1);
+          result.emplace_back(pin, make_pin(master.get_sink_pin(*loop->activation_input), next, container));
+        }
+      }
+      if (pin.is_driver() && ordinal + 1 != count) {
+        return result;  // only the final occurrence drives parent readers
+      }
+    }
+  }
+
+  for (const auto& edge : pin.pin_.out_edges()) {
+    if (expand_loops && master.is_loop_subnode() && edge.sink.get_master_node().get_debug_nid() == master.get_debug_nid()) {
+      continue;  // stored carry self-edge is replaced by virtual chain edges
+    }
+    for (auto& sink : resolve_sink(edge.sink, container)) {
+      result.emplace_back(pin, std::move(sink));
+    }
+  }
+  return result;
+}
+
+}  // namespace detail
+
+void detail::assert_hierarchy_view_unmutated(const std::shared_ptr<Hierarchy_view_state>& state) noexcept {
+  if (state) {
+    state->assert_unmutated();
+  }
+}
+
+Occurrence_node Occurrence_pin::get_master_node() const {
+  return Occurrence_node(pin_.get_master_node(), path_, container_path_, state_);
+}
+
+std::string Occurrence_node::get_hier_name() const {
+  if (node_.get_graph() == nullptr) {
+    return {};
+  }
+  const auto io = node_.get_graph()->get_io();
+  if (!io || io->get_library() == nullptr) {
+    return occurrence_local_name(node_, {});
+  }
+  std::string result            = format_occurrence_path(*io->get_library(), path_);
+  const auto  steps             = path_.steps();
+  const bool  node_is_last_site = !steps.empty() && steps.back().subnode == node_.get_definition_index();
+  if (!node_is_last_site) {
+    const auto local = occurrence_local_name(node_, {});
+    if (!local.empty()) {
+      if (!result.empty()) {
+        result += '.';
+      }
+      result += local;
+    }
+  }
+  return result;
+}
+
+std::string Occurrence_pin::get_hier_name() const {
+  std::string result = get_master_node().get_hier_name();
+  if (get_port_id() != 0 && !get_pin_name().empty()) {
+    if (!result.empty()) {
+      result += '.';
+    }
+    result += occurrence_escape_segment(get_pin_name(), {});
+  }
+  return result;
+}
+
+OccurrenceEdgeRange Occurrence_pin::out_edges() const {
+  return OccurrenceEdgeRange(state_ ? state_->pin_out_edges(*this) : std::vector<Occurrence_edge>{}, state_);
+}
+
+OccurrenceEdgeRange Occurrence_pin::inp_edges() const {
+  return OccurrenceEdgeRange(state_ ? state_->pin_in_edges(*this) : std::vector<Occurrence_edge>{}, state_);
+}
+
+OccurrencePinRange Occurrence_pin::get_driver_pins() const {
+  std::vector<Occurrence_pin> result;
+  for (const auto& edge : inp_edges()) {
+    result.push_back(edge.driver);
+  }
+  return OccurrencePinRange(std::move(result), state_);
+}
+
+Occurrence_pin Occurrence_node::get_driver_pin(Port_id port_id) const {
+  return Occurrence_pin(node_.get_driver_pin(port_id), path_, container_path_, state_);
+}
+
+Occurrence_pin Occurrence_node::get_driver_pin(std::string_view name) const {
+  return Occurrence_pin(node_.get_driver_pin(name), path_, container_path_, state_);
+}
+
+Occurrence_pin Occurrence_node::get_sink_pin(Port_id port_id) const {
+  return Occurrence_pin(node_.get_sink_pin(port_id), path_, container_path_, state_);
+}
+
+Occurrence_pin Occurrence_node::get_sink_pin(std::string_view name) const {
+  return Occurrence_pin(node_.get_sink_pin(name), path_, container_path_, state_);
+}
+
+OccurrencePinRange Occurrence_node::out_pins() const {
+  std::vector<Occurrence_pin> result;
+  for (const auto& pin : node_.out_pins()) {
+    result.push_back(Occurrence_pin(pin, path_, container_path_, state_));
+  }
+  return OccurrencePinRange(std::move(result), state_);
+}
+
+OccurrencePinRange Occurrence_node::inp_pins() const {
+  std::vector<Occurrence_pin> result;
+  for (const auto& pin : node_.inp_pins()) {
+    result.push_back(Occurrence_pin(pin, path_, container_path_, state_));
+  }
+  return OccurrencePinRange(std::move(result), state_);
+}
+
+OccurrenceEdgeRange Occurrence_node::out_edges() const {
+  std::vector<Occurrence_edge>      result;
+  ankerl::unordered_dense::set<Pid> seen;
+  for (const auto& class_edge : node_.out_edges()) {
+    if (!seen.insert(class_edge.driver.get_debug_pid()).second) {
+      continue;
+    }
+    const Occurrence_pin pin(class_edge.driver, path_, container_path_, state_);
+    for (const auto& edge : pin.out_edges()) {
+      result.push_back(edge);
+    }
+  }
+  // Activation carry bypass is expressed from a sink pin, so include those
+  // virtual dependencies in the node-wide range as well.
+  if (node_.is_loop_subnode()) {
+    for (const auto& pin : inp_pins()) {
+      for (const auto& edge : pin.out_edges()) {
+        result.push_back(edge);
+      }
+    }
+  }
+  return OccurrenceEdgeRange(std::move(result), state_);
+}
+
+OccurrenceEdgeRange Occurrence_node::inp_edges() const {
+  std::vector<Occurrence_edge>      result;
+  ankerl::unordered_dense::set<Pid> seen;
+  for (const auto& class_edge : node_.inp_edges()) {
+    if (!seen.insert(class_edge.sink.get_debug_pid()).second) {
+      continue;
+    }
+    const Occurrence_pin pin(class_edge.sink, path_, container_path_, state_);
+    for (const auto& edge : pin.inp_edges()) {
+      result.push_back(edge);
+    }
+  }
+  return OccurrenceEdgeRange(std::move(result), state_);
+}
+
+ReachablePinIterator::ReachablePinIterator(std::vector<Occurrence_pin> seeds, Reach_options options) : options_(options) {
+  if (!seeds.empty() && seeds.front().get_graph() != nullptr) {
+    if (const auto io = seeds.front().get_graph()->get_io()) {
+      library_ = io->get_library();
+      if (library_ != nullptr) {
+        mutation_epoch_ = library_->mutation_epoch();
+      }
+    }
+  }
+  for (auto& seed : seeds) {
+    if (!seed.is_invalid() && visited_.insert(seed.get_occurrence_index()).second) {
+      frontier_.push_back(std::move(seed));
+    }
+  }
+  done_ = false;
+  advance();
+}
+
+ReachablePinIterator& ReachablePinIterator::operator++() {
+  advance();
+  return *this;
+}
+
+void ReachablePinIterator::advance() {
+  assert((library_ == nullptr || library_->mutation_epoch() == mutation_epoch_)
+         && "structural mutation during a hierarchical reachability walk");
+  current_ = {};
+  while (true) {
+    while (edge_pos_ < edges_.size()) {
+      const auto& edge   = edges_[edge_pos_++];
+      const auto& far    = options_.direction == Direction::forward ? edge.sink : edge.driver;
+      const auto& from   = options_.direction == Direction::forward ? edge.driver : edge.sink;
+      const auto  action = options_.visit ? options_.visit(from, edge) : Walk_control::yield_and_follow;
+      if (action == Walk_control::prune || far.is_invalid()) {
+        continue;
+      }
+      if (!visited_.insert(far.get_occurrence_index()).second) {
+        continue;
+      }
+      if (action == Walk_control::follow || action == Walk_control::yield_and_follow) {
+        frontier_.push_back(far);
+      }
+      if (action == Walk_control::yield_and_follow || action == Walk_control::yield_and_cut) {
+        current_ = far;
+        done_    = false;
+        return;
+      }
+    }
+
+    if (frontier_.empty()) {
+      done_ = true;
+      return;
+    }
+
+    Occurrence_pin from;
+    if (options_.search_order == Search_order::bfs) {
+      from = std::move(frontier_.front());
+      frontier_.pop_front();
+    } else {
+      from = std::move(frontier_.back());
+      frontier_.pop_back();
+    }
+
+    // A dependency edge lands on a node input and leaves from its outputs
+    // (backward is the mirror). These within-node transitions are traversal
+    // plumbing, not stored edges, so the edge visitor is consulted only for
+    // actual occurrence dependencies.
+    if (options_.direction == Direction::forward && from.is_sink()) {
+      edges_.clear();
+      edge_pos_ = 0;
+      for (const auto& edge : from.out_edges()) {
+        edges_.push_back(edge);  // virtual sink-to-sink loop bypass dependencies
+      }
+      for (const auto& output : from.get_master_node().out_pins()) {
+        for (const auto& edge : output.out_edges()) {
+          edges_.push_back(edge);
+        }
+      }
+      resync_epoch();
+      continue;
+    }
+    if (options_.direction == Direction::backward && from.is_driver()) {
+      edges_.clear();
+      edge_pos_ = 0;
+      for (const auto& edge : from.inp_edges()) {
+        edges_.push_back(edge);
+      }
+      for (const auto& input : from.get_master_node().inp_pins()) {
+        for (const auto& edge : input.inp_edges()) {
+          edges_.push_back(edge);
+        }
+      }
+      resync_epoch();
+      continue;
+    }
+
+    edges_.clear();
+    edge_pos_           = 0;
+    const auto adjacent = options_.direction == Direction::forward ? from.out_edges() : from.inp_edges();
+    edges_.reserve(adjacent.size());
+    for (const auto& edge : adjacent) {
+      edges_.push_back(edge);
+    }
+    resync_epoch();
+  }
+}
+
+// Crossing a module boundary can lazily materialize a persisted body, which
+// advances the library's mutation epoch. That is part of resolving the walk, not
+// a caller mutation, so re-baseline after every edge expansion — otherwise the
+// assert at the top of advance() fires on a purely read-only walk over a library
+// whose child bodies are still pending on disk. Mirrors
+// Hierarchy_view_state::subgraph()'s refresh_epoch().
+void ReachablePinIterator::resync_epoch() noexcept {
+  if (library_ != nullptr) {
+    mutation_epoch_ = library_->mutation_epoch();
+  }
+}
+
+int64_t Subnode_loop::index_at(uint64_t ordinal) const {
+  if (ordinal >= count) {
+    throw std::out_of_range("Subnode_loop::index_at: ordinal outside the loop domain");
+  }
+  if (ordinal > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+    throw std::overflow_error("Subnode_loop::index_at: ordinal does not fit int64");
+  }
+  int64_t    scaled       = 0;
+  int64_t    value        = 0;
+  const bool mul_overflow = __builtin_mul_overflow(static_cast<int64_t>(ordinal), step, &scaled);
+  const bool add_overflow = !mul_overflow && __builtin_add_overflow(first, scaled, &value);
+  if (mul_overflow || add_overflow) {
+    throw std::overflow_error("Subnode_loop::index_at: descriptor domain overflows int64");
+  }
+  return value;
+}
+
+namespace {
+
+bool subnode_loop_domain_valid(const Subnode_loop& loop) {
+  if (loop.step == 0) {
+    return false;
+  }
+  if (loop.count == 0) {
+    return true;
+  }
+  if (loop.count - 1 > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+    return false;
+  }
+  int64_t scaled = 0;
+  int64_t value  = 0;
+  return !__builtin_mul_overflow(static_cast<int64_t>(loop.count - 1), loop.step, &scaled)
+         && !__builtin_add_overflow(loop.first, scaled, &value);
+}
+
+}  // namespace
 
 auto Node_class::get_root_gid() const noexcept -> Gid {
   if (context_ == Context::Flat || context_ == Context::Hier) {
@@ -626,7 +1836,74 @@ void Graph::release_storage() noexcept {
   overflow_storage_.clear();  // raw: tearing down, do not trigger a deferred read
   overflow_free_.clear();
   overflow_deferred_ = false;
+  subnode_loops_.clear();
+#ifndef NDEBUG
+  validated_loop_carries_.clear();
+#endif
+  sync_loop_presence();
 }
+
+void Graph::sync_loop_presence() noexcept {
+  const bool present = !subnode_loops_.empty();
+  if (present == loop_presence_counted_) {
+    return;
+  }
+  if (owner_lib_ != nullptr) {
+    if (present) {
+      owner_lib_->loop_graph_count_.fetch_add(1, std::memory_order_acq_rel);
+    } else {
+      const uint64_t old = owner_lib_->loop_graph_count_.fetch_sub(1, std::memory_order_acq_rel);
+      assert(old != 0 && "loop graph presence count underflow");
+    }
+  }
+  loop_presence_counted_ = present;
+}
+
+#ifndef NDEBUG
+void Graph::debug_mark_loop_validated(Nid nid) const {
+  nid &= ~static_cast<Nid>(3);
+  if (validated_loop_carries_.contains(nid)) {
+    return;
+  }
+  std::vector<std::pair<Port_id, Port_id>> carries;
+  for (const auto& carry : Node_class(const_cast<Graph*>(this), nid).subnode_group().carries()) {
+    carries.emplace_back(carry.input_port(), carry.output_port());
+  }
+  std::ranges::sort(carries);
+  validated_loop_carries_.emplace(nid, std::move(carries));
+}
+
+void Graph::debug_revalidate_loop_edge_mutation(Vid driver_id, Vid sink_id) const {
+  ankerl::unordered_dense::set<Nid> touched;
+  const auto                        remember = [&](Vid endpoint) {
+    Nid nid = 0;
+    if ((endpoint & static_cast<Vid>(1)) != 0) {
+      const Pid pid = (static_cast<Pid>(endpoint) & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+      nid           = ref_pin(pid)->get_master_nid();
+    } else {
+      nid = static_cast<Nid>(endpoint);
+    }
+    nid &= ~static_cast<Nid>(3);
+    if (subnode_loops_.contains(nid) && validated_loop_carries_.contains(nid)) {
+      touched.insert(nid);
+    }
+  };
+  remember(driver_id);
+  remember(sink_id);
+  for (const Nid nid : touched) {
+    const auto                               group = Node_class(const_cast<Graph*>(this), nid).subnode_group();
+    std::vector<std::pair<Port_id, Port_id>> current_carries;
+    for (const auto& carry : group.carries()) {
+      current_carries.emplace_back(carry.input_port(), carry.output_port());
+    }
+    std::ranges::sort(current_carries);
+    if (current_carries != validated_loop_carries_.at(nid)) {
+      throw std::logic_error("loop carry shape changed after validation");
+    }
+    group.validate();
+  }
+}
+#endif
 
 void Graph::invalidate_from_library() noexcept {
   if (deleted_) {
@@ -651,6 +1928,7 @@ void Graph::invalidate_from_library() noexcept {
   }
   subnode_tree_pos_.clear();
   tree_pos_to_nid_.clear();
+  subnode_loops_.clear();
   input_pins_.clear();
   output_pins_.clear();
 }
@@ -677,6 +1955,11 @@ void Graph::clear_graph() {
   (void)tree_->add_root();
   subnode_tree_pos_.clear();
   tree_pos_to_nid_.clear();
+  subnode_loops_.clear();
+#ifndef NDEBUG
+  validated_loop_carries_.clear();
+#endif
+  sync_loop_presence();
   invalidate_traversal_caches();
 }
 
@@ -727,6 +2010,11 @@ void Graph::clear() {
   (void)tree_->add_root();
   subnode_tree_pos_.clear();
   tree_pos_to_nid_.clear();
+  subnode_loops_.clear();
+#ifndef NDEBUG
+  validated_loop_carries_.clear();
+#endif
+  sync_loop_presence();
   invalidate_traversal_caches();
   if (auto graphio = get_io()) {
     for (const auto& input : graphio->input_pin_decls_) {
@@ -808,6 +2096,9 @@ void Graph::ensure_forward_caches() const {
         continue;
       }
       const size_t sink_idx = sink_idx_of(vid);
+      if (sink_idx == driver_idx && subnode_loops_.contains(driver_nid)) {
+        continue;  // compact carry: visible edge, absent topological dependency
+      }
       if (sink_idx >= kFirstUserNodeIdx && sink_idx < node_count) {
         f(sink_idx);
       }
@@ -820,6 +2111,9 @@ void Graph::ensure_forward_caches() const {
           continue;
         }
         const size_t sink_idx = sink_idx_of(edge_vid);
+        if (sink_idx == driver_idx && subnode_loops_.contains(driver_nid)) {
+          continue;
+        }
         if (sink_idx >= kFirstUserNodeIdx && sink_idx < node_count) {
           f(sink_idx);
         }
@@ -939,6 +2233,9 @@ void Graph::ensure_backward_caches() const {
         continue;
       }
       const size_t driver_idx = driver_idx_of(vid);
+      if (driver_idx == sink_idx && subnode_loops_.contains(sink_nid)) {
+        continue;  // compact carry: visible edge, absent topological dependency
+      }
       if (driver_idx >= kFirstUserNodeIdx && driver_idx < node_count) {
         f(driver_idx);
       }
@@ -951,6 +2248,9 @@ void Graph::ensure_backward_caches() const {
           continue;
         }
         const size_t driver_idx = driver_idx_of(edge_vid);
+        if (driver_idx == sink_idx && subnode_loops_.contains(sink_nid)) {
+          continue;
+        }
         if (driver_idx >= kFirstUserNodeIdx && driver_idx < node_count) {
           f(driver_idx);
         }
@@ -1302,7 +2602,7 @@ auto Graph::materialize_declared_io_pin(std::string_view name, Port_id port_id, 
   return pin_pid;
 }
 
-void Graph::erase_declared_io_pin(std::string_view                                                name,
+void Graph::erase_declared_io_pin(std::string_view                                                    name,
                                   ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq>& pins_by_name) {
   assert_accessible();
   const auto it = pins_by_name.find(name);  // transparent Name_hash/Name_eq: no std::string alloc
@@ -1486,6 +2786,52 @@ void Node_class::set_subnode(const std::shared_ptr<GraphIO>& graphio) const {
   graph_->set_subnode(*this, graphio->get_gid());
 }
 
+void Node_class::set_subnode(const std::shared_ptr<GraphIO>& graphio, Subnode_loop loop) const {
+  if (graph_ == nullptr) {
+    throw std::logic_error("set_subnode(loop): node is not attached to a graph");
+  }
+  if (graphio == nullptr) {
+    throw std::invalid_argument("set_subnode(loop): null GraphIO");
+  }
+  if (!subnode_loop_domain_valid(loop)) {
+    throw std::invalid_argument("set_subnode(loop): invalid or overflowing loop domain");
+  }
+  if (loop.index_input && !graphio->has_input_with_port_id(*loop.index_input)) {
+    throw std::invalid_argument("set_subnode(loop): index_input is not a callee input");
+  }
+  if (loop.activation_input && !graphio->has_input_with_port_id(*loop.activation_input)) {
+    throw std::invalid_argument("set_subnode(loop): activation_input is not a callee input");
+  }
+  if (loop.next_active_output && !graphio->has_output_with_port_id(*loop.next_active_output)) {
+    throw std::invalid_argument("set_subnode(loop): next_active_output is not a callee output");
+  }
+  if (loop.next_active_output && !loop.activation_input) {
+    throw std::invalid_argument("set_subnode(loop): next_active_output requires activation_input");
+  }
+  if (loop.index_input && loop.activation_input && *loop.index_input == *loop.activation_input) {
+    throw std::invalid_argument("set_subnode(loop): role inputs must be distinct");
+  }
+
+  graph_->set_subnode(*this, graphio->get_gid());
+  // Role pins are part of the compact site's typed boundary even when they
+  // have no stored edge (the index is supplied by each occurrence).
+  if (loop.index_input) {
+    (void)create_sink_pin(*loop.index_input);
+  }
+  if (loop.activation_input) {
+    (void)create_sink_pin(*loop.activation_input);
+  }
+  if (loop.next_active_output) {
+    (void)create_driver_pin(*loop.next_active_output);
+  }
+  graph_->subnode_loops_.insert_or_assign(raw_nid & ~static_cast<Nid>(3), std::move(loop));
+#ifndef NDEBUG
+  graph_->validated_loop_carries_.erase(raw_nid & ~static_cast<Nid>(3));
+#endif
+  graph_->sync_loop_presence();
+  graph_->dirty_ = true;
+}
+
 Gid Node_class::get_subnode_gid() const {
   assert(graph_ != nullptr && "get_subnode_gid: node is not attached to a graph");
   const auto* entry = graph_->ref_node(raw_nid);
@@ -1514,6 +2860,264 @@ std::shared_ptr<Graph> Node_class::get_subnode_graph() const {
     return {};
   }
   return gio->get_graph();
+}
+
+bool Node_class::is_loop_subnode() const {
+  assert(graph_ != nullptr && "is_loop_subnode: node is not attached to a graph");
+  return graph_->subnode_loops_.contains(raw_nid & ~static_cast<Nid>(3));
+}
+
+std::optional<Subnode_loop> Node_class::subnode_loop() const {
+  assert(graph_ != nullptr && "subnode_loop: node is not attached to a graph");
+  const auto it = graph_->subnode_loops_.find(raw_nid & ~static_cast<Nid>(3));
+  if (it == graph_->subnode_loops_.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+Subnode_group Node_class::subnode_group() const {
+  assert(get_subnode_gid() != Gid_invalid && "subnode_group: node is not a Sub");
+  return Subnode_group(*this);
+}
+
+GraphIO& Subnode_group::target_io() const {
+  auto io = node_.get_subnode_io();
+  assert(io != nullptr && "Subnode_group::target_io: target declaration is unavailable");
+  return *io;
+}
+
+uint64_t Subnode_group::size() const {
+  const auto desc = loop();
+  return desc ? desc->count : 1;
+}
+
+bool Subnode_group::is_loop() const { return node_.is_loop_subnode(); }
+
+std::optional<Subnode_loop> Subnode_group::loop() const { return node_.subnode_loop(); }
+
+LoopCarryRange Subnode_group::carries() const {
+  LoopCarryRange result;
+  if (!is_loop()) {
+    return result;
+  }
+  for (const auto& edge : node_.out_edges()) {
+    if (edge.driver.get_master_node() == node_ && edge.sink.get_master_node() == node_) {
+      result.push_back(Loop_carry(edge.sink.get_port_id(), edge.driver.get_port_id(), edge));
+    }
+  }
+  return result;
+}
+
+SubnodeOccurrenceRange Subnode_group::occurrences() const { return SubnodeOccurrenceRange(*this); }
+
+OutputBindingRange Subnode_group::zero_count_output_bindings() const {
+  OutputBindingRange result;
+  const auto         desc = loop();
+  if (!desc || desc->count != 0) {
+    return result;
+  }
+  for (const auto& carry : carries()) {
+    Output_binding binding;
+    binding.output_port_       = carry.output_port();
+    binding.kind_              = Output_binding_kind::inactive_carry_bypass;
+    binding.source_input_port_ = carry.input_port();
+    for (const auto& edge : node_.out_edges()) {
+      if (edge.sink.get_master_node() != node_ && edge.driver.get_port_id() == carry.output_port()) {
+        binding.stored_edges_.push_back(edge);
+      }
+    }
+    result.push_back(std::move(binding));
+  }
+  return result;
+}
+
+std::optional<int64_t> Subnode_occurrence::index_value() const {
+  const auto desc = group_.loop();
+  if (!desc) {
+    return std::nullopt;
+  }
+  return desc->index_at(ordinal_);
+}
+
+Occurrence_path Subnode_occurrence::path() const {
+  const auto                             node    = group_.base_node();
+  auto                                   storage = std::make_shared<detail::Occurrence_path_storage>();
+  detail::Occurrence_path_storage::Entry entry;
+  storage->entries.front().structural_hash = detail::occurrence_path_root_hash(node.get_root_gid());
+  entry.step.subnode                       = node.get_definition_index();
+  if (group_.is_loop()) {
+    entry.step.ordinal = ordinal_;
+  }
+  entry.structural_hash = detail::occurrence_path_extend_hash(storage->entries.front().structural_hash, entry.step);
+  storage->entries.push_back(std::move(entry));
+  return Occurrence_path(node.get_root_gid(), std::move(storage), 1);
+}
+
+InputBindingRange Subnode_occurrence::input_bindings() const {
+  InputBindingRange result;
+  const auto        node = group_.base_node();
+  const auto        desc = group_.loop();
+  auto&             io   = group_.target_io();
+
+  const auto external_edges = [&](Port_id port) {
+    std::vector<Edge_class> edges;
+    for (const auto& edge : node.inp_edges()) {
+      if (edge.driver.get_master_node() != node && edge.sink.get_port_id() == port) {
+        edges.push_back(edge);
+      }
+    }
+    return edges;
+  };
+  const auto add = [&](Port_id                 port,
+                       Input_binding_kind      kind,
+                       std::optional<Port_id>  source_port    = std::nullopt,
+                       std::optional<uint64_t> source_ordinal = std::nullopt) -> Input_binding& {
+    Input_binding binding;
+    binding.input_port_     = port;
+    binding.kind_           = kind;
+    binding.source_port_    = source_port;
+    binding.source_ordinal_ = source_ordinal;
+    result.push_back(std::move(binding));
+    return result.back();
+  };
+
+  const auto carries = group_.carries();
+  for (const auto& input : io.get_input_pin_decls()) {
+    if (!desc) {
+      auto& binding         = add(input.port_id, Input_binding_kind::invariant_external);
+      binding.stored_edges_ = external_edges(input.port_id);
+      continue;
+    }
+    if (desc->index_input && input.port_id == *desc->index_input) {
+      auto& binding        = add(input.port_id, Input_binding_kind::domain_index);
+      binding.index_value_ = desc->index_at(ordinal_);
+      continue;
+    }
+    if (desc->activation_input && input.port_id == *desc->activation_input) {
+      if (ordinal_ == 0 || !desc->next_active_output) {
+        auto& binding         = add(input.port_id, Input_binding_kind::external_activation);
+        binding.stored_edges_ = external_edges(input.port_id);
+      } else {
+        (void)add(input.port_id, Input_binding_kind::previous_occurrence_activation, input.port_id, ordinal_ - 1);
+        (void)add(input.port_id, Input_binding_kind::previous_occurrence_next_active, *desc->next_active_output, ordinal_ - 1);
+      }
+      continue;
+    }
+
+    const auto carry = std::ranges::find_if(carries, [&](const auto& item) { return item.input_port() == input.port_id; });
+    if (carry != carries.end()) {
+      if (ordinal_ == 0) {
+        auto& binding         = add(input.port_id, Input_binding_kind::carry_initial);
+        binding.stored_edges_ = external_edges(input.port_id);
+      } else {
+        (void)add(input.port_id, Input_binding_kind::previous_occurrence_output, carry->output_port(), ordinal_ - 1);
+        if (desc->activation_input) {
+          (void)add(input.port_id, Input_binding_kind::inactive_carry_bypass, input.port_id, ordinal_ - 1);
+        }
+      }
+      continue;
+    }
+
+    auto& binding         = add(input.port_id, Input_binding_kind::invariant_external);
+    binding.stored_edges_ = external_edges(input.port_id);
+  }
+  return result;
+}
+
+OutputBindingRange Subnode_occurrence::output_bindings() const {
+  OutputBindingRange result;
+  if (ordinal_ + 1 != group_.size()) {
+    return result;
+  }
+  const auto node = group_.base_node();
+  for (const auto& output : group_.target_io().get_output_pin_decls()) {
+    Output_binding binding;
+    binding.output_port_ = output.port_id;
+    binding.kind_        = Output_binding_kind::external_reader;
+    for (const auto& edge : node.out_edges()) {
+      if (edge.sink.get_master_node() != node && edge.driver.get_port_id() == output.port_id) {
+        binding.stored_edges_.push_back(edge);
+      }
+    }
+    if (!binding.stored_edges_.empty()) {
+      result.push_back(std::move(binding));
+    }
+  }
+  return result;
+}
+
+void Subnode_group::validate() const {
+  const auto desc = loop();
+  if (!desc) {
+    return;
+  }
+  const auto require = [](bool condition, const char* message) {
+    if (!condition) {
+      throw std::logic_error(message);
+    }
+  };
+  require(subnode_loop_domain_valid(*desc), "Subnode_group::validate: invalid loop domain");
+
+  auto io = node_.get_subnode_io();
+  require(io != nullptr, "Subnode_group::validate: target declaration is unavailable");
+  require(!desc->index_input || io->has_input_with_port_id(*desc->index_input),
+          "Subnode_group::validate: index_input is not a callee input");
+  require(!desc->activation_input || io->has_input_with_port_id(*desc->activation_input),
+          "Subnode_group::validate: activation_input is not a callee input");
+  require(!desc->next_active_output || io->has_output_with_port_id(*desc->next_active_output),
+          "Subnode_group::validate: next_active_output is not a callee output");
+  require(!desc->next_active_output || desc->activation_input,
+          "Subnode_group::validate: next_active_output requires activation_input");
+
+  ankerl::unordered_dense::set<Port_id> carry_inputs;
+  ankerl::unordered_dense::set<Port_id> carry_outputs;
+  for (const auto& carry : carries()) {
+    require(carry_inputs.insert(carry.input_port()).second, "Subnode_group::validate: duplicate carry destination");
+    carry_outputs.insert(carry.output_port());
+    require(io->has_input_with_port_id(carry.input_port()), "Subnode_group::validate: carry destination is not a callee input");
+    require(io->has_output_with_port_id(carry.output_port()), "Subnode_group::validate: carry source is not a callee output");
+    require(!desc->index_input || carry.input_port() != *desc->index_input,
+            "Subnode_group::validate: index input is a carry destination");
+    require(!desc->activation_input || carry.input_port() != *desc->activation_input,
+            "Subnode_group::validate: activation input is a carry destination");
+
+    const auto input            = node_.get_sink_pin(carry.input_port());
+    size_t     self_drivers     = 0;
+    size_t     external_drivers = 0;
+    for (const auto& edge : input.inp_edges()) {
+      if (edge.driver.get_master_node() == node_) {
+        ++self_drivers;
+      } else {
+        ++external_drivers;
+      }
+    }
+    require(self_drivers == 1 && external_drivers == 1,
+            "Subnode_group::validate: carry input needs one self-edge and one external initial driver");
+  }
+
+  if (desc->index_input) {
+    require(node_.get_sink_pin(*desc->index_input).inp_edges().empty(),
+            "Subnode_group::validate: index input must be occurrence-supplied");
+  }
+  if (desc->activation_input) {
+    const auto edges = node_.get_sink_pin(*desc->activation_input).inp_edges();
+    require(edges.size() == 1 && edges.front().driver.get_master_node() != node_,
+            "Subnode_group::validate: activation input needs exactly one external driver");
+  }
+
+  if (desc->count == 0) {
+    for (const auto& edge : node_.out_edges()) {
+      if (edge.sink.get_master_node() == node_) {
+        continue;
+      }
+      require(carry_outputs.contains(edge.driver.get_port_id()),
+              "Subnode_group::validate: count-zero non-carry output has consumers");
+    }
+  }
+#ifndef NDEBUG
+  node_.get_graph()->debug_mark_loop_validated(node_.get_debug_nid());
+#endif
 }
 
 void Node_class::set_type(Type type) const {
@@ -1694,8 +3298,14 @@ void Graph::set_subnode(Nid nid, Gid gid) {
   // an infinite loop deep inside an iterator. Compiled out under NDEBUG.
   assert(!would_create_cycle(gid) && "set_subnode: structure-tree cycle detected");
 
-  nid       &= ~static_cast<Nid>(3);
-  auto pool  = get_overflow_pool();
+  nid &= ~static_cast<Nid>(3);
+  // Calling the ordinary overload explicitly demotes any prior compact loop.
+  subnode_loops_.erase(nid);
+#ifndef NDEBUG
+  validated_loop_carries_.erase(nid);
+#endif
+  sync_loop_presence();
+  auto pool = get_overflow_pool();
   ref_node(nid)->set_subnode(nid, gid, pool);
 
   // Persistent hierarchy: add a child to this graph's tree representing
@@ -1810,6 +3420,9 @@ void Graph::add_edge(Vid driver_id, Vid sink_id) {
   add_edge_int(driver_id, sink_id);
   add_edge_int(sink_id, driver_id);
   patch_traversal_caches_for_edge(driver_id, sink_id, +1);
+#ifndef NDEBUG
+  debug_revalidate_loop_edge_mutation(driver_id, sink_id);
+#endif
 }
 
 void Edge_class::del_edge() const {
@@ -1827,9 +3440,493 @@ void Graph::del_edge(Pin_class driver_pin, Pin_class sink_pin) {
   const Vid sink_vid   = static_cast<Vid>(sink_pin.get_debug_pid()) & ~static_cast<Vid>(2);
   del_edge_int(driver_pin.get_debug_pid(), sink_pin.get_debug_pid());
   patch_traversal_caches_for_edge(driver_vid, sink_vid, -1);
+#ifndef NDEBUG
+  debug_revalidate_loop_edge_mutation(driver_vid, sink_vid);
+#endif
 }
 
 FastClassRange Graph::fast_class() const noexcept { return FastClassRange(const_cast<Graph*>(this)); }
+
+Body_view Graph::body() const noexcept {
+  assert_accessible();
+  return Body_view(const_cast<Graph*>(this));
+}
+
+Definitions_view Graph::definitions() const noexcept {
+  assert_accessible();
+  return Definitions_view(const_cast<Graph*>(this));
+}
+
+Definitions_view Graph::definitions(Hierarchy_policy policy) const noexcept {
+  assert_accessible();
+  return Definitions_view(const_cast<Graph*>(this), policy);
+}
+
+Grouped_hierarchy_view Graph::grouped_hierarchy() const noexcept {
+  assert_accessible();
+  return Grouped_hierarchy_view(const_cast<Graph*>(this));
+}
+
+Grouped_hierarchy_view Graph::grouped_hierarchy(Hierarchy_policy policy) const noexcept {
+  assert_accessible();
+  return Grouped_hierarchy_view(const_cast<Graph*>(this), policy);
+}
+
+Occurrences_view Graph::occurrences() const noexcept {
+  assert_accessible();
+  return Occurrences_view(const_cast<Graph*>(this));
+}
+
+Occurrences_view Graph::occurrences(Hierarchy_policy policy) const noexcept {
+  assert_accessible();
+  return Occurrences_view(const_cast<Graph*>(this), policy);
+}
+
+Grouped_hierarchy_view Graph::grouped_hierarchy(const ankerl::unordered_dense::set<Gid>* opaque) const noexcept {
+  assert_accessible();
+  return Grouped_hierarchy_view(const_cast<Graph*>(this), opaque);
+}
+
+Occurrences_view Graph::occurrences(const ankerl::unordered_dense::set<Gid>* opaque) const noexcept {
+  assert_accessible();
+  return Occurrences_view(const_cast<Graph*>(this), opaque);
+}
+
+namespace {
+
+std::pair<bool, bool> cut_flags(Cut_placement cuts) {
+  switch (cuts) {
+    case Cut_placement::first: return {true, false};
+    case Cut_placement::last : return {false, true};
+    case Cut_placement::both : return {true, true};
+    case Cut_placement::omit : return {false, false};
+  }
+  return {true, false};
+}
+
+}  // namespace
+
+OccurrenceNodeRange::const_iterator::const_iterator(std::shared_ptr<const std::vector<Occurrence_node>> entities, size_t index,
+                                                    std::shared_ptr<detail::Hierarchy_view_state> state)
+    : entities_(std::move(entities)), index_(index), state_(std::move(state)) {}
+
+OccurrenceNodeRange::const_iterator::const_iterator(std::shared_ptr<detail::Occurrence_node_cursor> cursor)
+    : cursor_(std::move(cursor)) {}
+
+auto OccurrenceNodeRange::const_iterator::operator*() const -> reference {
+  if (cursor_) {
+    cursor_->state->assert_unmutated();
+    return cursor_->current;
+  }
+  detail::assert_hierarchy_view_unmutated(state_);
+  return (*entities_)[index_];
+}
+
+auto OccurrenceNodeRange::const_iterator::operator->() const -> pointer { return std::addressof(operator*()); }
+
+auto OccurrenceNodeRange::const_iterator::operator++() -> const_iterator& {
+  if (cursor_) {
+    cursor_->advance();
+    if (cursor_->done) {
+      cursor_.reset();
+    }
+  } else if (entities_) {
+    detail::assert_hierarchy_view_unmutated(state_);
+    ++index_;
+  }
+  return *this;
+}
+
+auto OccurrenceNodeRange::const_iterator::operator++(int) -> const_iterator {
+  auto old = *this;
+  if (cursor_) {
+    old.cursor_ = std::make_shared<detail::Occurrence_node_cursor>(*cursor_);
+  }
+  ++*this;
+  return old;
+}
+
+bool OccurrenceNodeRange::const_iterator::operator==(const const_iterator& other) const noexcept {
+  if (entities_ || other.entities_) {
+    return entities_ == other.entities_ && index_ == other.index_;
+  }
+  if (cursor_ && other.cursor_) {
+    return cursor_->state == other.cursor_->state && cursor_->position == other.cursor_->position
+           && cursor_->done == other.cursor_->done;
+  }
+  return !cursor_ && !other.cursor_;
+}
+
+OccurrenceNodeRange::OccurrenceNodeRange() : entities_(std::make_shared<const std::vector<Occurrence_node>>()) {}
+
+OccurrenceNodeRange::OccurrenceNodeRange(std::vector<Occurrence_node> entities, std::shared_ptr<detail::Hierarchy_view_state> state)
+    : entities_(std::make_shared<const std::vector<Occurrence_node>>(std::move(entities))), state_(std::move(state)) {}
+
+OccurrenceNodeRange::OccurrenceNodeRange(std::shared_ptr<detail::Hierarchy_view_state> state)
+    : state_(std::move(state)), streaming_(true) {}
+
+OccurrenceNodeRange OccurrenceNodeRange::streaming(std::shared_ptr<detail::Hierarchy_view_state> state) {
+  return OccurrenceNodeRange(std::move(state));
+}
+
+auto OccurrenceNodeRange::begin() const -> const_iterator {
+  if (!streaming_) {
+    return const_iterator(entities_, 0, state_);
+  }
+  auto cursor = std::make_shared<detail::Occurrence_node_cursor>(state_);
+  if (cursor->done) {
+    return {};
+  }
+  return const_iterator(std::move(cursor));
+}
+
+auto OccurrenceNodeRange::end() const -> const_iterator {
+  if (!streaming_) {
+    return const_iterator(entities_, entities_->size(), state_);
+  }
+  return {};
+}
+
+bool OccurrenceNodeRange::empty() const { return begin() == end(); }
+
+std::optional<uint64_t> OccurrenceNodeRange::size_exact() const {
+  if (!streaming_) {
+    return static_cast<uint64_t>(entities_->size());
+  }
+  return state_ ? state_->count_nodes(state_->expand_loops) : std::optional<uint64_t>(0);
+}
+
+uint64_t OccurrenceNodeRange::size_hint() const { return size_exact().value_or(std::numeric_limits<uint64_t>::max()); }
+
+size_t OccurrenceNodeRange::size() const {
+  const uint64_t value = size_hint();
+  return value > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ? std::numeric_limits<size_t>::max()
+                                                                           : static_cast<size_t>(value);
+}
+
+const Occurrence_node& OccurrenceNodeRange::front() const {
+  auto it = begin();
+  assert(it != end() && "OccurrenceNodeRange::front on an empty range");
+  front_cache_ = *it;
+  return *front_cache_;
+}
+
+FastClassRange    Body_view::nodes() const noexcept { return graph_->fast_class(); }
+FastClassRange    Body_view::nodes(Node_order::storage_t) const noexcept { return graph_->fast_class(); }
+ForwardClassRange Body_view::nodes(Node_order::forward_t, Cut_placement cuts) const noexcept {
+  const auto [first, last] = cut_flags(cuts);
+  return graph_->forward_class(first, last);
+}
+BackwardClassRange Body_view::nodes(Node_order::reverse_t, Cut_placement cuts) const noexcept {
+  const auto [first, last] = cut_flags(cuts);
+  return graph_->backward_class(first, last);
+}
+
+namespace {
+
+std::shared_ptr<detail::Hierarchy_view_state> make_hierarchy_state(Graph* graph, bool expand_loops, Hierarchy_policy policy,
+                                                                   const ankerl::unordered_dense::set<Gid>* opaque) {
+  return std::make_shared<detail::Hierarchy_view_state>(graph, expand_loops, policy, opaque);
+}
+
+std::vector<Occurrence_node> order_occurrence_nodes(std::vector<Occurrence_node> nodes, bool forward, Cut_placement cuts) {
+  const size_t                                   count = nodes.size();
+  std::unordered_map<Occurrence_index, uint32_t> index;
+  index.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    index.emplace(nodes[i].get_occurrence_index(), i);
+  }
+
+  std::vector<uint32_t>              indegree(count, 0);
+  std::vector<std::vector<uint32_t>> successors(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (nodes[i].is_loop_break()) {
+      continue;
+    }
+    const auto add_dependency = [&](const Occurrence_node& dependency) {
+      const auto it = index.find(dependency.get_occurrence_index());
+      if (it == index.end() || it->second == i) {
+        return;
+      }
+      successors[it->second].push_back(i);
+      ++indegree[i];
+    };
+    if (forward) {
+      for (const auto& edge : nodes[i].inp_edges()) {
+        add_dependency(edge.driver.get_master_node());
+      }
+    } else {
+      for (const auto& edge : nodes[i].out_edges()) {
+        add_dependency(edge.sink.get_master_node());
+      }
+    }
+  }
+
+  const bool emit_cuts_first = cuts == Cut_placement::first || cuts == Cut_placement::both;
+  const bool emit_cuts_last  = cuts == Cut_placement::last || cuts == Cut_placement::both;
+  std::priority_queue<uint32_t, std::vector<uint32_t>, std::greater<>> ready;
+  for (uint32_t i = 0; i < count; ++i) {
+    // Seed EVERY in-degree-zero node, cut points included. A loop_break node is
+    // a source of the ordering DAG no matter where it is emitted, so it must
+    // relax its successors; whether it is emitted here is decided below by
+    // emit_cuts_first. Skipping the seed left the whole post-flop cone stuck at
+    // in-degree > 0 for Cut_placement::last/omit, which then fell out to the
+    // raw storage-order tail.
+    if (indegree[i] == 0) {
+      ready.push(i);
+    }
+  }
+  std::vector<char>            emitted(count, false);
+  std::vector<Occurrence_node> ordered;
+  ordered.reserve(count + (emit_cuts_last ? count : 0));
+  while (!ready.empty()) {
+    const uint32_t i = ready.top();
+    ready.pop();
+    if (emitted[i]) {
+      continue;
+    }
+    emitted[i] = true;
+    if (!nodes[i].is_loop_break() || emit_cuts_first) {
+      ordered.push_back(nodes[i]);
+    }
+    for (const uint32_t successor : successors[i]) {
+      if (indegree[successor] != 0 && --indegree[successor] == 0) {
+        ready.push(successor);
+      }
+    }
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!emitted[i] && !nodes[i].is_loop_break()) {
+      ordered.push_back(nodes[i]);
+    }
+  }
+  if (emit_cuts_last) {
+    for (const auto& node : nodes) {
+      if (node.is_loop_break()) {
+        ordered.push_back(node);
+      }
+    }
+  }
+  return ordered;
+}
+
+std::vector<std::shared_ptr<Graph>> definition_graphs(Graph* root, const std::shared_ptr<detail::Hierarchy_view_state>& state,
+                                                      bool reverse) {
+  if (root == nullptr) {
+    return {};
+  }
+  state->assert_unmutated();
+  std::vector<Gid>                                discovery;
+  std::unordered_map<Gid, std::shared_ptr<Graph>> graph_by_gid;
+  std::unordered_map<Gid, std::vector<Gid>>       callees;
+  ankerl::unordered_dense::set<Gid>               active;
+
+  const auto remember = [&](Graph* graph) {
+    if (graph_by_gid.contains(graph->get_gid())) {
+      return;
+    }
+    auto io     = graph->get_io();
+    auto shared = io ? io->get_graph() : std::shared_ptr<Graph>();
+    if (!shared) {
+      shared = std::shared_ptr<Graph>(graph, [](Graph*) {});
+    }
+    graph_by_gid.emplace(graph->get_gid(), std::move(shared));
+    discovery.push_back(graph->get_gid());
+  };
+
+  std::function<void(Graph*, uint32_t)> explore = [&](Graph* graph, uint32_t path_handle) {
+    if (graph == nullptr || active.contains(graph->get_gid())) {
+      return;
+    }
+    remember(graph);
+    active.insert(graph->get_gid());
+    for (const auto node : graph->body().nodes()) {
+      auto child = state->subgraph(node);
+      if (!child) {
+        continue;
+      }
+      const auto action = state->action(path_handle, node);
+      if (action == Instance_action::prune) {
+        continue;
+      }
+      remember(child.get());
+      auto& edges = callees[graph->get_gid()];
+      if (std::ranges::find(edges, child->get_gid()) == edges.end()) {
+        edges.push_back(child->get_gid());
+      }
+      if (action == Instance_action::descend) {
+        const uint32_t child_path = state->append_path(path_handle, node, std::nullopt);
+        explore(child.get(), child_path);
+      }
+    }
+    active.erase(graph->get_gid());
+  };
+  explore(root, 0);
+
+  std::vector<Gid>                  ordered_gids;
+  ankerl::unordered_dense::set<Gid> visited;
+  std::function<void(Gid)>          callee_first = [&](Gid gid) {
+    if (!visited.insert(gid).second) {
+      return;
+    }
+    for (const Gid child : callees[gid]) {
+      callee_first(child);
+    }
+    ordered_gids.push_back(gid);
+  };
+  for (const Gid gid : discovery) {
+    callee_first(gid);
+  }
+  if (reverse) {
+    std::ranges::reverse(ordered_gids);
+  }
+  std::vector<std::shared_ptr<Graph>> result;
+  result.reserve(ordered_gids.size());
+  for (const Gid gid : ordered_gids) {
+    result.push_back(graph_by_gid.at(gid));
+  }
+  state->refresh_epoch();
+  return result;
+}
+
+}  // namespace
+
+std::shared_ptr<detail::Hierarchy_view_state> Definitions_view::state() const {
+  if (!state_) {
+    state_ = make_hierarchy_state(graph_, false, policy_, nullptr);
+  }
+  return state_;
+}
+
+Entity_range<std::shared_ptr<Graph>> Definitions_view::graphs() const {
+  return Entity_range<std::shared_ptr<Graph>>(definition_graphs(graph_, state(), false));
+}
+
+Entity_range<std::shared_ptr<Graph>> Definitions_view::graphs(Node_order::reverse_t) const {
+  return Entity_range<std::shared_ptr<Graph>>(definition_graphs(graph_, state(), true));
+}
+
+DefinitionNodeRange Definitions_view::nodes() const { return nodes(Node_order::storage); }
+
+DefinitionNodeRange Definitions_view::nodes(Node_order::storage_t) const {
+  std::vector<Definition_node> result;
+  for (const auto& graph : graphs()) {
+    for (const auto node : graph->body().nodes()) {
+      result.push_back(node);
+    }
+  }
+  return DefinitionNodeRange(std::move(result));
+}
+
+DefinitionNodeRange Definitions_view::nodes(Node_order::forward_t, Cut_placement cuts) const {
+  const auto [first, last] = cut_flags(cuts);
+  std::vector<Definition_node> result;
+  for (const auto& graph : graphs()) {
+    for (const auto node : graph->body().nodes(Node_order::forward, cuts)) {
+      result.push_back(node);
+    }
+  }
+  return DefinitionNodeRange(std::move(result));
+}
+
+DefinitionNodeRange Definitions_view::nodes(Node_order::reverse_t, Cut_placement cuts) const {
+  std::vector<Definition_node> result;
+  for (const auto& graph : graphs(Node_order::reverse)) {
+    for (const auto node : graph->body().nodes(Node_order::reverse, cuts)) {
+      result.push_back(node);
+    }
+  }
+  return DefinitionNodeRange(std::move(result));
+}
+
+OccurrenceNodeRange Grouped_hierarchy_view::nodes() const { return nodes(Node_order::storage); }
+
+std::shared_ptr<detail::Hierarchy_view_state> Grouped_hierarchy_view::state() const {
+  if (!state_) {
+    state_ = make_hierarchy_state(graph_, false, policy_, opaque_);
+  }
+  return state_;
+}
+
+OccurrenceNodeRange Grouped_hierarchy_view::nodes(Node_order::storage_t) const { return OccurrenceNodeRange::streaming(state()); }
+
+OccurrenceNodeRange Grouped_hierarchy_view::nodes(Node_order::forward_t, Cut_placement cuts) const {
+  auto hierarchy = state();
+  return OccurrenceNodeRange(order_occurrence_nodes(hierarchy->storage_nodes(), true, cuts), hierarchy);
+}
+
+OccurrenceNodeRange Grouped_hierarchy_view::nodes(Node_order::reverse_t, Cut_placement cuts) const {
+  auto hierarchy = state();
+  return OccurrenceNodeRange(order_occurrence_nodes(hierarchy->storage_nodes(), false, cuts), hierarchy);
+}
+
+InstanceGroupRange Grouped_hierarchy_view::instances() const {
+  auto hierarchy = state();
+  return InstanceGroupRange(hierarchy->instance_groups(), hierarchy);
+}
+
+Occurrence_pin Grouped_hierarchy_view::lift(Pin_class root_pin) const {
+  assert(root_pin.get_graph() == graph_ && "Grouped_hierarchy_view::lift requires a pin in the root body");
+  return state()->make_pin(root_pin, 0, 0);
+}
+
+Occurrence_node Grouped_hierarchy_view::lift(Node_class root_node) const {
+  assert(root_node.get_graph() == graph_ && "Grouped_hierarchy_view::lift requires a node in the root body");
+  return state()->make_node(root_node, 0, 0);
+}
+
+ReachablePinRange Grouped_hierarchy_view::reachable_pins(std::vector<Occurrence_pin> seeds, Reach_options options) const {
+  return ReachablePinRange(std::move(seeds), options);
+}
+
+std::optional<uint64_t> Grouped_hierarchy_view::size_exact() const { return state()->count_nodes(false); }
+
+uint64_t Grouped_hierarchy_view::size_hint() const { return size_exact().value_or(std::numeric_limits<uint64_t>::max()); }
+
+std::optional<uint64_t> Grouped_hierarchy_view::physical_node_count_exact() const { return state()->count_nodes(true); }
+
+uint64_t Grouped_hierarchy_view::physical_node_count_hint() const {
+  return physical_node_count_exact().value_or(std::numeric_limits<uint64_t>::max());
+}
+
+OccurrenceNodeRange Occurrences_view::nodes() const { return nodes(Node_order::storage); }
+
+std::shared_ptr<detail::Hierarchy_view_state> Occurrences_view::state() const {
+  if (!state_) {
+    state_ = make_hierarchy_state(graph_, true, policy_, opaque_);
+  }
+  return state_;
+}
+
+OccurrenceNodeRange Occurrences_view::nodes(Node_order::storage_t) const { return OccurrenceNodeRange::streaming(state()); }
+
+OccurrenceNodeRange Occurrences_view::nodes(Node_order::forward_t, Cut_placement cuts) const {
+  auto hierarchy = state();
+  return OccurrenceNodeRange(order_occurrence_nodes(hierarchy->storage_nodes(), true, cuts), hierarchy);
+}
+
+OccurrenceNodeRange Occurrences_view::nodes(Node_order::reverse_t, Cut_placement cuts) const {
+  auto hierarchy = state();
+  return OccurrenceNodeRange(order_occurrence_nodes(hierarchy->storage_nodes(), false, cuts), hierarchy);
+}
+
+Occurrence_pin Occurrences_view::lift(Pin_class root_pin) const {
+  assert(root_pin.get_graph() == graph_ && "Occurrences_view::lift requires a pin in the root body");
+  return state()->make_pin(root_pin, 0, 0);
+}
+
+Occurrence_node Occurrences_view::lift(Node_class root_node) const {
+  assert(root_node.get_graph() == graph_ && "Occurrences_view::lift requires a node in the root body");
+  return state()->make_node(root_node, 0, 0);
+}
+
+ReachablePinRange Occurrences_view::reachable_pins(std::vector<Occurrence_pin> seeds, Reach_options options) const {
+  return ReachablePinRange(std::move(seeds), options);
+}
+
+std::optional<uint64_t> Occurrences_view::size_exact() const { return state()->count_nodes(true); }
+
+uint64_t Occurrences_view::size_hint() const { return size_exact().value_or(std::numeric_limits<uint64_t>::max()); }
 
 ForwardClassRange Graph::forward_class(bool loop_break_first, bool loop_break_last) const noexcept {
   assert_accessible();
@@ -2025,8 +4122,8 @@ auto FastHierIterator::operator++() -> FastHierIterator& {
   }
   const auto& entry = frame.graph->node_table[frame.node_idx];
   if (entry.has_subnode() && frame.graph->owner_lib_ != nullptr) {
-    const Gid   sub = entry.get_subnode();
-    const auto* lib = frame.graph->owner_lib_;
+    const Gid   sub       = entry.get_subnode();
+    const auto* lib       = frame.graph->owner_lib_;
     // `opaque_` (explicit) or the ambient Hier_opaque_scope subnodes are NOT
     // descended into (yielded as leaf Sub nodes) — the SAME rule as
     // ForwardHierIterator and the cross-boundary edge resolver. All three must
@@ -2034,7 +4131,7 @@ auto FastHierIterator::operator++() -> FastHierIterator& {
     // caller would cut state inside an instance whose boundary it models as free
     // (pass/lec --collapse => false PROVEN). They contribute no boundary IO under
     // visit_io (we never enter the body).
-    const bool is_opaque = (opaque_ != nullptr && opaque_->find(sub) != opaque_->end()) || hier_is_opaque(sub);
+    const bool  is_opaque = (opaque_ != nullptr && opaque_->find(sub) != opaque_->end()) || hier_is_opaque(sub);
     if (lib->has_graph(sub) && !is_opaque && active_graphs_.find(sub) == active_graphs_.end()) {
       Graph*         child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
       const Nid      subnode_nid = static_cast<Nid>(frame.node_idx) << 2;
@@ -2148,6 +4245,9 @@ void ForwardClassIterator::propagate(size_t driver_idx, size_t /*cursor*/) {
 
   auto try_dec = [&](size_t sink_idx) {
     if (sink_idx < kFirstUserNodeIdx || sink_idx >= node_count_) {
+      return;
+    }
+    if (sink_idx == driver_idx && graph_->subnode_loops_.contains(driver_nid)) {
       return;
     }
     if (is_emitted(sink_idx) || is_source(sink_idx)) {
@@ -2484,7 +4584,7 @@ static std::vector<Node_class> hier_topo_reorder(std::vector<Node_class> raw, bo
 
   std::vector<Node_class> out;
   out.reserve(n);
-  std::vector<char> emitted(n, 0);
+  std::vector<char>                                                    emitted(n, 0);
   // STABLE Kahn: a min-heap keyed by the original (DFS-collected) index, so an
   // input that is already topological is reproduced verbatim and only nodes that
   // genuinely violate the order (a driver emitted after its consumer across a
@@ -2492,8 +4592,12 @@ static std::vector<Node_class> hier_topo_reorder(std::vector<Node_class> raw, bo
   // produce while guaranteeing drivers precede consumers.
   std::priority_queue<uint32_t, std::vector<uint32_t>, std::greater<>> ready;
   for (uint32_t i = 0; i < static_cast<uint32_t>(n); ++i) {
-    if (indeg[i] == 0 && (loop_break_first || !nodes[i].is_loop_break())) {
-      ready.push(i);  // sources: primary-IO-fed nodes and (loop_break_first) the cut nodes
+    // Cut nodes are sources of the ordering DAG regardless of where they are
+    // EMITTED, so they must always be seeded — otherwise everything downstream
+    // of a flop keeps in-degree > 0 under !loop_break_first and drops into the
+    // raw-DFS residual below, out of topological order.
+    if (indeg[i] == 0) {
+      ready.push(i);
     }
   }
   while (!ready.empty()) {
@@ -2503,18 +4607,21 @@ static std::vector<Node_class> hier_topo_reorder(std::vector<Node_class> raw, bo
       continue;
     }
     emitted[i] = 1;
-    out.push_back(nodes[i]);
+    if (loop_break_first || !nodes[i].is_loop_break()) {
+      out.push_back(nodes[i]);
+    }
     for (const uint32_t s : succ[i]) {
       if (indeg[s] > 0 && --indeg[s] == 0) {
         ready.push(s);
       }
     }
   }
-  // Residual — cycle-tails (should not occur once loops are flop-broken) and, when
-  // !loop_break_first, the deferred cut nodes and their cones. Emit them in the
-  // collected (DFS) order so the result is deterministic.
+  // Residual — cycle-tails (should not occur once loops are flop-broken). Emit
+  // them in the collected (DFS) order so the result is deterministic. Cut nodes
+  // are excluded when they are not wanted up front: the loop_break_last replay
+  // below is the single place they appear, so they are never emitted twice.
   for (uint32_t i = 0; i < static_cast<uint32_t>(n); ++i) {
-    if (!emitted[i]) {
+    if (!emitted[i] && (loop_break_first || !nodes[i].is_loop_break())) {
       out.push_back(nodes[i]);
     }
   }
@@ -2613,8 +4720,8 @@ void ForwardHierIterator::descend_step() {
       auto           child_path = std::make_shared<std::vector<Nid>>(*frame.path);
       child_path->push_back(cur_nid & ~static_cast<Nid>(3));
       active_graphs_.insert(sub);
-      stack_.push_back(Frame{child, ForwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos,
-                             std::move(child_path)});
+      stack_.push_back(
+          Frame{child, ForwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos, std::move(child_path)});
     }
   }
   advance();
@@ -2677,6 +4784,9 @@ void BackwardClassIterator::propagate(size_t sink_idx, size_t /*cursor*/) {
 
   auto try_dec = [&](size_t driver_idx) {
     if (driver_idx < kFirstUserNodeIdx || driver_idx >= node_count_) {
+      return;
+    }
+    if (driver_idx == sink_idx && graph_->subnode_loops_.contains(static_cast<Nid>(sink_idx) << 2)) {
       return;
     }
     if (is_emitted(driver_idx) || is_sink(driver_idx)) {
@@ -2944,16 +5054,14 @@ void BackwardHierIterator::descend_step() {
       auto           child_path = std::make_shared<std::vector<Nid>>(*frame.path);
       child_path->push_back(cur_nid & ~static_cast<Nid>(3));
       active_graphs_.insert(sub);
-      stack_.push_back(Frame{child, BackwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos,
-                             std::move(child_path)});
+      stack_.push_back(
+          Frame{child, BackwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos, std::move(child_path)});
     }
   }
   advance();
 }
 
-BackwardHierIterator BackwardHierRange::begin() const {
-  return BackwardHierIterator(graph_, loop_break_first_, loop_break_last_);
-}
+BackwardHierIterator BackwardHierRange::begin() const { return BackwardHierIterator(graph_, loop_break_first_, loop_break_last_); }
 
 // --- Hier_instance members ---
 
@@ -2995,6 +5103,21 @@ Node_class Hier_instance::get_parent_node() const {
   return Node_class(parent_graph_, root_gid_, hier_pos_, parent_nid_);
 }
 
+Node_class Hier_instance::base_node() const {
+  if (!is_valid()) {
+    return Node_class();
+  }
+  return Node_class(parent_graph_, parent_nid_);
+}
+
+GraphIO& Hier_instance::target_io() const {
+  auto io = base_node().get_subnode_io();
+  assert(io != nullptr && "Instance_group::target_io: target is unavailable");
+  return *io;
+}
+
+Subnode_group Hier_instance::subnode_group() const { return base_node().subnode_group(); }
+
 bool Hier_instance::is_valid() const noexcept {
   if (parent_graph_ == nullptr) {
     return false;
@@ -3020,15 +5143,19 @@ HierIterator::HierIterator(Graph* root_graph) {
   if (root_graph == nullptr || root_graph->tree_ == nullptr) {
     return;
   }
-  root_gid_  = root_graph->self_gid_;
+  root_gid_                                      = root_graph->self_gid_;
+  path_storage_                                  = std::make_shared<detail::Occurrence_path_storage>();
+  path_storage_->entries.front().structural_hash = detail::occurrence_path_root_hash(root_gid_);
   // Seed the top frame with pre_order over the root graph's tree, plus a
   // hier_pos of ROOT so the yielded instances match the top-level naming that
   // fast_hier and forward_hier produce (their root frame also uses ROOT).
-  auto* tree = root_graph->tree_.get();
+  auto* tree                                     = root_graph->tree_.get();
   stack_.push_back(Frame{root_graph,
                          Tree::pre_order_iterator(static_cast<Tree_pos>(ROOT), tree, false),
                          Tree::pre_order_iterator(INVALID, tree, false),
-                         static_cast<Tree_pos>(ROOT)});
+                         static_cast<Tree_pos>(ROOT),
+                         0,
+                         1});
   if (root_gid_ != Gid_invalid) {
     active_graphs_.insert(root_gid_);
   }
@@ -3078,21 +5205,57 @@ void HierIterator::advance_to_next_instance() {
 }
 
 Hier_instance HierIterator::operator*() const {
-  const Frame&   frame     = stack_.back();
-  const Tree_pos pos       = (*frame.cur).get_debug_nid();
-  auto           nid_it    = frame.graph->tree_pos_to_nid_.find(pos);
-  const Nid      owner_nid = nid_it->second;
-  return Hier_instance(frame.graph, root_gid_, frame.hier_pos, pos, owner_nid);
+  const Frame&   frame       = stack_.back();
+  const Tree_pos pos         = (*frame.cur).get_debug_nid();
+  auto           nid_it      = frame.graph->tree_pos_to_nid_.find(pos);
+  const Nid      owner_nid   = nid_it->second;
+  auto           storage     = path_storage_;
+  uint32_t       path_handle = 0;
+  if (memo_graph_ == frame.graph && memo_pos_ == pos && memo_parent_ == frame.path_handle) {
+    path_handle = memo_path_handle_;  // same cursor: reuse the interned entry
+  } else {
+    detail::Occurrence_path_storage::Entry path_entry;
+    path_entry.parent       = frame.path_handle;
+    path_entry.step.subnode = Definition_index{frame.graph->self_gid_, owner_nid};
+    path_entry.step.ordinal = std::nullopt;
+    path_entry.structural_hash
+        = detail::occurrence_path_extend_hash(storage->entries[frame.path_handle].structural_hash, path_entry.step);
+    storage->entries.push_back(std::move(path_entry));
+    path_handle       = static_cast<uint32_t>(storage->entries.size() - 1);
+    memo_graph_       = frame.graph;
+    memo_pos_         = pos;
+    memo_parent_      = frame.path_handle;
+    memo_path_handle_ = path_handle;
+  }
+
+  uint64_t site_size = 1;
+  if (const auto loop = frame.graph->subnode_loops_.find(owner_nid); loop != frame.graph->subnode_loops_.end()) {
+    site_size = loop->second.count;
+  }
+  uint64_t multiplicity = 0;
+  if (site_size != 0 && frame.multiplicity > std::numeric_limits<uint64_t>::max() / site_size) {
+    multiplicity = std::numeric_limits<uint64_t>::max();
+  } else {
+    multiplicity = frame.multiplicity * site_size;
+  }
+  return Hier_instance(frame.graph,
+                       root_gid_,
+                       frame.hier_pos,
+                       pos,
+                       owner_nid,
+                       Occurrence_path(root_gid_, std::move(storage), path_handle),
+                       multiplicity);
 }
 
 HierIterator& HierIterator::operator++() {
-  Frame&         frame     = stack_.back();
-  const Tree_pos this_pos  = (*frame.cur).get_debug_nid();
-  auto           it        = frame.graph->tree_pos_to_nid_.find(this_pos);
-  const Nid      owner_nid = (it != frame.graph->tree_pos_to_nid_.end()) ? it->second : static_cast<Nid>(0);
-  const auto*    entry     = frame.graph->ref_node(owner_nid);
-  const Gid      sub       = entry->get_subnode();
-  const auto*    lib       = frame.graph->owner_lib_;
+  const Hier_instance current   = operator*();
+  Frame&              frame     = stack_.back();
+  const Tree_pos      this_pos  = (*frame.cur).get_debug_nid();
+  auto                it        = frame.graph->tree_pos_to_nid_.find(this_pos);
+  const Nid           owner_nid = (it != frame.graph->tree_pos_to_nid_.end()) ? it->second : static_cast<Nid>(0);
+  const auto*         entry     = frame.graph->ref_node(owner_nid);
+  const Gid           sub       = entry->get_subnode();
+  const auto*         lib       = frame.graph->owner_lib_;
   ++frame.cur;
   if (sub != Gid_invalid && lib != nullptr && lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
     Graph* child = const_cast<Graph*>(lib->get_graph(sub).get());
@@ -3105,7 +5268,9 @@ HierIterator& HierIterator::operator++() {
       stack_.push_back(Frame{child,
                              Tree::pre_order_iterator(static_cast<Tree_pos>(ROOT), child_tree, false),
                              Tree::pre_order_iterator(INVALID, child_tree, false),
-                             this_pos});
+                             this_pos,
+                             current.path().interned_handle(),
+                             current.multiplicity()});
     }
   }
   advance_to_next_instance();
@@ -4096,6 +6261,11 @@ void Graph::delete_node(Nid nid) {
     overflow_sets()[node->get_overflow_idx()].clear();
   }
   node_table[actual_id] = NodeEntry();
+  subnode_loops_.erase(nid);
+#ifndef NDEBUG
+  validated_loop_carries_.erase(nid);
+#endif
+  sync_loop_presence();
   invalidate_traversal_caches();
 }
 
@@ -4227,9 +6397,10 @@ std::string Graph::print() const {
 // Binary persistence
 // --------------------------------------------------------------------------
 
-static constexpr uint32_t GRAPH_BODY_MAGIC   = 0x48484742;  // "HHGB"
-static constexpr uint32_t GRAPH_BODY_VERSION = 3;
-static constexpr uint32_t ENDIAN_CHECK       = 0x01020304;
+static constexpr uint32_t GRAPH_BODY_MAGIC     = 0x48484742;  // "HHGB"
+static constexpr uint32_t GRAPH_BODY_VERSION   = 5;
+static constexpr uint32_t SUBNODE_LOOP_VERSION = 1;
+static constexpr uint32_t ENDIAN_CHECK         = 0x01020304;
 
 void Graph::save_body(const std::string& dir_path) const {
   namespace fs = std::filesystem;
@@ -4281,6 +6452,38 @@ void Graph::save_body(const std::string& dir_path) const {
     // Bulk write node_table and pin_table — pointer-free POD arrays.
     ofs.write(reinterpret_cast<const char*>(node_table.data()), static_cast<std::streamsize>(node_count * sizeof(NodeEntry)));
     ofs.write(reinterpret_cast<const char*>(pin_table.data()), static_cast<std::streamsize>(pin_count * sizeof(PinEntry)));
+
+    // Native compact-loop descriptors. Write in nid order so persistence is a
+    // pure function of stored structure, independent of hash-map iteration.
+    std::vector<Nid> loop_nids;
+    loop_nids.reserve(subnode_loops_.size());
+    for (const auto& [nid, loop] : subnode_loops_) {
+      (void)loop;
+      loop_nids.push_back(nid);
+    }
+    std::ranges::sort(loop_nids);
+    const uint64_t loop_count = loop_nids.size();
+    ofs.write(reinterpret_cast<const char*>(&loop_count), sizeof(loop_count));
+    for (const Nid nid : loop_nids) {
+      const auto&   loop  = subnode_loops_.at(nid);
+      const uint8_t flags = static_cast<uint8_t>((loop.index_input ? 1U : 0U) | (loop.activation_input ? 2U : 0U)
+                                                 | (loop.next_active_output ? 4U : 0U));
+      ofs.write(reinterpret_cast<const char*>(&nid), sizeof(nid));
+      ofs.write(reinterpret_cast<const char*>(&SUBNODE_LOOP_VERSION), sizeof(SUBNODE_LOOP_VERSION));
+      ofs.write(reinterpret_cast<const char*>(&loop.first), sizeof(loop.first));
+      ofs.write(reinterpret_cast<const char*>(&loop.step), sizeof(loop.step));
+      ofs.write(reinterpret_cast<const char*>(&loop.count), sizeof(loop.count));
+      ofs.write(reinterpret_cast<const char*>(&flags), sizeof(flags));
+      if (loop.index_input) {
+        ofs.write(reinterpret_cast<const char*>(&*loop.index_input), sizeof(Port_id));
+      }
+      if (loop.activation_input) {
+        ofs.write(reinterpret_cast<const char*>(&*loop.activation_input), sizeof(Port_id));
+      }
+      if (loop.next_active_output) {
+        ofs.write(reinterpret_cast<const char*>(&*loop.next_active_output), sizeof(Port_id));
+      }
+    }
     save_attr_stores(ofs);
   }
 
@@ -4318,8 +6521,8 @@ void Graph::ensure_overflow_loaded() const {
   if (!overflow_deferred_) {
     return;
   }
-  namespace fs = std::filesystem;
-  auto* self = const_cast<Graph*>(this);
+  namespace fs             = std::filesystem;
+  auto* self               = const_cast<Graph*>(this);
   // Clear the flag FIRST so overflow_storage_ accesses below (and any re-entry
   // through overflow_sets()) do not recurse back into this read.
   self->overflow_deferred_ = false;
@@ -4360,15 +6563,23 @@ void Graph::load_body(const std::string& dir_path) {
   {
     const auto    path = fs::path(dir_path) / "body.bin";
     std::ifstream ifs(path, std::ios::binary);
-    assert(ifs.good() && "load_body: cannot open body.bin for reading");
+    if (!ifs.good()) {
+      throw std::runtime_error("load_body: cannot open body.bin for reading");
+    }
 
     uint32_t magic = 0, version = 0, endian = 0;
     ifs.read(reinterpret_cast<char*>(&magic), sizeof(magic));
     ifs.read(reinterpret_cast<char*>(&version), sizeof(version));
     ifs.read(reinterpret_cast<char*>(&endian), sizeof(endian));
-    assert(magic == GRAPH_BODY_MAGIC && "load_body: bad magic");
-    assert(version == GRAPH_BODY_VERSION && "load_body: unsupported version");
-    assert(endian == ENDIAN_CHECK && "load_body: endian mismatch — file from different platform");
+    if (magic != GRAPH_BODY_MAGIC) {
+      throw std::runtime_error("load_body: bad graph-body magic");
+    }
+    if (version < 3 || version > GRAPH_BODY_VERSION) {
+      throw std::runtime_error("load_body: unsupported graph-body version " + std::to_string(version));
+    }
+    if (endian != ENDIAN_CHECK) {
+      throw std::runtime_error("load_body: endian mismatch — file from different platform");
+    }
 
     uint64_t node_count = 0, pin_count = 0, overflow_count = 0;
     ifs.read(reinterpret_cast<char*>(&node_count), sizeof(node_count));
@@ -4387,7 +6598,66 @@ void Graph::load_body(const std::string& dir_path) {
     overflow_storage_.resize(overflow_count);
     overflow_free_.clear();
 
-    load_attr_stores(ifs);
+    subnode_loops_.clear();
+#ifndef NDEBUG
+    validated_loop_carries_.clear();
+#endif
+    sync_loop_presence();
+    if (version >= 4) {
+      uint64_t loop_count = 0;
+      ifs.read(reinterpret_cast<char*>(&loop_count), sizeof(loop_count));
+      for (uint64_t i = 0; i < loop_count; ++i) {
+        Nid          nid = 0;
+        Subnode_loop loop;
+        uint32_t     descriptor_version = 1;
+        uint8_t      flags              = 0;
+        ifs.read(reinterpret_cast<char*>(&nid), sizeof(nid));
+        if (version >= 5) {
+          ifs.read(reinterpret_cast<char*>(&descriptor_version), sizeof(descriptor_version));
+          if (descriptor_version != SUBNODE_LOOP_VERSION) {
+            throw std::runtime_error("load_body: unsupported subnode-loop descriptor version "
+                                     + std::to_string(descriptor_version));
+          }
+        }
+        ifs.read(reinterpret_cast<char*>(&loop.first), sizeof(loop.first));
+        ifs.read(reinterpret_cast<char*>(&loop.step), sizeof(loop.step));
+        ifs.read(reinterpret_cast<char*>(&loop.count), sizeof(loop.count));
+        ifs.read(reinterpret_cast<char*>(&flags), sizeof(flags));
+        Port_id port = 0;
+        if ((flags & 1U) != 0) {
+          ifs.read(reinterpret_cast<char*>(&port), sizeof(port));
+          loop.index_input = port;
+        }
+        if ((flags & 2U) != 0) {
+          ifs.read(reinterpret_cast<char*>(&port), sizeof(port));
+          loop.activation_input = port;
+        }
+        if ((flags & 4U) != 0) {
+          ifs.read(reinterpret_cast<char*>(&port), sizeof(port));
+          loop.next_active_output = port;
+        }
+        if ((flags & ~static_cast<uint8_t>(7U)) != 0) {
+          throw std::runtime_error("load_body: invalid subnode-loop flags");
+        }
+        if (!subnode_loop_domain_valid(loop)) {
+          throw std::runtime_error("load_body: invalid subnode-loop domain");
+        }
+        if ((nid & static_cast<Nid>(3)) != 0) {
+          throw std::runtime_error("load_body: invalid subnode-loop node id");
+        }
+        const size_t idx = static_cast<size_t>(nid >> 2);
+        if (idx >= node_table.size() || !node_table[idx].is_alive() || !node_table[idx].has_subnode()) {
+          throw std::runtime_error("load_body: loop descriptor belongs to a non-Sub node");
+        }
+        subnode_loops_.emplace(nid, loop);
+      }
+      sync_loop_presence();
+    }
+
+    load_attr_stores(ifs, version < 5);
+    if (!ifs) {
+      throw std::runtime_error("load_body: truncated or corrupt graph body");
+    }
   }
 
   // --- overflow sets: DEFERRED ---
@@ -4402,6 +6672,28 @@ void Graph::load_body(const std::string& dir_path) {
   overflow_deferred_ = (overflow_storage_.size() > 0);
 
   rebuild_derived_after_body();
+  // Descriptor-local load validation. Edge-shape validation remains deferred
+  // until Subnode_group::validate()/first group traversal because overflow
+  // adjacency is intentionally lazy-loaded.
+  for (const auto& [nid, loop] : subnode_loops_) {
+    const auto node = Node_class(this, nid);
+    const auto io   = owner_lib_ != nullptr ? owner_lib_->io_at_unlocked(node.get_subnode_gid()) : nullptr;
+    if (io == nullptr) {
+      throw std::runtime_error("load_body: loop Sub target declaration is unavailable");
+    }
+    if (loop.index_input && !io->has_input_with_port_id(*loop.index_input)) {
+      throw std::runtime_error("load_body: loop index role is not a callee input");
+    }
+    if (loop.activation_input && !io->has_input_with_port_id(*loop.activation_input)) {
+      throw std::runtime_error("load_body: loop activation role is not a callee input");
+    }
+    if (loop.next_active_output && !io->has_output_with_port_id(*loop.next_active_output)) {
+      throw std::runtime_error("load_body: loop next-active role is not a callee output");
+    }
+    if (loop.next_active_output && !loop.activation_input) {
+      throw std::runtime_error("load_body: next-active role requires activation input");
+    }
+  }
   dirty_ = false;
 }
 
@@ -4483,6 +6775,11 @@ void Graph::copy_body_from(const Graph& src) {
   overflow_free_     = src.overflow_free_;
   overflow_deferred_ = false;
   overflow_src_dir_.clear();
+  subnode_loops_ = src.subnode_loops_;
+#ifndef NDEBUG
+  validated_loop_carries_.clear();
+#endif
+  sync_loop_presence();
   clone_attr_stores_from(src);  // deep-copy every attr store (srcid/name/lut/pin_*)
   rebuild_derived_after_body();
   dirty_ = true;
@@ -4550,7 +6847,16 @@ void GraphLibrary::save(const std::string& db_path) const {
   {
     std::ofstream ofs(fs::path(db_path) / "library.txt");
     assert(ofs.good() && "GraphLibrary::save: cannot open library.txt");
-    ofs << "hhds_graphlib 1\n";
+    ofs << "hhds_graphlib 2\n";
+    ofs << "has_loop_subnodes " << (has_loop_subnodes() ? 1 : 0) << "\n";
+    for (const Gid gid : io_gids) {
+      const auto graph_it = graphs_.find(gid);
+      const bool materialized_has_loop
+          = graph_it != graphs_.end() && graph_it->second && !graph_it->second->deleted_ && graph_it->second->has_loop_subnodes();
+      if (materialized_has_loop || pending_loop_gids_.contains(gid)) {
+        ofs << "graph_loop_subnodes " << gid << "\n";
+      }
+    }
     for (const Gid gid : io_gids) {
       const auto& gio = graph_ios_.at(gid);
       ofs << "graph_io " << gid << " " << gio->get_name() << "\n";
@@ -4645,12 +6951,15 @@ void GraphLibrary::load(const std::string& db_path) {
   graph_ios_.clear();
   graphs_.clear();
   pending_body_dir_.clear();
+  pending_loop_gids_.clear();
+  pending_loop_metadata_exact_ = false;
   graph_slot_states_.clear();
   graph_slot_abort_pending_.clear();
   graph_name_to_id_.clear();
   deleted_name_to_id_.clear();
   live_count_ = 0;
   mutation_epoch_.store(1, std::memory_order_release);
+  loop_graph_count_.store(0, std::memory_order_release);
   // (gid-keyed maps need no slot-0 reservation)
 
   // Source-provenance base: state = what's on disk (missing file -> empty).
@@ -4659,20 +6968,52 @@ void GraphLibrary::load(const std::string& db_path) {
     (void)srcmap_sp_->load(db_path);
   }
 
+  int  library_version           = 0;
+  bool declared_has_loops        = false;
+  bool saw_has_loops_declaration = false;
+
   // --- Parse library.txt ---
   {
     std::ifstream ifs(fs::path(db_path) / "library.txt");
-    assert(ifs.good() && "GraphLibrary::load: cannot open library.txt");
+    if (!ifs.good()) {
+      throw std::runtime_error("GraphLibrary::load: cannot open library.txt");
+    }
 
     std::string line;
-    std::getline(ifs, line);  // header: "hhds_graphlib 1"
+    if (!std::getline(ifs, line) || (line != "hhds_graphlib 1" && line != "hhds_graphlib 2")) {
+      throw std::runtime_error("GraphLibrary::load: invalid or unsupported library.txt header");
+    }
+    library_version              = line == "hhds_graphlib 2" ? 2 : 1;
+    pending_loop_metadata_exact_ = library_version == 2;
 
     std::shared_ptr<GraphIO> current_gio;
     while (std::getline(ifs, line)) {
       if (line.empty()) {
         continue;
       }
-      if (line.substr(0, 17) == "graph_io_deleted ") {
+      if (line.substr(0, 18) == "has_loop_subnodes ") {
+        const auto value = line.substr(18);
+        if (value != "0" && value != "1") {
+          throw std::runtime_error("GraphLibrary::load: invalid has_loop_subnodes declaration");
+        }
+        declared_has_loops        = value == "1";
+        saw_has_loops_declaration = true;
+        current_gio.reset();
+      } else if (line.substr(0, 20) == "graph_loop_subnodes ") {
+        if (library_version < 2) {
+          throw std::runtime_error("GraphLibrary::load: graph_loop_subnodes requires library format 2");
+        }
+        std::istringstream ss(line.substr(20));
+        Gid                gid = Gid_invalid;
+        std::string        trailing;
+        if (!(ss >> gid) || gid == Gid_invalid || (ss >> trailing)) {
+          throw std::runtime_error("GraphLibrary::load: invalid graph_loop_subnodes declaration");
+        }
+        if (!pending_loop_gids_.insert(gid).second) {
+          throw std::runtime_error("GraphLibrary::load: duplicate graph_loop_subnodes declaration");
+        }
+        current_gio.reset();
+      } else if (line.substr(0, 17) == "graph_io_deleted ") {
         std::istringstream ss(line.substr(17));
         Gid                gid;
         std::string        name;
@@ -4750,6 +7091,38 @@ void GraphLibrary::load(const std::string& db_path) {
       pending_body_dir_.emplace(gid, dir.string());
     }
   }
+
+  if (!saw_has_loops_declaration) {
+    throw std::runtime_error("GraphLibrary::load: missing has_loop_subnodes declaration");
+  }
+  if (library_version == 2) {
+    for (const Gid gid : pending_loop_gids_) {
+      if (!pending_body_dir_.contains(gid)) {
+        throw std::runtime_error("GraphLibrary::load: loop metadata names a graph without a body");
+      }
+    }
+    loop_graph_count_.store(static_cast<uint64_t>(pending_loop_gids_.size()), std::memory_order_release);
+    if (declared_has_loops != !pending_loop_gids_.empty()) {
+      throw std::runtime_error("GraphLibrary::load: inconsistent loop-presence metadata");
+    }
+  } else {
+    // Format 1 persisted only one library-wide bit, so it cannot maintain an
+    // exact flag after deleting or demoting one lazy body. Materialize the old
+    // bodies once to translate that bit into exact per-graph state in memory.
+    std::vector<Gid> pending_gids;
+    pending_gids.reserve(pending_body_dir_.size());
+    for (const auto& [gid, dir] : pending_body_dir_) {
+      pending_gids.push_back(gid);
+    }
+    std::sort(pending_gids.begin(), pending_gids.end());
+    for (const Gid gid : pending_gids) {
+      (void)materialize_body_unlocked(gid);
+    }
+    if (declared_has_loops != has_loop_subnodes()) {
+      throw std::runtime_error("GraphLibrary::load: legacy loop-presence bit does not match graph bodies");
+    }
+    pending_loop_metadata_exact_ = true;
+  }
 }
 
 void GraphLibrary::load_merge(const std::string& db_path) {
@@ -4767,9 +7140,13 @@ void GraphLibrary::load_merge(const std::string& db_path) {
   std::vector<Entry> entries;
   {
     std::ifstream ifs(fs::path(db_path) / "library.txt");
-    assert(ifs.good() && "GraphLibrary::load_merge: cannot open library.txt");
+    if (!ifs.good()) {
+      throw std::runtime_error("GraphLibrary::load_merge: cannot open library.txt");
+    }
     std::string line;
-    std::getline(ifs, line);  // header: "hhds_graphlib 1"
+    if (!std::getline(ifs, line) || (line != "hhds_graphlib 1" && line != "hhds_graphlib 2")) {
+      throw std::runtime_error("GraphLibrary::load_merge: invalid or unsupported library.txt header");
+    }
     size_t cur = static_cast<size_t>(-1);
     while (std::getline(ifs, line)) {
       if (line.empty()) {
@@ -4871,7 +7248,17 @@ void GraphLibrary::load_merge(const std::string& db_path) {
         continue;
       }
       if (const auto it = remap.find(old); it != remap.end() && it->second != old) {
+        // set_subnode(Nid, Gid) deliberately DEMOTES a compact loop — calling
+        // the plain overload is how a caller drops the descriptor. A gid remap
+        // is not a retarget, so carry the descriptor load_body just read across
+        // it; otherwise the merged site silently becomes a single instance and
+        // its carry self-edge stops being excluded from the topological order.
+        const auto loop = node.subnode_loop();
         graph->set_subnode(node, it->second);
+        if (loop) {
+          graph->subnode_loops_.insert_or_assign(node.get_debug_nid() & ~static_cast<Nid>(3), *loop);
+          graph->sync_loop_presence();
+        }
       }
     }
     // Rewrite srcid attribute values through the source-map remap (identity →
@@ -4921,13 +7308,15 @@ bool GraphLibrary::copy_from(const GraphLibrary& src, std::string_view module_na
   // name-new branch).
   for (const auto& d : src_gio->input_pin_decls_) {
     dst_gio->input_pin_decls_.push_back(d);
-    dst_gio->declared_io_pins_.emplace(dst_gio->input_pin_decls_.back().name,
-                                       GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Input, dst_gio->input_pin_decls_.size() - 1});
+    dst_gio->declared_io_pins_.emplace(
+        dst_gio->input_pin_decls_.back().name,
+        GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Input, dst_gio->input_pin_decls_.size() - 1});
   }
   for (const auto& d : src_gio->output_pin_decls_) {
     dst_gio->output_pin_decls_.push_back(d);
-    dst_gio->declared_io_pins_.emplace(dst_gio->output_pin_decls_.back().name,
-                                       GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Output, dst_gio->output_pin_decls_.size() - 1});
+    dst_gio->declared_io_pins_.emplace(
+        dst_gio->output_pin_decls_.back().name,
+        GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Output, dst_gio->output_pin_decls_.size() - 1});
   }
 
   // Materialize a fresh body and deep-copy the source body in-memory (no disk).

@@ -4,20 +4,23 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdlib>
 #include <ctime>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
-#include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -26,11 +29,13 @@
 #include "attr.hpp"
 #include "attrs/name.hpp"
 #include "attrs/srcid.hpp"
+#include "function_ref.hpp"
 #include "graph_sizing.hpp"
+#include "iassert.hpp"
 #include "index.hpp"
 #include "rapidhash.h"
 #include "source_locator.hpp"
-#include "str_hash.hpp"  // Name_hash/Name_eq: module + IO-pin names match case-sensitively
+#include "str_hash.hpp" // Name_hash/Name_eq: module + IO-pin names match case-sensitively
 #include "tree.hpp"
 #include "unordered_dense.hpp"
 
@@ -53,13 +58,14 @@ using OverflowSet = ankerl::unordered_dense::set<Vid>;
 //
 // This variant gates NEW readers as soon as a writer is waiting, so a waiting
 // writer always drains the current readers and makes progress. It exposes the
-// BasicLockable + SharedLockable surface, so std::unique_lock / std::shared_lock
-// keep working unchanged. It is NOT recursive: a thread must not re-acquire it
-// while already holding it (GraphLibrary always takes the registry lock once per
-// public call and delegates to *_unlocked helpers, so this invariant holds).
+// BasicLockable + SharedLockable surface, so std::unique_lock /
+// std::shared_lock keep working unchanged. It is NOT recursive: a thread must
+// not re-acquire it while already holding it (GraphLibrary always takes the
+// registry lock once per public call and delegates to *_unlocked helpers, so
+// this invariant holds).
 class Prefer_writer_shared_mutex {
 public:
-  void lock() {  // exclusive
+  void lock() { // exclusive
     std::unique_lock<std::mutex> lk(mu_);
     ++writers_waiting_;
     gate_.wait(lk, [this] { return !writer_active_ && readers_ == 0; });
@@ -89,37 +95,42 @@ public:
       last = (--readers_ == 0);
     }
     if (last) {
-      gate_.notify_all();  // wake a queued writer once the last reader leaves
+      gate_.notify_all(); // wake a queued writer once the last reader leaves
     }
   }
 
 private:
-  std::mutex              mu_;
+  std::mutex mu_;
   std::condition_variable gate_;
-  unsigned                readers_         = 0;
-  unsigned                writers_waiting_ = 0;
-  bool                    writer_active_   = false;
+  unsigned readers_ = 0;
+  unsigned writers_waiting_ = 0;
+  bool writer_active_ = false;
 };
 
 // Forward iterator over the edges of a node or pin. Two modes:
-//   - Inline: walks a contiguous buffer owned by the EdgeRange (decoded sedges + ledges).
-//   - Overflow: walks the OverflowSet (unordered_dense::set<Vid>) in-place, no copy.
+//   - Inline: walks a contiguous buffer owned by the EdgeRange (decoded sedges
+//   + ledges).
+//   - Overflow: walks the OverflowSet (unordered_dense::set<Vid>) in-place, no
+//   copy.
 class EdgeIterator {
 public:
   using iterator_category = std::forward_iterator_tag;
-  using value_type        = Vid;
-  using reference         = Vid;
-  using pointer           = const Vid*;
-  using difference_type   = std::ptrdiff_t;
-  using OverflowIter      = OverflowSet::const_iterator;
+  using value_type = Vid;
+  using reference = Vid;
+  using pointer = const Vid *;
+  using difference_type = std::ptrdiff_t;
+  using OverflowIter = OverflowSet::const_iterator;
 
   EdgeIterator() = default;
-  explicit EdgeIterator(const Vid* p) noexcept : inline_ptr_(p) {}
-  explicit EdgeIterator(OverflowIter it) noexcept : over_it_(it), overflow_(true) {}
+  explicit EdgeIterator(const Vid *p) noexcept : inline_ptr_(p) {}
+  explicit EdgeIterator(OverflowIter it) noexcept
+      : over_it_(it), overflow_(true) {}
 
-  Vid operator*() const noexcept { return overflow_ ? *over_it_ : *inline_ptr_; }
+  Vid operator*() const noexcept {
+    return overflow_ ? *over_it_ : *inline_ptr_;
+  }
 
-  EdgeIterator& operator++() noexcept {
+  EdgeIterator &operator++() noexcept {
     if (overflow_) {
       ++over_it_;
     } else {
@@ -133,20 +144,23 @@ public:
     return tmp;
   }
 
-  bool operator==(const EdgeIterator& o) const noexcept {
-    return overflow_ ? (over_it_ == o.over_it_) : (inline_ptr_ == o.inline_ptr_);
+  bool operator==(const EdgeIterator &o) const noexcept {
+    return overflow_ ? (over_it_ == o.over_it_)
+                     : (inline_ptr_ == o.inline_ptr_);
   }
-  bool operator!=(const EdgeIterator& o) const noexcept { return !(*this == o); }
+  bool operator!=(const EdgeIterator &o) const noexcept {
+    return !(*this == o);
+  }
 
 private:
   OverflowIter over_it_{};
-  const Vid*   inline_ptr_ = nullptr;
-  bool         overflow_   = false;
+  const Vid *inline_ptr_ = nullptr;
+  bool overflow_ = false;
 };
 
 struct OverflowPool {
-  OverflowVec&           sets;
-  std::vector<uint32_t>& free_list;
+  OverflowVec &sets;
+  std::vector<uint32_t> &free_list;
 
   uint32_t alloc() {
     if (!free_list.empty()) {
@@ -167,6 +181,8 @@ struct OverflowPool {
 
 class Graph;
 class GraphIO;
+class GraphLibrary;
+class GraphLibrary;
 class Node_class;
 class Pin_class;
 class Edge_class;
@@ -195,62 +211,148 @@ class HierIterator;
 class HierRange;
 class OutEdgeIterator;
 class OutEdgeRange;
+class Subnode_group;
+class Subnode_occurrence;
+class SubnodeOccurrenceRange;
+class Body_view;
+class Definitions_view;
+class Grouped_hierarchy_view;
+class Occurrences_view;
+class Instance_site;
+class Occurrence_node;
+class Occurrence_pin;
+class Occurrence_edge;
+class OccurrenceNodeRange;
+class ReachablePinRange;
+
+// Compact subnode-loop domain. Carries deliberately do not live here: they
+// are the literal output-to-input self-edges of the descriptor-bearing Sub.
+struct Subnode_loop {
+  int64_t first = 0;
+  int64_t step = 1;
+  uint64_t count = 0;
+
+  std::optional<Port_id> index_input;
+  std::optional<Port_id> activation_input;
+  std::optional<Port_id> next_active_output;
+
+  [[nodiscard]] int64_t index_at(uint64_t ordinal) const;
+  [[nodiscard]] bool operator==(const Subnode_loop &) const noexcept = default;
+};
 
 enum class Handle_context : uint8_t { Class, Flat, Hier };
+
+// Distinct tag types keep order selection at compile time while retaining the
+// concise `nodes(Node_order::storage)` spelling.
+struct Node_order {
+  struct storage_t {};
+  struct forward_t {};
+  struct reverse_t {};
+
+  inline static constexpr storage_t storage{};
+  inline static constexpr forward_t forward{};
+  inline static constexpr reverse_t reverse{};
+};
+
+enum class Cut_placement : uint8_t { first, last, both, omit };
+
+enum class Instance_action : uint8_t { descend, opaque, prune };
+using Hierarchy_policy = function_ref<Instance_action(const Instance_site &)>;
+
+enum class Walk_control : uint8_t {
+  follow,
+  prune,
+  yield_and_follow,
+  yield_and_cut
+};
+enum class Direction : uint8_t { forward, backward };
+enum class Search_order : uint8_t { dfs, bfs };
+
+struct Occurrence_name_policy {
+  std::string_view separator = ".";
+  std::string_view loop_prefix = "__li";
+  bool escape_embedded_separators = true;
+};
+
+[[nodiscard]] std::string
+format_occurrence_path(const GraphLibrary &lib, const Occurrence_path &path,
+                       const Occurrence_name_policy &policy = {});
 
 class Pin_class {
 public:
   Pin_class() = default;
-  Pin_class(Graph* graph_value, Pid pin_pid_value) : graph_(graph_value), pin_pid(pin_pid_value) {}
+  Pin_class(Graph *graph_value, Pid pin_pid_value)
+      : graph_(graph_value), pin_pid(pin_pid_value) {}
   explicit Pin_class(Pid pin_pid_value) : pin_pid(pin_pid_value) {}
 
-  [[nodiscard]] Node_class       get_master_node() const;
-  [[nodiscard]] Nid              get_debug_nid() const noexcept;
-  [[nodiscard]] constexpr Pid    get_debug_pid() const noexcept { return pin_pid; }
-  [[nodiscard]] Port_id          get_port_id() const noexcept;
-  [[nodiscard]] Graph*           get_graph() const noexcept { return graph_; }
+  [[nodiscard]] Node_class get_master_node() const;
+  [[nodiscard]] Nid get_debug_nid() const noexcept;
+  [[nodiscard]] constexpr Pid get_debug_pid() const noexcept { return pin_pid; }
+  [[nodiscard]] Port_id get_port_id() const noexcept;
+  [[nodiscard]] Graph *get_graph() const noexcept { return graph_; }
   [[nodiscard]] std::string_view get_pin_name() const;
-  [[nodiscard]] bool             is_valid() const noexcept;
-  [[nodiscard]] bool             is_invalid() const noexcept { return !is_valid(); }
-  [[nodiscard]] bool             is_class() const noexcept { return context_ == Handle_context::Class; }
-  [[nodiscard]] bool             is_flat() const noexcept { return context_ == Handle_context::Flat; }
-  [[nodiscard]] bool             is_hier() const noexcept { return context_ == Handle_context::Hier; }
+  [[nodiscard]] bool is_valid() const noexcept;
+  [[nodiscard]] bool is_invalid() const noexcept { return !is_valid(); }
+  [[nodiscard]] bool is_class() const noexcept {
+    return context_ == Handle_context::Class;
+  }
+  [[nodiscard]] bool is_flat() const noexcept {
+    return context_ == Handle_context::Flat;
+  }
+  [[nodiscard]] bool is_hier() const noexcept {
+    return context_ == Handle_context::Hier;
+  }
   // Pin polarity: bit 1 (mask 2) of pin_pid is set on driver pins, clear on
   // sink pins. Storage-level invariant maintained by create_driver_pin /
   // create_sink_pin in graph.cpp.
-  [[nodiscard]] constexpr bool   is_driver() const noexcept { return (pin_pid & static_cast<Pid>(2)) != 0; }
-  [[nodiscard]] constexpr bool   is_sink() const noexcept { return (pin_pid & static_cast<Pid>(2)) == 0; }
-  [[nodiscard]] Handle_context   get_context() const noexcept { return context_; }
-  [[nodiscard]] Gid              get_root_gid() const noexcept;
-  [[nodiscard]] Gid              get_current_gid() const noexcept;
-  [[nodiscard]] Tree_pos         get_hier_pos() const noexcept { return hier_pos_; }
-  // Hier: full instance chain (subnode nids root..immediate-parent) that locates
-  // this handle's body unambiguously even when its graph is instantiated more
-  // than once. Empty/null for root-level or non-hier handles. Used by the
-  // cross-boundary edge resolver; see inp_edges/out_edges.
-  [[nodiscard]] const std::shared_ptr<const std::vector<Nid>>& get_hier_path() const noexcept { return hier_path_; }
-  // Verilog-style dotted hierarchical name: "inst.inst...node.pin" (the pin port
-  // name is appended only for non-zero ports). See Node_class::get_hier_name.
-  [[nodiscard]] std::string                                    get_hier_name() const;
+  [[nodiscard]] constexpr bool is_driver() const noexcept {
+    return (pin_pid & static_cast<Pid>(2)) != 0;
+  }
+  [[nodiscard]] constexpr bool is_sink() const noexcept {
+    return (pin_pid & static_cast<Pid>(2)) == 0;
+  }
+  [[nodiscard]] Handle_context get_context() const noexcept { return context_; }
+  [[nodiscard]] Gid get_root_gid() const noexcept;
+  [[nodiscard]] Gid get_current_gid() const noexcept;
+  [[nodiscard]] Tree_pos get_hier_pos() const noexcept { return hier_pos_; }
+  // Hier: full instance chain (subnode nids root..immediate-parent) that
+  // locates this handle's body unambiguously even when its graph is
+  // instantiated more than once. Empty/null for root-level or non-hier handles.
+  // Used by the cross-boundary edge resolver; see inp_edges/out_edges.
+  [[nodiscard]] const std::shared_ptr<const std::vector<Nid>> &
+  get_hier_path() const noexcept {
+    return hier_path_;
+  }
+  // Verilog-style dotted hierarchical name: "inst.inst...node.pin" (the pin
+  // port name is appended only for non-zero ports). See
+  // Node_class::get_hier_name.
+  [[nodiscard]] std::string get_hier_name() const;
 
   // Opaque, hashable keys for use in user-owned maps. See hhds/index.hpp for
   // semantics. Prefer these over using Pin_class directly as a map key.
-  [[nodiscard]] Class_index get_class_index() const noexcept { return Class_index{pin_pid}; }
-  [[nodiscard]] Flat_index  get_flat_index() const noexcept {
-    assert(graph_ != nullptr && "get_flat_index: pin is not attached to a graph");
+  [[nodiscard]] Class_index get_class_index() const noexcept {
+    return Class_index{pin_pid};
+  }
+  [[nodiscard]] Flat_index get_flat_index() const noexcept {
+    assert(graph_ != nullptr &&
+           "get_flat_index: pin is not attached to a graph");
     return Flat_index{get_current_gid(), pin_pid};
   }
+  [[nodiscard]] Definition_index get_definition_index() const noexcept {
+    return get_flat_index();
+  }
   [[nodiscard]] Hier_index get_hier_index() const noexcept {
-    assert(context_ == Handle_context::Hier && "get_hier_index: requires hier traversal context");
+    assert(context_ == Handle_context::Hier &&
+           "get_hier_index: requires hier traversal context");
     return Hier_index{get_current_gid(), hier_pos_, pin_pid};
   }
 
-  void                                             connect_driver(Pin_class driver_pin) const;
-  void                                             connect_sink(Pin_class sink_pin) const;
-  void                                             del_sink(Pin_class driver_pin) const;
-  void                                             del_sink() const;
-  void                                             del_driver() const;
-  void                                             del_pin() const;
+  void connect_driver(Pin_class driver_pin) const;
+  void connect_sink(Pin_class sink_pin) const;
+  void del_sink(Pin_class driver_pin) const;
+  void del_sink() const;
+  void del_driver() const;
+  void del_pin() const;
   // out_edges() is a LAZY, auto-scaling view (see OutEdgeRange). ~90% of pins
   // have a handful of out edges, but a few (clock/reset/enable) fan out to
   // 100K+; the range walks live storage on demand — inline edges decode cheaply
@@ -258,48 +360,55 @@ public:
   // copy — so the *same* call is efficient for both and supports early `break`.
   // It is a view over live storage: snapshot before mutating during iteration
   // (see OutEdgeRange docs).
-  [[nodiscard]] OutEdgeRange                       out_edges() const;
-  // inp_edges() stays eager: a sink's fan-in is small (usually a single driver),
-  // so the heap-free InlinedVector is the right shape; [4] inline covers it.
+  [[nodiscard]] OutEdgeRange out_edges() const;
+  // inp_edges() stays eager: a sink's fan-in is small (usually a single
+  // driver), so the heap-free InlinedVector is the right shape; [4] inline
+  // covers it.
   [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges() const;
   // Drivers feeding this sink pin (the far end of each inp edge). A sink's
   // fan-in is small — usually a single driver in a well-formed net — so this
   // materializes into the same heap-free InlinedVector the other pin/node
   // accessors use. Asymmetric on purpose: a driver's fanout (out_edges) can be
   // huge, so there is no eager get_sink_pins() companion here.
-  [[nodiscard]] absl::InlinedVector<Pin_class, 4>  get_driver_pins() const;
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_driver_pins() const;
 
-  template <Attribute Tag>
-  [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
+  template <Attribute Tag> [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
     assert(graph_ != nullptr && "attr: pin is not attached to a graph");
-    const auto flat_key = make_pin_attr_key(static_cast<uint64_t>(pin_pid & ~static_cast<Pid>(2)));
+    const auto flat_key = make_pin_attr_key(
+        static_cast<uint64_t>(pin_pid & ~static_cast<Pid>(2)));
     if (context_ == Handle_context::Hier) {
       return AttrRef<Tag>(graph_, flat_key, hier_pos_);
     }
     return AttrRef<Tag>(graph_, flat_key);
   }
 
-  [[nodiscard]] bool operator==(const Pin_class& other) const noexcept { return pin_pid == other.pin_pid; }
-  [[nodiscard]] bool operator!=(const Pin_class& other) const noexcept { return !(*this == other); }
+  [[nodiscard]] bool operator==(const Pin_class &other) const noexcept {
+    return pin_pid == other.pin_pid;
+  }
+  [[nodiscard]] bool operator!=(const Pin_class &other) const noexcept {
+    return !(*this == other);
+  }
 
-  template <typename H>
-  friend H AbslHashValue(H h, const Pin_class& pin) {
+  template <typename H> friend H AbslHashValue(H h, const Pin_class &pin) {
     return H::combine(std::move(h), pin.pin_pid);
   }
 
 private:
-  Graph*                                  graph_    = nullptr;
-  Pid                                     pin_pid   = 0;
-  Handle_context                          context_  = Handle_context::Class;
-  Gid                                     root_gid_ = Gid_invalid;  // Flat & Hier: root graph of the traversal
-  Tree_pos                                hier_pos_ = INVALID;      // Hier: per-instance token (parent's structure-tree pos)
-  std::shared_ptr<const std::vector<Nid>> hier_path_;               // Hier: full root..parent instance chain
+  Graph *graph_ = nullptr;
+  Pid pin_pid = 0;
+  Handle_context context_ = Handle_context::Class;
+  Gid root_gid_ = Gid_invalid; // Flat & Hier: root graph of the traversal
+  Tree_pos hier_pos_ =
+      INVALID; // Hier: per-instance token (parent's structure-tree pos)
+  std::shared_ptr<const std::vector<Nid>>
+      hier_path_; // Hier: full root..parent instance chain
 
   friend class Graph;
   friend class GraphLibrary;
   friend class Node_class;
-  friend class OutEdgeIterator;  // builds/stamps driver+sink pins while walking out edges
-  friend void inherit_pin_context(Pin_class& pin, const Node_class& node);
+  friend class OutEdgeIterator; // builds/stamps driver+sink pins while walking
+                                // out edges
+  friend void inherit_pin_context(Pin_class &pin, const Node_class &node);
 };
 
 class Node_class {
@@ -307,123 +416,151 @@ public:
   using Context = Handle_context;
 
   Node_class() = default;
-  Node_class(Graph* graph_value, Nid raw_nid_value) : graph_(graph_value), raw_nid(raw_nid_value) {}
-  Node_class(Graph* graph_value, Gid root_gid_value, Nid raw_nid_value)
-      : graph_(graph_value), raw_nid(raw_nid_value), context_(Context::Flat), root_gid_(root_gid_value) {}
-  Node_class(Graph* graph_value, Gid root_gid_value, Tree_pos hier_pos_value, Nid raw_nid_value,
+  Node_class(Graph *graph_value, Nid raw_nid_value)
+      : graph_(graph_value), raw_nid(raw_nid_value) {}
+  Node_class(Graph *graph_value, Gid root_gid_value, Nid raw_nid_value)
+      : graph_(graph_value), raw_nid(raw_nid_value), context_(Context::Flat),
+        root_gid_(root_gid_value) {}
+  Node_class(Graph *graph_value, Gid root_gid_value, Tree_pos hier_pos_value,
+             Nid raw_nid_value,
              std::shared_ptr<const std::vector<Nid>> hier_path_value = nullptr)
-      : graph_(graph_value)
-      , raw_nid(raw_nid_value)
-      , context_(Context::Hier)
-      , root_gid_(root_gid_value)
-      , hier_pos_(hier_pos_value)
-      , hier_path_(std::move(hier_path_value)) {}
+      : graph_(graph_value), raw_nid(raw_nid_value), context_(Context::Hier),
+        root_gid_(root_gid_value), hier_pos_(hier_pos_value),
+        hier_path_(std::move(hier_path_value)) {}
   explicit Node_class(Nid raw_nid_value) : raw_nid(raw_nid_value) {}
 
-  [[nodiscard]] constexpr Port_id                              get_port_id() const noexcept { return 0; }
-  [[nodiscard]] constexpr Nid                                  get_debug_nid() const noexcept { return raw_nid; }
-  [[nodiscard]] Graph*                                         get_graph() const noexcept { return graph_; }
-  [[nodiscard]] bool                                           is_valid() const noexcept;
-  [[nodiscard]] bool                                           is_invalid() const noexcept { return !is_valid(); }
-  [[nodiscard]] bool                                           is_class() const noexcept { return context_ == Context::Class; }
-  [[nodiscard]] bool                                           is_flat() const noexcept { return context_ == Context::Flat; }
-  [[nodiscard]] bool                                           is_hier() const noexcept { return context_ == Context::Hier; }
-  [[nodiscard]] Context                                        get_context() const noexcept { return context_; }
+  [[nodiscard]] constexpr Port_id get_port_id() const noexcept { return 0; }
+  [[nodiscard]] constexpr Nid get_debug_nid() const noexcept { return raw_nid; }
+  [[nodiscard]] Graph *get_graph() const noexcept { return graph_; }
+  [[nodiscard]] bool is_valid() const noexcept;
+  [[nodiscard]] bool is_invalid() const noexcept { return !is_valid(); }
+  [[nodiscard]] bool is_class() const noexcept {
+    return context_ == Context::Class;
+  }
+  [[nodiscard]] bool is_flat() const noexcept {
+    return context_ == Context::Flat;
+  }
+  [[nodiscard]] bool is_hier() const noexcept {
+    return context_ == Context::Hier;
+  }
+  [[nodiscard]] Context get_context() const noexcept { return context_; }
   // True when this handle refers to a body's reserved INPUT_NODE / OUTPUT_NODE
   // boundary node. These handles are emitted at hierarchy transitions by the
   // *_hier traversals only when visit_io is enabled; they let a caller detect
   // that the walk just entered (input) or is about to leave (output) a body and
   // read the crossed port names/attrs off the node's pins.
-  [[nodiscard]] bool                                           is_input_node() const noexcept;
-  [[nodiscard]] bool                                           is_output_node() const noexcept;
-  [[nodiscard]] Gid                                            get_root_gid() const noexcept;
-  [[nodiscard]] Gid                                            get_current_gid() const noexcept;
-  [[nodiscard]] Tree_pos                                       get_hier_pos() const noexcept { return hier_pos_; }
+  [[nodiscard]] bool is_input_node() const noexcept;
+  [[nodiscard]] bool is_output_node() const noexcept;
+  [[nodiscard]] Gid get_root_gid() const noexcept;
+  [[nodiscard]] Gid get_current_gid() const noexcept;
+  [[nodiscard]] Tree_pos get_hier_pos() const noexcept { return hier_pos_; }
   // See Pin_class::get_hier_path.
-  [[nodiscard]] const std::shared_ptr<const std::vector<Nid>>& get_hier_path() const noexcept { return hier_path_; }
-  // See class comment: "inst.inst...node" from the instance chain plus this node.
-  [[nodiscard]] std::string                                    get_hier_name() const;
+  [[nodiscard]] const std::shared_ptr<const std::vector<Nid>> &
+  get_hier_path() const noexcept {
+    return hier_path_;
+  }
+  // See class comment: "inst.inst...node" from the instance chain plus this
+  // node.
+  [[nodiscard]] std::string get_hier_name() const;
 
   // Convenience name accessors backed by hhds::attrs::name — the SAME attr that
   // get_hier_name() / hier_local_name() read. LiveHD stamps the RTL instance
-  // name (or a flop's register name) here via set_name() so that get_hier_name()
-  // yields the Verilog-style hierarchical path instead of the "n<id>" fallback.
-  void                           set_name(std::string_view name) const;
+  // name (or a flop's register name) here via set_name() so that
+  // get_hier_name() yields the Verilog-style hierarchical path instead of the
+  // "n<id>" fallback.
+  void set_name(std::string_view name) const;
   [[nodiscard]] std::string_view get_name() const;
 
   // Opaque, hashable keys for use in user-owned maps. See hhds/index.hpp for
   // semantics. Prefer these over using Node_class directly as a map key.
-  [[nodiscard]] Class_index get_class_index() const noexcept { return Class_index{raw_nid}; }
-  [[nodiscard]] Flat_index  get_flat_index() const noexcept {
-    assert(graph_ != nullptr && "get_flat_index: node is not attached to a graph");
+  [[nodiscard]] Class_index get_class_index() const noexcept {
+    return Class_index{raw_nid};
+  }
+  [[nodiscard]] Flat_index get_flat_index() const noexcept {
+    assert(graph_ != nullptr &&
+           "get_flat_index: node is not attached to a graph");
     return Flat_index{get_current_gid(), raw_nid};
   }
+  [[nodiscard]] Definition_index get_definition_index() const noexcept {
+    return get_flat_index();
+  }
   [[nodiscard]] Hier_index get_hier_index() const noexcept {
-    assert(context_ == Context::Hier && "get_hier_index: requires hier traversal context");
+    assert(context_ == Context::Hier &&
+           "get_hier_index: requires hier traversal context");
     return Hier_index{get_current_gid(), hier_pos_, raw_nid};
   }
 
-  void                                             set_subnode(const std::shared_ptr<GraphIO>& graphio) const;
+  void set_subnode(const std::shared_ptr<GraphIO> &graphio) const;
+  void set_subnode(const std::shared_ptr<GraphIO> &graphio,
+                   Subnode_loop loop) const;
   // Inverse accessors for set_subnode. All three return the "no subnode"
   // sentinel (nullptr / Gid_invalid) when the node has none.
-  [[nodiscard]] Gid                                get_subnode_gid() const;
-  [[nodiscard]] std::shared_ptr<GraphIO>           get_subnode_io() const;
-  [[nodiscard]] std::shared_ptr<Graph>             get_subnode_graph() const;
-  void                                             set_type(Type type) const;
-  [[nodiscard]] Type                               get_type() const;
-  [[nodiscard]] bool                               is_loop_break() const;
-  [[nodiscard]] Pin_class                          create_driver_pin() const;
-  [[nodiscard]] Pin_class                          create_driver_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class                          create_driver_pin(std::string_view name) const;
-  [[nodiscard]] Pin_class                          create_sink_pin() const;
-  [[nodiscard]] Pin_class                          create_sink_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class                          create_sink_pin(std::string_view name) const;
-  [[nodiscard]] Pin_class                          get_driver_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class                          get_driver_pin(std::string_view name) const;
-  [[nodiscard]] Pin_class                          get_sink_pin(Port_id port_id) const;
-  [[nodiscard]] Pin_class                          get_sink_pin(std::string_view name) const;
-  void                                             del_node() const;
+  [[nodiscard]] Gid get_subnode_gid() const;
+  [[nodiscard]] std::shared_ptr<GraphIO> get_subnode_io() const;
+  [[nodiscard]] std::shared_ptr<Graph> get_subnode_graph() const;
+  [[nodiscard]] bool is_loop_subnode() const;
+  [[nodiscard]] std::optional<Subnode_loop> subnode_loop() const;
+  [[nodiscard]] Subnode_group subnode_group() const;
+  void set_type(Type type) const;
+  [[nodiscard]] Type get_type() const;
+  [[nodiscard]] bool is_loop_break() const;
+  [[nodiscard]] Pin_class create_driver_pin() const;
+  [[nodiscard]] Pin_class create_driver_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class create_driver_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class create_sink_pin() const;
+  [[nodiscard]] Pin_class create_sink_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class create_sink_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class get_driver_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class get_driver_pin(std::string_view name) const;
+  [[nodiscard]] Pin_class get_sink_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class get_sink_pin(std::string_view name) const;
+  void del_node() const;
   // Lazy, auto-scaling out-edge view (see OutEdgeRange / Pin_class::out_edges).
   // In Class/Flat context this walks live storage on demand; in Hier context it
   // resolves cross-boundary edges (materialized) behind the same range type.
-  [[nodiscard]] OutEdgeRange                       out_edges() const;
+  [[nodiscard]] OutEdgeRange out_edges() const;
   [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges() const;
-  [[nodiscard]] absl::InlinedVector<Pin_class, 4>  out_pins() const;
-  [[nodiscard]] absl::InlinedVector<Pin_class, 4>  inp_pins() const;
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4> out_pins() const;
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4> inp_pins() const;
   // Fast boolean predicates — avoid materializing the full edge vector when
   // callers only need an "any?" answer (LiveHD's Lgraph::has_outputs /
   // has_inputs hot paths).
-  [[nodiscard]] bool                               has_out_edges() const;
-  [[nodiscard]] bool                               has_inp_edges() const;
+  [[nodiscard]] bool has_out_edges() const;
+  [[nodiscard]] bool has_inp_edges() const;
 
-  template <Attribute Tag>
-  [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
+  template <Attribute Tag> [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
     assert(graph_ != nullptr && "attr: node is not attached to a graph");
-    const auto flat_key = make_node_attr_key(static_cast<uint64_t>(raw_nid & ~static_cast<Nid>(3)));
+    const auto flat_key = make_node_attr_key(
+        static_cast<uint64_t>(raw_nid & ~static_cast<Nid>(3)));
     if (context_ == Context::Hier) {
       return AttrRef<Tag>(graph_, flat_key, hier_pos_);
     }
     return AttrRef<Tag>(graph_, flat_key);
   }
 
-  [[nodiscard]] bool operator==(const Node_class& other) const noexcept { return raw_nid == other.raw_nid; }
-  [[nodiscard]] bool operator!=(const Node_class& other) const noexcept { return !(*this == other); }
+  [[nodiscard]] bool operator==(const Node_class &other) const noexcept {
+    return raw_nid == other.raw_nid;
+  }
+  [[nodiscard]] bool operator!=(const Node_class &other) const noexcept {
+    return !(*this == other);
+  }
 
-  template <typename H>
-  friend H AbslHashValue(H h, const Node_class& node) {
+  template <typename H> friend H AbslHashValue(H h, const Node_class &node) {
     return H::combine(std::move(h), node.raw_nid);
   }
 
 private:
-  Graph*                                  graph_    = nullptr;
-  Nid                                     raw_nid   = 0;
-  Context                                 context_  = Context::Class;
-  Gid                                     root_gid_ = Gid_invalid;  // Flat & Hier: root graph of the traversal
-  Tree_pos                                hier_pos_ = INVALID;      // Hier: per-instance token (parent's structure-tree pos)
-  std::shared_ptr<const std::vector<Nid>> hier_path_;               // Hier: full root..parent instance chain
+  Graph *graph_ = nullptr;
+  Nid raw_nid = 0;
+  Context context_ = Context::Class;
+  Gid root_gid_ = Gid_invalid; // Flat & Hier: root graph of the traversal
+  Tree_pos hier_pos_ =
+      INVALID; // Hier: per-instance token (parent's structure-tree pos)
+  std::shared_ptr<const std::vector<Nid>>
+      hier_path_; // Hier: full root..parent instance chain
 
   friend class Graph;
-  friend void inherit_pin_context(Pin_class& pin, const Node_class& node);
+  friend void inherit_pin_context(Pin_class &pin, const Node_class &node);
 };
 
 class Edge_class {
@@ -437,6 +574,619 @@ private:
   friend class Graph;
 };
 
+class Loop_carry {
+public:
+  Loop_carry() = default;
+
+  [[nodiscard]] Port_id input_port() const noexcept { return input_port_; }
+  [[nodiscard]] Port_id output_port() const noexcept { return output_port_; }
+  [[nodiscard]] Edge_class self_edge() const { return self_edge_; }
+
+private:
+  Loop_carry(Port_id input_port, Port_id output_port, Edge_class self_edge)
+      : input_port_(input_port), output_port_(output_port),
+        self_edge_(std::move(self_edge)) {}
+
+  Port_id input_port_ = 0;
+  Port_id output_port_ = 0;
+  Edge_class self_edge_;
+
+  friend class Subnode_group;
+};
+
+using LoopCarryRange = std::vector<Loop_carry>;
+
+enum class Input_binding_kind : uint8_t {
+  invariant_external,
+  domain_index,
+  carry_initial,
+  previous_occurrence_output,
+  external_activation,
+  previous_occurrence_activation,
+  previous_occurrence_next_active,
+  inactive_carry_bypass,
+};
+
+class Input_binding {
+public:
+  [[nodiscard]] Port_id input_port() const noexcept { return input_port_; }
+  [[nodiscard]] Input_binding_kind kind() const noexcept { return kind_; }
+  [[nodiscard]] std::optional<int64_t> index_value() const noexcept {
+    return index_value_;
+  }
+  [[nodiscard]] std::optional<Port_id> source_port() const noexcept {
+    return source_port_;
+  }
+  [[nodiscard]] std::optional<uint64_t> source_ordinal() const noexcept {
+    return source_ordinal_;
+  }
+  [[nodiscard]] const std::vector<Edge_class> &stored_edges() const noexcept {
+    return stored_edges_;
+  }
+
+private:
+  Port_id input_port_ = 0;
+  Input_binding_kind kind_ = Input_binding_kind::invariant_external;
+  std::optional<int64_t> index_value_;
+  std::optional<Port_id> source_port_;
+  std::optional<uint64_t> source_ordinal_;
+  std::vector<Edge_class> stored_edges_;
+
+  friend class Subnode_occurrence;
+};
+
+using InputBindingRange = std::vector<Input_binding>;
+
+enum class Output_binding_kind : uint8_t {
+  external_reader,
+  inactive_carry_bypass
+};
+
+class Output_binding {
+public:
+  [[nodiscard]] Port_id output_port() const noexcept { return output_port_; }
+  [[nodiscard]] Output_binding_kind kind() const noexcept { return kind_; }
+  [[nodiscard]] std::optional<Port_id> source_input_port() const noexcept {
+    return source_input_port_;
+  }
+  [[nodiscard]] const std::vector<Edge_class> &stored_edges() const noexcept {
+    return stored_edges_;
+  }
+
+private:
+  Port_id output_port_ = 0;
+  Output_binding_kind kind_ = Output_binding_kind::external_reader;
+  std::optional<Port_id> source_input_port_;
+  std::vector<Edge_class> stored_edges_;
+
+  friend class Subnode_occurrence;
+  friend class Subnode_group;
+};
+
+using OutputBindingRange = std::vector<Output_binding>;
+
+// One stored Sub and its optional compact loop domain.
+class Subnode_group {
+public:
+  Subnode_group() = default;
+  explicit Subnode_group(Node_class node) : node_(std::move(node)) {}
+
+  [[nodiscard]] Node_class base_node() const { return node_; }
+  [[nodiscard]] GraphIO &target_io() const;
+  [[nodiscard]] uint64_t size() const;
+  [[nodiscard]] bool is_loop() const;
+  [[nodiscard]] std::optional<Subnode_loop> loop() const;
+  [[nodiscard]] LoopCarryRange carries() const;
+  [[nodiscard]] SubnodeOccurrenceRange occurrences() const;
+  [[nodiscard]] OutputBindingRange zero_count_output_bindings() const;
+  // Asserts the descriptor and its completed edge shape. This is deliberately
+  // explicit because callers may attach the descriptor before wiring carries.
+  void validate() const;
+
+private:
+  Node_class node_;
+};
+
+// One logical call represented by a Subnode_group, without entering the
+// callee body. The range is lazy, so very large compact domains stay O(1).
+class Subnode_occurrence {
+public:
+  Subnode_occurrence() = default;
+
+  [[nodiscard]] Subnode_group group() const { return group_; }
+  [[nodiscard]] uint64_t ordinal() const noexcept { return ordinal_; }
+  [[nodiscard]] std::optional<int64_t> index_value() const;
+  [[nodiscard]] Occurrence_path path() const;
+  [[nodiscard]] InputBindingRange input_bindings() const;
+  [[nodiscard]] OutputBindingRange output_bindings() const;
+
+private:
+  Subnode_occurrence(Subnode_group group, uint64_t ordinal)
+      : group_(std::move(group)), ordinal_(ordinal) {}
+
+  Subnode_group group_;
+  uint64_t ordinal_ = 0;
+
+  friend class SubnodeOccurrenceIterator;
+};
+
+class SubnodeOccurrenceIterator {
+public:
+  using iterator_category = std::forward_iterator_tag;
+  using value_type = Subnode_occurrence;
+  using difference_type = std::ptrdiff_t;
+  using pointer = void;
+  using reference = Subnode_occurrence;
+
+  SubnodeOccurrenceIterator() = default;
+  SubnodeOccurrenceIterator(Subnode_group group, uint64_t ordinal)
+      : group_(std::move(group)), ordinal_(ordinal) {}
+
+  [[nodiscard]] Subnode_occurrence operator*() const {
+    return Subnode_occurrence(group_, ordinal_);
+  }
+  SubnodeOccurrenceIterator &operator++() {
+    ++ordinal_;
+    return *this;
+  }
+  [[nodiscard]] bool
+  operator==(const SubnodeOccurrenceIterator &other) const noexcept {
+    return ordinal_ == other.ordinal_ &&
+           group_.base_node() == other.group_.base_node();
+  }
+  [[nodiscard]] bool
+  operator!=(const SubnodeOccurrenceIterator &other) const noexcept {
+    return !(*this == other);
+  }
+
+private:
+  Subnode_group group_;
+  uint64_t ordinal_ = 0;
+};
+
+class SubnodeOccurrenceRange {
+public:
+  explicit SubnodeOccurrenceRange(Subnode_group group)
+      : group_(std::move(group)) {}
+
+  [[nodiscard]] SubnodeOccurrenceIterator begin() const {
+    group_.validate();
+    return SubnodeOccurrenceIterator(group_, 0);
+  }
+  [[nodiscard]] SubnodeOccurrenceIterator end() const {
+    return SubnodeOccurrenceIterator(group_, group_.size());
+  }
+  [[nodiscard]] uint64_t size() const { return group_.size(); }
+  [[nodiscard]] bool empty() const { return size() == 0; }
+
+private:
+  Subnode_group group_;
+};
+
+// The policy input for one stored call site. It intentionally carries no loop
+// ordinal: loop expansion is selected by the view, and the policy verdict is
+// shared by every ordinal of the site.
+class Instance_site {
+public:
+  Instance_site() = default;
+  Instance_site(Occurrence_path parent_path, Subnode_group group)
+      : parent_path_(std::move(parent_path)), group_(std::move(group)) {}
+
+  [[nodiscard]] const Occurrence_path &parent_path() const noexcept {
+    return parent_path_;
+  }
+  [[nodiscard]] Definition_index definition_index() const noexcept {
+    return group_.base_node().get_definition_index();
+  }
+  [[nodiscard]] Node_class base_node() const { return group_.base_node(); }
+  [[nodiscard]] Gid target_gid() const {
+    return group_.base_node().get_subnode_gid();
+  }
+  [[nodiscard]] GraphIO &target_io() const { return group_.target_io(); }
+  [[nodiscard]] bool is_loop() const { return group_.is_loop(); }
+  [[nodiscard]] std::optional<Subnode_loop> loop() const {
+    return group_.loop();
+  }
+  [[nodiscard]] Subnode_group group() const { return group_; }
+
+private:
+  Occurrence_path parent_path_;
+  Subnode_group group_;
+};
+
+template <typename Entity> class Entity_range {
+public:
+  using const_iterator = typename std::vector<Entity>::const_iterator;
+
+  Entity_range() : entities_(std::make_shared<const std::vector<Entity>>()) {}
+  explicit Entity_range(std::vector<Entity> entities)
+      : entities_(
+            std::make_shared<const std::vector<Entity>>(std::move(entities))) {}
+
+  [[nodiscard]] const_iterator begin() const noexcept {
+    return entities_->begin();
+  }
+  [[nodiscard]] const_iterator end() const noexcept { return entities_->end(); }
+  [[nodiscard]] bool empty() const noexcept { return entities_->empty(); }
+  [[nodiscard]] size_t size() const noexcept { return entities_->size(); }
+  [[nodiscard]] uint64_t size_hint() const noexcept {
+    return static_cast<uint64_t>(entities_->size());
+  }
+  [[nodiscard]] std::optional<uint64_t> size_exact() const noexcept {
+    return size_hint();
+  }
+  [[nodiscard]] const Entity &front() const { return entities_->front(); }
+
+private:
+  std::shared_ptr<const std::vector<Entity>> entities_;
+};
+
+namespace detail {
+void assert_hierarchy_view_unmutated(
+    const std::shared_ptr<Hierarchy_view_state> &state) noexcept;
+struct Occurrence_node_cursor;
+} // namespace detail
+
+// Materialized hierarchical ranges retain their view state and check its
+// library mutation epoch at every iterator operation. This makes a structural
+// edit during a grouped/occurrence walk a localized debug contract failure;
+// occurrence-attribute writes do not advance the structural epoch.
+template <typename Entity> class Hierarchy_entity_range {
+public:
+  class const_iterator {
+  public:
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = Entity;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const Entity *;
+    using reference = const Entity &;
+
+    const_iterator() = default;
+    const_iterator(typename std::vector<Entity>::const_iterator iterator,
+                   std::shared_ptr<detail::Hierarchy_view_state> state)
+        : iterator_(iterator), state_(std::move(state)) {}
+
+    [[nodiscard]] reference operator*() const {
+      detail::assert_hierarchy_view_unmutated(state_);
+      return *iterator_;
+    }
+    [[nodiscard]] pointer operator->() const {
+      detail::assert_hierarchy_view_unmutated(state_);
+      return std::addressof(*iterator_);
+    }
+    const_iterator &operator++() {
+      detail::assert_hierarchy_view_unmutated(state_);
+      ++iterator_;
+      return *this;
+    }
+    const_iterator operator++(int) {
+      auto old = *this;
+      ++*this;
+      return old;
+    }
+    [[nodiscard]] bool operator==(const const_iterator &other) const noexcept {
+      return iterator_ == other.iterator_;
+    }
+    [[nodiscard]] bool operator!=(const const_iterator &other) const noexcept {
+      return !(*this == other);
+    }
+
+  private:
+    typename std::vector<Entity>::const_iterator iterator_;
+    std::shared_ptr<detail::Hierarchy_view_state> state_;
+  };
+
+  Hierarchy_entity_range()
+      : entities_(std::make_shared<const std::vector<Entity>>()) {}
+  Hierarchy_entity_range(std::vector<Entity> entities,
+                         std::shared_ptr<detail::Hierarchy_view_state> state)
+      : entities_(
+            std::make_shared<const std::vector<Entity>>(std::move(entities))),
+        state_(std::move(state)) {}
+
+  [[nodiscard]] const_iterator begin() const {
+    return const_iterator(entities_->begin(), state_);
+  }
+  [[nodiscard]] const_iterator end() const {
+    return const_iterator(entities_->end(), state_);
+  }
+  [[nodiscard]] bool empty() const noexcept { return entities_->empty(); }
+  [[nodiscard]] size_t size() const noexcept { return entities_->size(); }
+  [[nodiscard]] uint64_t size_hint() const noexcept {
+    return static_cast<uint64_t>(entities_->size());
+  }
+  [[nodiscard]] std::optional<uint64_t> size_exact() const noexcept {
+    return size_hint();
+  }
+  [[nodiscard]] const Entity &front() const {
+    detail::assert_hierarchy_view_unmutated(state_);
+    return entities_->front();
+  }
+
+private:
+  std::shared_ptr<const std::vector<Entity>> entities_;
+  std::shared_ptr<detail::Hierarchy_view_state> state_;
+};
+
+using OccurrencePinRange = Hierarchy_entity_range<Occurrence_pin>;
+using OccurrenceEdgeRange = Hierarchy_entity_range<Occurrence_edge>;
+using InstanceGroupRange = Hierarchy_entity_range<Hier_instance>;
+using Definition_node = Node_class;
+using DefinitionNodeRange = Entity_range<Definition_node>;
+
+// Read-only physical/grouped node handle. Structural rewrites are available
+// only after the caller explicitly asks for base_node().
+class Occurrence_node {
+public:
+  Occurrence_node() = default;
+
+  [[nodiscard]] Node_class base_node() const { return node_; }
+  [[nodiscard]] const Occurrence_path &path() const noexcept { return path_; }
+  [[nodiscard]] Occurrence_index get_occurrence_index() const noexcept {
+    return Occurrence_index{path_, node_.get_definition_index()};
+  }
+  [[nodiscard]] Definition_index get_definition_index() const noexcept {
+    return node_.get_definition_index();
+  }
+  [[nodiscard]] Class_index get_class_index() const noexcept {
+    return node_.get_class_index();
+  }
+  [[nodiscard]] Graph *get_graph() const noexcept { return node_.get_graph(); }
+  [[nodiscard]] Nid get_debug_nid() const noexcept {
+    return node_.get_debug_nid();
+  }
+  [[nodiscard]] Gid get_current_gid() const noexcept {
+    return node_.get_current_gid();
+  }
+  [[nodiscard]] Gid get_root_gid() const noexcept { return path_.root_gid(); }
+  [[nodiscard]] bool is_valid() const noexcept { return node_.is_valid(); }
+  [[nodiscard]] bool is_invalid() const noexcept { return !is_valid(); }
+  [[nodiscard]] bool is_input_node() const noexcept {
+    return node_.is_input_node();
+  }
+  [[nodiscard]] bool is_output_node() const noexcept {
+    return node_.is_output_node();
+  }
+  [[nodiscard]] bool is_loop_break() const { return node_.is_loop_break(); }
+  [[nodiscard]] bool is_loop_subnode() const { return node_.is_loop_subnode(); }
+  [[nodiscard]] Type get_type() const { return node_.get_type(); }
+  [[nodiscard]] std::string_view get_name() const { return node_.get_name(); }
+  [[nodiscard]] std::string get_hier_name() const;
+  [[nodiscard]] Gid get_subnode_gid() const { return node_.get_subnode_gid(); }
+  [[nodiscard]] std::shared_ptr<GraphIO> get_subnode_io() const {
+    return node_.get_subnode_io();
+  }
+  [[nodiscard]] std::shared_ptr<Graph> get_subnode_graph() const {
+    return node_.get_subnode_graph();
+  }
+  [[nodiscard]] std::optional<Subnode_loop> subnode_loop() const {
+    return node_.subnode_loop();
+  }
+  [[nodiscard]] Subnode_group subnode_group() const {
+    return node_.subnode_group();
+  }
+
+  [[nodiscard]] Occurrence_pin get_driver_pin(Port_id port_id) const;
+  [[nodiscard]] Occurrence_pin get_driver_pin(std::string_view name) const;
+  [[nodiscard]] Occurrence_pin get_sink_pin(Port_id port_id) const;
+  [[nodiscard]] Occurrence_pin get_sink_pin(std::string_view name) const;
+  [[nodiscard]] OccurrencePinRange out_pins() const;
+  [[nodiscard]] OccurrencePinRange inp_pins() const;
+  [[nodiscard]] OccurrenceEdgeRange out_edges() const;
+  [[nodiscard]] OccurrenceEdgeRange inp_edges() const;
+  [[nodiscard]] bool has_out_edges() const { return !out_edges().empty(); }
+  [[nodiscard]] bool has_inp_edges() const { return !inp_edges().empty(); }
+
+  template <Attribute Tag> [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
+    static_assert(std::is_same_v<typename Tag::storage, hier_storage>,
+                  "Occurrence_node::attr requires a hier_storage attribute "
+                  "tag; use base_node().attr() for class storage");
+    std::vector<Hier_attr_step> steps;
+    steps.reserve(path_.steps().size());
+    for (const auto &step : path_.steps()) {
+      steps.push_back(
+          Hier_attr_step{step.subnode.gid, step.subnode.value, step.ordinal});
+    }
+    return AttrRef<Tag>(node_.get_graph(),
+                        make_node_attr_key(static_cast<uint64_t>(
+                            node_.get_debug_nid() & ~static_cast<Nid>(3))),
+                        path_.root_gid(), std::move(steps));
+  }
+
+  [[nodiscard]] bool operator==(const Occurrence_node &other) const noexcept {
+    return get_occurrence_index() == other.get_occurrence_index();
+  }
+  [[nodiscard]] bool operator!=(const Occurrence_node &other) const noexcept {
+    return !(*this == other);
+  }
+
+  template <typename H>
+  friend H AbslHashValue(H h, const Occurrence_node &node) {
+    return H::combine(std::move(h), node.get_occurrence_index());
+  }
+
+private:
+  Occurrence_node(Node_class node, Occurrence_path path,
+                  Occurrence_path container_path,
+                  std::shared_ptr<detail::Hierarchy_view_state> state)
+      : node_(std::move(node)), path_(std::move(path)),
+        container_path_(std::move(container_path)), state_(std::move(state)) {}
+
+  Node_class node_;
+  Occurrence_path path_;
+  Occurrence_path container_path_;
+  std::shared_ptr<detail::Hierarchy_view_state> state_;
+
+  friend struct detail::Hierarchy_view_state;
+  friend class Occurrence_pin;
+};
+
+class Occurrence_pin {
+public:
+  Occurrence_pin() = default;
+
+  [[nodiscard]] Pin_class base_pin() const { return pin_; }
+  [[nodiscard]] Occurrence_node get_master_node() const;
+  [[nodiscard]] const Occurrence_path &path() const noexcept { return path_; }
+  [[nodiscard]] Occurrence_index get_occurrence_index() const noexcept {
+    return Occurrence_index{path_, pin_.get_definition_index()};
+  }
+  [[nodiscard]] Definition_index get_definition_index() const noexcept {
+    return pin_.get_definition_index();
+  }
+  [[nodiscard]] Class_index get_class_index() const noexcept {
+    return pin_.get_class_index();
+  }
+  [[nodiscard]] Graph *get_graph() const noexcept { return pin_.get_graph(); }
+  [[nodiscard]] Gid get_current_gid() const noexcept {
+    return pin_.get_current_gid();
+  }
+  [[nodiscard]] Gid get_root_gid() const noexcept { return path_.root_gid(); }
+  [[nodiscard]] Pid get_debug_pid() const noexcept {
+    return pin_.get_debug_pid();
+  }
+  [[nodiscard]] Nid get_debug_nid() const noexcept {
+    return pin_.get_debug_nid();
+  }
+  [[nodiscard]] Port_id get_port_id() const noexcept {
+    return pin_.get_port_id();
+  }
+  [[nodiscard]] std::string_view get_pin_name() const {
+    return pin_.get_pin_name();
+  }
+  [[nodiscard]] std::string get_hier_name() const;
+  [[nodiscard]] bool is_valid() const noexcept { return pin_.is_valid(); }
+  [[nodiscard]] bool is_invalid() const noexcept { return !is_valid(); }
+  [[nodiscard]] bool is_driver() const noexcept { return pin_.is_driver(); }
+  [[nodiscard]] bool is_sink() const noexcept { return pin_.is_sink(); }
+  [[nodiscard]] OccurrenceEdgeRange out_edges() const;
+  [[nodiscard]] OccurrenceEdgeRange inp_edges() const;
+  [[nodiscard]] OccurrencePinRange get_driver_pins() const;
+
+  template <Attribute Tag> [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
+    static_assert(std::is_same_v<typename Tag::storage, hier_storage>,
+                  "Occurrence_pin::attr requires a hier_storage attribute tag; "
+                  "use base_pin().attr() for class storage");
+    std::vector<Hier_attr_step> steps;
+    steps.reserve(path_.steps().size());
+    for (const auto &step : path_.steps()) {
+      steps.push_back(
+          Hier_attr_step{step.subnode.gid, step.subnode.value, step.ordinal});
+    }
+    return AttrRef<Tag>(pin_.get_graph(),
+                        make_pin_attr_key(static_cast<uint64_t>(
+                            pin_.get_debug_pid() & ~static_cast<Pid>(2))),
+                        path_.root_gid(), std::move(steps));
+  }
+
+  [[nodiscard]] bool operator==(const Occurrence_pin &other) const noexcept {
+    return get_occurrence_index() == other.get_occurrence_index();
+  }
+  [[nodiscard]] bool operator!=(const Occurrence_pin &other) const noexcept {
+    return !(*this == other);
+  }
+
+  template <typename H> friend H AbslHashValue(H h, const Occurrence_pin &pin) {
+    return H::combine(std::move(h), pin.get_occurrence_index());
+  }
+
+private:
+  Occurrence_pin(Pin_class pin, Occurrence_path path,
+                 Occurrence_path container_path,
+                 std::shared_ptr<detail::Hierarchy_view_state> state)
+      : pin_(std::move(pin)), path_(std::move(path)),
+        container_path_(std::move(container_path)), state_(std::move(state)) {}
+
+  Pin_class pin_;
+  Occurrence_path path_;
+  Occurrence_path container_path_;
+  std::shared_ptr<detail::Hierarchy_view_state> state_;
+
+  friend struct detail::Hierarchy_view_state;
+  friend class Occurrence_node;
+};
+
+class Occurrence_edge {
+public:
+  Occurrence_edge() = default;
+  Occurrence_edge(Occurrence_pin driver_value, Occurrence_pin sink_value)
+      : driver(std::move(driver_value)), sink(std::move(sink_value)) {}
+
+  Occurrence_pin driver;
+  Occurrence_pin sink;
+};
+
+struct Reach_options {
+  Direction direction = Direction::forward;
+  Search_order search_order = Search_order::dfs;
+  function_ref<Walk_control(const Occurrence_pin &, const Occurrence_edge &)>
+      visit;
+};
+
+// Streaming, occurrence-identity-deduplicated pin reachability. The frontier
+// advances only as the iterator is incremented, so breaking a range-for stops
+// boundary resolution immediately rather than materializing the whole cone.
+class ReachablePinIterator {
+public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type = Occurrence_pin;
+  using difference_type = std::ptrdiff_t;
+  using pointer = const Occurrence_pin *;
+  using reference = const Occurrence_pin &;
+
+  ReachablePinIterator() = default;
+  ReachablePinIterator(std::vector<Occurrence_pin> seeds,
+                       Reach_options options);
+
+  [[nodiscard]] reference operator*() const noexcept { return current_; }
+  [[nodiscard]] pointer operator->() const noexcept { return &current_; }
+  ReachablePinIterator &operator++();
+  ReachablePinIterator operator++(int) {
+    auto old = *this;
+    ++*this;
+    return old;
+  }
+  [[nodiscard]] bool
+  operator==(const ReachablePinIterator &other) const noexcept {
+    return done_ && other.done_;
+  }
+  [[nodiscard]] bool
+  operator!=(const ReachablePinIterator &other) const noexcept {
+    return !(*this == other);
+  }
+
+private:
+  void advance();
+  // Re-baseline mutation_epoch_ after an edge expansion that may have lazily
+  // materialized a persisted body. See the definition in graph.cpp.
+  void resync_epoch() noexcept;
+
+  std::deque<Occurrence_pin> frontier_;
+  std::unordered_set<Occurrence_index> visited_;
+  std::vector<Occurrence_edge> edges_;
+  size_t edge_pos_ = 0;
+  Reach_options options_;
+  Occurrence_pin current_;
+  const GraphLibrary *library_ = nullptr;
+  uint64_t mutation_epoch_ = 0;
+  bool done_ = true;
+};
+
+class ReachablePinRange {
+public:
+  ReachablePinRange(std::vector<Occurrence_pin> seeds, Reach_options options)
+      : seeds_(std::move(seeds)), options_(options) {}
+
+  [[nodiscard]] ReachablePinIterator begin() const {
+    return ReachablePinIterator(seeds_, options_);
+  }
+  [[nodiscard]] ReachablePinIterator end() const noexcept { return {}; }
+
+private:
+  std::vector<Occurrence_pin> seeds_;
+  Reach_options options_;
+};
+
 // Handle for one subnode instance in the structure-tree walk driven by
 // Graph::hier_range(). Unlike Node_class (which yields every graph node),
 // Hier_instance yields exactly once per subnode — so hierarchy traversals
@@ -447,43 +1197,64 @@ private:
 class Hier_instance {
 public:
   Hier_instance() = default;
-  Hier_instance(Graph* parent_graph, Gid root_gid, Tree_pos hier_pos, Tree_pos tree_pos, Nid parent_nid)
-      : parent_graph_(parent_graph), root_gid_(root_gid), hier_pos_(hier_pos), tree_pos_(tree_pos), parent_nid_(parent_nid) {}
+  Hier_instance(Graph *parent_graph, Gid root_gid, Tree_pos hier_pos,
+                Tree_pos tree_pos, Nid parent_nid, Occurrence_path path,
+                uint64_t multiplicity)
+      : parent_graph_(parent_graph), root_gid_(root_gid), hier_pos_(hier_pos),
+        tree_pos_(tree_pos), parent_nid_(parent_nid), path_(std::move(path)),
+        multiplicity_(multiplicity) {}
 
-  [[nodiscard]] Graph*                 get_parent_graph() const noexcept { return parent_graph_; }
-  [[nodiscard]] Gid                    get_root_gid() const noexcept { return root_gid_; }
-  [[nodiscard]] Tree_pos               get_tree_pos() const noexcept { return tree_pos_; }
-  [[nodiscard]] Tree_pos               get_hier_pos() const noexcept { return hier_pos_; }
-  [[nodiscard]] Nid                    get_parent_nid() const noexcept { return parent_nid_; }
-  [[nodiscard]] Gid                    get_target_gid() const;
-  [[nodiscard]] std::shared_ptr<Graph> get_target_graph() const;
-  [[nodiscard]] Node_class             get_parent_node() const;
-  [[nodiscard]] bool                   is_valid() const noexcept;
-  [[nodiscard]] bool                   is_invalid() const noexcept { return !is_valid(); }
-
-  [[nodiscard]] bool operator==(const Hier_instance& other) const noexcept {
-    return parent_graph_ == other.parent_graph_ && tree_pos_ == other.tree_pos_ && hier_pos_ == other.hier_pos_;
+  [[nodiscard]] Graph *get_parent_graph() const noexcept {
+    return parent_graph_;
   }
-  [[nodiscard]] bool operator!=(const Hier_instance& other) const noexcept { return !(*this == other); }
+  [[nodiscard]] Gid get_root_gid() const noexcept { return root_gid_; }
+  [[nodiscard]] Tree_pos get_tree_pos() const noexcept { return tree_pos_; }
+  [[nodiscard]] Tree_pos get_hier_pos() const noexcept { return hier_pos_; }
+  [[nodiscard]] Nid get_parent_nid() const noexcept { return parent_nid_; }
+  [[nodiscard]] Gid get_target_gid() const;
+  [[nodiscard]] std::shared_ptr<Graph> get_target_graph() const;
+  [[nodiscard]] Node_class get_parent_node() const;
+  [[nodiscard]] Node_class base_node() const;
+  [[nodiscard]] GraphIO &target_io() const;
+  [[nodiscard]] Subnode_group subnode_group() const;
+  [[nodiscard]] const Occurrence_path &path() const noexcept { return path_; }
+  [[nodiscard]] uint64_t multiplicity() const noexcept { return multiplicity_; }
+  [[nodiscard]] bool is_valid() const noexcept;
+  [[nodiscard]] bool is_invalid() const noexcept { return !is_valid(); }
 
-  template <typename H>
-  friend H AbslHashValue(H h, const Hier_instance& inst) {
-    return H::combine(std::move(h), reinterpret_cast<uintptr_t>(inst.parent_graph_), inst.tree_pos_, inst.hier_pos_);
+  [[nodiscard]] bool operator==(const Hier_instance &other) const noexcept {
+    return parent_graph_ == other.parent_graph_ &&
+           tree_pos_ == other.tree_pos_ && hier_pos_ == other.hier_pos_;
+  }
+  [[nodiscard]] bool operator!=(const Hier_instance &other) const noexcept {
+    return !(*this == other);
+  }
+
+  template <typename H> friend H AbslHashValue(H h, const Hier_instance &inst) {
+    return H::combine(std::move(h),
+                      reinterpret_cast<uintptr_t>(inst.parent_graph_),
+                      inst.tree_pos_, inst.hier_pos_);
   }
 
 private:
-  Graph*   parent_graph_ = nullptr;
-  Gid      root_gid_     = Gid_invalid;
-  Tree_pos hier_pos_     = INVALID;
-  Tree_pos tree_pos_     = INVALID;
-  Nid      parent_nid_   = 0;
+  Graph *parent_graph_ = nullptr;
+  Gid root_gid_ = Gid_invalid;
+  Tree_pos hier_pos_ = INVALID;
+  Tree_pos tree_pos_ = INVALID;
+  Nid parent_nid_ = 0;
+  Occurrence_path path_;
+  uint64_t multiplicity_ = 0;
 
   friend class Graph;
   friend class HierIterator;
 };
 
+// New semantic spelling. Keep Hier_instance as a compatibility name while
+// downstream code migrates from hier_range().
+using Instance_group = Hier_instance;
+
 using Node = Node_class;
-using Pin  = Pin_class;
+using Pin = Pin_class;
 
 class GraphLibrary;
 
@@ -496,15 +1267,17 @@ class Graph : public Attr_host {
     PinEntry();
     PinEntry(Nid master_nid_value, Port_id port_id_value);
 
-    [[nodiscard]] Nid      get_master_nid() const { return master_nid; }
-    [[nodiscard]] Port_id  get_port_id() const { return port_id; }
-    auto                   add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
-    auto                   delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
-    [[nodiscard]] bool     has_edges() const;
-    [[nodiscard]] Pid      get_next_pin_id() const { return next_pin_id; }
-    void                   set_next_pin_id(Pid id) { next_pin_id = id; }
-    [[nodiscard]] bool     check_overflow() const { return use_overflow; }
-    [[nodiscard]] uint32_t get_overflow_idx() const { return sedges_.overflow_idx; }
+    [[nodiscard]] Nid get_master_nid() const { return master_nid; }
+    [[nodiscard]] Port_id get_port_id() const { return port_id; }
+    auto add_edge(Pid self_id, Pid other_id, OverflowPool &pool) -> bool;
+    auto delete_edge(Pid self_id, Pid other_id, OverflowPool &pool) -> bool;
+    [[nodiscard]] bool has_edges() const;
+    [[nodiscard]] Pid get_next_pin_id() const { return next_pin_id; }
+    void set_next_pin_id(Pid id) { next_pin_id = id; }
+    [[nodiscard]] bool check_overflow() const { return use_overflow; }
+    [[nodiscard]] uint32_t get_overflow_idx() const {
+      return sedges_.overflow_idx;
+    }
 
     static constexpr size_t MAX_EDGES = 8;
 
@@ -512,44 +1285,55 @@ class Graph : public Attr_host {
     public:
       // Inline capacity: 4 packed sedge slots + ledge0 + ledge1.
       static constexpr size_t kInlineMax = 6;
-      using iterator                     = EdgeIterator;
+      using iterator = EdgeIterator;
 
-      EdgeRange(const PinEntry* pin, Pid pid, const OverflowVec& overflow) noexcept;
+      EdgeRange(const PinEntry *pin, Pid pid,
+                const OverflowVec &overflow) noexcept;
       // begin()/end() hand out iterators into inline_buf_, which lives inside
       // this object. Copying/moving an EdgeRange would dangle those iterators,
-      // so forbid it — range-for and `auto r = get_edges(...)` still compile via
-      // guaranteed copy elision (get_edges returns a prvalue).
-      EdgeRange(const EdgeRange&)            = delete;
-      EdgeRange& operator=(const EdgeRange&) = delete;
-      EdgeRange(EdgeRange&&)                 = delete;
-      EdgeRange& operator=(EdgeRange&&)      = delete;
+      // so forbid it — range-for and `auto r = get_edges(...)` still compile
+      // via guaranteed copy elision (get_edges returns a prvalue).
+      EdgeRange(const EdgeRange &) = delete;
+      EdgeRange &operator=(const EdgeRange &) = delete;
+      EdgeRange(EdgeRange &&) = delete;
+      EdgeRange &operator=(EdgeRange &&) = delete;
 
-      iterator begin() const noexcept { return overflow_set_ ? iterator(overflow_set_->begin()) : iterator(inline_buf_.data()); }
+      iterator begin() const noexcept {
+        return overflow_set_ ? iterator(overflow_set_->begin())
+                             : iterator(inline_buf_.data());
+      }
       iterator end() const noexcept {
-        return overflow_set_ ? iterator(overflow_set_->end()) : iterator(inline_buf_.data() + inline_count_);
+        return overflow_set_ ? iterator(overflow_set_->end())
+                             : iterator(inline_buf_.data() + inline_count_);
       }
 
     private:
       std::array<Vid, kInlineMax> inline_buf_{};
-      const OverflowSet*          overflow_set_ = nullptr;
-      uint8_t                     inline_count_ = 0;
+      const OverflowSet *overflow_set_ = nullptr;
+      uint8_t inline_count_ = 0;
     };
-    [[nodiscard]] auto get_edges(Pid pid, const OverflowVec& overflow) const noexcept -> EdgeRange;
+    [[nodiscard]] auto get_edges(Pid pid,
+                                 const OverflowVec &overflow) const noexcept
+        -> EdgeRange;
 
   private:
-    auto overflow_handling(Pid self_id, Vid other_id, OverflowPool& pool) -> bool;
+    auto overflow_handling(Pid self_id, Vid other_id, OverflowPool &pool)
+        -> bool;
 
-    Nid     master_nid   : Nid_bits;   // 42 bits
-    Port_id port_id      : Port_bits;  // 22 bits    => 64 bits (8 bytes)
-    Pid     next_pin_id  : Nid_bits;   // 42 bits
-    Nid     ledge0       : Nid_bits;   // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
-    Nid     ledge1       : Nid_bits;   // 42 bits to too far node/pin (does not fit in sedge) => 64 bits (8 bytes)
-    uint8_t use_overflow : 1;          // 1 bit      => 64 bits (8 bytes)
+    Nid master_nid : Nid_bits;   // 42 bits
+    Port_id port_id : Port_bits; // 22 bits    => 64 bits (8 bytes)
+    Pid next_pin_id : Nid_bits;  // 42 bits
+    Nid ledge0 : Nid_bits;       // 42 bits to too far node/pin (does not fit in
+                                 // sedge) => 64 bits (8 bytes)
+    Nid ledge1 : Nid_bits;       // 42 bits to too far node/pin (does not fit in
+                                 // sedge) => 64 bits (8 bytes)
+    uint8_t use_overflow : 1;    // 1 bit      => 64 bits (8 bytes)
 
     union {
-      int64_t  sedges;        // 4 × 16-bit packed slots (when use_overflow == 0)
-      uint32_t overflow_idx;  // index into Graph::overflow_sets_ (when use_overflow == 1)
-    } sedges_;                // Total: 8 bytes
+      int64_t sedges; // 4 × 16-bit packed slots (when use_overflow == 0)
+      uint32_t overflow_idx; // index into Graph::overflow_sets_ (when
+                             // use_overflow == 1)
+    } sedges_;               // Total: 8 bytes
   };
 
   static_assert(sizeof(PinEntry) == 32, "PinEntry size mismatch");
@@ -562,54 +1346,67 @@ class Graph : public Attr_host {
     NodeEntry();
     explicit NodeEntry(bool alive_value);
 
-    [[nodiscard]] bool     is_alive() const noexcept { return alive != 0; }
-    [[nodiscard]] Type     get_type() const { return static_cast<Type>(type); }
-    void                   set_type(Type t) { type = t; }
-    [[nodiscard]] bool     is_loop_break() const noexcept { return (type & 1u) != 0u; }
-    [[nodiscard]] Pid      get_next_pin_id() const { return next_pin_id; }
-    void                   set_next_pin_id(Pid id) { next_pin_id = id; }
-    [[nodiscard]] bool     has_edges(const OverflowVec& overflow) const;
-    auto                   add_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
-    auto                   delete_edge(Pid self_id, Pid other_id, OverflowPool& pool) -> bool;
-    [[nodiscard]] bool     check_overflow() const { return use_overflow; }
-    [[nodiscard]] uint32_t get_overflow_idx() const { return sedges_.overflow_idx; }
+    [[nodiscard]] bool is_alive() const noexcept { return alive != 0; }
+    [[nodiscard]] Type get_type() const { return static_cast<Type>(type); }
+    void set_type(Type t) { type = t; }
+    [[nodiscard]] bool is_loop_break() const noexcept {
+      return (type & 1u) != 0u;
+    }
+    [[nodiscard]] Pid get_next_pin_id() const { return next_pin_id; }
+    void set_next_pin_id(Pid id) { next_pin_id = id; }
+    [[nodiscard]] bool has_edges(const OverflowVec &overflow) const;
+    auto add_edge(Pid self_id, Pid other_id, OverflowPool &pool) -> bool;
+    auto delete_edge(Pid self_id, Pid other_id, OverflowPool &pool) -> bool;
+    [[nodiscard]] bool check_overflow() const { return use_overflow; }
+    [[nodiscard]] uint32_t get_overflow_idx() const {
+      return sedges_.overflow_idx;
+    }
 
-    void               set_subnode(Nid self_nid, Gid gid, OverflowPool& pool);
-    [[nodiscard]] Gid  get_subnode() const noexcept;
+    void set_subnode(Nid self_nid, Gid gid, OverflowPool &pool);
+    [[nodiscard]] Gid get_subnode() const noexcept;
     [[nodiscard]] bool has_subnode() const noexcept;
 
     static constexpr size_t MAX_EDGES = 8;
 
     class EdgeRange {
     public:
-      // Inline capacity: 4 packed sedge slots + 3 extra slots in sedges_extra + ledge0 + ledge1.
+      // Inline capacity: 4 packed sedge slots + 3 extra slots in sedges_extra +
+      // ledge0 + ledge1.
       static constexpr size_t kInlineMax = 9;
-      using iterator                     = EdgeIterator;
+      using iterator = EdgeIterator;
 
-      EdgeRange(const NodeEntry* node, Nid nid, const OverflowVec& overflow) noexcept;
+      EdgeRange(const NodeEntry *node, Nid nid,
+                const OverflowVec &overflow) noexcept;
       // See PinEntry::EdgeRange: iterators point into inline_buf_, so copy/move
       // would dangle. Prvalue return + copy elision keep all callers valid.
-      EdgeRange(const EdgeRange&)            = delete;
-      EdgeRange& operator=(const EdgeRange&) = delete;
-      EdgeRange(EdgeRange&&)                 = delete;
-      EdgeRange& operator=(EdgeRange&&)      = delete;
+      EdgeRange(const EdgeRange &) = delete;
+      EdgeRange &operator=(const EdgeRange &) = delete;
+      EdgeRange(EdgeRange &&) = delete;
+      EdgeRange &operator=(EdgeRange &&) = delete;
 
-      iterator begin() const noexcept { return overflow_set_ ? iterator(overflow_set_->begin()) : iterator(inline_buf_.data()); }
+      iterator begin() const noexcept {
+        return overflow_set_ ? iterator(overflow_set_->begin())
+                             : iterator(inline_buf_.data());
+      }
       iterator end() const noexcept {
-        return overflow_set_ ? iterator(overflow_set_->end()) : iterator(inline_buf_.data() + inline_count_);
+        return overflow_set_ ? iterator(overflow_set_->end())
+                             : iterator(inline_buf_.data() + inline_count_);
       }
 
     private:
       std::array<Vid, kInlineMax> inline_buf_{};
-      const OverflowSet*          overflow_set_ = nullptr;
-      uint8_t                     inline_count_ = 0;
+      const OverflowSet *overflow_set_ = nullptr;
+      uint8_t inline_count_ = 0;
     };
 
-    [[nodiscard]] auto get_edges(Nid nid, const OverflowVec& overflow) const noexcept -> EdgeRange;
+    [[nodiscard]] auto get_edges(Nid nid,
+                                 const OverflowVec &overflow) const noexcept
+        -> EdgeRange;
 
   private:
     void clear_node();
-    auto overflow_handling(Nid self_id, Vid other_id, OverflowPool& pool) -> bool;
+    auto overflow_handling(Nid self_id, Vid other_id, OverflowPool &pool)
+        -> bool;
 
     // Layout (packed, 32 bytes):
     //   type            : 16 bits
@@ -620,41 +1417,50 @@ class Graph : public Attr_host {
     //   alive           :  1 bit   (tombstone = 0)
     //   sedges_extra    : 48 bits  (3 extra 16-bit slots, exact fit)
     // -> 192 bits = 24 bytes; sedges_ begins at byte 24 (8-byte aligned).
-    Type     type         : 16;
-    Pid      next_pin_id  : Nid_bits;
-    Nid      ledge0       : Nid_bits;
-    Nid      ledge1       : Nid_bits;
-    uint8_t  use_overflow : 1;
-    uint8_t  alive        : 1;
+    Type type : 16;
+    Pid next_pin_id : Nid_bits;
+    Nid ledge0 : Nid_bits;
+    Nid ledge1 : Nid_bits;
+    uint8_t use_overflow : 1;
+    uint8_t alive : 1;
     uint64_t sedges_extra : 48;
     union {
-      int64_t  sedges;        // low-4 slots of 16 bits (fills 64 bits exactly)
-      uint32_t overflow_idx;  // index into Graph::overflow_sets_ (when use_overflow == 1)
-    } sedges_;                // 8 bytes
+      int64_t sedges;        // low-4 slots of 16 bits (fills 64 bits exactly)
+      uint32_t overflow_idx; // index into Graph::overflow_sets_ (when
+                             // use_overflow == 1)
+    } sedges_;               // 8 bytes
   };
 
   static_assert(sizeof(NodeEntry) == 32, "NodeEntry size mismatch");
 
 public:
   Graph();
-  // Graphs are owned via handles; copying or moving would break library identity and traversal caches.
-  Graph(const Graph&)            = delete;
-  Graph& operator=(const Graph&) = delete;
-  Graph(Graph&&)                 = delete;
-  Graph& operator=(Graph&&)      = delete;
+  // Graphs are owned via handles; copying or moving would break library
+  // identity and traversal caches.
+  Graph(const Graph &) = delete;
+  Graph &operator=(const Graph &) = delete;
+  Graph(Graph &&) = delete;
+  Graph &operator=(Graph &&) = delete;
 
-  [[nodiscard]] Node                     create_node();
-  void                                   clear();
-  [[nodiscard]] Gid                      get_gid() const noexcept { return self_gid_; }
-  [[nodiscard]] std::string_view         get_name() const noexcept { return name_; }
-  [[nodiscard]] std::shared_ptr<GraphIO> get_io() const { return graphio_owner_.lock(); }
+  [[nodiscard]] Node create_node();
+  void clear();
+  [[nodiscard]] Gid get_gid() const noexcept { return self_gid_; }
+  [[nodiscard]] std::string_view get_name() const noexcept { return name_; }
+  [[nodiscard]] std::shared_ptr<GraphIO> get_io() const {
+    return graphio_owner_.lock();
+  }
+  [[nodiscard]] bool has_loop_subnodes() const noexcept {
+    return !subnode_loops_.empty();
+  }
 
   // Per-graph source-provenance table (hhds-srcloc). Single-writer like the
   // body itself; resolution chains to the owning library's base table. The
   // library-level union is built at GraphLibrary::save()/load_merge() time, at
   // which point this delta is folded in and cleared.
-  [[nodiscard]] Source_locator&       source_locator() noexcept { return srcloc_; }
-  [[nodiscard]] const Source_locator& source_locator() const noexcept { return srcloc_; }
+  [[nodiscard]] Source_locator &source_locator() noexcept { return srcloc_; }
+  [[nodiscard]] const Source_locator &source_locator() const noexcept {
+    return srcloc_;
+  }
 
   // Publish a writable graph (create_graph or find_graph_rw) ahead of the
   // writable handle going out of scope. Transitions the owning library slot
@@ -670,7 +1476,7 @@ public:
   // graphs.
   void abort();
 
-  [[nodiscard]] bool      is_frozen() const noexcept { return frozen_; }
+  [[nodiscard]] bool is_frozen() const noexcept { return frozen_; }
   [[nodiscard]] Pin_class get_input_pin(std::string_view name) const;
   [[nodiscard]] Pin_class get_output_pin(std::string_view name) const;
 
@@ -683,7 +1489,7 @@ public:
     if (!is_node_valid(idx.value)) {
       return Node_class();
     }
-    return Node_class(const_cast<Graph*>(this), idx.value);
+    return Node_class(const_cast<Graph *>(this), idx.value);
   }
   [[nodiscard]] Node_class get_node(Hier_index idx) const {
     if (!is_node_valid(idx.value)) {
@@ -692,7 +1498,8 @@ public:
     // root_gid unknown from a bare Hier_index — reconstructing a Node for
     // a key outside an active traversal yields a Node valid for identity
     // and attr lookups but with get_root_gid() == invalid.
-    return Node_class(const_cast<Graph*>(this), static_cast<Gid>(Gid_invalid), idx.hier_pos, idx.value);
+    return Node_class(const_cast<Graph *>(this), static_cast<Gid>(Gid_invalid),
+                      idx.hier_pos, idx.value);
   }
   [[nodiscard]] Pin_class get_pin(Class_index idx) const {
     if (!is_pin_valid(idx.value)) {
@@ -705,7 +1512,7 @@ public:
       return Pin_class();
     }
     Pin_class pin = make_pin_class(idx.value);
-    pin.context_  = Handle_context::Hier;
+    pin.context_ = Handle_context::Hier;
     pin.hier_pos_ = idx.hier_pos;
     return pin;
   }
@@ -715,20 +1522,43 @@ public:
   // via the accessors below. INPUT/OUTPUT host the declared IO pins; CONST
   // hosts driver pins for constant values (any pin whose master node is
   // CONST_NODE is a constant, no further check required).
-  static constexpr Nid INPUT_NODE  = (static_cast<Nid>(1) << 2);
+  static constexpr Nid INPUT_NODE = (static_cast<Nid>(1) << 2);
   static constexpr Nid OUTPUT_NODE = (static_cast<Nid>(2) << 2);
-  static constexpr Nid CONST_NODE  = (static_cast<Nid>(3) << 2);
+  static constexpr Nid CONST_NODE = (static_cast<Nid>(3) << 2);
 
-  [[nodiscard]] Node_class get_input_node() const noexcept { return Node_class(const_cast<Graph*>(this), INPUT_NODE); }
-  [[nodiscard]] Node_class get_output_node() const noexcept { return Node_class(const_cast<Graph*>(this), OUTPUT_NODE); }
-  [[nodiscard]] Node_class get_constant_node() const noexcept { return Node_class(const_cast<Graph*>(this), CONST_NODE); }
+  [[nodiscard]] Node_class get_input_node() const noexcept {
+    return Node_class(const_cast<Graph *>(this), INPUT_NODE);
+  }
+  [[nodiscard]] Node_class get_output_node() const noexcept {
+    return Node_class(const_cast<Graph *>(this), OUTPUT_NODE);
+  }
+  [[nodiscard]] Node_class get_constant_node() const noexcept {
+    return Node_class(const_cast<Graph *>(this), CONST_NODE);
+  }
   // Fresh driver pin on CONST_NODE. The caller attaches whatever value
   // representation it wants via the standard pin attr() API; the iterator
   // skips CONST_NODE itself, so this pin is only seen as a driver on its
   // sink's inp_edges().
-  [[nodiscard]] Pin_class  create_constant() { return get_constant_node().create_driver_pin(); }
+  [[nodiscard]] Pin_class create_constant() {
+    return get_constant_node().create_driver_pin();
+  }
 
-  [[nodiscard]] FastClassRange     fast_class() const noexcept;
+  [[nodiscard]] Body_view body() const noexcept;
+  [[nodiscard]] Definitions_view definitions() const noexcept;
+  [[nodiscard]] Definitions_view
+  definitions(Hierarchy_policy policy) const noexcept;
+  [[nodiscard]] Grouped_hierarchy_view grouped_hierarchy() const noexcept;
+  [[nodiscard]] Grouped_hierarchy_view
+  grouped_hierarchy(Hierarchy_policy policy) const noexcept;
+  [[nodiscard]] Occurrences_view occurrences() const noexcept;
+  [[nodiscard]] Occurrences_view
+  occurrences(Hierarchy_policy policy) const noexcept;
+  [[nodiscard]] Grouped_hierarchy_view grouped_hierarchy(
+      const ankerl::unordered_dense::set<Gid> *opaque) const noexcept;
+  [[nodiscard]] Occurrences_view
+  occurrences(const ankerl::unordered_dense::set<Gid> *opaque) const noexcept;
+
+  [[nodiscard]] FastClassRange fast_class() const noexcept;
   // Topological traversals. loop_break nodes (flops/registers — Type bit 0
   // set; forward sources / backward sinks) break the combinational cycle
   // regardless of these flags. The flags only control *when* the loop_break
@@ -740,271 +1570,346 @@ public:
   // The four combinations cover: see-first (default), see-last, see-both
   // (T,T — emitted twice), and never (F,F — skip flops entirely). The default
   // (true,false) preserves the historical "loop_break visited first" order.
-  [[nodiscard]] ForwardClassRange  forward_class(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
-  [[nodiscard]] FastFlatRange      fast_flat() const noexcept;
-  [[nodiscard]] ForwardFlatRange   forward_flat(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
+  [[nodiscard]] ForwardClassRange
+  forward_class(bool loop_break_first = true,
+                bool loop_break_last = false) const noexcept;
+  [[nodiscard]] FastFlatRange fast_flat() const noexcept;
+  [[nodiscard]] ForwardFlatRange
+  forward_flat(bool loop_break_first = true,
+               bool loop_break_last = false) const noexcept;
   // `visit_io` (all *_hier traversals, default false): also emit each body's
   // reserved boundary IO node as the walk crosses into and out of that body —
   // the root body included (its INPUT/OUTPUT bracket the whole walk). This
   // surfaces the port names/attrs of every hierarchy boundary and signals every
   // descend/ascend transition. Which boundary is seen first depends on
-  // direction: forward/fast enter on INPUT and leave on OUTPUT; backward mirrors
-  // it (enter on OUTPUT, leave on INPUT). Detect these handles with
+  // direction: forward/fast enter on INPUT and leave on OUTPUT; backward
+  // mirrors it (enter on OUTPUT, leave on INPUT). Detect these handles with
   // Node_class::is_input_node()/is_output_node(). Default false keeps the
   // historical "boundary IO never yielded" behaviour.
   //
-  // `opaque` (fast_hier and forward_hier): subnode Gids the hierarchical walk must
-  // NOT descend into — they are yielded as leaf Sub nodes even though their body
-  // lives in the library (a caller that wants to treat a proven/blackboxed instance
-  // as opaque, e.g. pass/lec's --collapse). nullptr keeps the default "descend into
-  // every resolvable subnode". The pointed-to set must outlive the returned range.
-  // BOTH iterators additionally honor the ambient RAII Hier_opaque_scope (see
-  // hier_opaque_ref below), and the explicit set is a UNION with it. Opaque subnodes
-  // contribute no boundary IO under visit_io (the body is never entered).
-  [[nodiscard]] FastHierRange      fast_hier(bool visit_io = false,
-                                             const ankerl::unordered_dense::set<Gid>* opaque = nullptr) const noexcept;
+  // `opaque` (fast_hier and forward_hier): subnode Gids the hierarchical walk
+  // must NOT descend into — they are yielded as leaf Sub nodes even though
+  // their body lives in the library (a caller that wants to treat a
+  // proven/blackboxed instance as opaque, e.g. pass/lec's --collapse). nullptr
+  // keeps the default "descend into every resolvable subnode". The pointed-to
+  // set must outlive the returned range. BOTH iterators additionally honor the
+  // ambient RAII Hier_opaque_scope (see hier_opaque_ref below), and the
+  // explicit set is a UNION with it. Opaque subnodes contribute no boundary IO
+  // under visit_io (the body is never entered).
+  [[nodiscard]] FastHierRange fast_hier(
+      bool visit_io = false,
+      const ankerl::unordered_dense::set<Gid> *opaque = nullptr) const noexcept;
   // forward_hier/backward_hier ALWAYS yield a flat-module (reverse-)TOPOLOGICAL
   // order — drivers precede consumers across module boundaries, loops broken at
   // the leaf flops/mems. That is their whole contract; a caller that only needs
   // to enumerate nodes (any order, cheaper, lazy) or wants the per-body IO
   // boundary markers uses fast_hier instead. Ordering is the ONLY difference:
-  // fast_hier and forward_hier yield the same node SET (same opacity rules, same
-  // cycle guard) for the default loop_break_first=true, loop_break_last=false.
-  [[nodiscard]] ForwardHierRange   forward_hier(bool loop_break_first = true, bool loop_break_last = false,
-                                                const ankerl::unordered_dense::set<Gid>* opaque = nullptr) const noexcept;
-  [[nodiscard]] BackwardClassRange backward_class(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
-  [[nodiscard]] BackwardFlatRange  backward_flat(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
-  [[nodiscard]] BackwardHierRange  backward_hier(bool loop_break_first = true, bool loop_break_last = false) const noexcept;
+  // fast_hier and forward_hier yield the same node SET (same opacity rules,
+  // same cycle guard) for the default loop_break_first=true,
+  // loop_break_last=false.
+  [[nodiscard]] ForwardHierRange forward_hier(
+      bool loop_break_first = true, bool loop_break_last = false,
+      const ankerl::unordered_dense::set<Gid> *opaque = nullptr) const noexcept;
+  [[nodiscard]] BackwardClassRange
+  backward_class(bool loop_break_first = true,
+                 bool loop_break_last = false) const noexcept;
+  [[nodiscard]] BackwardFlatRange
+  backward_flat(bool loop_break_first = true,
+                bool loop_break_last = false) const noexcept;
+  [[nodiscard]] BackwardHierRange
+  backward_hier(bool loop_break_first = true,
+                bool loop_break_last = false) const noexcept;
   // Hierarchy-only traversal: yields one Hier_instance per subnode in the
   // structure tree, recursing into each instance's target graph (cycle-
   // guarded by active_graphs). Walks tree_ alone — it never iterates
   // node_table, so cost is proportional to the hierarchy size (≪ number
   // of graph nodes). Use this for instance counts, module-tree walks, and
   // path resolution rather than fast_hier (which visits every graph node).
-  [[nodiscard]] HierRange          hier_range() const noexcept;
-  void                             display_graph() const;
-  void                             display_next_pin_of_node() const;
+  [[nodiscard]] HierRange hier_range() const noexcept;
+  void display_graph() const;
+  void display_next_pin_of_node() const;
 
-  void                      print(std::ostream& os) const;
+  void print(std::ostream &os) const;
   [[nodiscard]] std::string print() const;
 
 private:
-  void                       attr_note_modified() noexcept override { dirty_ = true; }
-  [[nodiscard]] OverflowPool get_overflow_pool() { return {overflow_sets(), overflow_free_}; }
+  void attr_note_modified() noexcept override { dirty_ = true; }
+  [[nodiscard]] OverflowPool get_overflow_pool() {
+    return {overflow_sets(), overflow_free_};
+  }
   // Overflow-set CONTENTS accessor: materializes the deferred overflow read on
   // first use, so every edge path (get_edges / EdgeRange / has_edges) sees full
   // adjacency. The raw member is overflow_storage_ (load/save/clear only).
-  [[nodiscard]] OverflowVec&       overflow_sets() {
+  [[nodiscard]] OverflowVec &overflow_sets() {
     if (overflow_deferred_) {
       ensure_overflow_loaded();
     }
     return overflow_storage_;
   }
-  [[nodiscard]] const OverflowVec& overflow_sets() const {
+  [[nodiscard]] const OverflowVec &overflow_sets() const {
     if (overflow_deferred_) {
       ensure_overflow_loaded();
     }
     return overflow_storage_;
   }
-  void ensure_overflow_loaded() const;  // reads the deferred overflow.bin / overflow_<i>.bin
-  void                       assert_accessible() const noexcept { assert(!deleted_ && "graph is no longer valid"); }
-  void                       assert_node_exists(const Node_class& node) const noexcept;
-  void                       assert_pin_exists(const Pin_class& pin) const noexcept;
-  [[nodiscard]] bool         is_node_valid(Nid nid) const noexcept;
-  [[nodiscard]] bool         is_pin_valid(Pid pid) const noexcept;
-  [[nodiscard]] NodeEntry*   ref_node(Nid id) const {
+  void ensure_overflow_loaded()
+      const; // reads the deferred overflow.bin / overflow_<i>.bin
+  void assert_accessible() const noexcept {
+    assert(!deleted_ && "graph is no longer valid");
+  }
+  void assert_node_exists(const Node_class &node) const noexcept;
+  void assert_pin_exists(const Pin_class &pin) const noexcept;
+  [[nodiscard]] bool is_node_valid(Nid nid) const noexcept;
+  [[nodiscard]] bool is_pin_valid(Pid pid) const noexcept;
+  [[nodiscard]] NodeEntry *ref_node(Nid id) const {
     assert_accessible();
     const Nid actual_id = id >> 2;
     assert(actual_id < node_table.size());
-    return const_cast<NodeEntry*>(&node_table[actual_id]);
+    return const_cast<NodeEntry *>(&node_table[actual_id]);
   }
-  [[nodiscard]] PinEntry* ref_pin(Pid id) const {
+  [[nodiscard]] PinEntry *ref_pin(Pid id) const {
     assert_accessible();
     const Pid actual_id = id >> 2;
     assert(actual_id < pin_table.size());
-    return const_cast<PinEntry*>(&pin_table[actual_id]);
+    return const_cast<PinEntry *>(&pin_table[actual_id]);
   }
-  void              invalidate_from_library() noexcept;
-  void              release_storage() noexcept;
-  void              clear_graph();
-  // Binary persistence — saves/loads body data (node_table, pin_table, overflow sets).
-  // dir_path is the graph-specific directory (e.g., "db/graph_1/").
-  void              save_body(const std::string& dir_path) const;
-  void              load_body(const std::string& dir_path);
-  // In-memory sibling of load_body: replace this body's contents with a deep copy
-  // of `src`'s (node/pin tables, overflow sets, every attr store), then rebuild
-  // the derived structures. No disk I/O; marks the body dirty. Used by
+  void invalidate_from_library() noexcept;
+  void release_storage() noexcept;
+  void sync_loop_presence() noexcept;
+#ifndef NDEBUG
+  void debug_mark_loop_validated(Nid nid) const;
+  void debug_revalidate_loop_edge_mutation(Vid driver_id, Vid sink_id) const;
+#endif
+  void clear_graph();
+  // Binary persistence — saves/loads body data (node_table, pin_table, overflow
+  // sets). dir_path is the graph-specific directory (e.g., "db/graph_1/").
+  void save_body(const std::string &dir_path) const;
+  void load_body(const std::string &dir_path);
+  // In-memory sibling of load_body: replace this body's contents with a deep
+  // copy of `src`'s (node/pin tables, overflow sets, every attr store), then
+  // rebuild the derived structures. No disk I/O; marks the body dirty. Used by
   // GraphLibrary::copy_from for a single-module cross-library copy.
-  void              copy_body_from(const Graph& src);
-  // Rebuild the tree_ / subnode / name->Pid derived structures from node_table +
-  // pin_table + the GraphIO decls. Shared by load_body (after a disk read) and
-  // copy_body_from (after an in-memory table copy) so both paths produce identical
-  // derived state. Does NOT set dirty_ — each caller sets it.
-  void              rebuild_derived_after_body();
-  void              delete_node(Nid nid);
-  [[nodiscard]] Pid materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
-                                                ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq>& pins_by_name);
-  void erase_declared_io_pin(std::string_view name, ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq>& pins_by_name);
+  void copy_body_from(const Graph &src);
+  // Rebuild the tree_ / subnode / name->Pid derived structures from node_table
+  // + pin_table + the GraphIO decls. Shared by load_body (after a disk read)
+  // and copy_body_from (after an in-memory table copy) so both paths produce
+  // identical derived state. Does NOT set dirty_ — each caller sets it.
+  void rebuild_derived_after_body();
+  void delete_node(Nid nid);
+  [[nodiscard]] Pid materialize_declared_io_pin(
+      std::string_view name, Port_id port_id, Nid owner_nid,
+      ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq>
+          &pins_by_name);
+  void erase_declared_io_pin(
+      std::string_view name,
+      ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq>
+          &pins_by_name);
   void delete_pin(Pid pin_pid);
-  [[nodiscard]] Pin_class        create_pin(Node_class node, Port_id port_id);
-  [[nodiscard]] Pid              create_pin(Nid nid, Port_id port_id);
-  [[nodiscard]] Pin_class        find_pin(Node_class node, Port_id port_id, bool driver) const;
-  [[nodiscard]] Pin_class        find_or_create_pin(Node_class node, Port_id port_id);
-  [[nodiscard]] Port_id          resolve_driver_port(Node_class node, std::string_view name) const;
-  [[nodiscard]] Port_id          resolve_sink_port(Node_class node, std::string_view name) const;
+  [[nodiscard]] Pin_class create_pin(Node_class node, Port_id port_id);
+  [[nodiscard]] Pid create_pin(Nid nid, Port_id port_id);
+  [[nodiscard]] Pin_class find_pin(Node_class node, Port_id port_id,
+                                   bool driver) const;
+  [[nodiscard]] Pin_class find_or_create_pin(Node_class node, Port_id port_id);
+  [[nodiscard]] Port_id resolve_driver_port(Node_class node,
+                                            std::string_view name) const;
+  [[nodiscard]] Port_id resolve_sink_port(Node_class node,
+                                          std::string_view name) const;
   [[nodiscard]] std::string_view pin_name(Pin_class pin) const;
-  void                           set_subnode(Node_class node, Gid gid);
-  void                           set_subnode(Nid nid, Gid gid);
+  void set_subnode(Node_class node, Gid gid);
+  void set_subnode(Nid nid, Gid gid);
   // Debug-only structural cycle check used by set_subnode. Returns true iff
   // making this graph contain an instance of `target_gid` would form a
   // structure-tree cycle (target_gid transitively contains self_gid_).
   // BFS over subnode_tree_pos_ entries, so cost scales with hierarchy size,
   // not graph size. Compiled out under NDEBUG via the call site.
-  [[nodiscard]] bool             would_create_cycle(Gid target_gid) const noexcept;
-  void                           add_edge(Pid driver_id, Pid sink_id);
-  void add_edge(Pin_class driver_pin, Pin_class sink_pin) { add_edge(driver_pin.get_debug_pid(), sink_pin.get_debug_pid()); }
+  [[nodiscard]] bool would_create_cycle(Gid target_gid) const noexcept;
+  void add_edge(Pid driver_id, Pid sink_id);
+  void add_edge(Pin_class driver_pin, Pin_class sink_pin) {
+    add_edge(driver_pin.get_debug_pid(), sink_pin.get_debug_pid());
+  }
   void del_edge(Pin_class driver_pin, Pin_class sink_pin);
-  [[nodiscard]] OutEdgeRange                       out_edges(Node_class node);
+  [[nodiscard]] OutEdgeRange out_edges(Node_class node);
   [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges(Node_class node);
-  [[nodiscard]] OutEdgeRange                       out_edges(Pin_class pin);
+  [[nodiscard]] OutEdgeRange out_edges(Pin_class pin);
   [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges(Pin_class pin);
-  [[nodiscard]] absl::InlinedVector<Pin_class, 4>  get_pins(Node_class node);
-  [[nodiscard]] absl::InlinedVector<Pin_class, 4>  get_driver_pins(Node_class node);
-  [[nodiscard]] absl::InlinedVector<Pin_class, 4>  get_sink_pins(Node_class node);
-  void                                             del_edge_int(Vid driver_id, Vid sink_id);
-  void                                             add_edge_int(Pid self_id, Pid other_id);
-  void                                             set_next_pin(Nid nid, Pid next_pin);
-  [[nodiscard]] Pin_class                          make_pin_class(Pid pin_pid) const;
-  void                                             bind_library(const GraphLibrary* owner, Gid self_gid) noexcept;
-  void                                             set_name(std::string_view name) { name_ = name; }
-  void                                             invalidate_traversal_caches() noexcept;  // defined inline at end of header
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_pins(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4>
+  get_driver_pins(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4>
+  get_sink_pins(Node_class node);
+  void del_edge_int(Vid driver_id, Vid sink_id);
+  void add_edge_int(Pid self_id, Pid other_id);
+  void set_next_pin(Nid nid, Pid next_pin);
+  [[nodiscard]] Pin_class make_pin_class(Pid pin_pid) const;
+  void bind_library(const GraphLibrary *owner, Gid self_gid) noexcept;
+  void set_name(std::string_view name) { name_ = name; }
+  void
+  invalidate_traversal_caches() noexcept; // defined inline at end of header
   // Incremental patch for a single edge add/delete. delta = +1 for add, -1 for
   // delete. Bumps forward_remaining_in_cache_[sink_idx] and
   // backward_remaining_out_cache_[driver_idx] using the same filters the cache
   // builder applies. Pass-2 caches are left intact — stale entries are already
   // filtered by is_emitted() during replay. Falls back to full invalidation on
   // unexpected underflow.
-  void               patch_traversal_caches_for_edge(Vid driver_id, Vid sink_id, int32_t delta) noexcept;
+  void patch_traversal_caches_for_edge(Vid driver_id, Vid sink_id,
+                                       int32_t delta) noexcept;
   // Build (or refresh) the Pass-2 deferred list and the initial in-edge counts
   // used by the forward_class streaming iterator. The full emission ordering
   // is never materialized — only these two small caches persist.
-  void               ensure_forward_caches() const;
+  void ensure_forward_caches() const;
   // Exposed to the Forward iterator classes (which are friends).
   [[nodiscard]] bool forward_is_source(size_t idx) const noexcept;
 
-  void               ensure_backward_caches() const;
+  void ensure_backward_caches() const;
   // Exposed to the Backward iterator classes (which are friends).
   [[nodiscard]] bool backward_is_sink(size_t idx) const noexcept;
 
   // --- Cross-boundary (hierarchical) edge resolution -----------------------
-  // In a HIER traversal, inp_edges()/out_edges() must not stop at a sub-module's
-  // GraphIO boundary pin: the reported driver/sink hops through the wrapping
-  // instance(s) — up to the caller and/or down into a callee — until it reaches
-  // a real driver/sink leaf. Only the root (starting) graph's own IO pins
-  // surface. These helpers implement that walk.
+  // In a HIER traversal, inp_edges()/out_edges() must not stop at a
+  // sub-module's GraphIO boundary pin: the reported driver/sink hops through
+  // the wrapping instance(s) — up to the caller and/or down into a callee —
+  // until it reaches a real driver/sink leaf. Only the root (starting) graph's
+  // own IO pins surface. These helpers implement that walk.
   struct HierInst {
-    Graph*   parent;         // graph that instantiates inst_nid
-    Nid      inst_nid;       // subnode instance node within parent
-    Tree_pos inst_tree_pos;  // inst_nid's structure-tree position in parent (== a child's hier_pos_)
+    Graph *parent;          // graph that instantiates inst_nid
+    Nid inst_nid;           // subnode instance node within parent
+    Tree_pos inst_tree_pos; // inst_nid's structure-tree position in parent (==
+                            // a child's hier_pos_)
   };
   // A resolved leaf endpoint: a real pin in `graph`, with its own root..parent
   // instance chain (for stamping the result handle's hier_path_).
   struct HierLeaf {
-    Graph*                                  graph;
-    Pid                                     pid;
-    Tree_pos                                hier_pos;
+    Graph *graph;
+    Pid pid;
+    Tree_pos hier_pos;
     std::shared_ptr<const std::vector<Nid>> path;
   };
   // Expand a stored instance-nid chain (Node/Pin::get_hier_path) into HierInst
   // entries by walking down from root. Returns the body graph at the chain end,
   // or nullptr if the chain is inconsistent with the library.
-  [[nodiscard]] static Graph* hier_path_to_insts(Graph* root, const std::vector<Nid>& chain, std::vector<HierInst>& path);
-  // Fallback DFS reconstruction for handles that carry no chain (e.g. hand-built).
-  // Ambiguous for reused sub-graphs — prefer the stored chain.
-  [[nodiscard]] static bool   reconstruct_hier_path(Graph* root, Gid body_gid, Tree_pos body_hier_pos, std::vector<HierInst>& path);
+  [[nodiscard]] static Graph *hier_path_to_insts(Graph *root,
+                                                 const std::vector<Nid> &chain,
+                                                 std::vector<HierInst> &path);
+  // Fallback DFS reconstruction for handles that carry no chain (e.g.
+  // hand-built). Ambiguous for reused sub-graphs — prefer the stored chain.
+  [[nodiscard]] static bool reconstruct_hier_path(Graph *root, Gid body_gid,
+                                                  Tree_pos body_hier_pos,
+                                                  std::vector<HierInst> &path);
   // Follow a local driver (inp) / sink (out) pin across module boundaries until
   // real leaves are reached, appending each to `out`. `path` is the instance
   // chain from root to `g` (passed by value: pushed/popped per crossing).
-  static void resolve_hier_driver(Graph* g, std::vector<HierInst> path, Pid driver_pid, std::vector<HierLeaf>& out, int depth);
-  static void resolve_hier_sink(Graph* g, std::vector<HierInst> path, Pid sink_pid, std::vector<HierLeaf>& out, int depth);
-  // Non-asserting pin lookup by port_id (0 == node-as-pin). Returns 0 if absent.
-  [[nodiscard]] Pid     find_pin_or_zero(Nid nid, Port_id port_id, bool driver) const;
+  static void resolve_hier_driver(Graph *g, std::vector<HierInst> path,
+                                  Pid driver_pid, std::vector<HierLeaf> &out,
+                                  int depth);
+  static void resolve_hier_sink(Graph *g, std::vector<HierInst> path,
+                                Pid sink_pid, std::vector<HierLeaf> &out,
+                                int depth);
+  // Non-asserting pin lookup by port_id (0 == node-as-pin). Returns 0 if
+  // absent.
+  [[nodiscard]] Pid find_pin_or_zero(Nid nid, Port_id port_id,
+                                     bool driver) const;
   // Master node nid (role bits cleared) and port_id of an arbitrary pin pid.
-  [[nodiscard]] Nid     master_nid_of_pid(Pid pid) const;
+  [[nodiscard]] Nid master_nid_of_pid(Pid pid) const;
   [[nodiscard]] Port_id port_of_pid(Pid pid) const;
-  static constexpr int  kHierResolveMaxDepth = 4096;  // runaway guard for malformed nets
+  static constexpr int kHierResolveMaxDepth =
+      4096; // runaway guard for malformed nets
 
   // Local (single-graph) edge readers — the historical behavior, used directly
   // for Class/Flat handles and as the per-graph primitive by the hier readers.
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges_local(Node_class node);
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4> out_edges_local(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4>
+  inp_edges_local(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4>
+  out_edges_local(Node_class node);
   // Hier readers: resolve each far endpoint across module boundaries.
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges_hier(Node_class node);
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4> out_edges_hier(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4>
+  inp_edges_hier(Node_class node);
+  [[nodiscard]] absl::InlinedVector<Edge_class, 4>
+  out_edges_hier(Node_class node);
   // Starting instance chain (root..node's body) for the hier resolvers.
-  [[nodiscard]] bool                               hier_base_path(Node_class node, std::vector<HierInst>& base_path);
+  [[nodiscard]] bool hier_base_path(Node_class node,
+                                    std::vector<HierInst> &base_path);
   // get_hier_name building blocks. hier_local_name (the LEAF): a node's `name`
-  // attr, else the instantiated module name, else "n<id>". build_hier_name: join
-  // the instance chain with the body node's local name -- but a path instance is
-  // TRANSPARENT when it has no `name` attr (contributes no component), so an
-  // anonymous re-partition wrapper does not perturb any leaf's hier name.
-  [[nodiscard]] static std::string                 hier_local_name(Graph* g, Nid nid);
-  [[nodiscard]] static std::string build_hier_name(Graph* graph, Gid root_gid, const std::shared_ptr<const std::vector<Nid>>& path,
-                                                   Nid raw_nid);
+  // attr, else the instantiated module name, else "n<id>". build_hier_name:
+  // join the instance chain with the body node's local name -- but a path
+  // instance is TRANSPARENT when it has no `name` attr (contributes no
+  // component), so an anonymous re-partition wrapper does not perturb any
+  // leaf's hier name.
+  [[nodiscard]] static std::string hier_local_name(Graph *g, Nid nid);
+  [[nodiscard]] static std::string
+  build_hier_name(Graph *graph, Gid root_gid,
+                  const std::shared_ptr<const std::vector<Nid>> &path,
+                  Nid raw_nid);
 
-  std::vector<NodeEntry>                                         node_table;
-  std::vector<PinEntry>                                          pin_table;
+  std::vector<NodeEntry> node_table;
+  std::vector<PinEntry> pin_table;
   // Edge-adjacency overflow sets. LAZY: load_body sizes this vector but defers
-  // reading the set CONTENTS (the overflow.bin / overflow_<i>.bin files) until an
-  // edge is actually traversed — a pure structure walk (fast_class + subnode +
-  // node count, e.g. `lhd tools tree`) never touches edges, so it never pays to
-  // read them. Access the CONTENTS only via overflow_sets() (which ensures the
-  // deferred read has happened); overflow_storage_ is the raw backing store used
-  // by load/save/clear, which must NOT trigger a re-read.
-  OverflowVec                                                    overflow_storage_;
-  std::vector<uint32_t>                                          overflow_free_;
-  mutable bool                                                   overflow_deferred_ = false;
-  std::string                                                    overflow_src_dir_;
+  // reading the set CONTENTS (the overflow.bin / overflow_<i>.bin files) until
+  // an edge is actually traversed — a pure structure walk (fast_class + subnode
+  // + node count, e.g. `lhd tools tree`) never touches edges, so it never pays
+  // to read them. Access the CONTENTS only via overflow_sets() (which ensures
+  // the deferred read has happened); overflow_storage_ is the raw backing store
+  // used by load/save/clear, which must NOT trigger a re-read.
+  OverflowVec overflow_storage_;
+  std::vector<uint32_t> overflow_free_;
+  mutable bool overflow_deferred_ = false;
+  std::string overflow_src_dir_;
   // Persistent hierarchy: one Tree per Graph, populated by set_subnode and
   // torn down in clear()/load_body rebuild. The tree's children correspond
   // 1:1 with live subnode NodeEntries. `subnode_tree_pos_` maps a subnode
   // Nid back to its Tree_pos so del_node / debug cycle checks can find it.
-  std::shared_ptr<Tree>                                          tree_;
-  ankerl::unordered_dense::map<Nid, Tree_pos>                    subnode_tree_pos_;
+  std::shared_ptr<Tree> tree_;
+  ankerl::unordered_dense::map<Nid, Tree_pos> subnode_tree_pos_;
   // Reverse map so hier_range can resolve a Tree_pos back to its owning Nid
   // in O(1) during tree-pre-order iteration. Kept in lockstep with
   // subnode_tree_pos_ — every set_subnode / load_body insertion updates
   // both, and all three clear sites (release_storage, clear_graph, clear)
   // clear both.
-  ankerl::unordered_dense::map<Tree_pos, Nid>                    tree_pos_to_nid_;
+  ankerl::unordered_dense::map<Tree_pos, Nid> tree_pos_to_nid_;
+  // Sparse native storage: ordinary nodes pay no per-node descriptor cost.
+  ankerl::unordered_dense::map<Nid, Subnode_loop> subnode_loops_;
+#ifndef NDEBUG
+  // A descriptor may be attached before its carry edges are wired. Once a
+  // caller explicitly validates it (or a hierarchy view first traverses it),
+  // later edge edits touching that Sub must preserve the validated shape.
+  mutable ankerl::unordered_dense::map<Nid,
+                                       std::vector<std::pair<Port_id, Port_id>>>
+      validated_loop_carries_;
+#endif
+  // Whether this graph's non-empty descriptor map is already represented in
+  // GraphLibrary::loop_graph_count_. Kept separate so lazy-loaded bodies can
+  // transfer the persisted per-graph presence bit without double-counting.
+  bool loop_presence_counted_ = false;
   // Forward-traversal caches, shared across forward_class / forward_flat /
   // forward_hier for this graph body. Only the Pass-2 deferral list and the
   // initial in-edge counts are kept — the Pass-1 emission order is replayed
   // from storage order and the Tail from alive-but-unemitted survivors. No
   // Node_class objects are cached, so memory is O(Pass2) + O(N × 4 bytes)
   // rather than O(N × sizeof(Node_class)).
-  mutable std::vector<Nid>                                       forward_pass2_cache_;
-  mutable std::vector<uint32_t>                                  forward_remaining_in_cache_;
-  mutable bool                                                   forward_caches_valid_ = false;
-  mutable std::vector<Nid>                                       backward_pass2_cache_;
-  mutable std::vector<uint32_t>                                  backward_remaining_out_cache_;
-  mutable bool                                                   backward_caches_valid_ = false;
-  ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq> input_pins_;
-  ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq> output_pins_;
-  const GraphLibrary*                                            owner_lib_ = nullptr;
-  std::weak_ptr<GraphIO>                                         graphio_owner_;
-  Gid                                                            self_gid_ = Gid_invalid;
-  bool                                                           deleted_  = false;
-  mutable bool                                                   dirty_    = true;
+  mutable std::vector<Nid> forward_pass2_cache_;
+  mutable std::vector<uint32_t> forward_remaining_in_cache_;
+  mutable bool forward_caches_valid_ = false;
+  mutable std::vector<Nid> backward_pass2_cache_;
+  mutable std::vector<uint32_t> backward_remaining_out_cache_;
+  mutable bool backward_caches_valid_ = false;
+  ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq>
+      input_pins_;
+  ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq>
+      output_pins_;
+  const GraphLibrary *owner_lib_ = nullptr;
+  std::weak_ptr<GraphIO> graphio_owner_;
+  Gid self_gid_ = Gid_invalid;
+  bool deleted_ = false;
+  mutable bool dirty_ = true;
   // Set by commit(). When true, the writer asked to publish the graph;
   // single-threaded — only the writer has a writable handle.
-  bool                                                           frozen_   = false;
-  std::string                                                    name_;
+  bool frozen_ = false;
+  std::string name_;
   // Source-provenance delta (hhds-srcloc). Provenance is body content, so it
   // is cleared with the attr stores (clear()/clear_graph()/
   // invalidate_from_library()); the base pointer to the owning library's
-  // shared source map (*srcmap_sp_, set in bind_library) survives everything but detach.
-  Source_locator                                                 srcloc_;
+  // shared source map (*srcmap_sp_, set in bind_library) survives everything
+  // but detach.
+  Source_locator srcloc_;
 
   friend class Node_class;
   friend class Pin_class;
@@ -1034,18 +1939,21 @@ private:
   friend class Hier_instance;
   friend class OutEdgeIterator;
   friend class OutEdgeRange;
+  friend class Subnode_group;
+  friend struct detail::Hierarchy_view_state;
 };
 
-// Lazy, auto-scaling view over the OUT edges of a pin or node. Yields Edge_class
-// on demand instead of materializing a vector: a pin with a huge fanout
-// (clock/reset/enable -> 100K+ sinks) is walked in place over its overflow set
-// with NO copy and supports early `break`, while the common small case decodes a
-// handful of inline edges into a tiny stack buffer. For a node in Hier context
-// the range is backed by the cross-boundary-resolved snapshot behind the same API.
+// Lazy, auto-scaling view over the OUT edges of a pin or node. Yields
+// Edge_class on demand instead of materializing a vector: a pin with a huge
+// fanout (clock/reset/enable -> 100K+ sinks) is walked in place over its
+// overflow set with NO copy and supports early `break`, while the common small
+// case decodes a handful of inline edges into a tiny stack buffer. For a node
+// in Hier context the range is backed by the cross-boundary-resolved snapshot
+// behind the same API.
 //
-// LIFETIME / MUTATION: this is a VIEW over live edge storage. Any graph mutation
-// (add_edge/del_edge/del_pin/del_node) invalidates an in-flight iterator. To
-// iterate-and-mutate, snapshot first:
+// LIFETIME / MUTATION: this is a VIEW over live edge storage. Any graph
+// mutation (add_edge/del_edge/del_pin/del_node) invalidates an in-flight
+// iterator. To iterate-and-mutate, snapshot first:
 //     auto r = pin.out_edges();
 //     absl::InlinedVector<Edge_class, 4> snap(r.begin(), r.end());
 //     for (auto& e : snap) e.del_edge();
@@ -1054,38 +1962,47 @@ private:
 class OutEdgeIterator {
 public:
   using iterator_category = std::input_iterator_tag;
-  using value_type        = Edge_class;
-  using reference         = Edge_class;
-  using pointer           = void;
-  using difference_type   = std::ptrdiff_t;
+  using value_type = Edge_class;
+  using reference = Edge_class;
+  using pointer = void;
+  using difference_type = std::ptrdiff_t;
 
-  OutEdgeIterator() = default;  // End sentinel (phase_ == End)
+  OutEdgeIterator() = default; // End sentinel (phase_ == End)
 
   [[nodiscard]] Edge_class operator*() const;
-  OutEdgeIterator&         operator++();
-  OutEdgeIterator          operator++(int) {
+  OutEdgeIterator &operator++();
+  OutEdgeIterator operator++(int) {
     OutEdgeIterator tmp = *this;
     ++*this;
     return tmp;
   }
-  [[nodiscard]] bool operator==(const OutEdgeIterator& o) const noexcept { return phase_ == Phase::End && o.phase_ == Phase::End; }
-  [[nodiscard]] bool operator!=(const OutEdgeIterator& o) const noexcept { return !(*this == o); }
+  [[nodiscard]] bool operator==(const OutEdgeIterator &o) const noexcept {
+    return phase_ == Phase::End && o.phase_ == Phase::End;
+  }
+  [[nodiscard]] bool operator!=(const OutEdgeIterator &o) const noexcept {
+    return !(*this == o);
+  }
 
 private:
   enum class Phase : uint8_t { NodeAsPin, PinList, Materialized, End };
 
-  void                     start();              // seed -> first outgoing edge (or End)
-  void                     skip_and_position();  // advance to next outgoing edge across entries
-  bool                     open_next_entry();    // node-as-pin -> pin list -> next pins; false when done
-  bool                     load_next_pin();
-  void                     bind_node_as_pin();
-  void                     bind_pin();
-  void                     set_driver(Pid driver_pid);
+  void start();             // seed -> first outgoing edge (or End)
+  void skip_and_position(); // advance to next outgoing edge across entries
+  bool
+  open_next_entry(); // node-as-pin -> pin list -> next pins; false when done
+  bool load_next_pin();
+  void bind_node_as_pin();
+  void bind_pin();
+  void set_driver(Pid driver_pid);
   [[nodiscard]] Edge_class build_edge(Vid vid) const;
 
-  [[nodiscard]] bool entry_at_end() const noexcept { return is_overflow_ ? (ovf_it_ == ovf_end_) : (idx_ >= n_); }
-  [[nodiscard]] Vid  entry_cur_vid() const noexcept { return is_overflow_ ? *ovf_it_ : buf_[idx_]; }
-  void               entry_step() noexcept {
+  [[nodiscard]] bool entry_at_end() const noexcept {
+    return is_overflow_ ? (ovf_it_ == ovf_end_) : (idx_ >= n_);
+  }
+  [[nodiscard]] Vid entry_cur_vid() const noexcept {
+    return is_overflow_ ? *ovf_it_ : buf_[idx_];
+  }
+  void entry_step() noexcept {
     if (is_overflow_) {
       ++ovf_it_;
     } else {
@@ -1093,42 +2010,46 @@ private:
     }
   }
 
-  Graph* graph_        = nullptr;
-  Phase  phase_        = Phase::End;
-  bool   is_node_src_  = false;  // true: node source (walk node-as-pin then pin list)
-  bool   src_is_port0_ = false;  // pin source whose single entry is the node-as-pin(0)
-  bool   is_overflow_  = false;  // current entry uses the overflow set (the 100K case)
+  Graph *graph_ = nullptr;
+  Phase phase_ = Phase::End;
+  bool is_node_src_ =
+      false; // true: node source (walk node-as-pin then pin list)
+  bool src_is_port0_ =
+      false; // pin source whose single entry is the node-as-pin(0)
+  bool is_overflow_ =
+      false; // current entry uses the overflow set (the 100K case)
 
   // Source identity + context template (copied from the range; stamped onto
-  // every emitted driver/sink to reproduce the eager out_edges behavior exactly).
-  Nid                                     self_nid_ = 0;  // node base (& ~2)
-  Handle_context                          context_  = Handle_context::Class;
-  Gid                                     root_gid_ = Gid_invalid;
-  Tree_pos                                hier_pos_ = INVALID;
+  // every emitted driver/sink to reproduce the eager out_edges behavior
+  // exactly).
+  Nid self_nid_ = 0; // node base (& ~2)
+  Handle_context context_ = Handle_context::Class;
+  Gid root_gid_ = Gid_invalid;
+  Tree_pos hier_pos_ = INVALID;
   std::shared_ptr<const std::vector<Nid>> hier_path_;
 
   // Current entry being walked.
-  const Graph::NodeEntry* node_entry_     = nullptr;
-  const Graph::PinEntry*  pin_entry_      = nullptr;
-  Pid                     cur_pin_lookup_ = 0;  // canonical ((pid&~2)|1) of pin_entry_
-  Pid                     next_pin_id_    = 0;  // next pin in the node's linked list
+  const Graph::NodeEntry *node_entry_ = nullptr;
+  const Graph::PinEntry *pin_entry_ = nullptr;
+  Pid cur_pin_lookup_ = 0; // canonical ((pid&~2)|1) of pin_entry_
+  Pid next_pin_id_ = 0;    // next pin in the node's linked list
 
   // Inline cursor: the entry's small decoded edge set, copied out of its
   // EdgeRange. Sized for the larger entry kind (NodeEntry kInlineMax 9 >=
   // PinEntry 6); bind_node_as_pin/bind_pin static_assert this stays valid.
-  static constexpr size_t  kBufCap = 9;
+  static constexpr size_t kBufCap = 9;
   std::array<Vid, kBufCap> buf_{};
-  uint8_t                  n_   = 0;
-  uint8_t                  idx_ = 0;
+  uint8_t n_ = 0;
+  uint8_t idx_ = 0;
 
   // Overflow cursor: borrowed live set, iterated in place (no copy).
-  const OverflowSet*          ovf_ = nullptr;
+  const OverflowSet *ovf_ = nullptr;
   OverflowSet::const_iterator ovf_it_{};
   OverflowSet::const_iterator ovf_end_{};
 
   // Hier-materialized backing (node in Hier context).
   std::shared_ptr<absl::InlinedVector<Edge_class, 4>> mat_;
-  size_t                                              mat_idx_ = 0;
+  size_t mat_idx_ = 0;
 
   // Driver pin for the active entry (built once per entry, already stamped).
   Pin_class cur_driver_{};
@@ -1143,22 +2064,25 @@ public:
   using iterator = OutEdgeIterator;
 
   [[nodiscard]] OutEdgeIterator begin() const;
-  [[nodiscard]] OutEdgeIterator end() const noexcept { return OutEdgeIterator{}; }
-  [[nodiscard]] bool            empty() const { return begin() == end(); }
-  [[nodiscard]] size_t          size() const;   // O(n): walks the range
-  [[nodiscard]] Edge_class      front() const;  // precondition: !empty()
+  [[nodiscard]] OutEdgeIterator end() const noexcept {
+    return OutEdgeIterator{};
+  }
+  [[nodiscard]] bool empty() const { return begin() == end(); }
+  [[nodiscard]] size_t size() const;      // O(n): walks the range
+  [[nodiscard]] Edge_class front() const; // precondition: !empty()
 
 private:
-  Graph*                                              graph_        = nullptr;
-  bool                                                is_node_src_  = false;
-  bool                                                src_is_port0_ = false;
-  Nid                                                 self_nid_     = 0;  // node base, or pin-port0 node base
-  Pid                                                 src_pid_      = 0;  // non-port0 pin source canonical pid (else 0)
-  Handle_context                                      context_      = Handle_context::Class;
-  Gid                                                 root_gid_     = Gid_invalid;
-  Tree_pos                                            hier_pos_     = INVALID;
-  std::shared_ptr<const std::vector<Nid>>             hier_path_;
-  std::shared_ptr<absl::InlinedVector<Edge_class, 4>> mat_;  // non-null => hier-materialized
+  Graph *graph_ = nullptr;
+  bool is_node_src_ = false;
+  bool src_is_port0_ = false;
+  Nid self_nid_ = 0; // node base, or pin-port0 node base
+  Pid src_pid_ = 0;  // non-port0 pin source canonical pid (else 0)
+  Handle_context context_ = Handle_context::Class;
+  Gid root_gid_ = Gid_invalid;
+  Tree_pos hier_pos_ = INVALID;
+  std::shared_ptr<const std::vector<Nid>> hier_path_;
+  std::shared_ptr<absl::InlinedVector<Edge_class, 4>>
+      mat_; // non-null => hier-materialized
 
   friend class Graph;
   friend class OutEdgeIterator;
@@ -1169,82 +2093,90 @@ private:
 class FastClassIterator {
 public:
   using iterator_category = std::input_iterator_tag;
-  using value_type        = Node_class;
-  using difference_type   = std::ptrdiff_t;
-  using pointer           = void;
-  using reference         = Node_class;
+  using value_type = Node_class;
+  using difference_type = std::ptrdiff_t;
+  using pointer = void;
+  using reference = Node_class;
 
   FastClassIterator() noexcept = default;
 
   [[nodiscard]] Node_class operator*() const noexcept;
-  FastClassIterator&       operator++() noexcept;
-  FastClassIterator        operator++(int) noexcept {
+  FastClassIterator &operator++() noexcept;
+  FastClassIterator operator++(int) noexcept {
     FastClassIterator tmp = *this;
     ++*this;
     return tmp;
   }
-  [[nodiscard]] bool operator==(const FastClassIterator& o) const noexcept { return graph_ == o.graph_ && idx_ == o.idx_; }
-  [[nodiscard]] bool operator!=(const FastClassIterator& o) const noexcept { return !(*this == o); }
+  [[nodiscard]] bool operator==(const FastClassIterator &o) const noexcept {
+    return graph_ == o.graph_ && idx_ == o.idx_;
+  }
+  [[nodiscard]] bool operator!=(const FastClassIterator &o) const noexcept {
+    return !(*this == o);
+  }
 
 private:
-  FastClassIterator(Graph* graph, size_t idx, size_t end) noexcept;
+  FastClassIterator(Graph *graph, size_t idx, size_t end) noexcept;
   void skip_tombstones() noexcept;
 
-  Graph* graph_ = nullptr;
-  size_t idx_   = 0;
-  size_t end_   = 0;
+  Graph *graph_ = nullptr;
+  size_t idx_ = 0;
+  size_t end_ = 0;
 
   friend class FastClassRange;
 };
 
 class FastClassRange {
 public:
-  explicit FastClassRange(Graph* graph) noexcept : graph_(graph) {}
+  explicit FastClassRange(Graph *graph) noexcept : graph_(graph) {}
   [[nodiscard]] FastClassIterator begin() const noexcept;
   [[nodiscard]] FastClassIterator end() const noexcept;
 
 private:
-  Graph* graph_;
+  Graph *graph_;
 };
 
 // Instance-level flat traversal (sub-graphs visited per instance).
 class FastFlatIterator {
 public:
   using iterator_category = std::input_iterator_tag;
-  using value_type        = Node_class;
-  using difference_type   = std::ptrdiff_t;
-  using pointer           = void;
-  using reference         = Node_class;
+  using value_type = Node_class;
+  using difference_type = std::ptrdiff_t;
+  using pointer = void;
+  using reference = Node_class;
 
-  FastFlatIterator() noexcept                          = default;
-  FastFlatIterator(const FastFlatIterator&)            = default;
-  FastFlatIterator(FastFlatIterator&&)                 = default;
-  FastFlatIterator& operator=(const FastFlatIterator&) = default;
-  FastFlatIterator& operator=(FastFlatIterator&&)      = default;
-  ~FastFlatIterator()                                  = default;
+  FastFlatIterator() noexcept = default;
+  FastFlatIterator(const FastFlatIterator &) = default;
+  FastFlatIterator(FastFlatIterator &&) = default;
+  FastFlatIterator &operator=(const FastFlatIterator &) = default;
+  FastFlatIterator &operator=(FastFlatIterator &&) = default;
+  ~FastFlatIterator() = default;
 
   [[nodiscard]] Node_class operator*() const;
-  FastFlatIterator&        operator++();
-  FastFlatIterator         operator++(int) {
+  FastFlatIterator &operator++();
+  FastFlatIterator operator++(int) {
     FastFlatIterator tmp = *this;
     ++*this;
     return tmp;
   }
-  [[nodiscard]] bool operator==(const FastFlatIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
-  [[nodiscard]] bool operator!=(const FastFlatIterator& o) const noexcept { return !(*this == o); }
+  [[nodiscard]] bool operator==(const FastFlatIterator &o) const noexcept {
+    return stack_.empty() && o.stack_.empty();
+  }
+  [[nodiscard]] bool operator!=(const FastFlatIterator &o) const noexcept {
+    return !(*this == o);
+  }
 
 private:
   struct Frame {
-    Graph* graph;
+    Graph *graph;
     size_t node_idx;
     size_t end;
   };
 
-  explicit FastFlatIterator(Graph* root_graph);
+  explicit FastFlatIterator(Graph *root_graph);
   void advance();
 
-  Gid                               top_graph_ = Gid_invalid;
-  std::vector<Frame>                stack_;
+  Gid top_graph_ = Gid_invalid;
+  std::vector<Frame> stack_;
   ankerl::unordered_dense::set<Gid> active_graphs_;
 
   friend class FastFlatRange;
@@ -1252,12 +2184,14 @@ private:
 
 class FastFlatRange {
 public:
-  explicit FastFlatRange(Graph* graph) noexcept : graph_(graph) {}
+  explicit FastFlatRange(Graph *graph) noexcept : graph_(graph) {}
   [[nodiscard]] FastFlatIterator begin() const;
-  [[nodiscard]] FastFlatIterator end() const noexcept { return FastFlatIterator{}; }
+  [[nodiscard]] FastFlatIterator end() const noexcept {
+    return FastFlatIterator{};
+  }
 
 private:
-  Graph* graph_;
+  Graph *graph_;
 };
 
 // Per-frame position within a body for a `visit_io` hierarchical walk: emit the
@@ -1273,59 +2207,69 @@ enum class Hier_io_phase : uint8_t { Enter, Body, Leave };
 class FastHierIterator {
 public:
   using iterator_category = std::input_iterator_tag;
-  using value_type        = Node_class;
-  using difference_type   = std::ptrdiff_t;
-  using pointer           = void;
-  using reference         = Node_class;
+  using value_type = Node_class;
+  using difference_type = std::ptrdiff_t;
+  using pointer = void;
+  using reference = Node_class;
 
-  FastHierIterator() noexcept                          = default;
-  FastHierIterator(const FastHierIterator&)            = delete;
-  FastHierIterator(FastHierIterator&&)                 = default;
-  FastHierIterator& operator=(const FastHierIterator&) = delete;
-  FastHierIterator& operator=(FastHierIterator&&)      = default;
-  ~FastHierIterator()                                  = default;
+  FastHierIterator() noexcept = default;
+  FastHierIterator(const FastHierIterator &) = delete;
+  FastHierIterator(FastHierIterator &&) = default;
+  FastHierIterator &operator=(const FastHierIterator &) = delete;
+  FastHierIterator &operator=(FastHierIterator &&) = default;
+  ~FastHierIterator() = default;
 
   [[nodiscard]] Node_class operator*() const;
-  FastHierIterator&        operator++();
-  [[nodiscard]] bool       operator==(const FastHierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
-  [[nodiscard]] bool       operator!=(const FastHierIterator& o) const noexcept { return !(*this == o); }
+  FastHierIterator &operator++();
+  [[nodiscard]] bool operator==(const FastHierIterator &o) const noexcept {
+    return stack_.empty() && o.stack_.empty();
+  }
+  [[nodiscard]] bool operator!=(const FastHierIterator &o) const noexcept {
+    return !(*this == o);
+  }
 
 private:
   struct Frame {
-    Graph*                                  graph;
-    size_t                                  node_idx;
-    size_t                                  end;
-    Tree_pos                                hier_pos;  // position in the parent graph's structure tree
-    std::shared_ptr<const std::vector<Nid>> path;      // root..this-frame instance chain
-    Hier_io_phase                           io_phase = Hier_io_phase::Body;  // visit_io: Enter/Body/Leave
+    Graph *graph;
+    size_t node_idx;
+    size_t end;
+    Tree_pos hier_pos; // position in the parent graph's structure tree
+    std::shared_ptr<const std::vector<Nid>>
+        path; // root..this-frame instance chain
+    Hier_io_phase io_phase = Hier_io_phase::Body; // visit_io: Enter/Body/Leave
   };
 
-  explicit FastHierIterator(Graph* root_graph, bool visit_io = false,
-                            const ankerl::unordered_dense::set<Gid>* opaque = nullptr);
+  explicit FastHierIterator(
+      Graph *root_graph, bool visit_io = false,
+      const ankerl::unordered_dense::set<Gid> *opaque = nullptr);
   void advance();
   void pop_frame();
 
-  Gid                                      root_gid_ = Gid_invalid;
-  bool                                     visit_io_ = false;
-  const ankerl::unordered_dense::set<Gid>* opaque_   = nullptr;  // subnodes to NOT descend into
-  std::vector<Frame>                       stack_;
-  ankerl::unordered_dense::set<Gid>        active_graphs_;
+  Gid root_gid_ = Gid_invalid;
+  bool visit_io_ = false;
+  const ankerl::unordered_dense::set<Gid> *opaque_ =
+      nullptr; // subnodes to NOT descend into
+  std::vector<Frame> stack_;
+  ankerl::unordered_dense::set<Gid> active_graphs_;
 
   friend class FastHierRange;
 };
 
 class FastHierRange {
 public:
-  explicit FastHierRange(Graph* graph, bool visit_io = false,
-                         const ankerl::unordered_dense::set<Gid>* opaque = nullptr) noexcept
+  explicit FastHierRange(
+      Graph *graph, bool visit_io = false,
+      const ankerl::unordered_dense::set<Gid> *opaque = nullptr) noexcept
       : graph_(graph), visit_io_(visit_io), opaque_(opaque) {}
   [[nodiscard]] FastHierIterator begin() const;
-  [[nodiscard]] FastHierIterator end() const noexcept { return FastHierIterator{}; }
+  [[nodiscard]] FastHierIterator end() const noexcept {
+    return FastHierIterator{};
+  }
 
 private:
-  Graph*                                   graph_;
-  bool                                     visit_io_ = false;
-  const ankerl::unordered_dense::set<Gid>* opaque_   = nullptr;
+  Graph *graph_;
+  bool visit_io_ = false;
+  const ankerl::unordered_dense::set<Gid> *opaque_ = nullptr;
 };
 
 // Forward topological iterator for a single graph body. Emits sources first,
@@ -1337,29 +2281,32 @@ private:
 class ForwardClassIterator {
 public:
   using iterator_category = std::input_iterator_tag;
-  using value_type        = Node_class;
-  using difference_type   = std::ptrdiff_t;
-  using pointer           = void;
-  using reference         = Node_class;
+  using value_type = Node_class;
+  using difference_type = std::ptrdiff_t;
+  using pointer = void;
+  using reference = Node_class;
 
-  ForwardClassIterator() noexcept                              = default;
-  ForwardClassIterator(const ForwardClassIterator&)            = delete;
-  ForwardClassIterator& operator=(const ForwardClassIterator&) = delete;
-  ForwardClassIterator(ForwardClassIterator&&) noexcept;
-  ForwardClassIterator& operator=(ForwardClassIterator&&) noexcept;
+  ForwardClassIterator() noexcept = default;
+  ForwardClassIterator(const ForwardClassIterator &) = delete;
+  ForwardClassIterator &operator=(const ForwardClassIterator &) = delete;
+  ForwardClassIterator(ForwardClassIterator &&) noexcept;
+  ForwardClassIterator &operator=(ForwardClassIterator &&) noexcept;
   ~ForwardClassIterator() = default;
 
   [[nodiscard]] Node_class operator*() const;
-  ForwardClassIterator&    operator++();
-  [[nodiscard]] bool       operator==(const ForwardClassIterator& o) const noexcept {
+  ForwardClassIterator &operator++();
+  [[nodiscard]] bool operator==(const ForwardClassIterator &o) const noexcept {
     // End sentinel: both iterators at Phase::End compare equal regardless of
     // graph_, so a default-constructed end iterator terminates range-for.
     if (phase_ == Phase::End && o.phase_ == Phase::End) {
       return true;
     }
-    return graph_ == o.graph_ && phase_ == o.phase_ && current_idx_ == o.current_idx_;
+    return graph_ == o.graph_ && phase_ == o.phase_ &&
+           current_idx_ == o.current_idx_;
   }
-  [[nodiscard]] bool operator!=(const ForwardClassIterator& o) const noexcept { return !(*this == o); }
+  [[nodiscard]] bool operator!=(const ForwardClassIterator &o) const noexcept {
+    return !(*this == o);
+  }
 
 private:
   // Phase order: Pass1 (sources + storage-order combinational), Pass2 (cached
@@ -1367,25 +2314,28 @@ private:
   // only entered when loop_break_last_), End.
   enum class Phase : uint8_t { Pass1, Pass2, Tail, LoopLast, End };
 
-  explicit ForwardClassIterator(Graph* graph, bool loop_break_first = true, bool loop_break_last = false);
-  void               advance();
-  void               propagate(size_t driver_idx, size_t cursor);
+  explicit ForwardClassIterator(Graph *graph, bool loop_break_first = true,
+                                bool loop_break_last = false);
+  void advance();
+  void propagate(size_t driver_idx, size_t cursor);
   [[nodiscard]] bool is_source(size_t idx) const noexcept;
   [[nodiscard]] bool is_emitted(size_t idx) const noexcept;
-  void               mark_emitted(size_t idx) noexcept;
+  void mark_emitted(size_t idx) noexcept;
   // True while the current emission is a loop_break_last replay. Used by the
   // flat/hier wrappers to avoid descending into a loop_break subnode twice
   // when it is emitted both first and last.
-  [[nodiscard]] bool current_is_loop_break_replay() const noexcept { return phase_ == Phase::LoopLast; }
+  [[nodiscard]] bool current_is_loop_break_replay() const noexcept {
+    return phase_ == Phase::LoopLast;
+  }
 
-  Graph* graph_            = nullptr;
-  Phase  phase_            = Phase::End;
-  size_t idx_              = 0;
-  size_t pass2_head_       = 0;
-  size_t node_count_       = 0;
-  size_t current_idx_      = 0;
-  bool   loop_break_first_ = true;
-  bool   loop_break_last_  = false;
+  Graph *graph_ = nullptr;
+  Phase phase_ = Phase::End;
+  size_t idx_ = 0;
+  size_t pass2_head_ = 0;
+  size_t node_count_ = 0;
+  size_t current_idx_ = 0;
+  bool loop_break_first_ = true;
+  bool loop_break_last_ = false;
 
   std::vector<uint32_t> working_remaining_in_;
   std::vector<uint64_t> emitted_bits_;
@@ -1397,21 +2347,25 @@ private:
 
 class ForwardClassRange {
 public:
-  explicit ForwardClassRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false) noexcept
-      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {}
+  explicit ForwardClassRange(Graph *graph, bool loop_break_first = true,
+                             bool loop_break_last = false) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first),
+        loop_break_last_(loop_break_last) {}
   [[nodiscard]] ForwardClassIterator begin() const;
-  [[nodiscard]] ForwardClassIterator end() const noexcept { return ForwardClassIterator{}; }
+  [[nodiscard]] ForwardClassIterator end() const noexcept {
+    return ForwardClassIterator{};
+  }
 
   // Backward-compat helpers for callers that previously used std::span.
   // size()/front() each walk the iteration once (O(N)) — avoid in hot paths.
-  [[nodiscard]] size_t     size() const;
+  [[nodiscard]] size_t size() const;
   [[nodiscard]] Node_class front() const;
-  [[nodiscard]] bool       empty() const;
+  [[nodiscard]] bool empty() const;
 
 private:
-  Graph* graph_;
-  bool   loop_break_first_ = true;
-  bool   loop_break_last_  = false;
+  Graph *graph_;
+  bool loop_break_first_ = true;
+  bool loop_break_last_ = false;
 };
 
 // Forward flat traversal: local graph's forward order, with subgraph bodies
@@ -1420,36 +2374,41 @@ private:
 class ForwardFlatIterator {
 public:
   using iterator_category = std::input_iterator_tag;
-  using value_type        = Node_class;
-  using difference_type   = std::ptrdiff_t;
-  using pointer           = void;
-  using reference         = Node_class;
+  using value_type = Node_class;
+  using difference_type = std::ptrdiff_t;
+  using pointer = void;
+  using reference = Node_class;
 
-  ForwardFlatIterator() noexcept                                 = default;
-  ForwardFlatIterator(const ForwardFlatIterator&)                = delete;
-  ForwardFlatIterator& operator=(const ForwardFlatIterator&)     = delete;
-  ForwardFlatIterator(ForwardFlatIterator&&) noexcept            = default;
-  ForwardFlatIterator& operator=(ForwardFlatIterator&&) noexcept = default;
-  ~ForwardFlatIterator()                                         = default;
+  ForwardFlatIterator() noexcept = default;
+  ForwardFlatIterator(const ForwardFlatIterator &) = delete;
+  ForwardFlatIterator &operator=(const ForwardFlatIterator &) = delete;
+  ForwardFlatIterator(ForwardFlatIterator &&) noexcept = default;
+  ForwardFlatIterator &operator=(ForwardFlatIterator &&) noexcept = default;
+  ~ForwardFlatIterator() = default;
 
   [[nodiscard]] Node_class operator*() const;
-  ForwardFlatIterator&     operator++();
-  [[nodiscard]] bool       operator==(const ForwardFlatIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
-  [[nodiscard]] bool       operator!=(const ForwardFlatIterator& o) const noexcept { return !(*this == o); }
+  ForwardFlatIterator &operator++();
+  [[nodiscard]] bool operator==(const ForwardFlatIterator &o) const noexcept {
+    return stack_.empty() && o.stack_.empty();
+  }
+  [[nodiscard]] bool operator!=(const ForwardFlatIterator &o) const noexcept {
+    return !(*this == o);
+  }
 
 private:
   struct Frame {
-    Graph*               graph;
+    Graph *graph;
     ForwardClassIterator it;
   };
 
-  explicit ForwardFlatIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false);
+  explicit ForwardFlatIterator(Graph *root_graph, bool loop_break_first = true,
+                               bool loop_break_last = false);
   void advance();
 
-  Gid                               top_graph_        = Gid_invalid;
-  bool                              loop_break_first_ = true;
-  bool                              loop_break_last_  = false;
-  std::vector<Frame>                stack_;
+  Gid top_graph_ = Gid_invalid;
+  bool loop_break_first_ = true;
+  bool loop_break_last_ = false;
+  std::vector<Frame> stack_;
   ankerl::unordered_dense::set<Gid> active_graphs_;
 
   friend class ForwardFlatRange;
@@ -1457,15 +2416,19 @@ private:
 
 class ForwardFlatRange {
 public:
-  explicit ForwardFlatRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false) noexcept
-      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {}
+  explicit ForwardFlatRange(Graph *graph, bool loop_break_first = true,
+                            bool loop_break_last = false) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first),
+        loop_break_last_(loop_break_last) {}
   [[nodiscard]] ForwardFlatIterator begin() const;
-  [[nodiscard]] ForwardFlatIterator end() const noexcept { return ForwardFlatIterator{}; }
+  [[nodiscard]] ForwardFlatIterator end() const noexcept {
+    return ForwardFlatIterator{};
+  }
 
 private:
-  Graph* graph_;
-  bool   loop_break_first_ = true;
-  bool   loop_break_last_  = false;
+  Graph *graph_;
+  bool loop_break_first_ = true;
+  bool loop_break_last_ = false;
 };
 
 // Forward hier traversal: per-instance hier_pos token, subgraph bodies visited
@@ -1474,126 +2437,146 @@ private:
 class ForwardHierIterator {
 public:
   using iterator_category = std::input_iterator_tag;
-  using value_type        = Node_class;
-  using difference_type   = std::ptrdiff_t;
-  using pointer           = void;
-  using reference         = Node_class;
+  using value_type = Node_class;
+  using difference_type = std::ptrdiff_t;
+  using pointer = void;
+  using reference = Node_class;
 
-  ForwardHierIterator() noexcept                                 = default;
-  ForwardHierIterator(const ForwardHierIterator&)                = delete;
-  ForwardHierIterator& operator=(const ForwardHierIterator&)     = delete;
-  ForwardHierIterator(ForwardHierIterator&&) noexcept            = default;
-  ForwardHierIterator& operator=(ForwardHierIterator&&) noexcept = default;
-  ~ForwardHierIterator()                                         = default;
+  ForwardHierIterator() noexcept = default;
+  ForwardHierIterator(const ForwardHierIterator &) = delete;
+  ForwardHierIterator &operator=(const ForwardHierIterator &) = delete;
+  ForwardHierIterator(ForwardHierIterator &&) noexcept = default;
+  ForwardHierIterator &operator=(ForwardHierIterator &&) noexcept = default;
+  ~ForwardHierIterator() = default;
 
   [[nodiscard]] Node_class operator*() const;
-  ForwardHierIterator&     operator++();
-  [[nodiscard]] bool       operator==(const ForwardHierIterator& o) const noexcept { return at_end() && o.at_end(); }
-  [[nodiscard]] bool       operator!=(const ForwardHierIterator& o) const noexcept { return !(*this == o); }
+  ForwardHierIterator &operator++();
+  [[nodiscard]] bool operator==(const ForwardHierIterator &o) const noexcept {
+    return at_end() && o.at_end();
+  }
+  [[nodiscard]] bool operator!=(const ForwardHierIterator &o) const noexcept {
+    return !(*this == o);
+  }
 
 private:
   struct Frame {
-    Graph*                                  graph;
-    ForwardClassIterator                    it;
-    Tree_pos                                hier_pos;
-    std::shared_ptr<const std::vector<Nid>> path;  // root..this-frame instance chain
+    Graph *graph;
+    ForwardClassIterator it;
+    Tree_pos hier_pos;
+    std::shared_ptr<const std::vector<Nid>>
+        path; // root..this-frame instance chain
   };
 
-  explicit ForwardHierIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false,
-                               const ankerl::unordered_dense::set<Gid>* opaque = nullptr);
-  void       advance();
-  void       pop_frame();
-  Node_class descend_deref() const;  // per-body DFS deref, used only to collect the walk
-  void       descend_step();         // per-body DFS step,  used only to collect the walk
-  [[nodiscard]] bool at_end() const noexcept { return topo_pos_ >= topo_.size(); }
+  explicit ForwardHierIterator(
+      Graph *root_graph, bool loop_break_first = true,
+      bool loop_break_last = false,
+      const ankerl::unordered_dense::set<Gid> *opaque = nullptr);
+  void advance();
+  void pop_frame();
+  Node_class
+  descend_deref() const; // per-body DFS deref, used only to collect the walk
+  void descend_step();   // per-body DFS step,  used only to collect the walk
+  [[nodiscard]] bool at_end() const noexcept {
+    return topo_pos_ >= topo_.size();
+  }
 
-  Gid                                      root_gid_         = Gid_invalid;
-  bool                                     loop_break_first_ = true;
-  bool                                     loop_break_last_  = false;
-  std::vector<Frame>                       stack_;
-  ankerl::unordered_dense::set<Gid>        active_graphs_;
-  const ankerl::unordered_dense::set<Gid>* opaque_ = nullptr;  // subnodes to NOT descend into
+  Gid root_gid_ = Gid_invalid;
+  bool loop_break_first_ = true;
+  bool loop_break_last_ = false;
+  std::vector<Frame> stack_;
+  ankerl::unordered_dense::set<Gid> active_graphs_;
+  const ankerl::unordered_dense::set<Gid> *opaque_ =
+      nullptr; // subnodes to NOT descend into
 
   // The walk is materialized once (via the DFS above) and reordered so drivers
   // precede consumers ACROSS module boundaries (loop-breaks at the leaf
   // flops/mems) — a genuine flat-module topological order, always.
   std::vector<Node_class> topo_;
-  std::size_t             topo_pos_ = 0;
+  std::size_t topo_pos_ = 0;
 
   friend class ForwardHierRange;
 };
 
 class ForwardHierRange {
 public:
-  explicit ForwardHierRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false,
-                            const ankerl::unordered_dense::set<Gid>* opaque = nullptr) noexcept
-      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last), opaque_(opaque) {}
+  explicit ForwardHierRange(
+      Graph *graph, bool loop_break_first = true, bool loop_break_last = false,
+      const ankerl::unordered_dense::set<Gid> *opaque = nullptr) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first),
+        loop_break_last_(loop_break_last), opaque_(opaque) {}
   [[nodiscard]] ForwardHierIterator begin() const;
-  [[nodiscard]] ForwardHierIterator end() const noexcept { return ForwardHierIterator{}; }
+  [[nodiscard]] ForwardHierIterator end() const noexcept {
+    return ForwardHierIterator{};
+  }
 
 private:
-  Graph*                                   graph_;
-  bool                                     loop_break_first_ = true;
-  bool                                     loop_break_last_  = false;
-  const ankerl::unordered_dense::set<Gid>* opaque_           = nullptr;
+  Graph *graph_;
+  bool loop_break_first_ = true;
+  bool loop_break_last_ = false;
+  const ankerl::unordered_dense::set<Gid> *opaque_ = nullptr;
 };
 
 // ── Ambient hierarchical-walk opacity ───────────────────────────────────────
 // Subnode Gids in the thread-local opacity set are treated as LEAVES by ALL the
-// hierarchical iterators (forward_hier AND fast_hier — not descended into) AND the
-// cross-boundary edge resolver (a read of such a subnode's output stops at the
-// instance boundary instead of threading down to the real internal driver). All
-// must agree, or a consumer would read an un-encoded internal pin. Used by
+// hierarchical iterators (forward_hier AND fast_hier — not descended into) AND
+// the cross-boundary edge resolver (a read of such a subnode's output stops at
+// the instance boundary instead of threading down to the real internal driver).
+// All must agree, or a consumer would read an un-encoded internal pin. Used by
 // pass/lec --collapse to black-box a proven submodule that lives in the SAME
 // library as its parent (so it cannot simply be omitted from the library). Set
 // with the RAII Hier_opaque_scope; nullptr (default) = descend into everything.
-const ankerl::unordered_dense::set<Gid>*& hier_opaque_ref() noexcept;
-[[nodiscard]] inline bool                 hier_is_opaque(Gid g) noexcept {
-  const auto* s = hier_opaque_ref();
+const ankerl::unordered_dense::set<Gid> *&hier_opaque_ref() noexcept;
+[[nodiscard]] inline bool hier_is_opaque(Gid g) noexcept {
+  const auto *s = hier_opaque_ref();
   return s != nullptr && s->find(g) != s->end();
 }
 
 class Hier_opaque_scope {
 public:
-  explicit Hier_opaque_scope(const ankerl::unordered_dense::set<Gid>* s) noexcept : prev_(hier_opaque_ref()) {
+  explicit Hier_opaque_scope(
+      const ankerl::unordered_dense::set<Gid> *s) noexcept
+      : prev_(hier_opaque_ref()) {
     hier_opaque_ref() = s;
   }
-  Hier_opaque_scope(const Hier_opaque_scope&)            = delete;
-  Hier_opaque_scope& operator=(const Hier_opaque_scope&) = delete;
+  Hier_opaque_scope(const Hier_opaque_scope &) = delete;
+  Hier_opaque_scope &operator=(const Hier_opaque_scope &) = delete;
   ~Hier_opaque_scope() { hier_opaque_ref() = prev_; }
 
 private:
-  const ankerl::unordered_dense::set<Gid>* prev_;
+  const ankerl::unordered_dense::set<Gid> *prev_;
 };
 
 // Backward topological iterator for a single graph body. Emits sinks first,
-// then reverse storage-order combinational nodes (Pass 1), then deferred back-edge
-// sources (Pass 2 replayed from Graph::backward_pass2_cache_), then any cycle
-// survivors (Tail).
+// then reverse storage-order combinational nodes (Pass 1), then deferred
+// back-edge sources (Pass 2 replayed from Graph::backward_pass2_cache_), then
+// any cycle survivors (Tail).
 class BackwardClassIterator {
 public:
   using iterator_category = std::input_iterator_tag;
-  using value_type        = Node_class;
-  using difference_type   = std::ptrdiff_t;
-  using pointer           = void;
-  using reference         = Node_class;
+  using value_type = Node_class;
+  using difference_type = std::ptrdiff_t;
+  using pointer = void;
+  using reference = Node_class;
 
-  BackwardClassIterator() noexcept                               = default;
-  BackwardClassIterator(const BackwardClassIterator&)            = delete;
-  BackwardClassIterator& operator=(const BackwardClassIterator&) = delete;
-  BackwardClassIterator(BackwardClassIterator&&) noexcept;
-  BackwardClassIterator& operator=(BackwardClassIterator&&) noexcept;
+  BackwardClassIterator() noexcept = default;
+  BackwardClassIterator(const BackwardClassIterator &) = delete;
+  BackwardClassIterator &operator=(const BackwardClassIterator &) = delete;
+  BackwardClassIterator(BackwardClassIterator &&) noexcept;
+  BackwardClassIterator &operator=(BackwardClassIterator &&) noexcept;
   ~BackwardClassIterator() = default;
 
   [[nodiscard]] Node_class operator*() const;
-  BackwardClassIterator&   operator++();
-  [[nodiscard]] bool       operator==(const BackwardClassIterator& o) const noexcept {
+  BackwardClassIterator &operator++();
+  [[nodiscard]] bool operator==(const BackwardClassIterator &o) const noexcept {
     if (phase_ == Phase::End && o.phase_ == Phase::End) {
       return true;
     }
-    return graph_ == o.graph_ && phase_ == o.phase_ && current_idx_ == o.current_idx_;
+    return graph_ == o.graph_ && phase_ == o.phase_ &&
+           current_idx_ == o.current_idx_;
   }
-  [[nodiscard]] bool operator!=(const BackwardClassIterator& o) const noexcept { return !(*this == o); }
+  [[nodiscard]] bool operator!=(const BackwardClassIterator &o) const noexcept {
+    return !(*this == o);
+  }
 
 private:
   // Phase order mirrors ForwardClassIterator: Pass1 (sinks + reverse
@@ -1601,22 +2584,25 @@ private:
   // survivors), LoopLast (loop_break replay, only when loop_break_last_), End.
   enum class Phase : uint8_t { Pass1, Pass2, Tail, LoopLast, End };
 
-  explicit BackwardClassIterator(Graph* graph, bool loop_break_first = true, bool loop_break_last = false);
-  void               advance();
-  void               propagate(size_t sink_idx, size_t cursor);
+  explicit BackwardClassIterator(Graph *graph, bool loop_break_first = true,
+                                 bool loop_break_last = false);
+  void advance();
+  void propagate(size_t sink_idx, size_t cursor);
   [[nodiscard]] bool is_sink(size_t idx) const noexcept;
   [[nodiscard]] bool is_emitted(size_t idx) const noexcept;
-  void               mark_emitted(size_t idx) noexcept;
-  [[nodiscard]] bool current_is_loop_break_replay() const noexcept { return phase_ == Phase::LoopLast; }
+  void mark_emitted(size_t idx) noexcept;
+  [[nodiscard]] bool current_is_loop_break_replay() const noexcept {
+    return phase_ == Phase::LoopLast;
+  }
 
-  Graph* graph_            = nullptr;
-  Phase  phase_            = Phase::End;
-  size_t idx_              = 0;
-  size_t pass2_head_       = 0;
-  size_t node_count_       = 0;
-  size_t current_idx_      = 0;
-  bool   loop_break_first_ = true;
-  bool   loop_break_last_  = false;
+  Graph *graph_ = nullptr;
+  Phase phase_ = Phase::End;
+  size_t idx_ = 0;
+  size_t pass2_head_ = 0;
+  size_t node_count_ = 0;
+  size_t current_idx_ = 0;
+  bool loop_break_first_ = true;
+  bool loop_break_last_ = false;
 
   std::vector<uint32_t> working_remaining_out_;
   std::vector<uint64_t> emitted_bits_;
@@ -1628,54 +2614,63 @@ private:
 
 class BackwardClassRange {
 public:
-  explicit BackwardClassRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false) noexcept
-      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {}
+  explicit BackwardClassRange(Graph *graph, bool loop_break_first = true,
+                              bool loop_break_last = false) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first),
+        loop_break_last_(loop_break_last) {}
   [[nodiscard]] BackwardClassIterator begin() const;
-  [[nodiscard]] BackwardClassIterator end() const noexcept { return BackwardClassIterator{}; }
+  [[nodiscard]] BackwardClassIterator end() const noexcept {
+    return BackwardClassIterator{};
+  }
 
-  [[nodiscard]] size_t     size() const;
+  [[nodiscard]] size_t size() const;
   [[nodiscard]] Node_class front() const;
-  [[nodiscard]] bool       empty() const;
+  [[nodiscard]] bool empty() const;
 
 private:
-  Graph* graph_;
-  bool   loop_break_first_ = true;
-  bool   loop_break_last_  = false;
+  Graph *graph_;
+  bool loop_break_first_ = true;
+  bool loop_break_last_ = false;
 };
 
 class BackwardFlatIterator {
 public:
   using iterator_category = std::input_iterator_tag;
-  using value_type        = Node_class;
-  using difference_type   = std::ptrdiff_t;
-  using pointer           = void;
-  using reference         = Node_class;
+  using value_type = Node_class;
+  using difference_type = std::ptrdiff_t;
+  using pointer = void;
+  using reference = Node_class;
 
-  BackwardFlatIterator() noexcept                                  = default;
-  BackwardFlatIterator(const BackwardFlatIterator&)                = delete;
-  BackwardFlatIterator& operator=(const BackwardFlatIterator&)     = delete;
-  BackwardFlatIterator(BackwardFlatIterator&&) noexcept            = default;
-  BackwardFlatIterator& operator=(BackwardFlatIterator&&) noexcept = default;
-  ~BackwardFlatIterator()                                          = default;
+  BackwardFlatIterator() noexcept = default;
+  BackwardFlatIterator(const BackwardFlatIterator &) = delete;
+  BackwardFlatIterator &operator=(const BackwardFlatIterator &) = delete;
+  BackwardFlatIterator(BackwardFlatIterator &&) noexcept = default;
+  BackwardFlatIterator &operator=(BackwardFlatIterator &&) noexcept = default;
+  ~BackwardFlatIterator() = default;
 
   [[nodiscard]] Node_class operator*() const;
-  BackwardFlatIterator&    operator++();
-  [[nodiscard]] bool       operator==(const BackwardFlatIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
-  [[nodiscard]] bool       operator!=(const BackwardFlatIterator& o) const noexcept { return !(*this == o); }
+  BackwardFlatIterator &operator++();
+  [[nodiscard]] bool operator==(const BackwardFlatIterator &o) const noexcept {
+    return stack_.empty() && o.stack_.empty();
+  }
+  [[nodiscard]] bool operator!=(const BackwardFlatIterator &o) const noexcept {
+    return !(*this == o);
+  }
 
 private:
   struct Frame {
-    Graph*                graph;
+    Graph *graph;
     BackwardClassIterator it;
   };
 
-  explicit BackwardFlatIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false);
+  explicit BackwardFlatIterator(Graph *root_graph, bool loop_break_first = true,
+                                bool loop_break_last = false);
   void advance();
 
-  Gid                               top_graph_        = Gid_invalid;
-  bool                              loop_break_first_ = true;
-  bool                              loop_break_last_  = false;
-  std::vector<Frame>                stack_;
+  Gid top_graph_ = Gid_invalid;
+  bool loop_break_first_ = true;
+  bool loop_break_last_ = false;
+  std::vector<Frame> stack_;
   ankerl::unordered_dense::set<Gid> active_graphs_;
 
   friend class BackwardFlatRange;
@@ -1683,77 +2678,94 @@ private:
 
 class BackwardFlatRange {
 public:
-  explicit BackwardFlatRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false) noexcept
-      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {}
+  explicit BackwardFlatRange(Graph *graph, bool loop_break_first = true,
+                             bool loop_break_last = false) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first),
+        loop_break_last_(loop_break_last) {}
   [[nodiscard]] BackwardFlatIterator begin() const;
-  [[nodiscard]] BackwardFlatIterator end() const noexcept { return BackwardFlatIterator{}; }
+  [[nodiscard]] BackwardFlatIterator end() const noexcept {
+    return BackwardFlatIterator{};
+  }
 
 private:
-  Graph* graph_;
-  bool   loop_break_first_ = true;
-  bool   loop_break_last_  = false;
+  Graph *graph_;
+  bool loop_break_first_ = true;
+  bool loop_break_last_ = false;
 };
 
 class BackwardHierIterator {
 public:
   using iterator_category = std::input_iterator_tag;
-  using value_type        = Node_class;
-  using difference_type   = std::ptrdiff_t;
-  using pointer           = void;
-  using reference         = Node_class;
+  using value_type = Node_class;
+  using difference_type = std::ptrdiff_t;
+  using pointer = void;
+  using reference = Node_class;
 
-  BackwardHierIterator() noexcept                                  = default;
-  BackwardHierIterator(const BackwardHierIterator&)                = delete;
-  BackwardHierIterator& operator=(const BackwardHierIterator&)     = delete;
-  BackwardHierIterator(BackwardHierIterator&&) noexcept            = default;
-  BackwardHierIterator& operator=(BackwardHierIterator&&) noexcept = default;
-  ~BackwardHierIterator()                                          = default;
+  BackwardHierIterator() noexcept = default;
+  BackwardHierIterator(const BackwardHierIterator &) = delete;
+  BackwardHierIterator &operator=(const BackwardHierIterator &) = delete;
+  BackwardHierIterator(BackwardHierIterator &&) noexcept = default;
+  BackwardHierIterator &operator=(BackwardHierIterator &&) noexcept = default;
+  ~BackwardHierIterator() = default;
 
   [[nodiscard]] Node_class operator*() const;
-  BackwardHierIterator&    operator++();
-  [[nodiscard]] bool       operator==(const BackwardHierIterator& o) const noexcept { return at_end() && o.at_end(); }
-  [[nodiscard]] bool       operator!=(const BackwardHierIterator& o) const noexcept { return !(*this == o); }
+  BackwardHierIterator &operator++();
+  [[nodiscard]] bool operator==(const BackwardHierIterator &o) const noexcept {
+    return at_end() && o.at_end();
+  }
+  [[nodiscard]] bool operator!=(const BackwardHierIterator &o) const noexcept {
+    return !(*this == o);
+  }
 
 private:
   struct Frame {
-    Graph*                                  graph;
-    BackwardClassIterator                   it;
-    Tree_pos                                hier_pos;
-    std::shared_ptr<const std::vector<Nid>> path;  // root..this-frame instance chain
+    Graph *graph;
+    BackwardClassIterator it;
+    Tree_pos hier_pos;
+    std::shared_ptr<const std::vector<Nid>>
+        path; // root..this-frame instance chain
   };
 
-  explicit BackwardHierIterator(Graph* root_graph, bool loop_break_first = true, bool loop_break_last = false);
-  void       advance();
-  void       pop_frame();
-  Node_class descend_deref() const;  // per-body DFS deref, used only to collect the walk
-  void       descend_step();         // per-body DFS step,  used only to collect the walk
-  [[nodiscard]] bool at_end() const noexcept { return topo_pos_ >= topo_.size(); }
+  explicit BackwardHierIterator(Graph *root_graph, bool loop_break_first = true,
+                                bool loop_break_last = false);
+  void advance();
+  void pop_frame();
+  Node_class
+  descend_deref() const; // per-body DFS deref, used only to collect the walk
+  void descend_step();   // per-body DFS step,  used only to collect the walk
+  [[nodiscard]] bool at_end() const noexcept {
+    return topo_pos_ >= topo_.size();
+  }
 
-  Gid                               root_gid_         = Gid_invalid;
-  bool                              loop_break_first_ = true;
-  bool                              loop_break_last_  = false;
-  std::vector<Frame>                stack_;
+  Gid root_gid_ = Gid_invalid;
+  bool loop_break_first_ = true;
+  bool loop_break_last_ = false;
+  std::vector<Frame> stack_;
   ankerl::unordered_dense::set<Gid> active_graphs_;
 
-  // Materialized once and reordered into a flat-module REVERSE topological order
-  // (consumers before drivers; loop-breaks at leaf flops/mems), always.
+  // Materialized once and reordered into a flat-module REVERSE topological
+  // order (consumers before drivers; loop-breaks at leaf flops/mems), always.
   std::vector<Node_class> topo_;
-  std::size_t             topo_pos_ = 0;
+  std::size_t topo_pos_ = 0;
 
   friend class BackwardHierRange;
 };
 
 class BackwardHierRange {
 public:
-  explicit BackwardHierRange(Graph* graph, bool loop_break_first = true, bool loop_break_last = false) noexcept
-      : graph_(graph), loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {}
+  explicit BackwardHierRange(Graph *graph, bool loop_break_first = true,
+                             bool loop_break_last = false) noexcept
+      : graph_(graph), loop_break_first_(loop_break_first),
+        loop_break_last_(loop_break_last) {}
   [[nodiscard]] BackwardHierIterator begin() const;
-  [[nodiscard]] BackwardHierIterator end() const noexcept { return BackwardHierIterator{}; }
+  [[nodiscard]] BackwardHierIterator end() const noexcept {
+    return BackwardHierIterator{};
+  }
 
 private:
-  Graph* graph_;
-  bool   loop_break_first_ = true;
-  bool   loop_break_last_  = false;
+  Graph *graph_;
+  bool loop_break_first_ = true;
+  bool loop_break_last_ = false;
 };
 
 // Structure-tree pre-order iterator. Walks tree_ (skipping ROOT) and, when
@@ -1765,143 +2777,353 @@ private:
 class HierIterator {
 public:
   using iterator_category = std::input_iterator_tag;
-  using value_type        = Hier_instance;
-  using difference_type   = std::ptrdiff_t;
-  using pointer           = void;
-  using reference         = Hier_instance;
+  using value_type = Hier_instance;
+  using difference_type = std::ptrdiff_t;
+  using pointer = void;
+  using reference = Hier_instance;
 
-  HierIterator() noexcept                          = default;
-  HierIterator(const HierIterator&)                = delete;
-  HierIterator(HierIterator&&) noexcept            = default;
-  HierIterator& operator=(const HierIterator&)     = delete;
-  HierIterator& operator=(HierIterator&&) noexcept = default;
-  ~HierIterator()                                  = default;
+  HierIterator() noexcept = default;
+  HierIterator(const HierIterator &) = delete;
+  HierIterator(HierIterator &&) noexcept = default;
+  HierIterator &operator=(const HierIterator &) = delete;
+  HierIterator &operator=(HierIterator &&) noexcept = default;
+  ~HierIterator() = default;
 
   [[nodiscard]] Hier_instance operator*() const;
-  HierIterator&               operator++();
-  [[nodiscard]] bool          operator==(const HierIterator& o) const noexcept { return stack_.empty() && o.stack_.empty(); }
-  [[nodiscard]] bool          operator!=(const HierIterator& o) const noexcept { return !(*this == o); }
+  HierIterator &operator++();
+  [[nodiscard]] bool operator==(const HierIterator &o) const noexcept {
+    return stack_.empty() && o.stack_.empty();
+  }
+  [[nodiscard]] bool operator!=(const HierIterator &o) const noexcept {
+    return !(*this == o);
+  }
 
 private:
   struct Frame {
-    Graph*                   graph;     // the graph whose tree is being walked
-    Tree::pre_order_iterator cur;       // cursor into graph->tree_->pre_order()
-    Tree::pre_order_iterator end;       // matching end sentinel
-    Tree_pos                 hier_pos;  // parent subnode's tree_pos within its graph, or ROOT for the top frame
+    Graph *graph;                 // the graph whose tree is being walked
+    Tree::pre_order_iterator cur; // cursor into graph->tree_->pre_order()
+    Tree::pre_order_iterator end; // matching end sentinel
+    Tree_pos hier_pos; // parent subnode's tree_pos within its graph, or ROOT
+                       // for the top frame
+    uint32_t path_handle = 0;
+    uint64_t multiplicity = 1;
   };
 
-  explicit HierIterator(Graph* root_graph);
+  explicit HierIterator(Graph *root_graph);
   // Advance cur_ until it lands on a Tree_pos that corresponds to a live
   // subnode in the current frame's graph. Pops exhausted frames (unwinding
   // active_graphs_ as we go) and keeps walking until either a yieldable
   // instance is found or the stack is empty.
   void advance_to_next_instance();
 
-  Gid                               root_gid_ = Gid_invalid;
-  std::vector<Frame>                stack_;
+  Gid root_gid_ = Gid_invalid;
+  std::vector<Frame> stack_;
   ankerl::unordered_dense::set<Gid> active_graphs_;
+  std::shared_ptr<detail::Occurrence_path_storage> path_storage_;
+
+  // operator*() interns one occurrence-path entry for the instance under the
+  // cursor. It is called more than once per position (operator++ needs the same
+  // instance), so memoize the cursor it was computed for: without this every
+  // dereference appended a fresh entry to the shared storage, so the walk cost
+  // grew without bound and two dereferences of the same position handed out
+  // paths with different interned_handle()s.
+  mutable Graph *memo_graph_ = nullptr;
+  mutable Tree_pos memo_pos_ = INVALID;
+  mutable uint32_t memo_parent_ = 0;
+  mutable uint32_t memo_path_handle_ = 0;
 
   friend class HierRange;
 };
 
 class HierRange {
 public:
-  explicit HierRange(Graph* graph) noexcept : graph_(graph) {}
+  explicit HierRange(Graph *graph) noexcept : graph_(graph) {}
   [[nodiscard]] HierIterator begin() const;
   [[nodiscard]] HierIterator end() const noexcept { return HierIterator{}; }
 
 private:
-  Graph* graph_;
+  Graph *graph_;
+};
+
+// Storage-order grouped/physical walks are streaming input ranges. Forward
+// and reverse topological walks use the same public range backed by their
+// permitted materialized dependency scratch.
+class OccurrenceNodeRange {
+public:
+  class const_iterator {
+  public:
+    using iterator_category = std::input_iterator_tag;
+    using value_type = Occurrence_node;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const Occurrence_node *;
+    using reference = const Occurrence_node &;
+
+    const_iterator() = default;
+
+    [[nodiscard]] reference operator*() const;
+    [[nodiscard]] pointer operator->() const;
+    const_iterator &operator++();
+    const_iterator operator++(int);
+    [[nodiscard]] bool operator==(const const_iterator &other) const noexcept;
+    [[nodiscard]] bool operator!=(const const_iterator &other) const noexcept {
+      return !(*this == other);
+    }
+
+  private:
+    const_iterator(std::shared_ptr<const std::vector<Occurrence_node>> entities,
+                   size_t index,
+                   std::shared_ptr<detail::Hierarchy_view_state> state);
+    explicit const_iterator(
+        std::shared_ptr<detail::Occurrence_node_cursor> cursor);
+
+    std::shared_ptr<const std::vector<Occurrence_node>> entities_;
+    size_t index_ = 0;
+    std::shared_ptr<detail::Hierarchy_view_state> state_;
+    std::shared_ptr<detail::Occurrence_node_cursor> cursor_;
+
+    friend class OccurrenceNodeRange;
+  };
+
+  OccurrenceNodeRange();
+  OccurrenceNodeRange(std::vector<Occurrence_node> entities,
+                      std::shared_ptr<detail::Hierarchy_view_state> state);
+  [[nodiscard]] static OccurrenceNodeRange
+  streaming(std::shared_ptr<detail::Hierarchy_view_state> state);
+
+  [[nodiscard]] const_iterator begin() const;
+  [[nodiscard]] const_iterator end() const;
+  [[nodiscard]] bool empty() const;
+  [[nodiscard]] size_t size() const;
+  [[nodiscard]] uint64_t size_hint() const;
+  [[nodiscard]] std::optional<uint64_t> size_exact() const;
+  [[nodiscard]] const Occurrence_node &front() const;
+
+private:
+  explicit OccurrenceNodeRange(
+      std::shared_ptr<detail::Hierarchy_view_state> state);
+
+  std::shared_ptr<const std::vector<Occurrence_node>> entities_;
+  std::shared_ptr<detail::Hierarchy_view_state> state_;
+  bool streaming_ = false;
+  mutable std::optional<Occurrence_node> front_cache_;
+};
+
+class Body_view {
+public:
+  explicit Body_view(Graph *graph) : graph_(graph) {}
+
+  [[nodiscard]] FastClassRange nodes() const noexcept;
+  [[nodiscard]] FastClassRange nodes(Node_order::storage_t) const noexcept;
+  [[nodiscard]] ForwardClassRange
+  nodes(Node_order::forward_t,
+        Cut_placement cuts = Cut_placement::first) const noexcept;
+  [[nodiscard]] BackwardClassRange
+  nodes(Node_order::reverse_t,
+        Cut_placement cuts = Cut_placement::first) const noexcept;
+
+private:
+  Graph *graph_ = nullptr;
+};
+
+class Definitions_view {
+public:
+  explicit Definitions_view(Graph *graph) : graph_(graph) {}
+  Definitions_view(Graph *graph, Hierarchy_policy policy)
+      : graph_(graph), policy_(policy) {}
+
+  [[nodiscard]] DefinitionNodeRange nodes() const;
+  [[nodiscard]] DefinitionNodeRange nodes(Node_order::storage_t) const;
+  [[nodiscard]] DefinitionNodeRange
+  nodes(Node_order::forward_t, Cut_placement cuts = Cut_placement::first) const;
+  [[nodiscard]] DefinitionNodeRange
+  nodes(Node_order::reverse_t, Cut_placement cuts = Cut_placement::first) const;
+  [[nodiscard]] Entity_range<std::shared_ptr<Graph>> graphs() const;
+  [[nodiscard]] Entity_range<std::shared_ptr<Graph>>
+      graphs(Node_order::reverse_t) const;
+
+private:
+  [[nodiscard]] std::shared_ptr<detail::Hierarchy_view_state> state() const;
+
+  Graph *graph_ = nullptr;
+  Hierarchy_policy policy_;
+  mutable std::shared_ptr<detail::Hierarchy_view_state> state_;
+};
+
+class Grouped_hierarchy_view {
+public:
+  explicit Grouped_hierarchy_view(
+      Graph *graph, const ankerl::unordered_dense::set<Gid> *opaque = nullptr)
+      : graph_(graph), opaque_(opaque) {}
+  Grouped_hierarchy_view(Graph *graph, Hierarchy_policy policy)
+      : graph_(graph), policy_(policy) {}
+
+  [[nodiscard]] OccurrenceNodeRange nodes() const;
+  [[nodiscard]] OccurrenceNodeRange nodes(Node_order::storage_t) const;
+  [[nodiscard]] OccurrenceNodeRange
+  nodes(Node_order::forward_t, Cut_placement cuts = Cut_placement::first) const;
+  [[nodiscard]] OccurrenceNodeRange
+  nodes(Node_order::reverse_t, Cut_placement cuts = Cut_placement::first) const;
+  [[nodiscard]] InstanceGroupRange instances() const;
+  [[nodiscard]] Occurrence_pin lift(Pin_class root_pin) const;
+  [[nodiscard]] Occurrence_node lift(Node_class root_node) const;
+  [[nodiscard]] ReachablePinRange
+  reachable_pins(std::vector<Occurrence_pin> seeds,
+                 Reach_options options = {}) const;
+  [[nodiscard]] ReachablePinRange
+  reachable_pins(std::initializer_list<Occurrence_pin> seeds,
+                 Reach_options options = {}) const {
+    return reachable_pins(std::vector<Occurrence_pin>(seeds), options);
+  }
+  [[nodiscard]] uint64_t size_hint() const;
+  [[nodiscard]] std::optional<uint64_t> size_exact() const;
+  [[nodiscard]] uint64_t physical_node_count_hint() const;
+  [[nodiscard]] std::optional<uint64_t> physical_node_count_exact() const;
+
+private:
+  [[nodiscard]] std::shared_ptr<detail::Hierarchy_view_state> state() const;
+
+  Graph *graph_ = nullptr;
+  const ankerl::unordered_dense::set<Gid> *opaque_ = nullptr;
+  Hierarchy_policy policy_;
+  mutable std::shared_ptr<detail::Hierarchy_view_state> state_;
+};
+
+class Occurrences_view {
+public:
+  explicit Occurrences_view(
+      Graph *graph, const ankerl::unordered_dense::set<Gid> *opaque = nullptr)
+      : graph_(graph), opaque_(opaque) {}
+  Occurrences_view(Graph *graph, Hierarchy_policy policy)
+      : graph_(graph), policy_(policy) {}
+
+  [[nodiscard]] OccurrenceNodeRange nodes() const;
+  [[nodiscard]] OccurrenceNodeRange nodes(Node_order::storage_t) const;
+  [[nodiscard]] OccurrenceNodeRange
+  nodes(Node_order::forward_t, Cut_placement cuts = Cut_placement::first) const;
+  [[nodiscard]] OccurrenceNodeRange
+  nodes(Node_order::reverse_t, Cut_placement cuts = Cut_placement::first) const;
+  [[nodiscard]] Occurrence_pin lift(Pin_class root_pin) const;
+  [[nodiscard]] Occurrence_node lift(Node_class root_node) const;
+  [[nodiscard]] ReachablePinRange
+  reachable_pins(std::vector<Occurrence_pin> seeds,
+                 Reach_options options = {}) const;
+  [[nodiscard]] ReachablePinRange
+  reachable_pins(std::initializer_list<Occurrence_pin> seeds,
+                 Reach_options options = {}) const {
+    return reachable_pins(std::vector<Occurrence_pin>(seeds), options);
+  }
+  [[nodiscard]] uint64_t size_hint() const;
+  [[nodiscard]] std::optional<uint64_t> size_exact() const;
+
+private:
+  [[nodiscard]] std::shared_ptr<detail::Hierarchy_view_state> state() const;
+
+  Graph *graph_ = nullptr;
+  const ankerl::unordered_dense::set<Gid> *opaque_ = nullptr;
+  Hierarchy_policy policy_;
+  mutable std::shared_ptr<detail::Hierarchy_view_state> state_;
 };
 
 class GraphIO : public std::enable_shared_from_this<GraphIO> {
 public:
-  // GraphIO owns declared IO-pin metadata. Concrete Pid values only exist once a Graph body is materialized.
+  // GraphIO owns declared IO-pin metadata. Concrete Pid values only exist once
+  // a Graph body is materialized.
   enum class IoDirection : uint8_t { Input, Output };
 
   struct DeclaredIoPin {
     std::string name;
-    Port_id     port_id    = 0;
-    bool        loop_break = false;
+    Port_id port_id = 0;
+    bool loop_break = false;
     // Per-declared-pin bitwidth. 0 means unspecified (defaulted by the
     // consumer). Stored on GraphIO rather than PinEntry so that declared
     // IO bits survive even when the body has not been materialized.
-    uint32_t    bits       = 0;
+    uint32_t bits = 0;
     // Sign hint: true == unsigned, false == signed/unspecified. Mirrors
     // LiveHD's `is_unsign()` predicate on graph IO pins.
-    bool        unsign     = false;
+    bool unsign = false;
   };
 
 private:
   struct DeclaredIoPinRef {
     IoDirection direction = IoDirection::Input;
-    size_t      index     = 0;
+    size_t index = 0;
   };
 
-  GraphLibrary* owner_lib_ = nullptr;
-  Gid           gid_       = Gid_invalid;
-  std::string   name_;
+  GraphLibrary *owner_lib_ = nullptr;
+  Gid gid_ = Gid_invalid;
+  std::string name_;
 
-  std::vector<DeclaredIoPin>                                                  input_pin_decls_;
-  std::vector<DeclaredIoPin>                                                  output_pin_decls_;
-  ankerl::unordered_dense::map<std::string, DeclaredIoPinRef, Name_hash, Name_eq> declared_io_pins_;
+  std::vector<DeclaredIoPin> input_pin_decls_;
+  std::vector<DeclaredIoPin> output_pin_decls_;
+  ankerl::unordered_dense::map<std::string, DeclaredIoPinRef, Name_hash,
+                               Name_eq>
+      declared_io_pins_;
 
-  GraphIO(GraphLibrary* owner_lib, Gid gid, std::string name) : owner_lib_(owner_lib), gid_(gid), name_(std::move(name)) {}
+  GraphIO(GraphLibrary *owner_lib, Gid gid, std::string name)
+      : owner_lib_(owner_lib), gid_(gid), name_(std::move(name)) {}
   void reindex_declared_io_pins(IoDirection direction, size_t start_index);
   void invalidate_from_library() noexcept;
 
 public:
-  GraphIO(const GraphIO&)            = delete;
-  GraphIO& operator=(const GraphIO&) = delete;
-  GraphIO(GraphIO&&)                 = delete;
-  GraphIO& operator=(GraphIO&&)      = delete;
+  GraphIO(const GraphIO &) = delete;
+  GraphIO &operator=(const GraphIO &) = delete;
+  GraphIO(GraphIO &&) = delete;
+  GraphIO &operator=(GraphIO &&) = delete;
 
-  [[nodiscard]] Gid                          get_gid() const noexcept { return gid_; }
-  [[nodiscard]] std::string_view             get_name() const noexcept { return name_; }
-  [[nodiscard]] GraphLibrary*                get_library() const noexcept { return owner_lib_; }
-  [[nodiscard]] std::shared_ptr<Graph>       get_graph();
+  [[nodiscard]] Gid get_gid() const noexcept { return gid_; }
+  [[nodiscard]] std::string_view get_name() const noexcept { return name_; }
+  [[nodiscard]] GraphLibrary *get_library() const noexcept {
+    return owner_lib_;
+  }
+  [[nodiscard]] std::shared_ptr<Graph> get_graph();
   [[nodiscard]] std::shared_ptr<const Graph> get_graph() const;
-  [[nodiscard]] std::shared_ptr<Graph>       create_graph();
-  [[nodiscard]] bool                         has_graph() const;
-  void                                       add_input(std::string_view name, Port_id port_id, bool loop_break = false);
-  void                                       add_output(std::string_view name, Port_id port_id, bool loop_break = false);
-  void                                       delete_input(std::string_view name);
-  void                                       delete_output(std::string_view name);
-  void                                       clear();
+  [[nodiscard]] std::shared_ptr<Graph> create_graph();
+  [[nodiscard]] bool has_graph() const;
+  void add_input(std::string_view name, Port_id port_id,
+                 bool loop_break = false);
+  void add_output(std::string_view name, Port_id port_id,
+                  bool loop_break = false);
+  void delete_input(std::string_view name);
+  void delete_output(std::string_view name);
+  void clear();
   // Drop all declared IO pins (and any materialized counterpart pins on the
   // body) but keep this GraphIO attached to its owning GraphLibrary, with
   // its Gid and name preserved. Distinct from clear(), which tombstones the
   // entire GraphIO+Graph entry. Used by callers that want "reset all IO
   // declarations on this slot" without invalidating the slot itself.
-  void                                       reset_declarations();
-  [[nodiscard]] bool                         has_input(std::string_view name) const;
-  [[nodiscard]] bool                         has_output(std::string_view name) const;
-  [[nodiscard]] bool                         is_loop_break(std::string_view name) const;
-  [[nodiscard]] Port_id                      get_input_port_id(std::string_view name) const;
-  [[nodiscard]] Port_id                      get_output_port_id(std::string_view name) const;
+  void reset_declarations();
+  [[nodiscard]] bool has_input(std::string_view name) const;
+  [[nodiscard]] bool has_output(std::string_view name) const;
+  [[nodiscard]] bool is_loop_break(std::string_view name) const;
+  [[nodiscard]] Port_id get_input_port_id(std::string_view name) const;
+  [[nodiscard]] Port_id get_output_port_id(std::string_view name) const;
   // Reverse lookup: does any declared input/output have this port_id?
   // O(input_count + output_count) — linear scan, no internal index. Add an
   // index if a hot path needs frequent calls.
-  [[nodiscard]] bool                         has_pin_with_port_id(Port_id port_id) const;
-  [[nodiscard]] bool                         has_input_with_port_id(Port_id port_id) const;
-  [[nodiscard]] bool                         has_output_with_port_id(Port_id port_id) const;
+  [[nodiscard]] bool has_pin_with_port_id(Port_id port_id) const;
+  [[nodiscard]] bool has_input_with_port_id(Port_id port_id) const;
+  [[nodiscard]] bool has_output_with_port_id(Port_id port_id) const;
 
   // Per-declared-pin bitwidth. `set_bits` stamps the value; `get_bits`
   // returns the stored bits (0 = unspecified). Asserts the pin name exists.
-  void                   set_bits(std::string_view name, uint32_t bits);
+  void set_bits(std::string_view name, uint32_t bits);
   [[nodiscard]] uint32_t get_bits(std::string_view name) const;
 
   // Per-declared-pin sign. `set_unsign(name, true)` marks unsigned;
   // `set_unsign(name, false)` marks signed. `is_unsign` reads it back.
-  void               set_unsign(std::string_view name, bool unsign_value);
+  void set_unsign(std::string_view name, bool unsign_value);
   [[nodiscard]] bool is_unsign(std::string_view name) const;
 
   // Public iteration over declared inputs / outputs. Returns const refs to
   // the underlying vectors so callers can range-for without exposing the
   // DeclaredIoPinRef hash map. Order is declaration order (matches Verilog
   // positional argument order via DeclaredIoPin::port_id).
-  [[nodiscard]] const std::vector<DeclaredIoPin>& get_input_pin_decls() const { return input_pin_decls_; }
-  [[nodiscard]] const std::vector<DeclaredIoPin>& get_output_pin_decls() const { return output_pin_decls_; }
+  [[nodiscard]] const std::vector<DeclaredIoPin> &get_input_pin_decls() const {
+    return input_pin_decls_;
+  }
+  [[nodiscard]] const std::vector<DeclaredIoPin> &get_output_pin_decls() const {
+    return output_pin_decls_;
+  }
 
   friend class Graph;
   friend class Node_class;
@@ -1913,15 +3135,15 @@ class GraphLibrary {
 public:
   static constexpr Gid invalid_id = Gid_invalid;
 
-  GraphLibrary(const GraphLibrary&)            = delete;
-  GraphLibrary& operator=(const GraphLibrary&) = delete;
-  GraphLibrary(GraphLibrary&&)                 = delete;
-  GraphLibrary& operator=(GraphLibrary&&)      = delete;
+  GraphLibrary(const GraphLibrary &) = delete;
+  GraphLibrary &operator=(const GraphLibrary &) = delete;
+  GraphLibrary(GraphLibrary &&) = delete;
+  GraphLibrary &operator=(GraphLibrary &&) = delete;
 
-  GraphLibrary() = default;  // gid 0 (Gid_invalid) is simply never a map key
+  GraphLibrary() = default; // gid 0 (Gid_invalid) is simply never a map key
 
   ~GraphLibrary() {
-    for (auto& [gid, graph] : graphs_) {
+    for (auto &[gid, graph] : graphs_) {
       if (graph) {
         graph->invalidate_from_library();
       }
@@ -1931,12 +3153,13 @@ public:
   [[nodiscard]] std::shared_ptr<GraphIO> create_io(std::string_view name) {
     assert(!name.empty() && "create_io: name is required");
     std::unique_lock lock(registry_mu_);
-    const auto       it = deleted_name_to_id_.find(std::string(name));
+    const auto it = deleted_name_to_id_.find(std::string(name));
     if (it != deleted_name_to_id_.end()) {
       const auto reused_gid = it->second;
       deleted_name_to_id_.erase(it);
-      // Reuse the original gid (so parent bodies' subnode refs resolve) UNLESS a
-      // fresh name's hash has since claimed it — then fall through to a new gid.
+      // Reuse the original gid (so parent bodies' subnode refs resolve) UNLESS
+      // a fresh name's hash has since claimed it — then fall through to a new
+      // gid.
       if (graph_ios_.find(reused_gid) == graph_ios_.end()) {
         return create_io_impl_unlocked(reused_gid, name);
       }
@@ -1949,7 +3172,8 @@ public:
     return find_io_unlocked(name);
   }
 
-  [[nodiscard]] std::shared_ptr<const GraphIO> find_io(std::string_view name) const {
+  [[nodiscard]] std::shared_ptr<const GraphIO>
+  find_io(std::string_view name) const {
     std::shared_lock lock(registry_mu_);
     return find_io_unlocked(name);
   }
@@ -1968,29 +3192,33 @@ public:
   [[nodiscard]] bool has_graph(Gid id) const noexcept {
     std::shared_lock lock(registry_mu_);
     // A pending body exists on disk even though it is not yet materialized.
-    return has_graph_unlocked(id) || pending_body_dir_.find(id) != pending_body_dir_.end();
+    return has_graph_unlocked(id) ||
+           pending_body_dir_.find(id) != pending_body_dir_.end();
   }
 
   [[nodiscard]] std::shared_ptr<Graph> get_graph(Gid id) {
     {
       std::shared_lock lock(registry_mu_);
       if (has_graph_unlocked(id)) {
-        return graph_at_unlocked(id);  // already materialized (fast reader path)
+        return graph_at_unlocked(id); // already materialized (fast reader path)
       }
       if (pending_body_dir_.find(id) == pending_body_dir_.end()) {
         assert(has_graph_unlocked(id) && "get_graph: unknown gid");
-        return graph_at_unlocked(id);  // unknown / deleted (preserve old contract)
+        return graph_at_unlocked(
+            id); // unknown / deleted (preserve old contract)
       }
     }
     // Pending: read the body under the writer lock. The registry mutex is
     // non-recursive and non-upgradeable, so we released the reader lock above
-    // before taking the writer lock; materialize_body_unlocked re-checks the race.
+    // before taking the writer lock; materialize_body_unlocked re-checks the
+    // race.
     std::unique_lock lock(registry_mu_);
     return materialize_body_unlocked(id);
   }
 
   [[nodiscard]] std::shared_ptr<const Graph> get_graph(Gid id) const {
-    return const_cast<GraphLibrary*>(this)->get_graph(id);  // lazy-load cache fill
+    return const_cast<GraphLibrary *>(this)->get_graph(
+        id); // lazy-load cache fill
   }
 
   // Read-only handle lookup. Returns nullptr unless the slot is Public —
@@ -1998,19 +3226,21 @@ public:
   // committed or released. While a writer (from create_graph or
   // find_graph_rw) is alive, this returns nullptr as if the graph did not
   // exist.
-  [[nodiscard]] std::shared_ptr<const Graph> find_graph(std::string_view name) const {
+  [[nodiscard]] std::shared_ptr<const Graph>
+  find_graph(std::string_view name) const {
     std::shared_lock lock(registry_mu_);
-    auto             gio = find_io_unlocked(name);
+    auto gio = find_io_unlocked(name);
     if (!gio) {
       return {};
     }
-    const Gid  gid = gio->get_gid();
-    const auto g   = graph_at_unlocked(gid);
+    const Gid gid = gio->get_gid();
+    const auto g = graph_at_unlocked(gid);
     if (!g || g->deleted_) {
       return {};
     }
-    const auto* state = slot_state_at_unlocked(gid);
-    if (!state || state->load(std::memory_order_acquire) != static_cast<uint8_t>(SlotState::Public)) {
+    const auto *state = slot_state_at_unlocked(gid);
+    if (!state || state->load(std::memory_order_acquire) !=
+                      static_cast<uint8_t>(SlotState::Public)) {
       return {};
     }
     return g;
@@ -2024,31 +3254,32 @@ public:
   // place — there is no abort semantic for find_graph_rw.
   [[nodiscard]] std::shared_ptr<Graph> find_graph_rw(std::string_view name) {
     std::shared_lock lock(registry_mu_);
-    auto             gio = find_io_unlocked(name);
+    auto gio = find_io_unlocked(name);
     if (!gio) {
       return {};
     }
-    const Gid  gid = gio->get_gid();
-    const auto it  = graphs_.find(gid);
+    const Gid gid = gio->get_gid();
+    const auto it = graphs_.find(gid);
     if (it == graphs_.end() || !it->second || it->second->deleted_) {
       return {};
     }
-    auto* state = slot_state_at_unlocked(gid);
+    auto *state = slot_state_at_unlocked(gid);
     if (!state) {
       return {};
     }
     uint8_t expected = static_cast<uint8_t>(SlotState::Public);
-    if (!state->compare_exchange_strong(expected,
-                                        static_cast<uint8_t>(SlotState::Writing),
-                                        std::memory_order_acquire,
-                                        std::memory_order_relaxed)) {
+    if (!state->compare_exchange_strong(
+            expected, static_cast<uint8_t>(SlotState::Writing),
+            std::memory_order_acquire, std::memory_order_relaxed)) {
       return {};
     }
-    if (it->second.use_count() > 1) {  // slot is the only owner unless a reader holds one
-      state->store(static_cast<uint8_t>(SlotState::Public), std::memory_order_release);
+    if (it->second.use_count() >
+        1) { // slot is the only owner unless a reader holds one
+      state->store(static_cast<uint8_t>(SlotState::Public),
+                   std::memory_order_release);
       return {};
     }
-    if (auto* ab = abort_pending_at_unlocked(gid)) {
+    if (auto *ab = abort_pending_at_unlocked(gid)) {
       ab->store(false, std::memory_order_relaxed);
     }
     return make_writer_handle_unlocked(gid, /*from_create=*/false);
@@ -2085,12 +3316,17 @@ public:
       return Pin_class();
     }
     Pin_class pin = graph->make_pin_class(idx.value);
-    pin.context_  = Handle_context::Flat;
+    pin.context_ = Handle_context::Flat;
     pin.root_gid_ = idx.gid;
     return pin;
   }
 
-  [[nodiscard]] uint64_t mutation_epoch() const noexcept { return mutation_epoch_.load(std::memory_order_acquire); }
+  [[nodiscard]] uint64_t mutation_epoch() const noexcept {
+    return mutation_epoch_.load(std::memory_order_acquire);
+  }
+  [[nodiscard]] bool has_loop_subnodes() const noexcept {
+    return loop_graph_count_.load(std::memory_order_acquire) != 0;
+  }
 
   // Tombstone-delete (IDs are not reused).
   void delete_graph(Gid id) noexcept {
@@ -2098,14 +3334,14 @@ public:
     delete_graph_unlocked(id);
   }
 
-  void delete_graph(const std::shared_ptr<Graph>& graph) noexcept {
+  void delete_graph(const std::shared_ptr<Graph> &graph) noexcept {
     if (!graph) {
       return;
     }
     delete_graph(graph->get_gid());
   }
 
-  void delete_graphio(const std::shared_ptr<GraphIO>& graphio) noexcept {
+  void delete_graphio(const std::shared_ptr<GraphIO> &graphio) noexcept {
     if (!graphio) {
       return;
     }
@@ -2115,7 +3351,7 @@ public:
 
   void delete_graphio(std::string_view name) noexcept {
     std::unique_lock lock(registry_mu_);
-    auto             gio = find_io_unlocked(name);
+    auto gio = find_io_unlocked(name);
     if (!gio) {
       return;
     }
@@ -2127,13 +3363,15 @@ public:
   // use all_gids() / all_io_gids() instead.
   [[nodiscard]] size_t capacity() const noexcept {
     std::shared_lock lock(registry_mu_);
-    return graphs_.size() + pending_body_dir_.size();  // materialized + pending-on-disk
+    return graphs_.size() +
+           pending_body_dir_.size(); // materialized + pending-on-disk
   }
 
   // Count of live graphs.
   [[nodiscard]] Gid live_count() const noexcept {
     std::shared_lock lock(registry_mu_);
-    return live_count_ + static_cast<Gid>(pending_body_dir_.size());  // materialized + pending
+    return live_count_ +
+           static_cast<Gid>(pending_body_dir_.size()); // materialized + pending
   }
 
   // gids of all live graph BODIES, ascending. Gids are sparse name-hashes now,
@@ -2142,13 +3380,14 @@ public:
     std::shared_lock lock(registry_mu_);
     std::vector<Gid> out;
     out.reserve(graphs_.size() + pending_body_dir_.size());
-    for (const auto& [gid, g] : graphs_) {
+    for (const auto &[gid, g] : graphs_) {
       if (g && !g->deleted_) {
         out.push_back(gid);
       }
     }
-    for (const auto& [gid, dir] : pending_body_dir_) {  // persisted, not yet materialized
-      out.push_back(gid);                               // (a gid is never in both maps)
+    for (const auto &[gid, dir] :
+         pending_body_dir_) { // persisted, not yet materialized
+      out.push_back(gid);     // (a gid is never in both maps)
     }
     std::sort(out.begin(), out.end());
     return out;
@@ -2160,7 +3399,7 @@ public:
     std::shared_lock lock(registry_mu_);
     std::vector<Gid> out;
     out.reserve(graph_ios_.size());
-    for (const auto& [gid, gio] : graph_ios_) {
+    for (const auto &[gid, gio] : graph_ios_) {
       if (gio) {
         out.push_back(gid);
       }
@@ -2174,10 +3413,12 @@ public:
   // it for resolution; it is only mutated under the EXCLUSIVE registry lock by
   // load(), load_merge() and save(). Per-graph srcid resolution chains to it
   // lock-free, so resolution must not run concurrently with those three.
-  [[nodiscard]] const Source_locator& source_map() const noexcept { return *srcmap_sp_; }
+  [[nodiscard]] const Source_locator &source_map() const noexcept {
+    return *srcmap_sp_;
+  }
   // Non-const access is for single-threaded setup/tests only — never while
   // other threads hold graphs from this library.
-  [[nodiscard]] Source_locator&       source_map() noexcept { return *srcmap_sp_; }
+  [[nodiscard]] Source_locator &source_map() noexcept { return *srcmap_sp_; }
 
   // Shared in-memory source map (hhds-srcloc). A Forest and a GraphLibrary that
   // persist into the SAME db directory must share ONE table (LNAST and LGraph
@@ -2185,22 +3426,25 @@ public:
   // single srcmap.txt writer avoids the clobber). source_map_shared() hands out
   // this library's table; share_source_map() adopts another's. Call BEFORE
   // creating graphs in the typical flow; for safety any existing graphs are
-  // re-based here under the registry lock. `persist` selects whether THIS object
-  // writes/reads srcmap.txt on save()/load() — exactly one sharer should persist
-  // (single-process; save() remains a single-threaded barrier — do not save two
-  // sharers of one map concurrently). Prefer making the GraphLibrary the
-  // persister: its save() folds the per-graph deltas into the shared table, so
-  // letting it write srcmap.txt guarantees those deltas reach disk. If instead
-  // the Forest persists, save the library FIRST so its fold lands before the
-  // Forest writes the table (else graph bodies would reference srcids absent
-  // from srcmap.txt).
-  [[nodiscard]] std::shared_ptr<Source_locator> source_map_shared() const noexcept { return srcmap_sp_; }
-  void                                          share_source_map(std::shared_ptr<Source_locator> sp, bool persist) {
+  // re-based here under the registry lock. `persist` selects whether THIS
+  // object writes/reads srcmap.txt on save()/load() — exactly one sharer should
+  // persist (single-process; save() remains a single-threaded barrier — do not
+  // save two sharers of one map concurrently). Prefer making the GraphLibrary
+  // the persister: its save() folds the per-graph deltas into the shared table,
+  // so letting it write srcmap.txt guarantees those deltas reach disk. If
+  // instead the Forest persists, save the library FIRST so its fold lands
+  // before the Forest writes the table (else graph bodies would reference
+  // srcids absent from srcmap.txt).
+  [[nodiscard]] std::shared_ptr<Source_locator>
+  source_map_shared() const noexcept {
+    return srcmap_sp_;
+  }
+  void share_source_map(std::shared_ptr<Source_locator> sp, bool persist) {
     assert(sp != nullptr && "share_source_map: null source map");
     std::unique_lock lock(registry_mu_);
-    srcmap_sp_      = std::move(sp);
+    srcmap_sp_ = std::move(sp);
     persist_srcmap_ = persist;
-    for (auto& [gid, g] : graphs_) {
+    for (auto &[gid, g] : graphs_) {
       if (g) {
         g->source_locator().set_base(srcmap_sp_.get());
       }
@@ -2209,38 +3453,42 @@ public:
 
   // Persistence — saves all declarations (text) and bodies (binary).
   // db_path is the root directory (e.g., "my_db/").
-  void save(const std::string& db_path) const;
-  void load(const std::string& db_path);
+  void save(const std::string &db_path) const;
+  void load(const std::string &db_path);
 
   // Merge another saved library at db_path INTO this one (no clear) — the
   // graph-library linker primitive (task 1m-C). Conflict policy:
   //   - name already present here  → keep ours (dedup); load the incoming body
   //     only if ours is an IO-only stub. (Same name with a different body is a
   //     genuine ambiguity; not deduped away silently — see assert.)
-  //   - name new                   → assign its canonical gid (hash of the name,
+  //   - name new                   → assign its canonical gid (hash of the
+  //   name,
   //     probed on collision). When both libraries use name-hash gids the gid is
   //     identical, so the merge is conflict-free; otherwise an incoming gid is
   //     remapped and every Sub (subnode) reference in the loaded bodies is
   //     rewritten through the remap table.
-  void load_merge(const std::string& db_path);
+  void load_merge(const std::string &db_path);
 
-  // Copy ONE named module (its IO decls + body + the srcids it references) from a
-  // live in-memory `src` library into this one, fully in-memory (no library.txt
-  // parse, no dst serialize/reload). REPLACE-stale: an existing module of the same
-  // name is dropped first, but its name-hash gid is preserved so a parent body's
-  // Sub reference keeps resolving across the swap. Returns false if `src` has no
-  // such module. The single-module, in-memory sibling of load_merge (which is
-  // whole-library, from disk, and keep-ours/fill-stub).
-  [[nodiscard]] bool copy_from(const GraphLibrary& src, std::string_view module_name);
+  // Copy ONE named module (its IO decls + body + the srcids it references) from
+  // a live in-memory `src` library into this one, fully in-memory (no
+  // library.txt parse, no dst serialize/reload). REPLACE-stale: an existing
+  // module of the same name is dropped first, but its name-hash gid is
+  // preserved so a parent body's Sub reference keeps resolving across the swap.
+  // Returns false if `src` has no such module. The single-module, in-memory
+  // sibling of load_merge (which is whole-library, from disk, and
+  // keep-ours/fill-stub).
+  [[nodiscard]] bool copy_from(const GraphLibrary &src,
+                               std::string_view module_name);
 
   // Replace an EXISTING module's body in place with a deep copy of `src` (no
   // module delete/recreate, so an open writer handle and the name-hash gid both
-  // stay valid). Returns false if the module is absent from this library. Used by
-  // abc incremental reuse to fill a freshly-partitioned region shell from a
+  // stay valid). Returns false if the module is absent from this library. Used
+  // by abc incremental reuse to fill a freshly-partitioned region shell from a
   // cached mapped body without a node-by-node clone or a port stitch.
-  [[nodiscard]] bool replace_body_from(std::string_view module_name, const Graph& src) {
+  [[nodiscard]] bool replace_body_from(std::string_view module_name,
+                                       const Graph &src) {
     std::unique_lock lock(registry_mu_);
-    auto             gio = find_io_unlocked(module_name);
+    auto gio = find_io_unlocked(module_name);
     if (!gio) {
       return false;
     }
@@ -2249,13 +3497,13 @@ public:
       return false;
     }
     g->copy_body_from(src);
-    // Re-mint the srcids the copied body references into THIS library's source map
-    // (copy_body_from deep-copies the srcid VALUES, which index `src`'s map; without
-    // this they dangle here and the emitted source map comes out empty). The
-    // in-place analogue of copy_from's srcid re-mint.
+    // Re-mint the srcids the copied body references into THIS library's source
+    // map (copy_body_from deep-copies the srcid VALUES, which index `src`'s
+    // map; without this they dangle here and the emitted source map comes out
+    // empty). The in-place analogue of copy_from's srcid re-mint.
     if (g->has_attr(attrs::srcid)) {
-      auto& ids = g->attr_store(attrs::srcid);
-      for (auto& [key, value] : ids) {
+      auto &ids = g->attr_store(attrs::srcid);
+      for (auto &[key, value] : ids) {
         if (value != 0) {
           value = g->source_locator().import_from(src.source_locator(), value);
         }
@@ -2272,12 +3520,14 @@ private:
     return io_at_unlocked(id);
   }
 
-  [[nodiscard]] std::shared_ptr<GraphIO> find_io_unlocked(std::string_view name) const {
+  [[nodiscard]] std::shared_ptr<GraphIO>
+  find_io_unlocked(std::string_view name) const {
     if (name.empty()) {
       return {};
     }
 
-    const auto it = graph_name_to_id_.find(name);  // transparent Name_hash/Name_eq: no std::string alloc
+    const auto it = graph_name_to_id_.find(
+        name); // transparent Name_hash/Name_eq: no std::string alloc
     if (it == graph_name_to_id_.end()) {
       return {};
     }
@@ -2289,16 +3539,20 @@ private:
     return g != nullptr && !g->deleted_;
   }
 
-  [[nodiscard]] std::shared_ptr<GraphIO> create_io_impl_unlocked(Gid id, std::string_view name) {
+  [[nodiscard]] std::shared_ptr<GraphIO>
+  create_io_impl_unlocked(Gid id, std::string_view name) {
     assert(id != invalid_id && "create_io: graph id 0 is reserved");
     assert(!name.empty() && "create_io: name is required");
     assert_name_available_unlocked(name);
-    assert(graph_ios_.find(id) == graph_ios_.end() && "create_io: explicit id already exists");
+    assert(graph_ios_.find(id) == graph_ios_.end() &&
+           "create_io: explicit id already exists");
 
-    auto graphio   = std::shared_ptr<GraphIO>(new GraphIO(this, id, std::string(name)));
-    graph_ios_[id] = graphio;  // body created lazily by create_graph_body
+    auto graphio =
+        std::shared_ptr<GraphIO>(new GraphIO(this, id, std::string(name)));
+    graph_ios_[id] = graphio; // body created lazily by create_graph_body
     ensure_slot_atomics_unlocked(id);
-    graph_slot_states_.at(id)->store(static_cast<uint8_t>(SlotState::Empty), std::memory_order_release);
+    graph_slot_states_.at(id)->store(static_cast<uint8_t>(SlotState::Empty),
+                                     std::memory_order_release);
     graph_slot_abort_pending_.at(id)->store(false, std::memory_order_relaxed);
 
     graph_name_to_id_.emplace(std::string(name), id);
@@ -2306,7 +3560,8 @@ private:
     return graphio;
   }
 
-  [[nodiscard]] std::shared_ptr<Graph> create_graph_body(const std::shared_ptr<GraphIO>& graphio) {
+  [[nodiscard]] std::shared_ptr<Graph>
+  create_graph_body(const std::shared_ptr<GraphIO> &graphio) {
     std::unique_lock lock(registry_mu_);
     return create_graph_body_unlocked(graphio);
   }
@@ -2316,38 +3571,44 @@ private:
   // handle aliases a GraphWriterCleanup whose destructor publishes the slot
   // on last-release (or tears it back to Empty if Graph::abort() was
   // called).
-  [[nodiscard]] std::shared_ptr<Graph> create_graph_body_unlocked(const std::shared_ptr<GraphIO>& graphio) {
+  [[nodiscard]] std::shared_ptr<Graph>
+  create_graph_body_unlocked(const std::shared_ptr<GraphIO> &graphio) {
     assert(graphio != nullptr && "create_graph_body: null GraphIO");
 
     const Gid gid = graphio->get_gid();
-    assert(io_at_unlocked(gid) == graphio && "create_graph_body: GraphIO is not owned by this library");
+    assert(io_at_unlocked(gid) == graphio &&
+           "create_graph_body: GraphIO is not owned by this library");
 
     ensure_slot_atomics_unlocked(gid);
-    auto&   state    = *graph_slot_states_.at(gid);
+    auto &state = *graph_slot_states_.at(gid);
     uint8_t expected = static_cast<uint8_t>(SlotState::Empty);
-    if (!state.compare_exchange_strong(expected,
-                                       static_cast<uint8_t>(SlotState::Writing),
-                                       std::memory_order_acquire,
-                                       std::memory_order_relaxed)) {
+    if (!state.compare_exchange_strong(
+            expected, static_cast<uint8_t>(SlotState::Writing),
+            std::memory_order_acquire, std::memory_order_relaxed)) {
       // Slot is already Writing or Public — caller must use find_graph /
       // find_graph_rw.
       return {};
     }
     graph_slot_abort_pending_.at(gid)->store(false, std::memory_order_relaxed);
-    // A fresh body supersedes any lazily-pending on-disk body for this gid (e.g.
-    // emit-dir reuse: delete_graph then create_graph over a persisted library).
+    // A fresh body supersedes any lazily-pending on-disk body for this gid
+    // (e.g. emit-dir reuse: delete_graph then create_graph over a persisted
+    // library).
     pending_body_dir_.erase(gid);
 
-    if (auto existing = graph_at_unlocked(gid); !existing || existing->deleted_) {
+    if (auto existing = graph_at_unlocked(gid);
+        !existing || existing->deleted_) {
       std::shared_ptr<Graph> graph = std::make_shared<Graph>();
       graph->bind_library(this, gid);
       graph->set_name(graphio->get_name());
       graph->graphio_owner_ = graphio;
-      for (const auto& input : graphio->input_pin_decls_) {
-        (void)graph->materialize_declared_io_pin(input.name, input.port_id, Graph::INPUT_NODE, graph->input_pins_);
+      for (const auto &input : graphio->input_pin_decls_) {
+        (void)graph->materialize_declared_io_pin(
+            input.name, input.port_id, Graph::INPUT_NODE, graph->input_pins_);
       }
-      for (const auto& output : graphio->output_pin_decls_) {
-        (void)graph->materialize_declared_io_pin(output.name, output.port_id, Graph::OUTPUT_NODE, graph->output_pins_);
+      for (const auto &output : graphio->output_pin_decls_) {
+        (void)graph->materialize_declared_io_pin(output.name, output.port_id,
+                                                 Graph::OUTPUT_NODE,
+                                                 graph->output_pins_);
       }
 
       graphs_[gid] = graph;
@@ -2362,76 +3623,106 @@ private:
   // Internal load path: directly publish a freshly deserialized body to
   // the Public state, bypassing the Writing window. Caller must hold
   // unique_lock(registry_mu_).
-  [[nodiscard]] std::shared_ptr<Graph> create_graph_body_loaded_unlocked(const std::shared_ptr<GraphIO>& graphio) {
+  [[nodiscard]] std::shared_ptr<Graph>
+  create_graph_body_loaded_unlocked(const std::shared_ptr<GraphIO> &graphio) {
     assert(graphio != nullptr && "create_graph_body_loaded: null GraphIO");
     const Gid gid = graphio->get_gid();
-    assert(io_at_unlocked(gid) == graphio && "create_graph_body_loaded: GraphIO is not owned by this library");
+    assert(io_at_unlocked(gid) == graphio &&
+           "create_graph_body_loaded: GraphIO is not owned by this library");
     ensure_slot_atomics_unlocked(gid);
-    pending_body_dir_.erase(gid);  // this body is now (being) materialized in memory
+    pending_body_dir_.erase(
+        gid); // this body is now (being) materialized in memory
 
-    if (auto existing = graph_at_unlocked(gid); !existing || existing->deleted_) {
+    if (auto existing = graph_at_unlocked(gid);
+        !existing || existing->deleted_) {
       std::shared_ptr<Graph> graph = std::make_shared<Graph>();
       graph->bind_library(this, gid);
       graph->set_name(graphio->get_name());
       graph->graphio_owner_ = graphio;
-      for (const auto& input : graphio->input_pin_decls_) {
-        (void)graph->materialize_declared_io_pin(input.name, input.port_id, Graph::INPUT_NODE, graph->input_pins_);
+      for (const auto &input : graphio->input_pin_decls_) {
+        (void)graph->materialize_declared_io_pin(
+            input.name, input.port_id, Graph::INPUT_NODE, graph->input_pins_);
       }
-      for (const auto& output : graphio->output_pin_decls_) {
-        (void)graph->materialize_declared_io_pin(output.name, output.port_id, Graph::OUTPUT_NODE, graph->output_pins_);
+      for (const auto &output : graphio->output_pin_decls_) {
+        (void)graph->materialize_declared_io_pin(output.name, output.port_id,
+                                                 Graph::OUTPUT_NODE,
+                                                 graph->output_pins_);
       }
       graphs_[gid] = graph;
       ++live_count_;
     }
-    graph_slot_states_.at(gid)->store(static_cast<uint8_t>(SlotState::Public), std::memory_order_release);
+    graph_slot_states_.at(gid)->store(static_cast<uint8_t>(SlotState::Public),
+                                      std::memory_order_release);
     graph_slot_abort_pending_.at(gid)->store(false, std::memory_order_relaxed);
     note_graph_mutation();
     return graph_at_unlocked(gid);
   }
 
   // Read a pending (persisted-but-unloaded) body into memory. Caller MUST hold
-  // the UNIQUE (writer) lock — this mutates graphs_/live_count_/slot state. Safe
-  // to call after swapping a reader lock for the writer lock: it double-checks
-  // whether another thread materialized the gid in the gap before doing the read.
-  // Returns the (now materialized) body, or the existing body / nullptr if the
-  // gid was not actually pending.
+  // the UNIQUE (writer) lock — this mutates graphs_/live_count_/slot state.
+  // Safe to call after swapping a reader lock for the writer lock: it
+  // double-checks whether another thread materialized the gid in the gap before
+  // doing the read. Returns the (now materialized) body, or the existing body /
+  // nullptr if the gid was not actually pending.
   [[nodiscard]] std::shared_ptr<Graph> materialize_body_unlocked(Gid id) {
     if (auto g = graph_at_unlocked(id); g && !g->deleted_) {
-      return g;  // materialized by a racing thread while we swapped locks
+      return g; // materialized by a racing thread while we swapped locks
     }
     const auto pit = pending_body_dir_.find(id);
     if (pit == pending_body_dir_.end()) {
-      return graph_at_unlocked(id);  // not pending (raced-and-erased, or unknown)
+      return graph_at_unlocked(
+          id); // not pending (raced-and-erased, or unknown)
     }
-    const std::string dir = pit->second;  // copy before the map is mutated
-    const auto        gio = io_at_unlocked(id);
+    const std::string dir = pit->second; // copy before the map is mutated
+    const bool expected_loop_presence = pending_loop_gids_.contains(id);
+    const auto gio = io_at_unlocked(id);
     assert(gio && "materialize_body: pending gid without a GraphIO");
     auto graph = create_graph_body_loaded_unlocked(gio);
+    // Version-2 metadata already contributes this pending graph to the O(1)
+    // library count. Transfer that contribution to the materialized Graph so
+    // load_body() does not count it twice.
+    if (pending_loop_metadata_exact_) {
+      graph->loop_presence_counted_ = expected_loop_presence;
+    }
     graph->load_body(dir);
+    if (pending_loop_metadata_exact_ &&
+        graph->has_loop_subnodes() != expected_loop_presence) {
+      throw std::runtime_error(
+          "materialize_body: graph loop metadata does not match body");
+    }
     pending_body_dir_.erase(id);
+    pending_loop_gids_.erase(id);
     return graph;
   }
 
   void delete_graph_unlocked(Gid id) noexcept {
     // Drop any lazily-pending on-disk body too, else it would still resolve via
-    // get_graph() after the delete (e.g. emit-dir reuse deletes a persisted graph
-    // before recreating it).
+    // get_graph() after the delete (e.g. emit-dir reuse deletes a persisted
+    // graph before recreating it).
     pending_body_dir_.erase(id);
-    if (auto it = graphs_.find(id); it != graphs_.end() && it->second && !it->second->deleted_) {
+    if (pending_loop_gids_.erase(id) != 0) {
+      const uint64_t old =
+          loop_graph_count_.fetch_sub(1, std::memory_order_acq_rel);
+      I(old != 0 && "pending loop graph count underflow");
+    }
+    if (auto it = graphs_.find(id);
+        it != graphs_.end() && it->second && !it->second->deleted_) {
       it->second->invalidate_from_library();
       it->second.reset();
       --live_count_;
       note_graph_mutation();
     }
-    if (auto* state = slot_state_at_unlocked(id)) {
-      state->store(static_cast<uint8_t>(SlotState::Empty), std::memory_order_release);
+    if (auto *state = slot_state_at_unlocked(id)) {
+      state->store(static_cast<uint8_t>(SlotState::Empty),
+                   std::memory_order_release);
     }
-    if (auto* ab = abort_pending_at_unlocked(id)) {
+    if (auto *ab = abort_pending_at_unlocked(id)) {
       ab->store(false, std::memory_order_relaxed);
     }
   }
 
-  void delete_graphio_unlocked(const std::shared_ptr<GraphIO>& graphio) noexcept {
+  void
+  delete_graphio_unlocked(const std::shared_ptr<GraphIO> &graphio) noexcept {
     if (!graphio) {
       return;
     }
@@ -2457,15 +3748,19 @@ private:
       return;
     }
 
-    assert(graph_name_to_id_.find(name) == graph_name_to_id_.end() && "create_graph: graph name already exists");
+    I(graph_name_to_id_.find(name) == graph_name_to_id_.end() &&
+      "create_graph: graph name already exists");
   }
 
-  void note_graph_mutation() const noexcept { mutation_epoch_.fetch_add(1, std::memory_order_acq_rel); }
+  void note_graph_mutation() const noexcept {
+    mutation_epoch_.fetch_add(1, std::memory_order_acq_rel);
+  }
 
-  // gid value space: a name hashes into [1, kGidModulus). kGidModulus stays well
-  // under 2^Nid_bits because a Sub stores the callee gid packed into a Nid_bits
-  // field (Graph::NodeEntry::set_subnode). 2^40 gives a huge, sparse space so
-  // distinct names rarely collide, while leaving headroom below the 2^42 cap.
+  // gid value space: a name hashes into [1, kGidModulus). kGidModulus stays
+  // well under 2^Nid_bits because a Sub stores the callee gid packed into a
+  // Nid_bits field (Graph::NodeEntry::set_subnode). 2^40 gives a huge, sparse
+  // space so distinct names rarely collide, while leaving headroom below the
+  // 2^42 cap.
   static constexpr Gid kGidModulus = (Gid{1} << 40);
 
   // Deterministic hash over the name → a stable gid, identical across runs,
@@ -2475,14 +3770,15 @@ private:
   // different gids, matching the case-sensitive graph_name_to_id_ lookup.
   [[nodiscard]] static Gid hash_name_to_gid(std::string_view name) noexcept {
     const uint64_t h = name_hash(name);
-    const Gid      g = static_cast<Gid>(h % (kGidModulus - 1)) + 1;  // ∈ [1, kGidModulus)
+    const Gid g =
+        static_cast<Gid>(h % (kGidModulus - 1)) + 1; // ∈ [1, kGidModulus)
     return g;
   }
 
   // Choose a free gid for a fresh name: the name hash, linear-probed (wrapping
   // inside [1, kGidModulus)) past any colliding occupied slot. Caller holds the
-  // unique_lock. The common (collision-free) case returns the bare name hash, so
-  // the same name maps to the same gid in every library.
+  // unique_lock. The common (collision-free) case returns the bare name hash,
+  // so the same name maps to the same gid in every library.
   [[nodiscard]] Gid pick_gid_for_name_unlocked(std::string_view name) const {
     Gid g = hash_name_to_gid(name);
     while (graph_ios_.find(g) != graph_ios_.end()) {
@@ -2492,23 +3788,27 @@ private:
   }
 
   // gid-keyed reads (nullptr when absent). MUST be used on read paths — never
-  // operator[], which would insert a null entry (and mutate under a shared_lock).
+  // operator[], which would insert a null entry (and mutate under a
+  // shared_lock).
   [[nodiscard]] std::shared_ptr<GraphIO> io_at_unlocked(Gid id) const noexcept {
     const auto it = graph_ios_.find(id);
     return it == graph_ios_.end() ? nullptr : it->second;
   }
-  [[nodiscard]] std::shared_ptr<Graph> graph_at_unlocked(Gid id) const noexcept {
+  [[nodiscard]] std::shared_ptr<Graph>
+  graph_at_unlocked(Gid id) const noexcept {
     const auto it = graphs_.find(id);
     return it == graphs_.end() ? nullptr : it->second;
   }
   // Raw slot-atomic pointers (nullptr when the gid has no slot). The atomic
   // objects are heap-allocated (unique_ptr), so the pointer stays valid across
   // map rehashes as long as the slot is not deleted.
-  [[nodiscard]] std::atomic<uint8_t>* slot_state_at_unlocked(Gid id) const noexcept {
+  [[nodiscard]] std::atomic<uint8_t> *
+  slot_state_at_unlocked(Gid id) const noexcept {
     const auto it = graph_slot_states_.find(id);
     return it == graph_slot_states_.end() ? nullptr : it->second.get();
   }
-  [[nodiscard]] std::atomic<bool>* abort_pending_at_unlocked(Gid id) const noexcept {
+  [[nodiscard]] std::atomic<bool> *
+  abort_pending_at_unlocked(Gid id) const noexcept {
     const auto it = graph_slot_abort_pending_.find(id);
     return it == graph_slot_abort_pending_.end() ? nullptr : it->second.get();
   }
@@ -2517,35 +3817,44 @@ private:
   // Graph bodies remain single-threaded per pointer; this lock protects only
   // the slot vectors and name maps so concurrent find_io / find_graph callers
   // from different threads can proceed in parallel.
-  mutable Prefer_writer_shared_mutex                             registry_mu_;
+  mutable Prefer_writer_shared_mutex registry_mu_;
   // gid-keyed maps (Task 1m / hhds gid refactor): gids are a deterministic hash
   // of the graph name (see pick_gid_for_name_unlocked) rather than a positional
   // counter, so two libraries assign the SAME gid to the SAME name — making a
   // future cross-library merge a no-op for matching names (only true hash
   // collisions need remapping). The map storage tolerates the resulting sparse,
   // large gids that a vector could not. gid 0 (Gid_invalid) is never a key.
-  absl::flat_hash_map<Gid, std::shared_ptr<GraphIO>>             graph_ios_;
-  absl::flat_hash_map<Gid, std::shared_ptr<Graph>>               graphs_;
+  absl::flat_hash_map<Gid, std::shared_ptr<GraphIO>> graph_ios_;
+  absl::flat_hash_map<Gid, std::shared_ptr<Graph>> graphs_;
   // Lazy body materialization (hhds lazy-load): load() records every persisted
   // graph_<gid>/ dir here instead of eagerly reading its body. The body is read
-  // on first get_graph(id) / GraphIO::get_graph() and the gid is erased. A gid is
-  // NEVER simultaneously in `graphs_` (materialized) and here (pending). Consumers
-  // that touch only a sub-hierarchy pay for just the graphs they visit.
-  absl::flat_hash_map<Gid, std::string>                          pending_body_dir_;
-  ankerl::unordered_dense::map<std::string, Gid, Name_hash, Name_eq> graph_name_to_id_;
-  ankerl::unordered_dense::map<std::string, Gid, Name_hash, Name_eq> deleted_name_to_id_;
+  // on first get_graph(id) / GraphIO::get_graph() and the gid is erased. A gid
+  // is NEVER simultaneously in `graphs_` (materialized) and here (pending).
+  // Consumers that touch only a sub-hierarchy pay for just the graphs they
+  // visit.
+  absl::flat_hash_map<Gid, std::string> pending_body_dir_;
+  // Version-2 library metadata identifies exactly which lazy bodies contain
+  // native loop descriptors. Each gid contributes one to loop_graph_count_.
+  ankerl::unordered_dense::set<Gid> pending_loop_gids_;
+  bool pending_loop_metadata_exact_ = true;
+  ankerl::unordered_dense::map<std::string, Gid, Name_hash, Name_eq>
+      graph_name_to_id_;
+  ankerl::unordered_dense::map<std::string, Gid, Name_hash, Name_eq>
+      deleted_name_to_id_;
   // Source-provenance base (hhds-srcloc): see source_map(). Held by shared_ptr
   // so a Forest and a GraphLibrary sharing a db directory can share ONE
   // in-memory table (share_source_map); standalone libraries own a private one.
   // The const save() folds the per-graph deltas into the pointee — allowed
   // through the shared_ptr without `mutable`.
-  std::shared_ptr<Source_locator>                                srcmap_sp_      = std::make_shared<Source_locator>();
+  std::shared_ptr<Source_locator> srcmap_sp_ =
+      std::make_shared<Source_locator>();
   // false on a borrower of a shared map: its save()/load() skip srcmap.txt and
   // defer persistence to the owning sharer.
-  bool                                                           persist_srcmap_ = true;
+  bool persist_srcmap_ = true;
   // count of live graphs
-  Gid                                                            live_count_     = 0;
-  mutable std::atomic<uint64_t>                                  mutation_epoch_ = 1;
+  Gid live_count_ = 0;
+  mutable std::atomic<uint64_t> mutation_epoch_ = 1;
+  mutable std::atomic<uint64_t> loop_graph_count_ = 0;
 
   // Per-slot state machine for the body in graphs_[idx]:
   //   Empty   -> no body; create_graph may CAS to Writing
@@ -2555,10 +3864,12 @@ private:
 
   // Heap-allocated atomics so the vector can grow under unique_lock without
   // invalidating addresses observed by concurrent readers/writers.
-  absl::flat_hash_map<Gid, std::unique_ptr<std::atomic<uint8_t>>> graph_slot_states_;
+  absl::flat_hash_map<Gid, std::unique_ptr<std::atomic<uint8_t>>>
+      graph_slot_states_;
   // Latched by Graph::abort(); read by the WriterCleanup deleter on
   // last-release of the writable handle.
-  absl::flat_hash_map<Gid, std::unique_ptr<std::atomic<bool>>>    graph_slot_abort_pending_;
+  absl::flat_hash_map<Gid, std::unique_ptr<std::atomic<bool>>>
+      graph_slot_abort_pending_;
 
   // Cleanup payload that lives on the control block of every writable Graph
   // handle returned by create_graph / find_graph_rw. When the last copy of
@@ -2566,9 +3877,9 @@ private:
   // performs the slot transition (Writing -> Public, or Writing -> Empty
   // for an aborted create_graph).
   struct GraphWriterCleanup {
-    GraphLibrary*          library;
-    Gid                    gid;
-    bool                   from_create;
+    GraphLibrary *library;
+    Gid gid;
+    bool from_create;
     std::shared_ptr<Graph> graph_keepalive;
     ~GraphWriterCleanup();
   };
@@ -2579,26 +3890,31 @@ private:
   // pointer captured under the lock stays valid until the slot is deleted.
   void ensure_slot_atomics_unlocked(Gid id) {
     if (graph_slot_states_.find(id) == graph_slot_states_.end()) {
-      graph_slot_states_.emplace(id, std::make_unique<std::atomic<uint8_t>>(static_cast<uint8_t>(SlotState::Empty)));
+      graph_slot_states_.emplace(id,
+                                 std::make_unique<std::atomic<uint8_t>>(
+                                     static_cast<uint8_t>(SlotState::Empty)));
     }
     if (graph_slot_abort_pending_.find(id) == graph_slot_abort_pending_.end()) {
-      graph_slot_abort_pending_.emplace(id, std::make_unique<std::atomic<bool>>(false));
+      graph_slot_abort_pending_.emplace(
+          id, std::make_unique<std::atomic<bool>>(false));
     }
   }
 
-  std::shared_ptr<Graph> make_writer_handle_unlocked(Gid gid, bool from_create) {
+  std::shared_ptr<Graph> make_writer_handle_unlocked(Gid gid,
+                                                     bool from_create) {
     auto g = graph_at_unlocked(gid);
-    assert(g && "make_writer_handle: empty slot");
-    auto cleanup             = std::make_shared<GraphWriterCleanup>();
-    cleanup->library         = this;
-    cleanup->gid             = gid;
-    cleanup->from_create     = from_create;
+    I(g && "make_writer_handle: empty slot");
+    auto cleanup = std::make_shared<GraphWriterCleanup>();
+    cleanup->library = this;
+    cleanup->gid = gid;
+    cleanup->from_create = from_create;
     cleanup->graph_keepalive = std::move(g);
     return std::shared_ptr<Graph>(cleanup, cleanup->graph_keepalive.get());
   }
 
   friend class Graph;
   friend class GraphIO;
+  friend class Node_class;
 };
 
 inline std::shared_ptr<Graph> GraphIO::get_graph() {
@@ -2607,26 +3923,29 @@ inline std::shared_ptr<Graph> GraphIO::get_graph() {
   }
   {
     std::shared_lock lock(owner_lib_->registry_mu_);
-    const auto       graph = owner_lib_->graph_at_unlocked(gid_);
+    const auto graph = owner_lib_->graph_at_unlocked(gid_);
     if (graph) {
-      return graph->deleted_ ? std::shared_ptr<Graph>{} : graph;  // already materialized
+      return graph->deleted_ ? std::shared_ptr<Graph>{}
+                             : graph; // already materialized
     }
-    if (owner_lib_->pending_body_dir_.find(gid_) == owner_lib_->pending_body_dir_.end()) {
-      return {};  // no body materialized and none pending on disk
+    if (owner_lib_->pending_body_dir_.find(gid_) ==
+        owner_lib_->pending_body_dir_.end()) {
+      return {}; // no body materialized and none pending on disk
     }
   }
   // Pending: read the body under the writer lock (see GraphLibrary::get_graph).
-  auto*            lib = const_cast<GraphLibrary*>(owner_lib_);
+  auto *lib = const_cast<GraphLibrary *>(owner_lib_);
   std::unique_lock lock(lib->registry_mu_);
   return lib->materialize_body_unlocked(gid_);
 }
 
 inline std::shared_ptr<const Graph> GraphIO::get_graph() const {
-  return const_cast<GraphIO*>(this)->get_graph();  // lazy-load cache fill
+  return const_cast<GraphIO *>(this)->get_graph(); // lazy-load cache fill
 }
 
 inline std::shared_ptr<Graph> GraphIO::create_graph() {
-  assert(owner_lib_ != nullptr && "create_graph: GraphIO is no longer attached to a library");
+  I(owner_lib_ != nullptr &&
+    "create_graph: GraphIO is no longer attached to a library");
   return owner_lib_->create_graph_body(shared_from_this());
 }
 
@@ -2637,11 +3956,14 @@ inline bool GraphIO::has_graph() const {
   return owner_lib_->has_graph(gid_);
 }
 
-inline void GraphIO::reindex_declared_io_pins(IoDirection direction, size_t start_index) {
-  auto& pins = direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
+inline void GraphIO::reindex_declared_io_pins(IoDirection direction,
+                                              size_t start_index) {
+  auto &pins =
+      direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
   for (size_t index = start_index; index < pins.size(); ++index) {
     auto it = declared_io_pins_.find(pins[index].name);
-    assert(it != declared_io_pins_.end() && "reindex_declared_io_pins: missing IO-pin lookup entry");
+    I(it != declared_io_pins_.end() &&
+      "reindex_declared_io_pins: missing IO-pin lookup entry");
     it->second.index = index;
   }
 }
@@ -2664,15 +3986,16 @@ inline GraphLibrary::GraphWriterCleanup::~GraphWriterCleanup() {
     return;
   }
   std::unique_lock lock(library->registry_mu_);
-  auto*            state = library->slot_state_at_unlocked(gid);
+  auto *state = library->slot_state_at_unlocked(gid);
   if (!state) {
     return;
   }
-  if (state->load(std::memory_order_acquire) != static_cast<uint8_t>(GraphLibrary::SlotState::Writing)) {
+  if (state->load(std::memory_order_acquire) !=
+      static_cast<uint8_t>(GraphLibrary::SlotState::Writing)) {
     // commit() already flipped to Public, or the slot was deleted.
     return;
   }
-  auto*      ab      = library->abort_pending_at_unlocked(gid);
+  auto *ab = library->abort_pending_at_unlocked(gid);
   const bool aborted = from_create && ab && ab->load(std::memory_order_acquire);
   if (aborted) {
     if (auto g = library->graph_at_unlocked(gid)) {
@@ -2681,11 +4004,13 @@ inline GraphLibrary::GraphWriterCleanup::~GraphWriterCleanup() {
       --library->live_count_;
     }
     ab->store(false, std::memory_order_relaxed);
-    state->store(static_cast<uint8_t>(GraphLibrary::SlotState::Empty), std::memory_order_release);
+    state->store(static_cast<uint8_t>(GraphLibrary::SlotState::Empty),
+                 std::memory_order_release);
     library->note_graph_mutation();
     return;
   }
-  state->store(static_cast<uint8_t>(GraphLibrary::SlotState::Public), std::memory_order_release);
+  state->store(static_cast<uint8_t>(GraphLibrary::SlotState::Public),
+               std::memory_order_release);
 }
 
 inline void Graph::commit() {
@@ -2699,18 +4024,17 @@ inline void Graph::commit() {
   // const-cast: owner_lib_ is intentionally const within Graph, but commit
   // must mutate the library's slot state. The writer holds the only
   // writable handle here so the library is alive.
-  auto*            lib = const_cast<GraphLibrary*>(owner_lib_);
+  auto *lib = const_cast<GraphLibrary *>(owner_lib_);
   std::unique_lock lock(lib->registry_mu_);
-  auto*            state = lib->slot_state_at_unlocked(self_gid_);
+  auto *state = lib->slot_state_at_unlocked(self_gid_);
   if (!state) {
     frozen_ = true;
     return;
   }
   uint8_t expected = static_cast<uint8_t>(GraphLibrary::SlotState::Writing);
-  state->compare_exchange_strong(expected,
-                                 static_cast<uint8_t>(GraphLibrary::SlotState::Public),
-                                 std::memory_order_release,
-                                 std::memory_order_relaxed);
+  state->compare_exchange_strong(
+      expected, static_cast<uint8_t>(GraphLibrary::SlotState::Public),
+      std::memory_order_release, std::memory_order_relaxed);
   frozen_ = true;
 }
 
@@ -2718,60 +4042,78 @@ inline void Graph::abort() {
   if (owner_lib_ == nullptr || self_gid_ == Gid_invalid) {
     return;
   }
-  auto*            lib = const_cast<GraphLibrary*>(owner_lib_);
+  auto *lib = const_cast<GraphLibrary *>(owner_lib_);
   std::unique_lock lock(lib->registry_mu_);
-  auto*            ab = lib->abort_pending_at_unlocked(self_gid_);
+  auto *ab = lib->abort_pending_at_unlocked(self_gid_);
   if (!ab) {
     return;
   }
   ab->store(true, std::memory_order_release);
 }
 
-inline void GraphIO::add_input(std::string_view name, Port_id port_id, bool loop_break) {
-  assert(owner_lib_ != nullptr && "add_input: GraphIO is no longer attached to a library");
-  assert(!name.empty() && "add_input: name is required");
+inline void GraphIO::add_input(std::string_view name, Port_id port_id,
+                               bool loop_break) {
+  I(owner_lib_ != nullptr &&
+    "add_input: GraphIO is no longer attached to a library");
+  I(!name.empty() && "add_input: name is required");
 
   const std::string key(name);
-  assert(declared_io_pins_.find(key) == declared_io_pins_.end() && "add_input: input pin name already exists");
+  I(declared_io_pins_.find(key) == declared_io_pins_.end() &&
+    "add_input: input pin name already exists");
   input_pin_decls_.push_back(DeclaredIoPin{key, port_id, loop_break});
-  declared_io_pins_.emplace(input_pin_decls_.back().name, DeclaredIoPinRef{IoDirection::Input, input_pin_decls_.size() - 1});
+  declared_io_pins_.emplace(
+      input_pin_decls_.back().name,
+      DeclaredIoPinRef{IoDirection::Input, input_pin_decls_.size() - 1});
 
   if (auto graph = get_graph()) {
-    (void)graph->materialize_declared_io_pin(name, port_id, Graph::INPUT_NODE, graph->input_pins_);
+    (void)graph->materialize_declared_io_pin(name, port_id, Graph::INPUT_NODE,
+                                             graph->input_pins_);
   } else if (owner_lib_ != nullptr) {
     owner_lib_->note_graph_mutation();
   }
 }
 
-inline void GraphIO::add_output(std::string_view name, Port_id port_id, bool loop_break) {
-  assert(owner_lib_ != nullptr && "add_output: GraphIO is no longer attached to a library");
-  assert(!name.empty() && "add_output: name is required");
+inline void GraphIO::add_output(std::string_view name, Port_id port_id,
+                                bool loop_break) {
+  I(owner_lib_ != nullptr &&
+    "add_output: GraphIO is no longer attached to a library");
+  I(!name.empty() && "add_output: name is required");
 
   const std::string key(name);
-  assert(declared_io_pins_.find(key) == declared_io_pins_.end() && "add_output: output pin name already exists");
+  I(declared_io_pins_.find(key) == declared_io_pins_.end() &&
+    "add_output: output pin name already exists");
   output_pin_decls_.push_back(DeclaredIoPin{key, port_id, loop_break});
-  declared_io_pins_.emplace(output_pin_decls_.back().name, DeclaredIoPinRef{IoDirection::Output, output_pin_decls_.size() - 1});
+  declared_io_pins_.emplace(
+      output_pin_decls_.back().name,
+      DeclaredIoPinRef{IoDirection::Output, output_pin_decls_.size() - 1});
 
   if (auto graph = get_graph()) {
-    (void)graph->materialize_declared_io_pin(name, port_id, Graph::OUTPUT_NODE, graph->output_pins_);
+    (void)graph->materialize_declared_io_pin(name, port_id, Graph::OUTPUT_NODE,
+                                             graph->output_pins_);
   } else if (owner_lib_ != nullptr) {
     owner_lib_->note_graph_mutation();
   }
 }
 
 inline void GraphIO::delete_input(std::string_view name) {
-  assert(owner_lib_ != nullptr && "delete_input: GraphIO is no longer attached to a library");
+  I(owner_lib_ != nullptr &&
+    "delete_input: GraphIO is no longer attached to a library");
 
   const auto it = declared_io_pins_.find(std::string(name));
-  assert(it != declared_io_pins_.end() && "delete_input: input pin name not found");
-  assert(it->second.direction == IoDirection::Input && "delete_input: declared pin is not an input");
+  I(it != declared_io_pins_.end() && "delete_input: input pin name not found");
+  I(it->second.direction == IoDirection::Input &&
+    "delete_input: declared pin is not an input");
 
   const size_t index = it->second.index;
   if (auto graph = get_graph()) {
     const auto pin_it = graph->input_pins_.find(std::string(name));
     if (pin_it != graph->input_pins_.end()) {
-      assert(graph->out_edges(graph->make_pin_class(pin_it->second | static_cast<Pid>(2))).empty()
-             && "delete_input: input pin is still connected — disconnect before delete");
+      I(graph
+            ->out_edges(
+                graph->make_pin_class(pin_it->second | static_cast<Pid>(2)))
+            .empty() &&
+        "delete_input: input pin is still connected — disconnect before "
+        "delete");
     }
     graph->erase_declared_io_pin(name, graph->input_pins_);
   } else if (owner_lib_ != nullptr) {
@@ -2779,23 +4121,28 @@ inline void GraphIO::delete_input(std::string_view name) {
   }
 
   declared_io_pins_.erase(it);
-  input_pin_decls_.erase(input_pin_decls_.begin() + static_cast<std::ptrdiff_t>(index));
+  input_pin_decls_.erase(input_pin_decls_.begin() +
+                         static_cast<std::ptrdiff_t>(index));
   reindex_declared_io_pins(IoDirection::Input, index);
 }
 
 inline void GraphIO::delete_output(std::string_view name) {
-  assert(owner_lib_ != nullptr && "delete_output: GraphIO is no longer attached to a library");
+  I(owner_lib_ != nullptr &&
+    "delete_output: GraphIO is no longer attached to a library");
 
   const auto it = declared_io_pins_.find(std::string(name));
-  assert(it != declared_io_pins_.end() && "delete_output: output pin name not found");
-  assert(it->second.direction == IoDirection::Output && "delete_output: declared pin is not an output");
+  I(it != declared_io_pins_.end() &&
+    "delete_output: output pin name not found");
+  I(it->second.direction == IoDirection::Output &&
+    "delete_output: declared pin is not an output");
 
   const size_t index = it->second.index;
   if (auto graph = get_graph()) {
     const auto pin_it = graph->output_pins_.find(std::string(name));
     if (pin_it != graph->output_pins_.end()) {
-      assert(graph->inp_edges(graph->make_pin_class(pin_it->second)).empty()
-             && "delete_output: output pin is still connected — disconnect before delete");
+      I(graph->inp_edges(graph->make_pin_class(pin_it->second)).empty() &&
+        "delete_output: output pin is still connected — disconnect before "
+        "delete");
     }
     graph->erase_declared_io_pin(name, graph->output_pins_);
   } else if (owner_lib_ != nullptr) {
@@ -2803,23 +4150,26 @@ inline void GraphIO::delete_output(std::string_view name) {
   }
 
   declared_io_pins_.erase(it);
-  output_pin_decls_.erase(output_pin_decls_.begin() + static_cast<std::ptrdiff_t>(index));
+  output_pin_decls_.erase(output_pin_decls_.begin() +
+                          static_cast<std::ptrdiff_t>(index));
   reindex_declared_io_pins(IoDirection::Output, index);
 }
 
 inline void GraphIO::clear() {
-  assert(owner_lib_ != nullptr && "clear: GraphIO is no longer attached to a library");
+  I(owner_lib_ != nullptr &&
+    "clear: GraphIO is no longer attached to a library");
   owner_lib_->delete_graphio(shared_from_this());
 }
 
 inline void GraphIO::reset_declarations() {
-  assert(owner_lib_ != nullptr && "reset_declarations: GraphIO is no longer attached to a library");
+  I(owner_lib_ != nullptr &&
+    "reset_declarations: GraphIO is no longer attached to a library");
   // Drop body-side counterpart pins first, while we still know the names.
   if (auto graph = get_graph()) {
-    for (const auto& input : input_pin_decls_) {
+    for (const auto &input : input_pin_decls_) {
       graph->erase_declared_io_pin(input.name, graph->input_pins_);
     }
-    for (const auto& output : output_pin_decls_) {
+    for (const auto &output : output_pin_decls_) {
       graph->erase_declared_io_pin(output.name, graph->output_pins_);
     }
   }
@@ -2833,16 +4183,18 @@ inline void GraphIO::reset_declarations() {
 
 inline bool GraphIO::has_input(std::string_view name) const {
   const auto it = declared_io_pins_.find(std::string(name));
-  return it != declared_io_pins_.end() && it->second.direction == IoDirection::Input;
+  return it != declared_io_pins_.end() &&
+         it->second.direction == IoDirection::Input;
 }
 
 inline bool GraphIO::has_output(std::string_view name) const {
   const auto it = declared_io_pins_.find(std::string(name));
-  return it != declared_io_pins_.end() && it->second.direction == IoDirection::Output;
+  return it != declared_io_pins_.end() &&
+         it->second.direction == IoDirection::Output;
 }
 
 inline bool GraphIO::has_input_with_port_id(Port_id port_id) const {
-  for (const auto& pin : input_pin_decls_) {
+  for (const auto &pin : input_pin_decls_) {
     if (pin.port_id == port_id) {
       return true;
     }
@@ -2851,7 +4203,7 @@ inline bool GraphIO::has_input_with_port_id(Port_id port_id) const {
 }
 
 inline bool GraphIO::has_output_with_port_id(Port_id port_id) const {
-  for (const auto& pin : output_pin_decls_) {
+  for (const auto &pin : output_pin_decls_) {
     if (pin.port_id == port_id) {
       return true;
     }
@@ -2865,35 +4217,46 @@ inline bool GraphIO::has_pin_with_port_id(Port_id port_id) const {
 
 inline void GraphIO::set_bits(std::string_view name, uint32_t bits) {
   const auto it = declared_io_pins_.find(std::string(name));
-  assert(it != declared_io_pins_.end() && "set_bits: declared pin name not found");
-  auto& pins                  = it->second.direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
+  assert(it != declared_io_pins_.end() &&
+         "set_bits: declared pin name not found");
+  auto &pins = it->second.direction == IoDirection::Input ? input_pin_decls_
+                                                          : output_pin_decls_;
   pins[it->second.index].bits = bits;
 }
 
 inline uint32_t GraphIO::get_bits(std::string_view name) const {
   const auto it = declared_io_pins_.find(std::string(name));
-  assert(it != declared_io_pins_.end() && "get_bits: declared pin name not found");
-  const auto& pins = it->second.direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
+  assert(it != declared_io_pins_.end() &&
+         "get_bits: declared pin name not found");
+  const auto &pins = it->second.direction == IoDirection::Input
+                         ? input_pin_decls_
+                         : output_pin_decls_;
   return pins[it->second.index].bits;
 }
 
 inline void GraphIO::set_unsign(std::string_view name, bool unsign_value) {
   const auto it = declared_io_pins_.find(std::string(name));
-  assert(it != declared_io_pins_.end() && "set_unsign: declared pin name not found");
-  auto& pins                    = it->second.direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
+  assert(it != declared_io_pins_.end() &&
+         "set_unsign: declared pin name not found");
+  auto &pins = it->second.direction == IoDirection::Input ? input_pin_decls_
+                                                          : output_pin_decls_;
   pins[it->second.index].unsign = unsign_value;
 }
 
 inline bool GraphIO::is_unsign(std::string_view name) const {
   const auto it = declared_io_pins_.find(std::string(name));
-  assert(it != declared_io_pins_.end() && "is_unsign: declared pin name not found");
-  const auto& pins = it->second.direction == IoDirection::Input ? input_pin_decls_ : output_pin_decls_;
+  assert(it != declared_io_pins_.end() &&
+         "is_unsign: declared pin name not found");
+  const auto &pins = it->second.direction == IoDirection::Input
+                         ? input_pin_decls_
+                         : output_pin_decls_;
   return pins[it->second.index].unsign;
 }
 
 inline bool GraphIO::is_loop_break(std::string_view name) const {
   const auto it = declared_io_pins_.find(std::string(name));
-  assert(it != declared_io_pins_.end() && "is_loop_break: declared pin name not found");
+  assert(it != declared_io_pins_.end() &&
+         "is_loop_break: declared pin name not found");
   if (it == declared_io_pins_.end()) {
     return false;
   }
@@ -2906,9 +4269,12 @@ inline bool GraphIO::is_loop_break(std::string_view name) const {
 
 inline Port_id GraphIO::get_input_port_id(std::string_view name) const {
   const auto it = declared_io_pins_.find(std::string(name));
-  assert(it != declared_io_pins_.end() && "get_input_port_id: input pin name not found");
-  assert(it == declared_io_pins_.end() || it->second.direction == IoDirection::Input);
-  if (it == declared_io_pins_.end() || it->second.direction != IoDirection::Input) {
+  assert(it != declared_io_pins_.end() &&
+         "get_input_port_id: input pin name not found");
+  assert(it == declared_io_pins_.end() ||
+         it->second.direction == IoDirection::Input);
+  if (it == declared_io_pins_.end() ||
+      it->second.direction != IoDirection::Input) {
     return 0;
   }
   return input_pin_decls_[it->second.index].port_id;
@@ -2916,21 +4282,24 @@ inline Port_id GraphIO::get_input_port_id(std::string_view name) const {
 
 inline Port_id GraphIO::get_output_port_id(std::string_view name) const {
   const auto it = declared_io_pins_.find(std::string(name));
-  assert(it != declared_io_pins_.end() && "get_output_port_id: output pin name not found");
-  assert(it == declared_io_pins_.end() || it->second.direction == IoDirection::Output);
-  if (it == declared_io_pins_.end() || it->second.direction != IoDirection::Output) {
+  assert(it != declared_io_pins_.end() &&
+         "get_output_port_id: output pin name not found");
+  assert(it == declared_io_pins_.end() ||
+         it->second.direction == IoDirection::Output);
+  if (it == declared_io_pins_.end() ||
+      it->second.direction != IoDirection::Output) {
     return 0;
   }
   return output_pin_decls_[it->second.index].port_id;
 }
 
 inline void Graph::invalidate_traversal_caches() noexcept {
-  dirty_                 = true;
-  forward_caches_valid_  = false;
+  dirty_ = true;
+  forward_caches_valid_ = false;
   backward_caches_valid_ = false;
   if (owner_lib_ != nullptr) {
     owner_lib_->note_graph_mutation();
   }
 }
 
-}  // namespace hhds
+} // namespace hhds

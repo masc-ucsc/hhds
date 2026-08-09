@@ -6,6 +6,7 @@
 #include <istream>
 #include <memory>
 #include <ostream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -87,20 +88,33 @@ using attr_result_t
 
 using Attr_key = uint64_t;
 
-struct Hier_attr_key {
-  int64_t  hier_pos = 0;
-  Attr_key flat_key = 0;
+struct Hier_attr_step {
+  Gid                     site_gid   = Gid_invalid;
+  Nid                     site_value = 0;
+  std::optional<uint64_t> ordinal;
 
-  [[nodiscard]] bool operator==(const Hier_attr_key& other) const noexcept {
-    return hier_pos == other.hier_pos && flat_key == other.flat_key;
-  }
+  [[nodiscard]] bool operator==(const Hier_attr_step&) const noexcept = default;
+};
+
+struct Hier_attr_key {
+  Gid                         root_gid = Gid_invalid;
+  std::vector<Hier_attr_step> steps;
+  Attr_key                    flat_key = 0;
+
+  [[nodiscard]] bool operator==(const Hier_attr_key&) const noexcept = default;
 };
 
 struct Hier_attr_key_hash {
   [[nodiscard]] size_t operator()(const Hier_attr_key& key) const noexcept {
-    const size_t h1 = std::hash<int64_t>{}(key.hier_pos);
-    const size_t h2 = std::hash<Attr_key>{}(key.flat_key);
-    return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6U) + (h1 >> 2U));
+    size_t     h   = std::hash<Gid>{}(key.root_gid);
+    const auto mix = [&h](size_t value) { h ^= value + 0x9e3779b97f4a7c15ULL + (h << 6U) + (h >> 2U); };
+    for (const auto& step : key.steps) {
+      mix(std::hash<Gid>{}(step.site_gid));
+      mix(std::hash<Nid>{}(step.site_value));
+      mix(step.ordinal ? std::hash<uint64_t>{}(*step.ordinal) : 0x6a09e667f3bcc909ULL);
+    }
+    mix(std::hash<Attr_key>{}(key.flat_key));
+    return h;
   }
 };
 
@@ -397,16 +411,16 @@ class Attr_store_base {
 public:
   virtual ~Attr_store_base() = default;
 
-  [[nodiscard]] virtual Attr_storage_kind                storage_kind() const noexcept                  = 0;
-  [[nodiscard]] virtual std::type_index                  type_key() const noexcept                      = 0;
-  [[nodiscard]] virtual std::string_view                 persistent_id() const noexcept                 = 0;
-  [[nodiscard]] virtual bool                             empty() const noexcept                         = 0;
-  [[nodiscard]] virtual uint64_t                         size() const noexcept                          = 0;
-  virtual void                                           clear_entries() noexcept                       = 0;
-  virtual void                                           erase_object(Attr_key key) noexcept            = 0;
-  virtual void                                           save_entries(std::ostream& os) const           = 0;
-  virtual void                                           load_entries(std::istream& is, uint64_t count) = 0;
-  [[nodiscard]] virtual std::unique_ptr<Attr_store_base> clone() const                                  = 0;
+  [[nodiscard]] virtual Attr_storage_kind                storage_kind() const noexcept                                    = 0;
+  [[nodiscard]] virtual std::type_index                  type_key() const noexcept                                        = 0;
+  [[nodiscard]] virtual std::string_view                 persistent_id() const noexcept                                   = 0;
+  [[nodiscard]] virtual bool                             empty() const noexcept                                           = 0;
+  [[nodiscard]] virtual uint64_t                         size() const noexcept                                            = 0;
+  virtual void                                           clear_entries() noexcept                                         = 0;
+  virtual void                                           erase_object(Attr_key key) noexcept                              = 0;
+  virtual void                                           save_entries(std::ostream& os) const                             = 0;
+  virtual void                                           load_entries(std::istream& is, uint64_t count, bool legacy_hier) = 0;
+  [[nodiscard]] virtual std::unique_ptr<Attr_store_base> clone() const                                                    = 0;
 };
 
 // flat_storage backing map. A trivially-copyable value (int/uint64 attrs like
@@ -418,13 +432,13 @@ public:
 // reference-STABLE std::unordered_map. Hier storage likewise stays std (its
 // erase-during-iteration loop relies on erase(it) returning the next iterator).
 template <Attribute Tag>
-using attr_map_t = std::conditional_t<
-    attr_is_dense<Tag>(), Dense_attr_map<typename Tag::value_type>,
-    std::conditional_t<std::is_same_v<typename Tag::storage, flat_storage>,
-                       std::conditional_t<std::is_trivially_copyable_v<typename Tag::value_type>,
-                                          absl::flat_hash_map<Attr_key, typename Tag::value_type>,
-                                          std::unordered_map<Attr_key, typename Tag::value_type>>,
-                       std::unordered_map<Hier_attr_key, typename Tag::value_type, Hier_attr_key_hash>>>;
+using attr_map_t
+    = std::conditional_t<attr_is_dense<Tag>(), Dense_attr_map<typename Tag::value_type>,
+                         std::conditional_t<std::is_same_v<typename Tag::storage, flat_storage>,
+                                            std::conditional_t<std::is_trivially_copyable_v<typename Tag::value_type>,
+                                                               absl::flat_hash_map<Attr_key, typename Tag::value_type>,
+                                                               std::unordered_map<Attr_key, typename Tag::value_type>>,
+                                            std::unordered_map<Hier_attr_key, typename Tag::value_type, Hier_attr_key_hash>>>;
 
 template <Attribute Tag>
 class Attr_store_impl final : public Attr_store_base {
@@ -481,14 +495,25 @@ public:
       }
     } else {
       for (const auto& [key, value] : map_) {
-        os.write(reinterpret_cast<const char*>(&key.hier_pos), sizeof(key.hier_pos));
+        os.write(reinterpret_cast<const char*>(&key.root_gid), sizeof(key.root_gid));
+        const uint64_t step_count = key.steps.size();
+        os.write(reinterpret_cast<const char*>(&step_count), sizeof(step_count));
+        for (const auto& step : key.steps) {
+          os.write(reinterpret_cast<const char*>(&step.site_gid), sizeof(step.site_gid));
+          os.write(reinterpret_cast<const char*>(&step.site_value), sizeof(step.site_value));
+          const uint8_t has_ordinal = step.ordinal ? 1U : 0U;
+          os.write(reinterpret_cast<const char*>(&has_ordinal), sizeof(has_ordinal));
+          if (step.ordinal) {
+            os.write(reinterpret_cast<const char*>(&*step.ordinal), sizeof(*step.ordinal));
+          }
+        }
         os.write(reinterpret_cast<const char*>(&key.flat_key), sizeof(key.flat_key));
         write_value<value_type>(os, value);
       }
     }
   }
 
-  void load_entries(std::istream& is, uint64_t count) override {
+  void load_entries(std::istream& is, uint64_t count, bool legacy_hier) override {
     map_.clear();
     for (uint64_t i = 0; i < count; ++i) {
       if constexpr (std::is_same_v<typename Tag::storage, flat_storage>) {
@@ -496,8 +521,36 @@ public:
         is.read(reinterpret_cast<char*>(&key), sizeof(key));
         map_.emplace(key, read_value<value_type>(is));
       } else {
+        if (legacy_hier) {
+          int64_t  discarded_hier_pos = 0;
+          Attr_key discarded_flat_key = 0;
+          is.read(reinterpret_cast<char*>(&discarded_hier_pos), sizeof(discarded_hier_pos));
+          is.read(reinterpret_cast<char*>(&discarded_flat_key), sizeof(discarded_flat_key));
+          (void)read_value<value_type>(is);
+          continue;  // old immediate-parent keys are ambiguous; recompute them
+        }
         Hier_attr_key key{};
-        is.read(reinterpret_cast<char*>(&key.hier_pos), sizeof(key.hier_pos));
+        is.read(reinterpret_cast<char*>(&key.root_gid), sizeof(key.root_gid));
+        uint64_t step_count = 0;
+        is.read(reinterpret_cast<char*>(&step_count), sizeof(step_count));
+        if (step_count > (1ULL << 30)) {
+          throw std::runtime_error("load_attr_stores: unreasonable occurrence path length");
+        }
+        key.steps.resize(static_cast<size_t>(step_count));
+        for (auto& step : key.steps) {
+          is.read(reinterpret_cast<char*>(&step.site_gid), sizeof(step.site_gid));
+          is.read(reinterpret_cast<char*>(&step.site_value), sizeof(step.site_value));
+          uint8_t has_ordinal = 0;
+          is.read(reinterpret_cast<char*>(&has_ordinal), sizeof(has_ordinal));
+          if (has_ordinal > 1) {
+            throw std::runtime_error("load_attr_stores: invalid occurrence ordinal flag");
+          }
+          if (has_ordinal != 0) {
+            uint64_t ordinal = 0;
+            is.read(reinterpret_cast<char*>(&ordinal), sizeof(ordinal));
+            step.ordinal = ordinal;
+          }
+        }
         is.read(reinterpret_cast<char*>(&key.flat_key), sizeof(key.flat_key));
         map_.emplace(key, read_value<value_type>(is));
       }
@@ -589,17 +642,26 @@ public:
   using value_type = typename Tag::value_type;
 
   AttrRef() = default;
-  AttrRef(Attr_host* host, Attr_key flat_key) : host_(host), flat_key_(flat_key) {}
+  // No hierarchy context. hier_key_ still carries flat_key so that a hier-storage
+  // tag reached from a Class/Flat handle stays per-object: has_hier_ keeps the
+  // debug assert in key(), but under NDEBUG a default-constructed hier_key_ would
+  // collapse every node and pin in the graph onto the single key {_, {}, 0}.
+  AttrRef(Attr_host* host, Attr_key flat_key) : host_(host), flat_key_(flat_key), hier_key_{Gid_invalid, {}, flat_key} {}
   AttrRef(Attr_host* host, Attr_key flat_key, int64_t hier_pos)
-      : host_(host), flat_key_(flat_key), hier_pos_(hier_pos), has_hier_(true) {}
+      : host_(host)
+      , flat_key_(flat_key)
+      , hier_key_{Gid_invalid, {{Gid_invalid, static_cast<Nid>(hier_pos), std::nullopt}}, flat_key}
+      , has_hier_(true) {}
+  AttrRef(Attr_host* host, Attr_key flat_key, Gid root_gid, std::vector<Hier_attr_step> steps)
+      : host_(host), flat_key_(flat_key), hier_key_{root_gid, std::move(steps), flat_key}, has_hier_(true) {}
 
   [[nodiscard]] bool               has() const;
   [[nodiscard]] attr_result_t<Tag> get() const;
   // Single-lookup accessors — avoid the has()+get() double (store + map) probe.
   //   try_get(): pointer to the stored value, or nullptr when absent.
   //   get_or():  the stored value, or `fallback` when absent.
-  [[nodiscard]] const value_type* try_get() const;
-  [[nodiscard]] value_type        get_or(value_type fallback) const;
+  [[nodiscard]] const value_type*  try_get() const;
+  [[nodiscard]] value_type         get_or(value_type fallback) const;
   void                             set(const value_type& value);
   void                             set(value_type&& value);
   void                             del();
@@ -607,10 +669,10 @@ public:
 private:
   [[nodiscard]] auto key() const;
 
-  Attr_host* host_     = nullptr;
-  Attr_key   flat_key_ = 0;
-  int64_t    hier_pos_ = 0;
-  bool       has_hier_ = false;
+  Attr_host*    host_     = nullptr;
+  Attr_key      flat_key_ = 0;
+  Hier_attr_key hier_key_;
+  bool          has_hier_ = false;
 };
 
 class Attr_host {
@@ -704,7 +766,7 @@ protected:
     }
   }
 
-  void load_attr_stores(std::istream& is) {
+  void load_attr_stores(std::istream& is, bool legacy_hier = false) {
     discard_attr_stores();
 
     uint64_t store_count = 0;
@@ -719,17 +781,24 @@ protected:
 
       uint8_t storage_kind_u8 = 0;
       is.read(reinterpret_cast<char*>(&storage_kind_u8), sizeof(storage_kind_u8));
+      if (storage_kind_u8 > static_cast<uint8_t>(Attr_storage_kind::Hier)) {
+        throw std::runtime_error("load_attr_stores: unknown attribute storage kind");
+      }
       [[maybe_unused]] const auto storage_kind = static_cast<Attr_storage_kind>(storage_kind_u8);
 
       uint64_t entry_count = 0;
       is.read(reinterpret_cast<char*>(&entry_count), sizeof(entry_count));
 
       const auto* desc = detail::Attr_tag_registry::instance().find(persistent_id);
-      assert(desc != nullptr && "load_attr_stores: attribute tag was not registered for deserialization");
-      assert(desc->storage_kind == storage_kind && "load_attr_stores: persisted attribute storage kind mismatch");
+      if (desc == nullptr) {
+        throw std::runtime_error("load_attr_stores: unknown attribute tag '" + persistent_id + "'");
+      }
+      if (desc->storage_kind != storage_kind) {
+        throw std::runtime_error("load_attr_stores: persisted attribute storage kind mismatch for '" + persistent_id + "'");
+      }
 
       auto store = desc->factory();
-      store->load_entries(is, entry_count);
+      store->load_entries(is, entry_count, legacy_hier);
       if (desc->slot >= attr_stores_.size()) {
         attr_stores_.resize(static_cast<std::size_t>(desc->slot) + 1);
       }
@@ -756,7 +825,7 @@ inline auto AttrRef<Tag>::key() const {
     return flat_key_;
   } else {
     assert(has_hier_ && "AttrRef: hier attribute requires hierarchy context");
-    return Hier_attr_key{hier_pos_, flat_key_};
+    return hier_key_;
   }
 }
 

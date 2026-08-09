@@ -85,6 +85,7 @@ cc_library(
         "attr.hpp",
         "attrs/name.hpp",
         "attrs/srcid.hpp",
+        "function_ref.hpp",
         "graph.hpp",
         "graph_sizing.hpp",
         "hash_set3.hpp",

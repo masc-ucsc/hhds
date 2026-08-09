@@ -8,6 +8,7 @@
 #include <cassert>
 #include <csignal>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -20,6 +21,11 @@
 #include "hhds/attrs/name.hpp"
 
 namespace {
+
+struct occurrence_mark_t {
+  using value_type = uint64_t;
+  using storage    = hhds::hier_storage;
+};
 
 template <typename Range>
 std::vector<hhds::Nid> collect_nids(Range&& range) {
@@ -115,6 +121,504 @@ void test_wrapper_pin_connect_api() {
   assert(output_edges.size() == 1);
   assert(output_edges.front().driver == and1_out);
   assert(output_edges.front().sink == z);
+}
+
+void test_native_subnode_loop_group_and_order() {
+  hhds::GraphLibrary lib;
+
+  auto callee = lib.create_io("loop_body");
+  callee->add_input("acc", 1);
+  callee->add_input("idx", 2);
+  callee->add_output("next_acc", 3);
+  auto callee_graph = callee->create_graph();
+  auto inner        = callee_graph->create_node();
+  callee_graph->get_input_pin("acc").connect_sink(inner.create_sink_pin(1));
+  callee_graph->get_input_pin("idx").connect_sink(inner.create_sink_pin(2));
+  inner.create_driver_pin(3).connect_sink(callee_graph->get_output_pin("next_acc"));
+
+  auto top_io = lib.create_io("loop_top");
+  top_io->add_input("seed", 1);
+  top_io->add_output("result", 3);
+  auto top = top_io->create_graph();
+
+  // Put the consumer before the Sub in storage order. A carry self-edge must
+  // not strand both in the cycle tail: forward order still puts the compact
+  // group before its consumer, exactly as an unrolled chain would.
+  auto               consumer = top->create_node();
+  auto               sub      = top->create_node();
+  hhds::Subnode_loop loop{
+      .first       = 10,
+      .step        = -2,
+      .count       = 4,
+      .index_input = 2,
+  };
+  sub.set_subnode(callee, loop);
+
+  top->get_input_pin("seed").connect_sink(sub.create_sink_pin(1));
+  sub.create_driver_pin(3).connect_sink(sub.create_sink_pin(1));  // literal carry
+  sub.create_driver_pin(3).connect_sink(consumer.create_sink_pin());
+  consumer.create_driver_pin().connect_sink(top->get_output_pin("result"));
+
+  assert(sub.is_loop_subnode());
+  assert(top->has_loop_subnodes());
+  assert(lib.has_loop_subnodes());
+  assert(sub.subnode_loop() == std::optional<hhds::Subnode_loop>(loop));
+  auto group = sub.subnode_group();
+  assert(group.is_loop());
+  assert(group.size() == 4);
+  assert(&group.target_io() == callee.get());
+  const auto carries = group.carries();
+  assert(carries.size() == 1);
+  assert(carries[0].input_port() == 1);
+  assert(carries[0].output_port() == 3);
+  group.validate();
+
+  std::vector<int64_t> indexes;
+  for (const auto occurrence : group.occurrences()) {
+    indexes.push_back(*occurrence.index_value());
+    const auto path = occurrence.path();
+    assert(path.root_gid() == top->get_gid());
+    assert(path.steps().size() == 1);
+    assert(path.steps()[0].subnode == sub.get_definition_index());
+    assert(path.steps()[0].ordinal == occurrence.ordinal());
+    const auto bindings = occurrence.input_bindings();
+    assert(bindings.size() == 2);
+    assert(bindings[0].input_port() == 1);
+    assert(bindings[0].kind()
+           == (occurrence.ordinal() == 0 ? hhds::Input_binding_kind::carry_initial
+                                         : hhds::Input_binding_kind::previous_occurrence_output));
+    assert(bindings[1].kind() == hhds::Input_binding_kind::domain_index);
+    assert(bindings[1].index_value() == occurrence.index_value());
+    assert(occurrence.output_bindings().empty() == (occurrence.ordinal() != 3));
+  }
+  assert((indexes == std::vector<int64_t>{10, 8, 6, 4}));
+
+  const auto order = collect_nids(top->forward_class());
+  assert(order.size() == 2);
+  assert(order[0] == sub.get_debug_nid());
+  assert(order[1] == consumer.get_debug_nid());
+
+  // Grouped traversal retains one compact call and an ordinal-free path.
+  std::vector<hhds::Occurrence_node> grouped_nodes;
+  for (const auto& node : top->grouped_hierarchy().nodes()) {
+    grouped_nodes.push_back(node);
+  }
+  assert(grouped_nodes.size() == 3);
+  size_t grouped_subs = 0;
+  for (const auto& node : grouped_nodes) {
+    if (node.base_node() == sub) {
+      ++grouped_subs;
+      assert(node.path().steps().size() == 1);
+      assert(!node.path().steps().back().ordinal.has_value());
+      // Compact edge visibility deliberately retains the carry self-edge.
+      bool saw_self_edge = false;
+      for (const auto& edge : node.out_edges()) {
+        saw_self_edge |= edge.driver.get_master_node() == node && edge.sink.get_master_node() == node;
+      }
+      assert(saw_self_edge);
+    }
+  }
+  assert(grouped_subs == 1);
+
+  const auto groups = top->grouped_hierarchy().instances();
+  assert(groups.size() == 1);
+  assert(groups.front().multiplicity() == 4);
+  assert(groups.front().path().steps().size() == 1);
+  assert(!groups.front().path().steps().front().ordinal.has_value());
+
+  // Physical traversal expands the call and its body without touching the
+  // stored graph. Every ordinal has a distinct full structural identity and
+  // the compact self-edge is replaced by r -> r+1 chain edges.
+  std::vector<hhds::Occurrence_node> physical_nodes;
+  for (const auto& node : top->occurrences().nodes()) {
+    physical_nodes.push_back(node);
+  }
+  assert(physical_nodes.size() == 9);  // consumer + 4 calls + 4 callee bodies
+  std::vector<uint64_t> sub_ordinals;
+  size_t                checked_carry_inputs = 0;
+  for (const auto& node : physical_nodes) {
+    if (node.get_definition_index() == inner.get_definition_index()) {
+      const auto ordinal       = *node.path().steps().back().ordinal;
+      size_t     carry_drivers = 0;
+      for (const auto& edge : node.inp_edges()) {
+        if (edge.sink.get_port_id() != 1) {
+          continue;
+        }
+        ++carry_drivers;
+        // No physical occurrence may retain the compact Sub self-edge. The
+        // first reads the external initial value; later occurrences read the
+        // preceding body's real leaf producer.
+        assert(edge.driver.get_master_node().get_definition_index()
+               == (ordinal == 0 ? top->get_input_node().get_definition_index() : inner.get_definition_index()));
+        if (ordinal != 0) {
+          assert(*edge.driver.path().steps().back().ordinal == ordinal - 1);
+        }
+      }
+      assert(carry_drivers == 1);
+      ++checked_carry_inputs;
+      continue;
+    }
+    if (node.get_definition_index() != sub.get_definition_index()) {
+      continue;
+    }
+    assert(node.path().steps().size() == 1);
+    const uint64_t ordinal = *node.path().steps().back().ordinal;
+    sub_ordinals.push_back(ordinal);
+    for (const auto call : group.occurrences()) {
+      if (call.ordinal() == ordinal) {
+        assert(call.path() == node.path());
+        assert(call.path().hash() == node.path().hash());
+      }
+    }
+    for (const auto& edge : node.out_edges()) {
+      assert(!(edge.driver.get_master_node() == node && edge.sink.get_master_node() == node));
+    }
+  }
+  assert(checked_carry_inputs == 4);
+  assert((sub_ordinals == std::vector<uint64_t>{0, 1, 2, 3}));
+  assert(top->occurrences().size_exact() == 9);
+  assert(top->grouped_hierarchy().physical_node_count_exact() == 9);
+
+  // Occurrence attributes use every loop ordinal in their key and compare
+  // structurally across separately-created views.
+  hhds::register_attr_tag<occurrence_mark_t>("hhds.tests.occurrence_mark");
+  for (const auto& node : physical_nodes) {
+    if (node.base_node() == sub) {
+      node.attr(occurrence_mark_t{}).set(*node.path().steps().back().ordinal + 100);
+    }
+  }
+  for (const auto& node : top->occurrences().nodes()) {
+    if (node.base_node() == sub) {
+      assert(node.attr(occurrence_mark_t{}).get() == *node.path().steps().back().ordinal + 100);
+    }
+  }
+
+  // Pin reachability is lazy, crosses the compact group boundary, and its
+  // occurrence identity dedup terminates the visible carry self-edge.
+  auto   grouped          = top->grouped_hierarchy();
+  auto   seed             = grouped.lift(top->get_input_pin("seed"));
+  bool   reached_consumer = false;
+  size_t reached_count    = 0;
+  for (const auto& pin : grouped.reachable_pins({seed})) {
+    ++reached_count;
+    reached_consumer |= pin.get_master_node().base_node() == consumer;
+  }
+  assert(reached_consumer);
+  assert(reached_count < 32);
+
+  auto opaque_policy = [&](const hhds::Instance_site& site) {
+    return site.target_gid() == callee->get_gid() ? hhds::Instance_action::opaque : hhds::Instance_action::descend;
+  };
+  assert(top->occurrences(opaque_policy).nodes().size() == 5);
+  auto prune_policy = [&](const hhds::Instance_site&) { return hhds::Instance_action::prune; };
+  assert(top->occurrences(prune_policy).nodes().size() == 1);
+
+  // A view owns one policy cache shared by enumeration, counting, lifting,
+  // and boundary resolution. Reusing the view must not re-consult a pure
+  // policy for the same stored site.
+  size_t policy_calls   = 0;
+  auto   counted_policy = [&](const hhds::Instance_site&) {
+    ++policy_calls;
+    return hhds::Instance_action::descend;
+  };
+  auto counted_view = top->occurrences(counted_policy);
+  assert(counted_view.nodes().size() == 9);
+  assert(counted_view.size_exact() == 9);
+  auto lifted_seed = counted_view.lift(top->get_input_pin("seed"));
+  assert(!lifted_seed.out_edges().empty());
+  assert(policy_calls == 1);
+
+  const auto definitions = top->definitions().graphs();
+  assert(definitions.size() == 2);
+  assert(definitions.front()->get_gid() == callee->get_gid());
+  assert(definitions.begin()[1]->get_gid() == top->get_gid());
+
+#ifndef NDEBUG
+  // Once a completed loop has been validated, an edge edit touching it is
+  // checked immediately instead of leaving a malformed descriptor latent
+  // until some unrelated future traversal.
+  bool rejected_invalid_edit = false;
+  try {
+    carries.front().self_edge().del_edge();
+  } catch (const std::logic_error&) {
+    rejected_invalid_edit = true;
+  }
+  assert(rejected_invalid_edit);
+#endif
+
+  // Explicitly calling the ordinary overload demotes the site; an ordinary
+  // Sub self-edge is not silently reinterpreted as a carry.
+  sub.set_subnode(callee);
+  assert(!sub.is_loop_subnode());
+  assert(sub.subnode_group().size() == 1);
+  assert(sub.subnode_group().carries().empty());
+  assert(!top->has_loop_subnodes());
+  assert(!lib.has_loop_subnodes());
+}
+
+void test_native_subnode_loop_persistence() {
+  namespace fs   = std::filesystem;
+  const auto dir = fs::temp_directory_path() / ("hhds_subnode_loop_" + std::to_string(::getpid()));
+  fs::remove_all(dir);
+
+  {
+    hhds::GraphLibrary lib;
+    auto               callee = lib.create_io("persist_body");
+    callee->add_input("acc", 1);
+    callee->add_input("idx", 2);
+    callee->add_output("next_acc", 3);
+    auto top_io = lib.create_io("persist_top");
+    top_io->add_input("seed", 1);
+    top_io->add_output("result", 3);
+    {
+      auto top = top_io->create_graph();
+      auto sub = top->create_node();
+      sub.set_subnode(callee, hhds::Subnode_loop{.first = -3, .step = 4, .count = 5, .index_input = 2});
+      top->get_input_pin("seed").connect_sink(sub.create_sink_pin(1));
+      sub.create_driver_pin(3).connect_sink(sub.create_sink_pin(1));
+      sub.create_driver_pin(3).connect_sink(top->get_output_pin("result"));
+      hhds::register_attr_tag<occurrence_mark_t>("hhds.tests.occurrence_mark");
+      for (const auto& occurrence : top->occurrences().nodes()) {
+        if (occurrence.base_node() == sub) {
+          occurrence.attr(occurrence_mark_t{}).set(*occurrence.path().steps().back().ordinal + 7);
+        }
+      }
+    }
+    lib.save(dir.string());
+  }
+
+  hhds::GraphLibrary loaded;
+  loaded.load(dir.string());
+  assert(loaded.has_loop_subnodes());  // O(1) and exact before lazy body materialization
+  auto top = loaded.find_io("persist_top")->get_graph();
+  assert(top->has_loop_subnodes());
+  auto it = top->body().nodes().begin();
+  assert(it != top->body().nodes().end());
+  auto sub  = *it;
+  auto loop = sub.subnode_loop();
+  assert(loop.has_value());
+  assert(loop->first == -3 && loop->step == 4 && loop->count == 5 && loop->index_input == 2);
+  assert(sub.subnode_group().carries().size() == 1);
+  sub.subnode_group().validate();
+  for (const auto& occurrence : top->occurrences().nodes()) {
+    if (occurrence.base_node() == sub) {
+      assert(occurrence.attr(occurrence_mark_t{}).get() == *occurrence.path().steps().back().ordinal + 7);
+    }
+  }
+  sub.set_subnode(loaded.find_io("persist_body"));
+  assert(!top->has_loop_subnodes());
+  assert(!loaded.has_loop_subnodes());
+
+  fs::remove_all(dir);
+}
+
+void test_native_subnode_loop_activation_bindings() {
+  hhds::GraphLibrary lib;
+
+  auto body_io = lib.create_io("active_loop_body");
+  body_io->add_input("carry", 1);
+  body_io->add_input("active", 2);
+  body_io->add_output("next_carry", 3);
+  body_io->add_output("next_active", 4);
+  auto body         = body_io->create_graph();
+  auto carry_logic  = body->create_node();
+  auto active_logic = body->create_node();
+  body->get_input_pin("carry").connect_sink(carry_logic.create_sink_pin(1));
+  body->get_input_pin("active").connect_sink(carry_logic.create_sink_pin(2));
+  carry_logic.create_driver_pin(3).connect_sink(body->get_output_pin("next_carry"));
+  body->get_input_pin("active").connect_sink(active_logic.create_sink_pin(2));
+  active_logic.create_driver_pin(4).connect_sink(body->get_output_pin("next_active"));
+
+  auto top_io = lib.create_io("active_loop_top");
+  top_io->add_input("seed", 1);
+  top_io->add_input("enable", 2);
+  top_io->add_output("result", 3);
+  auto top = top_io->create_graph();
+  auto sub = top->create_node();
+  sub.set_subnode(body_io,
+                  hhds::Subnode_loop{
+                      .first              = 0,
+                      .step               = 1,
+                      .count              = 3,
+                      .activation_input   = 2,
+                      .next_active_output = 4,
+                  });
+  top->get_input_pin("seed").connect_sink(sub.create_sink_pin(1));
+  top->get_input_pin("enable").connect_sink(sub.create_sink_pin(2));
+  sub.create_driver_pin(3).connect_sink(sub.create_sink_pin(1));
+  sub.create_driver_pin(3).connect_sink(top->get_output_pin("result"));
+  sub.subnode_group().validate();
+
+  for (const auto occurrence : sub.subnode_group().occurrences()) {
+    const auto bindings        = occurrence.input_bindings();
+    size_t     carry_bindings  = 0;
+    size_t     active_bindings = 0;
+    for (const auto& binding : bindings) {
+      if (binding.input_port() == 1) {
+        ++carry_bindings;
+        if (occurrence.ordinal() == 0) {
+          assert(binding.kind() == hhds::Input_binding_kind::carry_initial);
+        } else {
+          assert(binding.kind() == hhds::Input_binding_kind::previous_occurrence_output
+                 || binding.kind() == hhds::Input_binding_kind::inactive_carry_bypass);
+        }
+      } else if (binding.input_port() == 2) {
+        ++active_bindings;
+        if (occurrence.ordinal() == 0) {
+          assert(binding.kind() == hhds::Input_binding_kind::external_activation);
+        } else {
+          assert(binding.kind() == hhds::Input_binding_kind::previous_occurrence_activation
+                 || binding.kind() == hhds::Input_binding_kind::previous_occurrence_next_active);
+        }
+      }
+    }
+    assert(carry_bindings == (occurrence.ordinal() == 0 ? 1 : 2));
+    assert(active_bindings == (occurrence.ordinal() == 0 ? 1 : 2));
+  }
+
+  // The physical view removes the compact carry self-edge. Ordinal zero sees
+  // only the seed; every later carry input conservatively sees both the prior
+  // body output and the prior input (the inactive bypass dependency).
+  size_t checked = 0;
+  for (const auto& node : top->occurrences().nodes()) {
+    if (node.get_definition_index() != carry_logic.get_definition_index()) {
+      continue;
+    }
+    const uint64_t ordinal               = *node.path().steps().front().ordinal;
+    size_t         carry_drivers         = 0;
+    bool           saw_compact_self_edge = false;
+    for (const auto& edge : node.inp_edges()) {
+      if (edge.sink.get_port_id() != 1) {
+        continue;
+      }
+      ++carry_drivers;
+      saw_compact_self_edge
+          |= edge.driver.is_driver() && edge.driver.get_master_node().get_definition_index() == sub.get_definition_index();
+    }
+    assert(!saw_compact_self_edge);
+    assert(carry_drivers == (ordinal == 0 ? 1 : 2));
+    ++checked;
+  }
+  assert(checked == 3);
+}
+
+void test_occurrence_storage_walk_streams_large_loop() {
+  hhds::GraphLibrary lib;
+  auto               body_io = lib.create_io("stream_body");
+  auto               body    = body_io->create_graph();
+  auto               leaf    = body->create_node();
+
+  auto top_io = lib.create_io("stream_top");
+  auto top    = top_io->create_graph();
+  auto sub    = top->create_node();
+  sub.set_subnode(body_io, hhds::Subnode_loop{.first = 0, .step = 1, .count = uint64_t{1} << 40});
+
+  auto     range = top->occurrences().nodes();
+  auto     it    = range.begin();
+  uint64_t seen  = 0;
+  for (; it != range.end() && seen != 4; ++it, ++seen) {
+    const auto& node    = *it;
+    const auto  ordinal = *node.path().steps().front().ordinal;
+    assert(ordinal == seen / 2);
+    assert(node.get_definition_index() == (seen % 2 == 0 ? sub.get_definition_index() : leaf.get_definition_index()));
+  }
+  assert(seen == 4);
+  assert(collect_nids(top->body().nodes()).size() == 1);
+}
+
+void test_zero_count_loop_bypasses_carries() {
+  hhds::GraphLibrary lib;
+  auto               body_io = lib.create_io("zero_body");
+  body_io->add_input("carry", 1);
+  body_io->add_output("next", 3);
+  body_io->add_output("unused", 4);
+  auto body  = body_io->create_graph();
+  auto logic = body->create_node();
+  body->get_input_pin("carry").connect_sink(logic.create_sink_pin(1));
+  logic.create_driver_pin(3).connect_sink(body->get_output_pin("next"));
+
+  auto top_io = lib.create_io("zero_top");
+  top_io->add_input("seed", 1);
+  top_io->add_output("result", 3);
+  auto top = top_io->create_graph();
+  auto sub = top->create_node();
+  sub.set_subnode(body_io, hhds::Subnode_loop{.first = 0, .step = 1, .count = 0});
+  top->get_input_pin("seed").connect_sink(sub.create_sink_pin(1));
+  sub.create_driver_pin(3).connect_sink(sub.create_sink_pin(1));
+  sub.create_driver_pin(3).connect_sink(top->get_output_pin("result"));
+  sub.subnode_group().validate();
+
+  assert(sub.subnode_group().occurrences().empty());
+  const auto bypass = sub.subnode_group().zero_count_output_bindings();
+  assert(bypass.size() == 1);
+  assert(bypass.front().output_port() == 3);
+  assert(bypass.front().source_input_port() == 1);
+  assert(top->occurrences().nodes().empty());
+
+  auto       physical   = top->occurrences();
+  auto       result_pin = physical.lift(top->get_output_pin("result"));
+  const auto edges      = result_pin.inp_edges();
+  assert(edges.size() == 1);
+  assert(edges.front().driver.base_pin() == top->get_input_pin("seed"));
+
+  bool rejected_noncarry_reader = false;
+  try {
+    auto consumer = top->create_node();
+    sub.create_driver_pin(4).connect_sink(consumer.create_sink_pin(4));
+    sub.subnode_group().validate();
+  } catch (const std::logic_error&) {
+    rejected_noncarry_reader = true;
+  }
+  assert(rejected_noncarry_reader);
+}
+
+void test_nested_loop_occurrence_identity_and_names() {
+  hhds::GraphLibrary lib;
+  auto               leaf_io = lib.create_io("nested_leaf");
+  auto               leaf    = leaf_io->create_graph();
+  auto               cell    = leaf->create_node();
+
+  auto middle_io = lib.create_io("nested_middle");
+  auto middle    = middle_io->create_graph();
+  auto inner     = middle->create_node();
+  inner.set_name("inner");
+  inner.set_subnode(leaf_io, hhds::Subnode_loop{.first = 9, .step = -3, .count = 2});
+
+  auto top_io = lib.create_io("nested_top");
+  auto top    = top_io->create_graph();
+  auto outer  = top->create_node();
+  outer.set_name("outer");
+  outer.set_subnode(middle_io, hhds::Subnode_loop{.first = 2, .step = 2, .count = 3});
+  auto tail = top->create_node();
+  tail.set_name("tail");
+  tail.set_subnode(leaf_io, hhds::Subnode_loop{.first = 0, .step = 1, .count = 2});
+
+  std::vector<std::pair<uint64_t, uint64_t>> ordinals;
+  std::vector<std::string>                   tail_names;
+  for (const auto& node : top->occurrences().nodes()) {
+    if (node.get_definition_index() != cell.get_definition_index()) {
+      continue;
+    }
+    const auto steps = node.path().steps();
+    if (steps.size() == 1) {
+      tail_names.push_back(hhds::format_occurrence_path(lib, node.path()));
+      continue;
+    }
+    assert(steps.size() == 2);
+    ordinals.emplace_back(*steps[0].ordinal, *steps[1].ordinal);
+    assert(hhds::format_occurrence_path(lib, node.path())
+           == std::format("outer__li{}.inner__li{}", *steps[0].ordinal, *steps[1].ordinal));
+  }
+  assert((ordinals
+          == std::vector<std::pair<uint64_t, uint64_t>>{
+              {0, 0},
+              {0, 1},
+              {1, 0},
+              {1, 1},
+              {2, 0},
+              {2, 1}
+  }));
+  assert((tail_names == std::vector<std::string>{"tail__li3", "tail__li4"}));
 }
 
 void test_subnode_accessors_round_trip_with_set_subnode() {
@@ -2023,6 +2527,211 @@ void test_get_hier_name_resolved_leaves_EXPECTED() {
   assert((names == std::vector<std::string>{"clk", "const"}));  // not "n1.clk" / "n3"
 }
 
+// --- hierarchical traversal of a sub-node with a self-looping (flop) output --
+
+// A submodule whose outputs are half combinational and half stateful:
+//
+//   module cnt_mod(input a, input b, output o1, output o2);
+//     assign o1 = a + b;              // comb  -> declared o1 (loop_break=false)
+//     always_ff: o2 = counter; counter++;  // flop -> declared o2 (loop_break=true)
+//
+// Inside the body `add` is a plain node while `cnt` carries the self-edge
+// (counter++ reads the register it writes) and is marked loop_break, so the
+// cycle is cut at the LEAF flop. Because o2 is a declared loop_break output the
+// instance node in the parent is loop_break too.
+struct CntModFixture {
+  hhds::GraphLibrary           lib;
+  std::shared_ptr<hhds::Graph> sub;
+  std::shared_ptr<hhds::Graph> top;
+  hhds::Node_class             add, cnt;                     // inside sub
+  hhds::Node_class             src, inst, use1, use2, join;  // inside top
+
+  CntModFixture() {
+    auto sub_gio = lib.create_io("cnt_mod");
+    sub_gio->add_input("a", 1);
+    sub_gio->add_input("b", 2);
+    sub_gio->add_output("o1", 3, /*loop_break=*/false);  // combinational
+    sub_gio->add_output("o2", 4, /*loop_break=*/true);   // flop output
+    sub = sub_gio->create_graph();
+
+    // o1 = a + b : purely combinational, so it orders after whatever drives the
+    // instance's a/b in the parent.
+    add = sub->create_node();
+    add.create_sink_pin(0).connect_driver(sub->get_input_pin("a"));
+    add.create_sink_pin(1).connect_driver(sub->get_input_pin("b"));
+    add.create_driver_pin(0).connect_sink(sub->get_output_pin("o1"));
+
+    // o2 = counter; counter++ : the self-edge is the register feedback, cut by
+    // the loop_break mark (type bit 0).
+    cnt = sub->create_node();
+    cnt.set_type(3);
+    cnt.create_sink_pin(0).connect_driver(cnt.create_driver_pin(0));  // counter++
+    cnt.create_driver_pin(1).connect_sink(sub->get_output_pin("o2"));
+
+    // top: ti -> src -> inst.{a,b} ; inst.o1 -> use1, inst.o2 -> use2 -> join
+    auto top_gio = lib.create_io("cnt_top");
+    top_gio->add_input("ti", 0);
+    top = top_gio->create_graph();
+
+    src = top->create_node();
+    src.create_sink_pin(0).connect_driver(top->get_input_pin("ti"));
+
+    inst = top->create_node();
+    inst.set_subnode(sub_gio);
+    inst.create_sink_pin("a").connect_driver(src.create_driver_pin(0));
+    inst.create_sink_pin("b").connect_driver(src.get_driver_pin(0));
+
+    use1 = top->create_node();
+    use1.create_sink_pin(0).connect_driver(inst.create_driver_pin("o1"));
+    use2 = top->create_node();
+    use2.create_sink_pin(0).connect_driver(inst.create_driver_pin("o2"));
+
+    join = top->create_node();
+    join.create_sink_pin(0).connect_driver(use1.create_driver_pin(0));
+    join.create_sink_pin(1).connect_driver(use2.create_driver_pin(0));
+  }
+};
+
+// Index of (gid, node) in a hier walk; asserts the node was visited exactly once.
+size_t hier_pos_of(const std::vector<std::pair<hhds::Gid, hhds::Nid>>& order, hhds::Gid gid, hhds::Nid nid) {
+  size_t found = order.size();
+  size_t hits  = 0;
+  for (size_t i = 0; i < order.size(); ++i) {
+    if (order[i].first == gid && node_of(order[i].second) == node_of(nid)) {
+      if (hits++ == 0) {
+        found = i;
+      }
+    }
+  }
+  assert(hits == 1 && "node must appear exactly once in this walk");
+  return found;
+}
+
+void test_forward_hier_comb_and_flop_outputs_of_stateful_sub() {
+  // The whole point of loop_break being a LEAF property: a submodule that mixes
+  // combinational and stateful outputs must not have its combinational cone
+  // dragged to the flop's slot. `add` (o1 = a + b) is ordinary logic and stays
+  // ordered between its cross-boundary driver and its cross-boundary consumer;
+  // `cnt` (the counter register) is the cut point and is a source.
+  CntModFixture f;
+
+  // Type bit 0 classification: only the register is a cut point, and the
+  // instance inherits loop_break from its declared loop_break OUTPUT (o2).
+  assert(!f.add.is_loop_break());
+  assert(f.cnt.is_loop_break());
+  assert(f.inst.is_loop_break());
+  assert(!f.use1.is_loop_break() && !f.use2.is_loop_break());
+
+  const auto order   = collect_gid_nids(f.top->forward_hier());
+  const auto sub_gid = f.sub->get_gid();
+  const auto top_gid = f.top->get_gid();
+  // Every node is visited exactly once — the counter's self-edge must not make
+  // the walk revisit or stall on it.
+  assert(order.size() == 7);
+  const size_t p_src  = hier_pos_of(order, top_gid, f.src.get_debug_nid());
+  const size_t p_inst = hier_pos_of(order, top_gid, f.inst.get_debug_nid());
+  const size_t p_add  = hier_pos_of(order, sub_gid, f.add.get_debug_nid());
+  const size_t p_cnt  = hier_pos_of(order, sub_gid, f.cnt.get_debug_nid());
+  const size_t p_use1 = hier_pos_of(order, top_gid, f.use1.get_debug_nid());
+  const size_t p_use2 = hier_pos_of(order, top_gid, f.use2.get_debug_nid());
+  const size_t p_join = hier_pos_of(order, top_gid, f.join.get_debug_nid());
+  (void)p_inst;
+
+  // COMBINATIONAL half: a full cross-boundary chain src -> add -> use1 -> join.
+  // `add` sits inside a loop_break INSTANCE but is not itself a cut point, so it
+  // must be ordered by its real dependencies in both directions.
+  assert(p_src < p_add && "driver in the parent precedes the sub's comb logic it feeds");
+  assert(p_add < p_use1 && "the sub's comb output precedes its parent-side consumer");
+  assert(p_use1 < p_join);
+
+  // FLOP half: the counter is a source — its self-edge imposes no order, so it
+  // never blocks, and its parent-side reader is simply ordered after it.
+  assert(p_cnt < p_use2 && "the register precedes its consumer");
+  assert(p_use2 < p_join);
+
+  // The self-edge really is there and really is a self-edge (counter++).
+  const auto cnt_h     = find_hier_node(f.top.get(), sub_gid, f.cnt.get_debug_nid());
+  size_t     self_deps = 0;
+  for (const auto& e : cnt_h.inp_edges()) {
+    if (node_of(e.driver.get_master_node().get_debug_nid()) == node_of(f.cnt.get_debug_nid())) {
+      ++self_deps;
+    }
+  }
+  assert(self_deps == 1 && "the counter reads the register it writes");
+
+  // The comb output resolves ACROSS the boundary to the real leaf producer, not
+  // to the instance or the module's declared output pin.
+  const auto use1_h  = find_hier_node(f.top.get(), top_gid, f.use1.get_debug_nid());
+  const auto use1_in = use1_h.inp_edges();
+  assert(use1_in.size() == 1);
+  const auto use1_drv = use1_in[0].driver.get_master_node();
+  assert(use1_drv.get_current_gid() == sub_gid);
+  assert(node_of(use1_drv.get_debug_nid()) == node_of(f.add.get_debug_nid()));
+
+  // ...and so does the flop output.
+  const auto use2_h  = find_hier_node(f.top.get(), top_gid, f.use2.get_debug_nid());
+  const auto use2_in = use2_h.inp_edges();
+  assert(use2_in.size() == 1);
+  const auto use2_drv = use2_in[0].driver.get_master_node();
+  assert(use2_drv.get_current_gid() == sub_gid);
+  assert(node_of(use2_drv.get_debug_nid()) == node_of(f.cnt.get_debug_nid()));
+}
+
+void test_forward_hier_stateful_sub_cut_placement_flags() {
+  // The loop_break_first/last flags move only the CUT nodes (the leaf register
+  // and the stateful instance that wraps it). The combinational cone inside the
+  // same instance stays topologically ordered either way — the bug this pins
+  // down let everything downstream of a cut node fall back to raw DFS order when
+  // loop_break_first was false, and emitted the cut nodes twice for (false,true).
+  CntModFixture f;
+  const auto    sub_gid = f.sub->get_gid();
+  const auto    top_gid = f.top->get_gid();
+
+  const auto tail = collect_gid_nids(f.top->forward_hier(/*loop_break_first=*/false, /*loop_break_last=*/true));
+  assert(tail.size() == 7 && "each node exactly once: cut nodes deferred, not duplicated");
+  const size_t t_src  = hier_pos_of(tail, top_gid, f.src.get_debug_nid());
+  const size_t t_add  = hier_pos_of(tail, sub_gid, f.add.get_debug_nid());
+  const size_t t_use1 = hier_pos_of(tail, top_gid, f.use1.get_debug_nid());
+  const size_t t_join = hier_pos_of(tail, top_gid, f.join.get_debug_nid());
+  const size_t t_inst = hier_pos_of(tail, top_gid, f.inst.get_debug_nid());
+  const size_t t_cnt  = hier_pos_of(tail, sub_gid, f.cnt.get_debug_nid());
+  // Comb chain still topological even though the cuts moved to the tail.
+  assert(t_src < t_add && t_add < t_use1 && t_use1 < t_join);
+  // Both cut nodes come after every non-cut node.
+  assert(t_join < t_inst && t_join < t_cnt);
+
+  // (true,true): the cut nodes are seen up front AND replayed at the end, and
+  // the body of the loop_break instance is walked only once.
+  const auto both = collect_gid_nids(f.top->forward_hier(/*loop_break_first=*/true, /*loop_break_last=*/true));
+  assert(both.size() == 9 && "7 nodes + the 2 cut nodes replayed");
+  size_t add_hits = 0;
+  for (const auto& [gid, nid] : both) {
+    add_hits += (gid == sub_gid && node_of(nid) == node_of(f.add.get_debug_nid())) ? 1 : 0;
+  }
+  assert(add_hits == 1 && "a replayed cut instance must not re-walk its body");
+}
+
+void test_backward_hier_comb_and_flop_outputs_of_stateful_sub() {
+  // Mirror: consumers precede drivers across the boundary, with the cut node
+  // acting as a sink instead of a source.
+  CntModFixture f;
+  const auto    order   = collect_gid_nids(f.top->backward_hier());
+  const auto    sub_gid = f.sub->get_gid();
+  const auto    top_gid = f.top->get_gid();
+  assert(order.size() == 7);
+  const size_t p_join = hier_pos_of(order, top_gid, f.join.get_debug_nid());
+  const size_t p_use1 = hier_pos_of(order, top_gid, f.use1.get_debug_nid());
+  const size_t p_use2 = hier_pos_of(order, top_gid, f.use2.get_debug_nid());
+  const size_t p_add  = hier_pos_of(order, sub_gid, f.add.get_debug_nid());
+  const size_t p_cnt  = hier_pos_of(order, sub_gid, f.cnt.get_debug_nid());
+  const size_t p_src  = hier_pos_of(order, top_gid, f.src.get_debug_nid());
+
+  assert(p_join < p_use1 && p_join < p_use2);
+  assert(p_use1 < p_add && "consumer precedes the sub's comb driver it reads");
+  assert(p_add < p_src && "and the comb logic precedes what drives it");
+  assert(p_use2 < p_cnt && "consumer precedes the register it reads");
+}
+
 // --- visit_io hierarchical traversal tests ----------------------------------
 
 // (gid, nid, kind) where kind is 'I' for a boundary INPUT_NODE, 'O' for a
@@ -2126,8 +2835,8 @@ void test_fast_hier_honors_ambient_opaque_scope() {
 void test_fast_hier_opaque_matches_forward_hier_node_set() {
   // The contract fast_hier documents: ordering is the ONLY difference from
   // forward_hier — the node SET is identical, opacity included.
-  IoFixture                                     f;
-  const ankerl::unordered_dense::set<hhds::Gid> opaque{f.inst.get_subnode_gid()};
+  IoFixture                                      f;
+  const ankerl::unordered_dense::set<hhds::Gid>  opaque{f.inst.get_subnode_gid()};
   const ankerl::unordered_dense::set<hhds::Gid>* cases[] = {nullptr, &opaque};
   for (const auto* opq : cases) {
     auto fast = collect_gid_nid_kind(f.top->fast_hier(false, opq));
@@ -2185,6 +2894,12 @@ int main() {
   test_declaration_api();
   test_subnode_accessors_round_trip_with_set_subnode();
   test_wrapper_pin_connect_api();
+  test_native_subnode_loop_group_and_order();
+  test_native_subnode_loop_persistence();
+  test_native_subnode_loop_activation_bindings();
+  test_occurrence_storage_walk_streams_large_loop();
+  test_zero_count_loop_bypasses_carries();
+  test_nested_loop_occurrence_identity_and_names();
   test_same_index_pin_to_node_port0_edge_survives();
   test_node_port0_self_loop_edge_survives();
   test_pin_get_driver_pins();
@@ -2253,6 +2968,9 @@ int main() {
   test_get_hier_name_resolved_leaves_EXPECTED();
   test_fast_hier_visit_io_storage_order();
   test_hier_visit_io_flat_top_only();
+  test_forward_hier_comb_and_flop_outputs_of_stateful_sub();
+  test_forward_hier_stateful_sub_cut_placement_flags();
+  test_backward_hier_comb_and_flop_outputs_of_stateful_sub();
   std::cout << "graph_test passed\n";
   return 0;
 }
