@@ -3819,7 +3819,6 @@ DefinitionNodeRange Definitions_view::nodes(Node_order::storage_t) const {
 }
 
 DefinitionNodeRange Definitions_view::nodes(Node_order::forward_t, Cut_placement cuts) const {
-  const auto [first, last] = cut_flags(cuts);
   std::vector<Definition_node> result;
   for (const auto& graph : graphs()) {
     for (const auto node : graph->body().nodes(Node_order::forward, cuts)) {
