@@ -914,7 +914,7 @@ TEST(SourceLocatorForest, SaveLoadAndResaveCarriesProvenance) {
 
   SourceId span = SourceId_invalid;
   {
-    // The working locator belongs to the artifact wrapper (livehd's Lnast); the
+    // The working locator belongs to the artifact wrapper (a client IR tree); the
     // caller unions it into the forest before save. Modeled here with a
     // standalone unit locator.
     Source_locator unit;

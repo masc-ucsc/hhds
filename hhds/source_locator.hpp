@@ -20,7 +20,7 @@
 // accumulating N sites collects them and mints once.
 //
 // Ownership/threading. One instance per single-writer artifact (a Graph body, a
-// livehd Lnast) — mints need no locks because only one thread edits an artifact
+// a client IR tree) — mints need no locks because only one thread edits an artifact
 // at a time. The per-GraphLibrary/Forest locator is the loaded read-only base
 // plus the save-time union destination; working locators chain to it via
 // set_base() (lookups consult own entries, then the base).

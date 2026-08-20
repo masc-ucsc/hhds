@@ -2,7 +2,7 @@
 #pragma once
 
 // ECMA-426 (source map v3) egress projection. A textual egress artifact
-// (generated Verilog, generated Pyrope, ...) records one Segment per emitted
+// (generated Verilog, generated HDL source, ...) records one Segment per emitted
 // statement — just the generated position plus the SourceId stamped on the
 // IR — and to_json resolves them through the locator and renders the standard
 // {version,file,sources,mappings} object so stock JS/TS-ecosystem tooling can

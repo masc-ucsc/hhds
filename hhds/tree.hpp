@@ -1636,7 +1636,7 @@ private:
   // Forest-level source-provenance table (hhds-srcloc): the loaded read-only
   // base plus the save-time union destination. Working mints belong to the
   // artifact wrapper that owns each tree (one Source_locator per single-writer
-  // unit, e.g. livehd's Lnast); the caller unions those into this member while
+  // unit, e.g. one client IR tree); the caller unions those into this member while
   // exporting trees, before save(). Forest::save only writes it. Held by
   // shared_ptr so a Forest and a GraphLibrary sharing a db directory can share
   // ONE in-memory table (share_source_map); standalone forests own a private one.
@@ -1681,9 +1681,9 @@ public:
   [[nodiscard]] Source_locator&       source_map() noexcept { return *srcmap_sp_; }
   [[nodiscard]] const Source_locator& source_map() const noexcept { return *srcmap_sp_; }
 
-  // Shared in-memory source map (hhds-srcloc). When a Forest (LNAST) and a
-  // GraphLibrary (LGraph) persist into the SAME db directory they must share ONE
-  // table: their spans come from the same source so the content-addressed ids
+  // Shared in-memory source map (hhds-srcloc). When a Forest (tree-side IR) and
+  // a GraphLibrary (graph-side IR) persist into the SAME db directory they must
+  // share ONE table: their spans come from the same source so the content-addressed ids
   // coincide, and a single srcmap.txt writer avoids the clobber. Typical wiring:
   //   forest->share_source_map(lib.source_map_shared(), /*persist=*/false);
   // makes the library the sole srcmap.txt writer. `persist` selects whether THIS

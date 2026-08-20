@@ -58,7 +58,7 @@ double run_diff(const std::string& file1, const std::string& file2, bool semanti
 }
 
 // Each pair tests an op with operands in original vs swapped order.
-// All use the standard LNAST shape: first child = destination, rest = operands.
+// All use the standard AST shape: first child = destination, rest = operands.
 
 // Helper to build a simple 2-operand expression dump
 std::string make_binop_dump(const std::string& name, const std::string& op, const std::string& op1, const std::string& op2) {

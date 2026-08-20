@@ -651,13 +651,13 @@ void test_subnode_accessors_round_trip_with_set_subnode() {
   assert(inst.get_subnode_graph() == other);
 }
 
-// Regression (LiveHD simple_hier_test via the slang reader): a sedge whose
+// Regression (found by a client's hierarchical netlist reader): a sedge whose
 // target is a node-as-sink (flag bits 00) at the SAME table index as the
 // storing entry encoded to 0 — the empty-slot sentinel — so the driver-side
 // half of the edge silently vanished while the sink-side half (flags 11,
 // never zero) survived. pin_table and node_table indices are independent, so
 // a pin at pin_table index N may legally drive port 0 of the node at
-// node_table index N. In LiveHD the collision was sub.y (pin idx 6) ->
+// node_table index N. In that netlist the collision was sub.y (pin idx 6) ->
 // get_mask.p0 (node idx 6); creating the big-pid const earlier merely
 // shifted pin indices, which is why it appeared const-correlated.
 void test_same_index_pin_to_node_port0_edge_survives() {
@@ -2076,7 +2076,7 @@ void test_copy_from() {
   assert(d.all_gids().size() == 1);
 }
 
-// Shared in-memory source map: a Forest (LNAST) and a GraphLibrary (LGraph)
+// Shared in-memory source map: a Forest (tree IR) and a GraphLibrary (graph IR)
 // sharing one db directory must share ONE Source_locator and a single
 // srcmap.txt writer, so tree-side and graph-side provenance both survive a
 // co-save instead of clobbering each other (the old per-structure behavior).

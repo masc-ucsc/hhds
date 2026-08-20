@@ -6,11 +6,11 @@ load("//tools:copt_default.bzl", "COPTS")
 
 exports_files(["tree.hpp"])
 
-# NOTE: keyed on `hhds_profiling`, NOT the `profiling` define LiveHD uses for
-# its own perfetto build: nothing in hhds reads HHDS_PROFILING today, and
-# flipping this from a LiveHD `--define profiling=1` build would link a second
-# perfetto SDK copy (v49 here, v50.1 in LiveHD) into one binary — duplicate
-# symbols. The @com_google_perfetto http_archive in MODULE.bazel builds with
+# NOTE: keyed on `hhds_profiling`, NOT the plain `profiling` define that
+# embedding projects commonly use for their own perfetto build: nothing in hhds
+# reads HHDS_PROFILING today, and flipping this from an embedder's
+# `--define profiling=1` build would link a second perfetto SDK copy (v49 here,
+# whatever the embedder pins there) into one binary — duplicate symbols. The @com_google_perfetto http_archive in MODULE.bazel builds with
 # //tools:perfetto.BUILD so this arm resolves standalone.
 config_setting(
     name = "use_profiling",
@@ -54,6 +54,7 @@ cc_library(
         "source_excerpt.hpp",
         "source_locator.hpp",
         "sourcemap_emit.hpp",
+        "attrs/const_payload.hpp",
         "attrs/name.hpp",
         "attrs/srcid.hpp",
     ]),
@@ -83,6 +84,7 @@ cc_library(
     srcs = ["graph.cpp"],
     hdrs = [
         "attr.hpp",
+        "attrs/const_payload.hpp",
         "attrs/name.hpp",
         "attrs/srcid.hpp",
         "function_ref.hpp",
@@ -224,6 +226,16 @@ cc_test(
     deps = [
         ":core",  # Forest::save/load for the shared source-map test
         ":graph",
+    ],
+)
+
+cc_test(
+    name = "constant_pool_test",
+    srcs = ["tests/constant_pool_test.cpp"],
+    deps = [
+        ":core",
+        ":graph",
+        "@googletest//:gtest_main",
     ],
 )
 

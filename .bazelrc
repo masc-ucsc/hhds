@@ -1,7 +1,7 @@
-# livehd specific bazel options
-build --output_filter='^//(core|pass|inou)'
+# HHDS specific bazel options
+build --output_filter='^//hhds'
 # External-repo headers via -isystem so -Werror (tools/copt_default.bzl) only
-# gates LiveHD code, not warnings emitted inside third-party headers
+# gates HHDS code, not warnings emitted inside third-party headers
 build --features=external_include_paths
 build --repo_env=BAZEL_CONLYOPTS="-std=gnu17"
 build --cxxopt="-std=c++23" --cxxopt="-fexceptions" --force_pic --build_tag_filters="-fixme"
@@ -118,7 +118,7 @@ build:ubsan --action_env=UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
 # from the standard library. Until that toolchain is wired up, prefer Valgrind
 # memcheck (--track-origins=yes) on a `--config=debug` binary — it detects the
 # same uninitialized reads on an uninstrumented build. Use clang for MSan:
-#   bazel build --config=clang --config=msan //main:lgshell
+#   bazel build --config=clang --config=msan //hhds:core
 build:msan --strip=never
 build:msan --copt -fsanitize=memory
 build:msan --copt -fsanitize-memory-track-origins=2

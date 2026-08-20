@@ -1784,6 +1784,12 @@ auto Graph::NodeEntry::get_edges(Nid nid, const OverflowVec& overflow) const noe
 
 Graph::Graph() {
   register_attr_tag<attrs::name_t>("hhds::attrs::name");
+  // Eager registration only (attr_tag_slot registers under the tag's default
+  // persistence id if nobody registered it yet). NOT register_attr_tag with an
+  // explicit id: a client that persists this payload under its own identifier
+  // registers it from a static initializer, i.e. before the first Graph is
+  // built, and re-registering here would fight that rename.
+  (void)attr_tag_slot<attrs::const_payload_t>();
   clear_graph();
 }
 
@@ -1840,6 +1846,7 @@ void Graph::release_storage() noexcept {
 #ifndef NDEBUG
   validated_loop_carries_.clear();
 #endif
+  constant_pin_index_.clear();
   sync_loop_presence();
 }
 
@@ -1971,6 +1978,7 @@ void Graph::clear() {
   overflow_deferred_ = false;
   discard_attr_stores();
   srcloc_.clear();  // provenance is body content: dropped with the attrs (base kept)
+  constant_pin_index_.clear();
 
   for (auto& pin : pin_table) {
     pin = PinEntry();
@@ -2485,8 +2493,94 @@ auto Graph::find_or_create_pin(Node_class node, Port_id port_id) -> Pin_class {
   } else {
     pin_table[prev_pin_id >> 2].set_next_pin_id(new_pid_canonical);
   }
+  if (self_nid == CONST_NODE) {
+    // A caller bypassed intern_constant(). Rebuild lazily so a later intern
+    // sees this pin and the true list tail.
+    constant_pin_index_.clear();
+  }
   invalidate_traversal_caches();
   return Pin_class(this, new_pid_canonical);
+}
+
+auto Graph::append_driver_pin(Node_class node, Port_id port_id, Pid tail_pin) -> Pin_class {
+  assert_node_exists(node);
+  assert(port_id != 0 && "append_driver_pin: port_id 0 is the node itself");
+  const Nid self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
+  auto*     self     = ref_node(self_nid);
+
+  if (tail_pin == 0) {
+    assert(self->get_next_pin_id() == 0 && "append_driver_pin: missing tail for non-empty pin list");
+  } else {
+    const Pid canonical_tail = (tail_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    auto*     tail           = ref_pin(canonical_tail);
+    assert(tail->get_master_nid() == self_nid && "append_driver_pin: tail belongs to another node");
+    assert(tail->get_next_pin_id() == 0 && "append_driver_pin: supplied pin is not the list tail");
+    assert(tail->get_port_id() < port_id && "append_driver_pin: port_id is not monotonically increasing");
+    tail_pin = canonical_tail;
+  }
+
+  const Pid new_raw = static_cast<Pid>(pin_table.size());
+  assert(new_raw != 0);
+  pin_table.emplace_back(self_nid, port_id);
+  const Pid canonical = (new_raw << 2) | static_cast<Pid>(1);
+  if (tail_pin == 0) {
+    node_table[self_nid >> 2].set_next_pin_id(canonical);
+  } else {
+    pin_table[tail_pin >> 2].set_next_pin_id(canonical);
+  }
+  invalidate_traversal_caches();
+  return Pin_class(this, canonical | static_cast<Pid>(2));
+}
+
+void Graph::rebuild_constant_pin_index(Port_id first_payload_port) {
+  auto& index = constant_pin_index_;
+  index.by_hash.clear();
+  index.next_port = std::max<Port_id>(first_payload_port, 1);
+  index.tail_pin  = 0;
+
+  auto* node = ref_node(CONST_NODE);
+  for (Pid cur = node->get_next_pin_id(); cur != 0;) {
+    const Pid canonical = (cur & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    auto*     entry     = ref_pin(canonical);
+    index.tail_pin      = canonical;
+    index.next_port     = std::max<Port_id>(index.next_port, entry->get_port_id() + 1);
+    auto pin            = make_pin_class(canonical);
+    auto payload        = pin.attr(attrs::const_payload);
+    if (payload.has()) {
+      const auto& text = payload.get();
+      index.by_hash[rapidhash(text.data(), text.size())].push_back(canonical);
+    }
+    cur = entry->get_next_pin_id();
+  }
+  index.valid = true;
+}
+
+auto Graph::intern_constant(std::string_view payload, Port_id first_payload_port) -> Pin_class {
+  assert_accessible();
+  if (!constant_pin_index_.valid) {
+    rebuild_constant_pin_index(first_payload_port);
+  } else if (constant_pin_index_.next_port < first_payload_port) {
+    constant_pin_index_.next_port = first_payload_port;
+  }
+
+  const uint64_t hash = rapidhash(payload.data(), payload.size());
+  if (const auto it = constant_pin_index_.by_hash.find(hash); it != constant_pin_index_.by_hash.end()) {
+    for (const Pid canonical : it->second) {
+      auto pin  = make_pin_class(canonical);
+      auto attr = pin.attr(attrs::const_payload);
+      if (attr.has() && attr.get() == payload) {
+        return Pin_class(this, canonical | static_cast<Pid>(2));
+      }
+    }
+  }
+
+  assert(static_cast<uint64_t>(constant_pin_index_.next_port) < (uint64_t{1} << Port_bits)
+         && "intern_constant: exhausted CONST_NODE port ids");
+  auto pin = append_driver_pin(get_constant_node(), constant_pin_index_.next_port++, constant_pin_index_.tail_pin);
+  constant_pin_index_.tail_pin = (pin.get_debug_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+  pin.attr(attrs::const_payload).set(std::string(payload));
+  constant_pin_index_.by_hash[hash].push_back(constant_pin_index_.tail_pin);
+  return pin;
 }
 
 auto Graph::resolve_driver_port(Node_class node, std::string_view name) const -> Port_id {
@@ -2613,8 +2707,8 @@ void Graph::erase_declared_io_pin(std::string_view                              
 
   // delete_pin below handles edge teardown — declared IO pins are wiped
   // wholesale by GraphIO::reset_declarations, including any edges they still
-  // carry from the prior build (e.g., when a LiveHD test reuses an Lgraph
-  // across cases and clear_int reruns reset_declarations).
+  // carry from the prior build (e.g., when a test reuses one Graph across
+  // cases and clear_int reruns reset_declarations).
   delete_pin(it->second);
   pins_by_name.erase(it);
 }
@@ -6697,6 +6791,7 @@ void Graph::load_body(const std::string& dir_path) {
 }
 
 void Graph::rebuild_derived_after_body() {
+  constant_pin_index_.clear();
   // Rebuild structure tree: save/load only persists node_table (which holds
   // each subnode's target Gid in ledge0). Walk the live entries and
   // reconstruct tree_ + subnode_tree_pos_ so hier traversal works.

@@ -27,6 +27,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
 #include "attr.hpp"
+#include "attrs/const_payload.hpp"
 #include "attrs/name.hpp"
 #include "attrs/srcid.hpp"
 #include "function_ref.hpp"
@@ -464,8 +465,8 @@ public:
   [[nodiscard]] std::string get_hier_name() const;
 
   // Convenience name accessors backed by hhds::attrs::name — the SAME attr that
-  // get_hier_name() / hier_local_name() read. LiveHD stamps the RTL instance
-  // name (or a flop's register name) here via set_name() so that
+  // get_hier_name() / hier_local_name() read. An HDL client stamps the RTL
+  // instance name (or a flop's register name) here via set_name() so that
   // get_hier_name() yields the Verilog-style hierarchical path instead of the
   // "n<id>" fallback.
   void set_name(std::string_view name) const;
@@ -523,8 +524,8 @@ public:
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> out_pins() const;
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> inp_pins() const;
   // Fast boolean predicates — avoid materializing the full edge vector when
-  // callers only need an "any?" answer (LiveHD's Lgraph::has_outputs /
-  // has_inputs hot paths).
+  // callers only need an "any?" answer (the has_outputs / has_inputs hot
+  // paths in netlist clients).
   [[nodiscard]] bool has_out_edges() const;
   [[nodiscard]] bool has_inp_edges() const;
 
@@ -1535,6 +1536,12 @@ public:
   [[nodiscard]] Node_class get_constant_node() const noexcept {
     return Node_class(const_cast<Graph *>(this), CONST_NODE);
   }
+  // Return the canonical CONST_NODE driver for an opaque serialized payload.
+  // Existing pins are indexed in one linear scan on first use after load/copy;
+  // new payload ports are then appended in O(1). first_payload_port reserves a
+  // caller-defined prefix for values encoded directly in their port id.
+  [[nodiscard]] Pin_class intern_constant(
+      std::string_view payload, Port_id first_payload_port = 1);
   // Fresh driver pin on CONST_NODE. The caller attaches whatever value
   // representation it wants via the standard pin attr() API; the iterator
   // skips CONST_NODE itself, so this pin is only seen as a driver on its
@@ -1710,6 +1717,9 @@ private:
   [[nodiscard]] Pin_class find_pin(Node_class node, Port_id port_id,
                                    bool driver) const;
   [[nodiscard]] Pin_class find_or_create_pin(Node_class node, Port_id port_id);
+  [[nodiscard]] Pin_class append_driver_pin(Node_class node, Port_id port_id,
+                                            Pid tail_pin);
+  void rebuild_constant_pin_index(Port_id first_payload_port);
   [[nodiscard]] Port_id resolve_driver_port(Node_class node,
                                             std::string_view name) const;
   [[nodiscard]] Port_id resolve_sink_port(Node_class node,
@@ -1842,6 +1852,20 @@ private:
 
   std::vector<NodeEntry> node_table;
   std::vector<PinEntry> pin_table;
+  struct Constant_pin_index {
+    bool valid = false;
+    Port_id next_port = 1;
+    Pid tail_pin = 0;
+    ankerl::unordered_dense::map<uint64_t, absl::InlinedVector<Pid, 1>>
+        by_hash;
+
+    void clear() {
+      valid = false;
+      next_port = 1;
+      tail_pin = 0;
+      by_hash.clear();
+    }
+  } constant_pin_index_;
   // Edge-adjacency overflow sets. LAZY: load_body sizes this vector but defers
   // reading the set CONTENTS (the overflow.bin / overflow_<i>.bin files) until
   // an edge is actually traversed — a pure structure walk (fast_class + subnode
@@ -3038,8 +3062,8 @@ public:
     // consumer). Stored on GraphIO rather than PinEntry so that declared
     // IO bits survive even when the body has not been materialized.
     uint32_t bits = 0;
-    // Sign hint: true == unsigned, false == signed/unspecified. Mirrors
-    // LiveHD's `is_unsign()` predicate on graph IO pins.
+    // Sign hint: true == unsigned, false == signed/unspecified. Backs the
+    // usual `is_unsign()` predicate a client exposes on graph IO pins.
     bool unsign = false;
   };
 
@@ -3421,9 +3445,9 @@ public:
   [[nodiscard]] Source_locator &source_map() noexcept { return *srcmap_sp_; }
 
   // Shared in-memory source map (hhds-srcloc). A Forest and a GraphLibrary that
-  // persist into the SAME db directory must share ONE table (LNAST and LGraph
-  // come from the same source, so their content-addressed ids coincide and a
-  // single srcmap.txt writer avoids the clobber). source_map_shared() hands out
+  // persist into the SAME db directory must share ONE table (the tree-side and
+  // graph-side IRs come from the same source, so their content-addressed ids
+  // coincide and a single srcmap.txt writer avoids the clobber). source_map_shared() hands out
   // this library's table; share_source_map() adopts another's. Call BEFORE
   // creating graphs in the typical flow; for safety any existing graphs are
   // re-based here under the registry lock. `persist` selects whether THIS

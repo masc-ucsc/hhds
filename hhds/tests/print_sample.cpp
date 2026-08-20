@@ -92,9 +92,9 @@ int main() {
   std::cout << "\nDump scoped tree\n";
   tree2->dump(std::cout, scope_opts);
 
-  // Demonstrate custom format_node callback (LNAST-style)
+  // Demonstrate custom format_node callback (AST-style)
   auto tree3 = hhds::Tree::create();
-  tree3->set_name("lnast_demo");
+  tree3->set_name("ast_demo");
 
   // Build: plus(dest, a, b) and if(cond, body_stmt)
   auto r3      = tree3->add_root_node();
@@ -116,7 +116,7 @@ int main() {
   cond.set_type(3);
   body_st.set_type(3);
 
-  const hhds::Type_entry lnast_types[] = {
+  const hhds::Type_entry ast_types[] = {
       {"stmts", hhds::Statement_class::Node},
       { "plus", hhds::Statement_class::Node},
       {   "if", hhds::Statement_class::Node},
@@ -131,26 +131,26 @@ int main() {
   ref_names[cond]    = "flag";
   ref_names[body_st] = "do_something";
 
-  std::cout << "\nDefault print of LNAST tree\n";
-  hhds::Tree::PrintOptions lnast_default;
-  lnast_default.type_table = lnast_types;
-  lnast_default.node_text  = [&ref_names](const hhds::Tree::Node_class& node) {
+  std::cout << "\nDefault print of AST tree\n";
+  hhds::Tree::PrintOptions ast_default;
+  ast_default.type_table = ast_types;
+  ast_default.node_text  = [&ref_names](const hhds::Tree::Node_class& node) {
     auto it = ref_names.find(node);
     return it == ref_names.end() ? std::string("?") : it->second;
   };
-  tree3->print(std::cout, lnast_default);
+  tree3->print(std::cout, ast_default);
 
-  std::cout << "\nCustom LNAST-style format_node\n";
-  hhds::Tree::PrintOptions lnast_custom;
-  lnast_custom.type_table = lnast_types;
-  lnast_custom.node_text  = lnast_default.node_text;
+  std::cout << "\nCustom AST-style format_node\n";
+  hhds::Tree::PrintOptions ast_custom;
+  ast_custom.type_table = ast_types;
+  ast_custom.node_text  = ast_default.node_text;
 
   auto get_ref = [&ref_names](const hhds::Tree::Node_class& node) -> std::string {
     auto it = ref_names.find(node);
     return it == ref_names.end() ? "?" : it->second;
   };
 
-  lnast_custom.format_node
+  ast_custom.format_node
       = [&](std::ostream& os, const hhds::Tree::Node_class& node, const hhds::Tree::PrintContext& ctx) -> bool {
     auto type     = node.get_type();
     auto children = ctx.get_children();
@@ -181,10 +181,10 @@ int main() {
 
     return false;  // fall back to default formatting
   };
-  tree3->print(std::cout, lnast_custom);
+  tree3->print(std::cout, ast_custom);
 
-  std::cout << "\nDump scoped tree for LNAST tree\n";
-  tree3->dump(std::cout, lnast_default);
+  std::cout << "\nDump scoped tree for AST tree\n";
+  tree3->dump(std::cout, ast_default);
 
   // Demonstrate write_dump / read_dump round-trip
   std::cout << "\n--- write_dump / read_dump round-trip ---\n";

@@ -424,10 +424,10 @@ public:
 };
 
 // flat_storage backing map. A trivially-copyable value (int/uint64 attrs like
-// lnast_name / srcid — read by value via get/get_or, never a held pointer into
+// name / srcid — read by value via get/get_or, never a held pointer into
 // the map) uses absl::flat_hash_map: no per-element node allocation (the
 // std::unordered_map _M_insert_unique_node hot spot). A non-trivial value
-// (std::string attrs, e.g. the LGraph node name, where try_get hands out a
+// (std::string attrs, e.g. the graph node name, where try_get hands out a
 // pointer/string_view that callers may hold across an insert) stays on the
 // reference-STABLE std::unordered_map. Hier storage likewise stays std (its
 // erase-during-iteration loop relies on erase(it) returning the next iterator).

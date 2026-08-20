@@ -2,7 +2,7 @@
 #pragma once
 
 // Case-SENSITIVE string hashing/equality for name-keyed maps (module names,
-// IO-pin names). LiveHD/Pyrope match names case-sensitively, so two spellings
+// IO-pin names). HDL clients match names case-sensitively, so two spellings
 // that differ only in letter case are DISTINCT names. The functors are
 // transparent (is_transparent) so string_view lookups never allocate a
 // std::string.

@@ -49,7 +49,7 @@ stored per-graph/tree, accessed through `Node`/`Pin` rich wrappers:
 
 ```cpp
 node.attr(hhds::attrs::name).set("adder");
-node.attr(livehd::attrs::bits).set(32);
+node.attr(mytool::attrs::bits).set(32);
 ```
 
 Downstream projects add new attributes by declaring tag structs in their own
