@@ -1,6 +1,3 @@
-#include "final_bench_common.hpp"
-#include "graph.hpp"
-
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -8,15 +5,18 @@
 #include <string>
 #include <vector>
 
+#include "final_bench_common.hpp"
+#include "graph.hpp"
+
 namespace {
 
 using hhds_final_bench::Args;
 using hhds_final_bench::Clock;
 using hhds_final_bench::Edge;
-using hhds_final_bench::Result;
 using hhds_final_bench::keep_alive;
 using hhds_final_bench::make_edges_for_op;
 using hhds_final_bench::ns_between;
+using hhds_final_bench::Result;
 
 struct FlatGraph {
   hhds::GraphLibrary           lib;
@@ -26,7 +26,7 @@ struct FlatGraph {
 };
 
 void create_empty_graph(FlatGraph& out, int nodes) {
-  auto io = out.lib.create_io("top");
+  auto io   = out.lib.create_io("top");
   out.graph = io->create_graph();
   out.nodes.reserve(static_cast<size_t>(nodes));
   for (int i = 0; i < nodes; ++i) {
@@ -44,7 +44,7 @@ hhds::Port_id port_for_edge(size_t edge_idx, int pins) {
 void connect_edges(FlatGraph& graph, const std::vector<Edge>& edges, int pins) {
   for (size_t i = 0; i < edges.size(); ++i) {
     const auto [src, dst] = edges[i];
-    const auto port = port_for_edge(i, pins);
+    const auto port       = port_for_edge(i, pins);
     graph.nodes[src].create_driver_pin(port).connect_sink(graph.nodes[dst].create_sink_pin(port));
   }
 }
@@ -99,7 +99,7 @@ std::shared_ptr<hhds::Graph> create_hier_graph(hhds::GraphLibrary& lib, int node
 
 Result op_add_nodes(const Args& args) {
   hhds::GraphLibrary lib;
-  auto               io = lib.create_io("top");
+  auto               io    = lib.create_io("top");
   auto               graph = io->create_graph();
 
   auto    begin = Clock::now();
@@ -115,9 +115,9 @@ Result op_add_nodes(const Args& args) {
 
 Result op_add_nodes_with_pins(const Args& args) {
   hhds::GraphLibrary lib;
-  auto               io = lib.create_io("top");
+  auto               io    = lib.create_io("top");
   auto               graph = io->create_graph();
-  const int          pins = std::max(1, args.pins);
+  const int          pins  = std::max(1, args.pins);
 
   auto    begin = Clock::now();
   int64_t items = 0;
@@ -127,7 +127,7 @@ Result op_add_nodes_with_pins(const Args& args) {
     ++items;
     for (int p = 0; p < pins; ++p) {
       auto driver = node.create_driver_pin(static_cast<hhds::Port_id>(p));
-      auto sink = node.create_sink_pin(static_cast<hhds::Port_id>(p));
+      auto sink   = node.create_sink_pin(static_cast<hhds::Port_id>(p));
       keep_alive(driver);
       keep_alive(sink);
       items += 2;
@@ -147,7 +147,7 @@ Result op_add_pins(const Args& args) {
   for (auto& node : graph.nodes) {
     for (int p = 0; p < pins; ++p) {
       auto driver = node.create_driver_pin(static_cast<hhds::Port_id>(p));
-      auto sink = node.create_sink_pin(static_cast<hhds::Port_id>(p));
+      auto sink   = node.create_sink_pin(static_cast<hhds::Port_id>(p));
       keep_alive(driver);
       keep_alive(sink);
       items += 2;
@@ -218,7 +218,8 @@ Result op_delete_pins_with_edges(const Args& args) {
   for (int i = 0; i < args.nodes; ++i) {
     const int dst = (i + 1) % std::max(1, args.nodes);
     for (int p = 1; p < pins; ++p) {
-      graph.nodes[i].create_driver_pin(static_cast<hhds::Port_id>(p))
+      graph.nodes[i]
+          .create_driver_pin(static_cast<hhds::Port_id>(p))
           .connect_sink(graph.nodes[dst].create_sink_pin(static_cast<hhds::Port_id>(p)));
     }
   }
@@ -238,7 +239,7 @@ Result op_delete_pins_with_edges(const Args& args) {
 Result op_delete_nodes_with_edges_and_pins(const Args& args) {
   FlatGraph graph;
   Args      edge_args = args;
-  edge_args.scenario = "ledge_inline";
+  edge_args.scenario  = "ledge_inline";
   build_graph_with_edges(graph, edge_args, false, std::max(2, args.pins));
 
   auto    begin = Clock::now();
@@ -286,7 +287,7 @@ Result op_lookup_pins(const Args& args) {
   for (auto& node : graph.nodes) {
     for (int p = 0; p < pins; ++p) {
       auto driver = node.get_driver_pin(static_cast<hhds::Port_id>(p));
-      auto sink = node.get_sink_pin(static_cast<hhds::Port_id>(p));
+      auto sink   = node.get_sink_pin(static_cast<hhds::Port_id>(p));
       keep_alive(driver);
       keep_alive(sink);
       items += 2;
@@ -303,8 +304,8 @@ Result op_lookup_edges(const Args& args) {
   auto    begin = Clock::now();
   int64_t items = 0;
   for (const auto& node : graph.nodes) {
-    auto edges = node.out_edges();
-    items += static_cast<int64_t>(edges.size());
+    auto edges  = node.out_edges();
+    items      += static_cast<int64_t>(edges.size());
     keep_alive(edges);
   }
   auto end = Clock::now();
@@ -317,7 +318,7 @@ Result op_traverse_fast_class(const Args& args) {
 
   auto    begin = Clock::now();
   int64_t items = 0;
-  for (auto node : graph.graph->fast_class()) {
+  for (auto node : graph.graph->body().nodes()) {
     keep_alive(node);
     ++items;
   }
@@ -331,7 +332,7 @@ Result op_traverse_forward_class(const Args& args) {
 
   auto    begin = Clock::now();
   int64_t items = 0;
-  for (auto node : graph.graph->forward_class()) {
+  for (auto node : graph.graph->body().nodes(hhds::Node_order::forward)) {
     keep_alive(node);
     ++items;
   }
@@ -345,7 +346,7 @@ Result op_traverse_backward_class(const Args& args) {
 
   auto    begin = Clock::now();
   int64_t items = 0;
-  for (auto node : graph.graph->backward_class()) {
+  for (auto node : graph.graph->body().nodes(hhds::Node_order::reverse)) {
     keep_alive(node);
     ++items;
   }
@@ -359,7 +360,7 @@ Result op_traverse_fast_flat(const Args& args) {
 
   auto    begin = Clock::now();
   int64_t items = 0;
-  for (auto node : graph->fast_flat()) {
+  for (auto node : graph->definitions().nodes()) {
     keep_alive(node);
     ++items;
   }
@@ -373,7 +374,7 @@ Result op_traverse_forward_flat(const Args& args) {
 
   auto    begin = Clock::now();
   int64_t items = 0;
-  for (auto node : graph->forward_flat()) {
+  for (auto node : graph->definitions().nodes(hhds::Node_order::forward)) {
     keep_alive(node);
     ++items;
   }
@@ -387,7 +388,7 @@ Result op_traverse_backward_flat(const Args& args) {
 
   auto    begin = Clock::now();
   int64_t items = 0;
-  for (auto node : graph->backward_flat()) {
+  for (auto node : graph->definitions().nodes(hhds::Node_order::reverse)) {
     keep_alive(node);
     ++items;
   }
@@ -401,7 +402,7 @@ Result op_traverse_fast_hier(const Args& args) {
 
   auto    begin = Clock::now();
   int64_t items = 0;
-  for (auto node : graph->fast_hier()) {
+  for (auto node : graph->grouped_hierarchy().nodes()) {
     keep_alive(node);
     ++items;
   }
@@ -415,7 +416,7 @@ Result op_traverse_forward_hier(const Args& args) {
 
   auto    begin = Clock::now();
   int64_t items = 0;
-  for (auto node : graph->forward_hier()) {
+  for (auto node : graph->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
     keep_alive(node);
     ++items;
   }
@@ -429,7 +430,7 @@ Result op_traverse_backward_hier(const Args& args) {
 
   auto    begin = Clock::now();
   int64_t items = 0;
-  for (auto node : graph->backward_hier()) {
+  for (auto node : graph->grouped_hierarchy().nodes(hhds::Node_order::reverse)) {
     keep_alive(node);
     ++items;
   }
@@ -443,7 +444,7 @@ Result op_traverse_hier_range(const Args& args) {
 
   auto    begin = Clock::now();
   int64_t items = 0;
-  for (auto instance : graph->hier_range()) {
+  for (auto instance : graph->grouped_hierarchy().instances()) {
     keep_alive(instance);
     ++items;
   }
@@ -452,27 +453,69 @@ Result op_traverse_hier_range(const Args& args) {
 }
 
 Result dispatch(const Args& args) {
-  if (args.op == "add_nodes") return op_add_nodes(args);
-  if (args.op == "add_nodes_with_pins") return op_add_nodes_with_pins(args);
-  if (args.op == "add_pins") return op_add_pins(args);
-  if (args.op == "add_edges") return op_add_edges(args);
-  if (args.op == "delete_edges") return op_delete_edges(args);
-  if (args.op == "delete_pins") return op_delete_pins(args);
-  if (args.op == "delete_pins_with_edges") return op_delete_pins_with_edges(args);
-  if (args.op == "delete_nodes_with_edges_and_pins") return op_delete_nodes_with_edges_and_pins(args);
-  if (args.op == "lookup_nodes") return op_lookup_nodes(args);
-  if (args.op == "lookup_pins") return op_lookup_pins(args);
-  if (args.op == "lookup_edges") return op_lookup_edges(args);
-  if (args.op == "traverse_fast_class") return op_traverse_fast_class(args);
-  if (args.op == "traverse_forward_class") return op_traverse_forward_class(args);
-  if (args.op == "traverse_backward_class") return op_traverse_backward_class(args);
-  if (args.op == "traverse_fast_flat") return op_traverse_fast_flat(args);
-  if (args.op == "traverse_forward_flat") return op_traverse_forward_flat(args);
-  if (args.op == "traverse_backward_flat") return op_traverse_backward_flat(args);
-  if (args.op == "traverse_fast_hier") return op_traverse_fast_hier(args);
-  if (args.op == "traverse_forward_hier") return op_traverse_forward_hier(args);
-  if (args.op == "traverse_backward_hier") return op_traverse_backward_hier(args);
-  if (args.op == "traverse_hier_range") return op_traverse_hier_range(args);
+  if (args.op == "add_nodes") {
+    return op_add_nodes(args);
+  }
+  if (args.op == "add_nodes_with_pins") {
+    return op_add_nodes_with_pins(args);
+  }
+  if (args.op == "add_pins") {
+    return op_add_pins(args);
+  }
+  if (args.op == "add_edges") {
+    return op_add_edges(args);
+  }
+  if (args.op == "delete_edges") {
+    return op_delete_edges(args);
+  }
+  if (args.op == "delete_pins") {
+    return op_delete_pins(args);
+  }
+  if (args.op == "delete_pins_with_edges") {
+    return op_delete_pins_with_edges(args);
+  }
+  if (args.op == "delete_nodes_with_edges_and_pins") {
+    return op_delete_nodes_with_edges_and_pins(args);
+  }
+  if (args.op == "lookup_nodes") {
+    return op_lookup_nodes(args);
+  }
+  if (args.op == "lookup_pins") {
+    return op_lookup_pins(args);
+  }
+  if (args.op == "lookup_edges") {
+    return op_lookup_edges(args);
+  }
+  if (args.op == "traverse_fast_class") {
+    return op_traverse_fast_class(args);
+  }
+  if (args.op == "traverse_forward_class") {
+    return op_traverse_forward_class(args);
+  }
+  if (args.op == "traverse_backward_class") {
+    return op_traverse_backward_class(args);
+  }
+  if (args.op == "traverse_fast_flat") {
+    return op_traverse_fast_flat(args);
+  }
+  if (args.op == "traverse_forward_flat") {
+    return op_traverse_forward_flat(args);
+  }
+  if (args.op == "traverse_backward_flat") {
+    return op_traverse_backward_flat(args);
+  }
+  if (args.op == "traverse_fast_hier") {
+    return op_traverse_fast_hier(args);
+  }
+  if (args.op == "traverse_forward_hier") {
+    return op_traverse_forward_hier(args);
+  }
+  if (args.op == "traverse_backward_hier") {
+    return op_traverse_backward_hier(args);
+  }
+  if (args.op == "traverse_hier_range") {
+    return op_traverse_hier_range(args);
+  }
 
   std::cerr << "hhds_final_bench: unsupported op " << args.op << "\n";
   std::exit(3);
@@ -491,4 +534,3 @@ int main(int argc, char** argv) {
   }
   return 0;
 }
-

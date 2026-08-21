@@ -82,7 +82,7 @@ private:
 
     ::std::unordered_map<Tree_pos, int> pos_to_idx;
 
-    for (auto node : root.post_order_class()) {
+    for (auto node : root.body().nodes(hhds::Tree_order::postorder)) {
       const int idx                    = static_cast<int>(data.nodes.size());
       pos_to_idx[node.get_debug_nid()] = idx;
 
@@ -119,14 +119,14 @@ private:
     }
     if (root1.is_invalid()) {
       int cnt = 0;
-      for ([[maybe_unused]] auto n : root2.post_order_class()) {
+      for ([[maybe_unused]] auto n : root2.body().nodes(hhds::Tree_order::postorder)) {
         ++cnt;
       }
       return cnt * costs_.insert;
     }
     if (root2.is_invalid()) {
       int cnt = 0;
-      for ([[maybe_unused]] auto n : root1.post_order_class()) {
+      for ([[maybe_unused]] auto n : root1.body().nodes(hhds::Tree_order::postorder)) {
         ++cnt;
       }
       return cnt * costs_.del;

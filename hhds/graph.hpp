@@ -191,25 +191,11 @@ class Tree;
 
 class FastClassIterator;
 class FastClassRange;
-class FastFlatIterator;
-class FastFlatRange;
-class FastHierIterator;
-class FastHierRange;
 class ForwardClassIterator;
 class ForwardClassRange;
-class ForwardFlatIterator;
-class ForwardFlatRange;
-class ForwardHierIterator;
-class ForwardHierRange;
 class BackwardClassIterator;
 class BackwardClassRange;
-class BackwardFlatIterator;
-class BackwardFlatRange;
-class BackwardHierIterator;
-class BackwardHierRange;
 class Hier_instance;
-class HierIterator;
-class HierRange;
 class OutEdgeIterator;
 class OutEdgeRange;
 class Subnode_group;
@@ -243,14 +229,12 @@ struct Subnode_loop {
 
 enum class Handle_context : uint8_t { Class, Flat, Hier };
 
-// Distinct tag types keep order selection at compile time while retaining the
-// concise `nodes(Node_order::storage)` spelling.
+// Distinct tag types keep order selection at compile time. The no-argument
+// nodes() overload selects the scope's natural storage order.
 struct Node_order {
-  struct storage_t {};
   struct forward_t {};
   struct reverse_t {};
 
-  inline static constexpr storage_t storage{};
   inline static constexpr forward_t forward{};
   inline static constexpr reverse_t reverse{};
 };
@@ -446,10 +430,8 @@ public:
   }
   [[nodiscard]] Context get_context() const noexcept { return context_; }
   // True when this handle refers to a body's reserved INPUT_NODE / OUTPUT_NODE
-  // boundary node. These handles are emitted at hierarchy transitions by the
-  // *_hier traversals only when visit_io is enabled; they let a caller detect
-  // that the walk just entered (input) or is about to leave (output) a body and
-  // read the crossed port names/attrs off the node's pins.
+  // boundary node. Normal node iteration excludes these nodes; reach them via
+  // Graph::get_input_node() and Graph::get_output_node().
   [[nodiscard]] bool is_input_node() const noexcept;
   [[nodiscard]] bool is_output_node() const noexcept;
   [[nodiscard]] Gid get_root_gid() const noexcept;
@@ -1188,13 +1170,12 @@ private:
   Reach_options options_;
 };
 
-// Handle for one subnode instance in the structure-tree walk driven by
-// Graph::hier_range(). Unlike Node_class (which yields every graph node),
-// Hier_instance yields exactly once per subnode — so hierarchy traversals
-// pay O(hier_size), not O(graph_size). Carries enough state to both
+// Handle for one stored subnode instance group. Unlike node traversal, this
+// handle is yielded exactly once per subnode site, so instance traversal
+// pays O(hier_size), not O(graph_size). Carries enough state to both
 // identify the instance (parent_graph + tree_pos) and resolve what it
-// expands into (target_gid). hier_pos matches fast_hier/forward_hier's
-// per-instance token so per-instance attribute lookups agree across APIs.
+// expands into (target_gid). hier_pos is the per-instance token used by
+// per-instance attribute lookups.
 class Hier_instance {
 public:
   Hier_instance() = default;
@@ -1247,11 +1228,9 @@ private:
   uint64_t multiplicity_ = 0;
 
   friend class Graph;
-  friend class HierIterator;
 };
 
-// New semantic spelling. Keep Hier_instance as a compatibility name while
-// downstream code migrates from hier_range().
+// Public semantic spelling for a stored instance group.
 using Instance_group = Hier_instance;
 
 using Node = Node_class;
@@ -1565,74 +1544,6 @@ public:
   [[nodiscard]] Occurrences_view
   occurrences(const ankerl::unordered_dense::set<Gid> *opaque) const noexcept;
 
-  [[nodiscard]] FastClassRange fast_class() const noexcept;
-  // Topological traversals. loop_break nodes (flops/registers — Type bit 0
-  // set; forward sources / backward sinks) break the combinational cycle
-  // regardless of these flags. The flags only control *when* the loop_break
-  // node itself is emitted:
-  //   loop_break_first (default true)  — emit it up front (forward: as a
-  //                                       source; backward: as a sink).
-  //   loop_break_last  (default false) — also/instead emit it after every
-  //                                       combinational node.
-  // The four combinations cover: see-first (default), see-last, see-both
-  // (T,T — emitted twice), and never (F,F — skip flops entirely). The default
-  // (true,false) preserves the historical "loop_break visited first" order.
-  [[nodiscard]] ForwardClassRange
-  forward_class(bool loop_break_first = true,
-                bool loop_break_last = false) const noexcept;
-  [[nodiscard]] FastFlatRange fast_flat() const noexcept;
-  [[nodiscard]] ForwardFlatRange
-  forward_flat(bool loop_break_first = true,
-               bool loop_break_last = false) const noexcept;
-  // `visit_io` (all *_hier traversals, default false): also emit each body's
-  // reserved boundary IO node as the walk crosses into and out of that body —
-  // the root body included (its INPUT/OUTPUT bracket the whole walk). This
-  // surfaces the port names/attrs of every hierarchy boundary and signals every
-  // descend/ascend transition. Which boundary is seen first depends on
-  // direction: forward/fast enter on INPUT and leave on OUTPUT; backward
-  // mirrors it (enter on OUTPUT, leave on INPUT). Detect these handles with
-  // Node_class::is_input_node()/is_output_node(). Default false keeps the
-  // historical "boundary IO never yielded" behaviour.
-  //
-  // `opaque` (fast_hier and forward_hier): subnode Gids the hierarchical walk
-  // must NOT descend into — they are yielded as leaf Sub nodes even though
-  // their body lives in the library (a caller that wants to treat a
-  // proven/blackboxed instance as opaque, e.g. pass/lec's --collapse). nullptr
-  // keeps the default "descend into every resolvable subnode". The pointed-to
-  // set must outlive the returned range. BOTH iterators additionally honor the
-  // ambient RAII Hier_opaque_scope (see hier_opaque_ref below), and the
-  // explicit set is a UNION with it. Opaque subnodes contribute no boundary IO
-  // under visit_io (the body is never entered).
-  [[nodiscard]] FastHierRange fast_hier(
-      bool visit_io = false,
-      const ankerl::unordered_dense::set<Gid> *opaque = nullptr) const noexcept;
-  // forward_hier/backward_hier ALWAYS yield a flat-module (reverse-)TOPOLOGICAL
-  // order — drivers precede consumers across module boundaries, loops broken at
-  // the leaf flops/mems. That is their whole contract; a caller that only needs
-  // to enumerate nodes (any order, cheaper, lazy) or wants the per-body IO
-  // boundary markers uses fast_hier instead. Ordering is the ONLY difference:
-  // fast_hier and forward_hier yield the same node SET (same opacity rules,
-  // same cycle guard) for the default loop_break_first=true,
-  // loop_break_last=false.
-  [[nodiscard]] ForwardHierRange forward_hier(
-      bool loop_break_first = true, bool loop_break_last = false,
-      const ankerl::unordered_dense::set<Gid> *opaque = nullptr) const noexcept;
-  [[nodiscard]] BackwardClassRange
-  backward_class(bool loop_break_first = true,
-                 bool loop_break_last = false) const noexcept;
-  [[nodiscard]] BackwardFlatRange
-  backward_flat(bool loop_break_first = true,
-                bool loop_break_last = false) const noexcept;
-  [[nodiscard]] BackwardHierRange
-  backward_hier(bool loop_break_first = true,
-                bool loop_break_last = false) const noexcept;
-  // Hierarchy-only traversal: yields one Hier_instance per subnode in the
-  // structure tree, recursing into each instance's target graph (cycle-
-  // guarded by active_graphs). Walks tree_ alone — it never iterates
-  // node_table, so cost is proportional to the hierarchy size (≪ number
-  // of graph nodes). Use this for instance counts, module-tree walks, and
-  // path resolution rather than fast_hier (which visits every graph node).
-  [[nodiscard]] HierRange hier_range() const noexcept;
   void display_graph() const;
   void display_next_pin_of_node() const;
 
@@ -1764,7 +1675,7 @@ private:
   void patch_traversal_caches_for_edge(Vid driver_id, Vid sink_id,
                                        int32_t delta) noexcept;
   // Build (or refresh) the Pass-2 deferred list and the initial in-edge counts
-  // used by the forward_class streaming iterator. The full emission ordering
+  // used by ordered body traversal. The full emission ordering
   // is never materialized — only these two small caches persist.
   void ensure_forward_caches() const;
   // Exposed to the Forward iterator classes (which are friends).
@@ -1868,7 +1779,7 @@ private:
   } constant_pin_index_;
   // Edge-adjacency overflow sets. LAZY: load_body sizes this vector but defers
   // reading the set CONTENTS (the overflow.bin / overflow_<i>.bin files) until
-  // an edge is actually traversed — a pure structure walk (fast_class + subnode
+  // an edge is actually traversed — a pure structure walk (body nodes + subnode
   // + node count, e.g. `lhd tools tree`) never touches edges, so it never pays
   // to read them. Access the CONTENTS only via overflow_sets() (which ensures
   // the deferred read has happened); overflow_storage_ is the raw backing store
@@ -1883,12 +1794,6 @@ private:
   // Nid back to its Tree_pos so del_node / debug cycle checks can find it.
   std::shared_ptr<Tree> tree_;
   ankerl::unordered_dense::map<Nid, Tree_pos> subnode_tree_pos_;
-  // Reverse map so hier_range can resolve a Tree_pos back to its owning Nid
-  // in O(1) during tree-pre-order iteration. Kept in lockstep with
-  // subnode_tree_pos_ — every set_subnode / load_body insertion updates
-  // both, and all three clear sites (release_storage, clear_graph, clear)
-  // clear both.
-  ankerl::unordered_dense::map<Tree_pos, Nid> tree_pos_to_nid_;
   // Sparse native storage: ordinary nodes pay no per-node descriptor cost.
   ankerl::unordered_dense::map<Nid, Subnode_loop> subnode_loops_;
 #ifndef NDEBUG
@@ -1903,8 +1808,8 @@ private:
   // GraphLibrary::loop_graph_count_. Kept separate so lazy-loaded bodies can
   // transfer the persisted per-graph presence bit without double-counting.
   bool loop_presence_counted_ = false;
-  // Forward-traversal caches, shared across forward_class / forward_flat /
-  // forward_hier for this graph body. Only the Pass-2 deferral list and the
+  // Forward-traversal caches, shared by ordered body, definition, and hierarchy
+  // views for this graph body. Only the Pass-2 deferral list and the
   // initial in-edge counts are kept — the Pass-1 emission order is replayed
   // from storage order and the Tail from alive-but-unemitted survivors. No
   // Node_class objects are cached, so memory is O(Pass2) + O(N × 4 bytes)
@@ -1942,28 +1847,18 @@ private:
   friend class GraphLibrary;
   friend class FastClassIterator;
   friend class FastClassRange;
-  friend class FastFlatIterator;
-  friend class FastFlatRange;
-  friend class FastHierIterator;
-  friend class FastHierRange;
   friend class ForwardClassIterator;
   friend class ForwardClassRange;
-  friend class ForwardFlatIterator;
-  friend class ForwardFlatRange;
-  friend class ForwardHierIterator;
-  friend class ForwardHierRange;
   friend class BackwardClassIterator;
   friend class BackwardClassRange;
-  friend class BackwardFlatIterator;
-  friend class BackwardFlatRange;
-  friend class BackwardHierIterator;
-  friend class BackwardHierRange;
-  friend class HierIterator;
-  friend class HierRange;
   friend class Hier_instance;
   friend class OutEdgeIterator;
   friend class OutEdgeRange;
   friend class Subnode_group;
+  friend class Body_view;
+  friend class Definitions_view;
+  friend class Grouped_hierarchy_view;
+  friend class Occurrences_view;
   friend struct detail::Hierarchy_view_state;
 };
 
@@ -2159,143 +2054,6 @@ private:
   Graph *graph_;
 };
 
-// Instance-level flat traversal (sub-graphs visited per instance).
-class FastFlatIterator {
-public:
-  using iterator_category = std::input_iterator_tag;
-  using value_type = Node_class;
-  using difference_type = std::ptrdiff_t;
-  using pointer = void;
-  using reference = Node_class;
-
-  FastFlatIterator() noexcept = default;
-  FastFlatIterator(const FastFlatIterator &) = default;
-  FastFlatIterator(FastFlatIterator &&) = default;
-  FastFlatIterator &operator=(const FastFlatIterator &) = default;
-  FastFlatIterator &operator=(FastFlatIterator &&) = default;
-  ~FastFlatIterator() = default;
-
-  [[nodiscard]] Node_class operator*() const;
-  FastFlatIterator &operator++();
-  FastFlatIterator operator++(int) {
-    FastFlatIterator tmp = *this;
-    ++*this;
-    return tmp;
-  }
-  [[nodiscard]] bool operator==(const FastFlatIterator &o) const noexcept {
-    return stack_.empty() && o.stack_.empty();
-  }
-  [[nodiscard]] bool operator!=(const FastFlatIterator &o) const noexcept {
-    return !(*this == o);
-  }
-
-private:
-  struct Frame {
-    Graph *graph;
-    size_t node_idx;
-    size_t end;
-  };
-
-  explicit FastFlatIterator(Graph *root_graph);
-  void advance();
-
-  Gid top_graph_ = Gid_invalid;
-  std::vector<Frame> stack_;
-  ankerl::unordered_dense::set<Gid> active_graphs_;
-
-  friend class FastFlatRange;
-};
-
-class FastFlatRange {
-public:
-  explicit FastFlatRange(Graph *graph) noexcept : graph_(graph) {}
-  [[nodiscard]] FastFlatIterator begin() const;
-  [[nodiscard]] FastFlatIterator end() const noexcept {
-    return FastFlatIterator{};
-  }
-
-private:
-  Graph *graph_;
-};
-
-// Per-frame position within a body for a `visit_io` hierarchical walk: emit the
-// body's boundary IO node when the walk enters (Enter) and leaves (Leave) it,
-// with the body's own nodes in between (Body). Which physical node Enter/Leave
-// map to depends on direction — forward enters on INPUT and leaves on OUTPUT;
-// backward mirrors it. When visit_io is off, every frame stays in Body and no
-// boundary node is ever emitted (the historical default).
-enum class Hier_io_phase : uint8_t { Enter, Body, Leave };
-
-// Hierarchical traversal with per-instance hier_pos (unique token that maps
-// through `hier_gids_` back to the owning Gid for downstream Node APIs).
-class FastHierIterator {
-public:
-  using iterator_category = std::input_iterator_tag;
-  using value_type = Node_class;
-  using difference_type = std::ptrdiff_t;
-  using pointer = void;
-  using reference = Node_class;
-
-  FastHierIterator() noexcept = default;
-  FastHierIterator(const FastHierIterator &) = delete;
-  FastHierIterator(FastHierIterator &&) = default;
-  FastHierIterator &operator=(const FastHierIterator &) = delete;
-  FastHierIterator &operator=(FastHierIterator &&) = default;
-  ~FastHierIterator() = default;
-
-  [[nodiscard]] Node_class operator*() const;
-  FastHierIterator &operator++();
-  [[nodiscard]] bool operator==(const FastHierIterator &o) const noexcept {
-    return stack_.empty() && o.stack_.empty();
-  }
-  [[nodiscard]] bool operator!=(const FastHierIterator &o) const noexcept {
-    return !(*this == o);
-  }
-
-private:
-  struct Frame {
-    Graph *graph;
-    size_t node_idx;
-    size_t end;
-    Tree_pos hier_pos; // position in the parent graph's structure tree
-    std::shared_ptr<const std::vector<Nid>>
-        path; // root..this-frame instance chain
-    Hier_io_phase io_phase = Hier_io_phase::Body; // visit_io: Enter/Body/Leave
-  };
-
-  explicit FastHierIterator(
-      Graph *root_graph, bool visit_io = false,
-      const ankerl::unordered_dense::set<Gid> *opaque = nullptr);
-  void advance();
-  void pop_frame();
-
-  Gid root_gid_ = Gid_invalid;
-  bool visit_io_ = false;
-  const ankerl::unordered_dense::set<Gid> *opaque_ =
-      nullptr; // subnodes to NOT descend into
-  std::vector<Frame> stack_;
-  ankerl::unordered_dense::set<Gid> active_graphs_;
-
-  friend class FastHierRange;
-};
-
-class FastHierRange {
-public:
-  explicit FastHierRange(
-      Graph *graph, bool visit_io = false,
-      const ankerl::unordered_dense::set<Gid> *opaque = nullptr) noexcept
-      : graph_(graph), visit_io_(visit_io), opaque_(opaque) {}
-  [[nodiscard]] FastHierIterator begin() const;
-  [[nodiscard]] FastHierIterator end() const noexcept {
-    return FastHierIterator{};
-  }
-
-private:
-  Graph *graph_;
-  bool visit_io_ = false;
-  const ankerl::unordered_dense::set<Gid> *opaque_ = nullptr;
-};
-
 // Forward topological iterator for a single graph body. Emits sources first,
 // then storage-order combinational nodes (Pass 1), then deferred back-edge
 // targets (Pass 2 replayed from Graph::forward_pass2_cache_), then any cycle
@@ -2345,13 +2103,6 @@ private:
   [[nodiscard]] bool is_source(size_t idx) const noexcept;
   [[nodiscard]] bool is_emitted(size_t idx) const noexcept;
   void mark_emitted(size_t idx) noexcept;
-  // True while the current emission is a loop_break_last replay. Used by the
-  // flat/hier wrappers to avoid descending into a loop_break subnode twice
-  // when it is emitted both first and last.
-  [[nodiscard]] bool current_is_loop_break_replay() const noexcept {
-    return phase_ == Phase::LoopLast;
-  }
-
   Graph *graph_ = nullptr;
   Phase phase_ = Phase::End;
   size_t idx_ = 0;
@@ -2365,8 +2116,6 @@ private:
   std::vector<uint64_t> emitted_bits_;
 
   friend class ForwardClassRange;
-  friend class ForwardFlatIterator;
-  friend class ForwardHierIterator;
 };
 
 class ForwardClassRange {
@@ -2392,157 +2141,10 @@ private:
   bool loop_break_last_ = false;
 };
 
-// Forward flat traversal: local graph's forward order, with subgraph bodies
-// visited once in the order their owning subnodes emit (global active_graphs
-// dedup — a subgraph seen via multiple instances expands only the first time).
-class ForwardFlatIterator {
-public:
-  using iterator_category = std::input_iterator_tag;
-  using value_type = Node_class;
-  using difference_type = std::ptrdiff_t;
-  using pointer = void;
-  using reference = Node_class;
-
-  ForwardFlatIterator() noexcept = default;
-  ForwardFlatIterator(const ForwardFlatIterator &) = delete;
-  ForwardFlatIterator &operator=(const ForwardFlatIterator &) = delete;
-  ForwardFlatIterator(ForwardFlatIterator &&) noexcept = default;
-  ForwardFlatIterator &operator=(ForwardFlatIterator &&) noexcept = default;
-  ~ForwardFlatIterator() = default;
-
-  [[nodiscard]] Node_class operator*() const;
-  ForwardFlatIterator &operator++();
-  [[nodiscard]] bool operator==(const ForwardFlatIterator &o) const noexcept {
-    return stack_.empty() && o.stack_.empty();
-  }
-  [[nodiscard]] bool operator!=(const ForwardFlatIterator &o) const noexcept {
-    return !(*this == o);
-  }
-
-private:
-  struct Frame {
-    Graph *graph;
-    ForwardClassIterator it;
-  };
-
-  explicit ForwardFlatIterator(Graph *root_graph, bool loop_break_first = true,
-                               bool loop_break_last = false);
-  void advance();
-
-  Gid top_graph_ = Gid_invalid;
-  bool loop_break_first_ = true;
-  bool loop_break_last_ = false;
-  std::vector<Frame> stack_;
-  ankerl::unordered_dense::set<Gid> active_graphs_;
-
-  friend class ForwardFlatRange;
-};
-
-class ForwardFlatRange {
-public:
-  explicit ForwardFlatRange(Graph *graph, bool loop_break_first = true,
-                            bool loop_break_last = false) noexcept
-      : graph_(graph), loop_break_first_(loop_break_first),
-        loop_break_last_(loop_break_last) {}
-  [[nodiscard]] ForwardFlatIterator begin() const;
-  [[nodiscard]] ForwardFlatIterator end() const noexcept {
-    return ForwardFlatIterator{};
-  }
-
-private:
-  Graph *graph_;
-  bool loop_break_first_ = true;
-  bool loop_break_last_ = false;
-};
-
-// Forward hier traversal: per-instance hier_pos token, subgraph bodies visited
-// once per subnode instance (active_graphs is push/pop scoped to the current
-// recursion path, not the whole walk).
-class ForwardHierIterator {
-public:
-  using iterator_category = std::input_iterator_tag;
-  using value_type = Node_class;
-  using difference_type = std::ptrdiff_t;
-  using pointer = void;
-  using reference = Node_class;
-
-  ForwardHierIterator() noexcept = default;
-  ForwardHierIterator(const ForwardHierIterator &) = delete;
-  ForwardHierIterator &operator=(const ForwardHierIterator &) = delete;
-  ForwardHierIterator(ForwardHierIterator &&) noexcept = default;
-  ForwardHierIterator &operator=(ForwardHierIterator &&) noexcept = default;
-  ~ForwardHierIterator() = default;
-
-  [[nodiscard]] Node_class operator*() const;
-  ForwardHierIterator &operator++();
-  [[nodiscard]] bool operator==(const ForwardHierIterator &o) const noexcept {
-    return at_end() && o.at_end();
-  }
-  [[nodiscard]] bool operator!=(const ForwardHierIterator &o) const noexcept {
-    return !(*this == o);
-  }
-
-private:
-  struct Frame {
-    Graph *graph;
-    ForwardClassIterator it;
-    Tree_pos hier_pos;
-    std::shared_ptr<const std::vector<Nid>>
-        path; // root..this-frame instance chain
-  };
-
-  explicit ForwardHierIterator(
-      Graph *root_graph, bool loop_break_first = true,
-      bool loop_break_last = false,
-      const ankerl::unordered_dense::set<Gid> *opaque = nullptr);
-  void advance();
-  void pop_frame();
-  Node_class
-  descend_deref() const; // per-body DFS deref, used only to collect the walk
-  void descend_step();   // per-body DFS step,  used only to collect the walk
-  [[nodiscard]] bool at_end() const noexcept {
-    return topo_pos_ >= topo_.size();
-  }
-
-  Gid root_gid_ = Gid_invalid;
-  bool loop_break_first_ = true;
-  bool loop_break_last_ = false;
-  std::vector<Frame> stack_;
-  ankerl::unordered_dense::set<Gid> active_graphs_;
-  const ankerl::unordered_dense::set<Gid> *opaque_ =
-      nullptr; // subnodes to NOT descend into
-
-  // The walk is materialized once (via the DFS above) and reordered so drivers
-  // precede consumers ACROSS module boundaries (loop-breaks at the leaf
-  // flops/mems) — a genuine flat-module topological order, always.
-  std::vector<Node_class> topo_;
-  std::size_t topo_pos_ = 0;
-
-  friend class ForwardHierRange;
-};
-
-class ForwardHierRange {
-public:
-  explicit ForwardHierRange(
-      Graph *graph, bool loop_break_first = true, bool loop_break_last = false,
-      const ankerl::unordered_dense::set<Gid> *opaque = nullptr) noexcept
-      : graph_(graph), loop_break_first_(loop_break_first),
-        loop_break_last_(loop_break_last), opaque_(opaque) {}
-  [[nodiscard]] ForwardHierIterator begin() const;
-  [[nodiscard]] ForwardHierIterator end() const noexcept {
-    return ForwardHierIterator{};
-  }
-
-private:
-  Graph *graph_;
-  bool loop_break_first_ = true;
-  bool loop_break_last_ = false;
-  const ankerl::unordered_dense::set<Gid> *opaque_ = nullptr;
-};
-
 // ── Ambient hierarchical-walk opacity ───────────────────────────────────────
-// Subnode Gids in the thread-local opacity set are treated as LEAVES by ALL the
-// hierarchical iterators (forward_hier AND fast_hier — not descended into) AND
+// Subnode Gids in the thread-local opacity set are treated as LEAVES by the
+// hierarchical views (grouped_hierarchy()/occurrences() — not descended into,
+// UNION with any explicit opaque set) AND by
 // the cross-boundary edge resolver (a read of such a subnode's output stops at
 // the instance boundary instead of threading down to the real internal driver).
 // All must agree, or a consumer would read an un-encoded internal pin. Used by
@@ -2615,9 +2217,6 @@ private:
   [[nodiscard]] bool is_sink(size_t idx) const noexcept;
   [[nodiscard]] bool is_emitted(size_t idx) const noexcept;
   void mark_emitted(size_t idx) noexcept;
-  [[nodiscard]] bool current_is_loop_break_replay() const noexcept {
-    return phase_ == Phase::LoopLast;
-  }
 
   Graph *graph_ = nullptr;
   Phase phase_ = Phase::End;
@@ -2632,8 +2231,6 @@ private:
   std::vector<uint64_t> emitted_bits_;
 
   friend class BackwardClassRange;
-  friend class BackwardFlatIterator;
-  friend class BackwardHierIterator;
 };
 
 class BackwardClassRange {
@@ -2655,218 +2252,6 @@ private:
   Graph *graph_;
   bool loop_break_first_ = true;
   bool loop_break_last_ = false;
-};
-
-class BackwardFlatIterator {
-public:
-  using iterator_category = std::input_iterator_tag;
-  using value_type = Node_class;
-  using difference_type = std::ptrdiff_t;
-  using pointer = void;
-  using reference = Node_class;
-
-  BackwardFlatIterator() noexcept = default;
-  BackwardFlatIterator(const BackwardFlatIterator &) = delete;
-  BackwardFlatIterator &operator=(const BackwardFlatIterator &) = delete;
-  BackwardFlatIterator(BackwardFlatIterator &&) noexcept = default;
-  BackwardFlatIterator &operator=(BackwardFlatIterator &&) noexcept = default;
-  ~BackwardFlatIterator() = default;
-
-  [[nodiscard]] Node_class operator*() const;
-  BackwardFlatIterator &operator++();
-  [[nodiscard]] bool operator==(const BackwardFlatIterator &o) const noexcept {
-    return stack_.empty() && o.stack_.empty();
-  }
-  [[nodiscard]] bool operator!=(const BackwardFlatIterator &o) const noexcept {
-    return !(*this == o);
-  }
-
-private:
-  struct Frame {
-    Graph *graph;
-    BackwardClassIterator it;
-  };
-
-  explicit BackwardFlatIterator(Graph *root_graph, bool loop_break_first = true,
-                                bool loop_break_last = false);
-  void advance();
-
-  Gid top_graph_ = Gid_invalid;
-  bool loop_break_first_ = true;
-  bool loop_break_last_ = false;
-  std::vector<Frame> stack_;
-  ankerl::unordered_dense::set<Gid> active_graphs_;
-
-  friend class BackwardFlatRange;
-};
-
-class BackwardFlatRange {
-public:
-  explicit BackwardFlatRange(Graph *graph, bool loop_break_first = true,
-                             bool loop_break_last = false) noexcept
-      : graph_(graph), loop_break_first_(loop_break_first),
-        loop_break_last_(loop_break_last) {}
-  [[nodiscard]] BackwardFlatIterator begin() const;
-  [[nodiscard]] BackwardFlatIterator end() const noexcept {
-    return BackwardFlatIterator{};
-  }
-
-private:
-  Graph *graph_;
-  bool loop_break_first_ = true;
-  bool loop_break_last_ = false;
-};
-
-class BackwardHierIterator {
-public:
-  using iterator_category = std::input_iterator_tag;
-  using value_type = Node_class;
-  using difference_type = std::ptrdiff_t;
-  using pointer = void;
-  using reference = Node_class;
-
-  BackwardHierIterator() noexcept = default;
-  BackwardHierIterator(const BackwardHierIterator &) = delete;
-  BackwardHierIterator &operator=(const BackwardHierIterator &) = delete;
-  BackwardHierIterator(BackwardHierIterator &&) noexcept = default;
-  BackwardHierIterator &operator=(BackwardHierIterator &&) noexcept = default;
-  ~BackwardHierIterator() = default;
-
-  [[nodiscard]] Node_class operator*() const;
-  BackwardHierIterator &operator++();
-  [[nodiscard]] bool operator==(const BackwardHierIterator &o) const noexcept {
-    return at_end() && o.at_end();
-  }
-  [[nodiscard]] bool operator!=(const BackwardHierIterator &o) const noexcept {
-    return !(*this == o);
-  }
-
-private:
-  struct Frame {
-    Graph *graph;
-    BackwardClassIterator it;
-    Tree_pos hier_pos;
-    std::shared_ptr<const std::vector<Nid>>
-        path; // root..this-frame instance chain
-  };
-
-  explicit BackwardHierIterator(Graph *root_graph, bool loop_break_first = true,
-                                bool loop_break_last = false);
-  void advance();
-  void pop_frame();
-  Node_class
-  descend_deref() const; // per-body DFS deref, used only to collect the walk
-  void descend_step();   // per-body DFS step,  used only to collect the walk
-  [[nodiscard]] bool at_end() const noexcept {
-    return topo_pos_ >= topo_.size();
-  }
-
-  Gid root_gid_ = Gid_invalid;
-  bool loop_break_first_ = true;
-  bool loop_break_last_ = false;
-  std::vector<Frame> stack_;
-  ankerl::unordered_dense::set<Gid> active_graphs_;
-
-  // Materialized once and reordered into a flat-module REVERSE topological
-  // order (consumers before drivers; loop-breaks at leaf flops/mems), always.
-  std::vector<Node_class> topo_;
-  std::size_t topo_pos_ = 0;
-
-  friend class BackwardHierRange;
-};
-
-class BackwardHierRange {
-public:
-  explicit BackwardHierRange(Graph *graph, bool loop_break_first = true,
-                             bool loop_break_last = false) noexcept
-      : graph_(graph), loop_break_first_(loop_break_first),
-        loop_break_last_(loop_break_last) {}
-  [[nodiscard]] BackwardHierIterator begin() const;
-  [[nodiscard]] BackwardHierIterator end() const noexcept {
-    return BackwardHierIterator{};
-  }
-
-private:
-  Graph *graph_;
-  bool loop_break_first_ = true;
-  bool loop_break_last_ = false;
-};
-
-// Structure-tree pre-order iterator. Walks tree_ (skipping ROOT) and, when
-// a tree position corresponds to a live subnode, descends into the subnode's
-// target graph's tree to continue recursively. active_graphs_ guards
-// against structural cycles (which are disallowed but not enforced in
-// release builds). Move-only: holds per-walk working state (frame stack +
-// active_graphs set) that we don't want copied implicitly.
-class HierIterator {
-public:
-  using iterator_category = std::input_iterator_tag;
-  using value_type = Hier_instance;
-  using difference_type = std::ptrdiff_t;
-  using pointer = void;
-  using reference = Hier_instance;
-
-  HierIterator() noexcept = default;
-  HierIterator(const HierIterator &) = delete;
-  HierIterator(HierIterator &&) noexcept = default;
-  HierIterator &operator=(const HierIterator &) = delete;
-  HierIterator &operator=(HierIterator &&) noexcept = default;
-  ~HierIterator() = default;
-
-  [[nodiscard]] Hier_instance operator*() const;
-  HierIterator &operator++();
-  [[nodiscard]] bool operator==(const HierIterator &o) const noexcept {
-    return stack_.empty() && o.stack_.empty();
-  }
-  [[nodiscard]] bool operator!=(const HierIterator &o) const noexcept {
-    return !(*this == o);
-  }
-
-private:
-  struct Frame {
-    Graph *graph;                 // the graph whose tree is being walked
-    Tree::pre_order_iterator cur; // cursor into graph->tree_->pre_order()
-    Tree::pre_order_iterator end; // matching end sentinel
-    Tree_pos hier_pos; // parent subnode's tree_pos within its graph, or ROOT
-                       // for the top frame
-    uint32_t path_handle = 0;
-    uint64_t multiplicity = 1;
-  };
-
-  explicit HierIterator(Graph *root_graph);
-  // Advance cur_ until it lands on a Tree_pos that corresponds to a live
-  // subnode in the current frame's graph. Pops exhausted frames (unwinding
-  // active_graphs_ as we go) and keeps walking until either a yieldable
-  // instance is found or the stack is empty.
-  void advance_to_next_instance();
-
-  Gid root_gid_ = Gid_invalid;
-  std::vector<Frame> stack_;
-  ankerl::unordered_dense::set<Gid> active_graphs_;
-  std::shared_ptr<detail::Occurrence_path_storage> path_storage_;
-
-  // operator*() interns one occurrence-path entry for the instance under the
-  // cursor. It is called more than once per position (operator++ needs the same
-  // instance), so memoize the cursor it was computed for: without this every
-  // dereference appended a fresh entry to the shared storage, so the walk cost
-  // grew without bound and two dereferences of the same position handed out
-  // paths with different interned_handle()s.
-  mutable Graph *memo_graph_ = nullptr;
-  mutable Tree_pos memo_pos_ = INVALID;
-  mutable uint32_t memo_parent_ = 0;
-  mutable uint32_t memo_path_handle_ = 0;
-
-  friend class HierRange;
-};
-
-class HierRange {
-public:
-  explicit HierRange(Graph *graph) noexcept : graph_(graph) {}
-  [[nodiscard]] HierIterator begin() const;
-  [[nodiscard]] HierIterator end() const noexcept { return HierIterator{}; }
-
-private:
-  Graph *graph_;
 };
 
 // Storage-order grouped/physical walks are streaming input ranges. Forward
@@ -2937,7 +2322,6 @@ public:
   explicit Body_view(Graph *graph) : graph_(graph) {}
 
   [[nodiscard]] FastClassRange nodes() const noexcept;
-  [[nodiscard]] FastClassRange nodes(Node_order::storage_t) const noexcept;
   [[nodiscard]] ForwardClassRange
   nodes(Node_order::forward_t,
         Cut_placement cuts = Cut_placement::first) const noexcept;
@@ -2946,6 +2330,18 @@ public:
         Cut_placement cuts = Cut_placement::first) const noexcept;
 
 private:
+  // Debug-only staleness check. A view holds a raw Graph*, is publicly
+  // constructible and freely copyable, so it can outlive the delete_graph()
+  // that gutted its graph. Graph::body() asserts when the view is HANDED
+  // OUT; this re-checks at every point of USE. Compiles out under NDEBUG.
+  // Note this catches a TOMBSTONED graph (deleted_), not a freed one — if no
+  // shared_ptr<Graph> survives, graph_ dangles and only ASan can see it.
+  void assert_graph_alive() const noexcept {
+    if (graph_ != nullptr) {
+      graph_->assert_accessible();
+    }
+  }
+
   Graph *graph_ = nullptr;
 };
 
@@ -2956,7 +2352,6 @@ public:
       : graph_(graph), policy_(policy) {}
 
   [[nodiscard]] DefinitionNodeRange nodes() const;
-  [[nodiscard]] DefinitionNodeRange nodes(Node_order::storage_t) const;
   [[nodiscard]] DefinitionNodeRange
   nodes(Node_order::forward_t, Cut_placement cuts = Cut_placement::first) const;
   [[nodiscard]] DefinitionNodeRange
@@ -2966,6 +2361,18 @@ public:
       graphs(Node_order::reverse_t) const;
 
 private:
+  // Debug-only staleness check. A view holds a raw Graph*, is publicly
+  // constructible and freely copyable, so it can outlive the delete_graph()
+  // that gutted its graph. Graph::definitions() asserts when the view is HANDED
+  // OUT; this re-checks at every point of USE. Compiles out under NDEBUG.
+  // Note this catches a TOMBSTONED graph (deleted_), not a freed one — if no
+  // shared_ptr<Graph> survives, graph_ dangles and only ASan can see it.
+  void assert_graph_alive() const noexcept {
+    if (graph_ != nullptr) {
+      graph_->assert_accessible();
+    }
+  }
+
   [[nodiscard]] std::shared_ptr<detail::Hierarchy_view_state> state() const;
 
   Graph *graph_ = nullptr;
@@ -2982,7 +2389,6 @@ public:
       : graph_(graph), policy_(policy) {}
 
   [[nodiscard]] OccurrenceNodeRange nodes() const;
-  [[nodiscard]] OccurrenceNodeRange nodes(Node_order::storage_t) const;
   [[nodiscard]] OccurrenceNodeRange
   nodes(Node_order::forward_t, Cut_placement cuts = Cut_placement::first) const;
   [[nodiscard]] OccurrenceNodeRange
@@ -3004,6 +2410,19 @@ public:
   [[nodiscard]] std::optional<uint64_t> physical_node_count_exact() const;
 
 private:
+  // Debug-only staleness check. A view holds a raw Graph*, is publicly
+  // constructible and freely copyable, so it can outlive the delete_graph()
+  // that gutted its graph. Graph::grouped_hierarchy() asserts when the view
+  // is HANDED OUT; this re-checks at every point of USE. Compiles out under
+  // NDEBUG.
+  // Note this catches a TOMBSTONED graph (deleted_), not a freed one — if no
+  // shared_ptr<Graph> survives, graph_ dangles and only ASan can see it.
+  void assert_graph_alive() const noexcept {
+    if (graph_ != nullptr) {
+      graph_->assert_accessible();
+    }
+  }
+
   [[nodiscard]] std::shared_ptr<detail::Hierarchy_view_state> state() const;
 
   Graph *graph_ = nullptr;
@@ -3021,7 +2440,6 @@ public:
       : graph_(graph), policy_(policy) {}
 
   [[nodiscard]] OccurrenceNodeRange nodes() const;
-  [[nodiscard]] OccurrenceNodeRange nodes(Node_order::storage_t) const;
   [[nodiscard]] OccurrenceNodeRange
   nodes(Node_order::forward_t, Cut_placement cuts = Cut_placement::first) const;
   [[nodiscard]] OccurrenceNodeRange
@@ -3040,6 +2458,18 @@ public:
   [[nodiscard]] std::optional<uint64_t> size_exact() const;
 
 private:
+  // Debug-only staleness check. A view holds a raw Graph*, is publicly
+  // constructible and freely copyable, so it can outlive the delete_graph()
+  // that gutted its graph. Graph::occurrences() asserts when the view is HANDED
+  // OUT; this re-checks at every point of USE. Compiles out under NDEBUG.
+  // Note this catches a TOMBSTONED graph (deleted_), not a freed one — if no
+  // shared_ptr<Graph> survives, graph_ dangles and only ASan can see it.
+  void assert_graph_alive() const noexcept {
+    if (graph_ != nullptr) {
+      graph_->assert_accessible();
+    }
+  }
+
   [[nodiscard]] std::shared_ptr<detail::Hierarchy_view_state> state() const;
 
   Graph *graph_ = nullptr;

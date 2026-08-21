@@ -68,8 +68,8 @@ std::vector<std::string> flat_order(auto&& range) {
   return order;
 }
 
-std::string hier_order_key(const hhds::Node& node) {
-  return std::to_string(node.get_current_gid()) + ":" + std::to_string(node.get_hier_pos()) + ":"
+std::string hier_order_key(const hhds::Occurrence_node& node) {
+  return std::to_string(node.get_current_gid()) + ":" + std::to_string(node.path().hash()) + ":"
          + std::to_string(node.get_debug_nid());
 }
 
@@ -103,9 +103,9 @@ TEST(GraphApiContract, BasicsFlatAttributesForwardTraversal) {
   EXPECT_EQ(n1.attr(name).get(), "adder");
   EXPECT_EQ(n2.attr(name).get(), "mux");
 
-  // forward_class returns Node handles with .attr() support.
+  // A body traversal returns Node_class handles with flat attributes.
   std::vector<std::string> names;
-  for (auto node : g->forward_class()) {
+  for (auto node : g->body().nodes(hhds::Node_order::forward)) {
     EXPECT_TRUE(node.is_class());
     if (node.attr(name).has()) {
       names.push_back(std::string(node.attr(name).get()));
@@ -114,7 +114,7 @@ TEST(GraphApiContract, BasicsFlatAttributesForwardTraversal) {
   EXPECT_EQ(names.size(), 2u);
 }
 
-TEST(GraphApiContract, FastTraversalVariants) {
+TEST(GraphApiContract, TraversalScopes) {
   hhds::GraphLibrary glib;
 
   auto leaf_io = glib.create_io("leaf_fast");
@@ -130,7 +130,7 @@ TEST(GraphApiContract, FastTraversalVariants) {
 
   bool saw_inst1 = false;
   bool saw_inst2 = false;
-  for (auto node : top->fast_class()) {
+  for (auto node : top->body().nodes()) {
     EXPECT_TRUE(node.is_class());
     if (node == inst1) {
       saw_inst1 = true;
@@ -142,27 +142,26 @@ TEST(GraphApiContract, FastTraversalVariants) {
   EXPECT_TRUE(saw_inst1);
   EXPECT_TRUE(saw_inst2);
 
-  size_t fast_flat_leaf_visits = 0;
-  for (auto node : top->fast_flat()) {
-    EXPECT_TRUE(node.is_flat());
+  size_t definition_leaf_visits = 0;
+  for (auto node : top->definitions().nodes()) {
+    EXPECT_TRUE(node.is_class());
     if (node.get_current_gid() == leaf->get_gid() && node.get_debug_nid() == leaf_n.get_debug_nid()) {
-      ++fast_flat_leaf_visits;
+      ++definition_leaf_visits;
     }
   }
-  EXPECT_EQ(fast_flat_leaf_visits, 1u);
+  EXPECT_EQ(definition_leaf_visits, 1u);
 
-  size_t fast_hier_leaf_visits = 0;
-  for (auto node : top->fast_hier()) {
-    EXPECT_TRUE(node.is_hier());
+  size_t grouped_leaf_visits = 0;
+  for (auto node : top->grouped_hierarchy().nodes()) {
+    EXPECT_EQ(node.get_root_gid(), top->get_gid());
     if (node.get_current_gid() == leaf->get_gid() && node.get_debug_nid() == leaf_n.get_debug_nid()) {
-      ++fast_hier_leaf_visits;
+      ++grouped_leaf_visits;
     }
   }
-  EXPECT_EQ(fast_hier_leaf_visits, 2u);
+  EXPECT_EQ(grouped_leaf_visits, 2u);
 }
 
-// class/flat/hier traversals (fast + forward + backward) visit only user
-// nodes — the three built-in singletons (INPUT / OUTPUT / CONST) are reached
+// Node views visit only user nodes. The built-in singletons are reached
 // directly via Graph::get_input_node() / get_output_node() / get_constant_node()
 // instead. CONST is recognized purely by node identity: any driver pin on
 // CONST_NODE is a constant, no attribute check required.
@@ -186,8 +185,8 @@ TEST(GraphApiContract, DefaultTraversalsSkipBuiltinNodes) {
   EXPECT_EQ(k.get_master_node().get_debug_nid(), hhds::Graph::CONST_NODE);
   k.connect_sink(n1.create_sink_pin());
 
-  const auto forward = class_order(g->forward_class());
-  const auto fast    = class_order(g->fast_class());
+  const auto forward = class_order(g->body().nodes(hhds::Node_order::forward));
+  const auto fast    = class_order(g->body().nodes());
 
   ASSERT_EQ(forward.size(), 2u);
   ASSERT_EQ(fast.size(), 2u);
@@ -201,7 +200,7 @@ TEST(GraphApiContract, DefaultTraversalsSkipBuiltinNodes) {
   }
 }
 
-// Built-in node accessors: direct singletons, no flat/hier/class variants.
+// Built-in node accessors are direct singletons.
 // To inspect their connectivity, use the standard out_edges() / inp_edges()
 // from the returned Node_class.
 TEST(GraphApiContract, BuiltinNodeAccessors) {
@@ -228,7 +227,7 @@ TEST(GraphApiContract, BuiltinNodeAccessors) {
   EXPECT_EQ(g->get_constant_node().out_edges().size(), 1u);
 }
 
-TEST(GraphApiContract, FastHierTouchesForwardHierNodesInForwardOrder) {
+TEST(GraphApiContract, GroupedStorageAndForwardVisitSameNodes) {
   hhds::GraphLibrary glib;
 
   auto leaf_io = glib.create_io("leaf_order");
@@ -244,10 +243,10 @@ TEST(GraphApiContract, FastHierTouchesForwardHierNodesInForwardOrder) {
   inst1.set_subnode(leaf_io);
   inst2.set_subnode(leaf_io);
 
-  EXPECT_EQ(hier_order(top->forward_hier()), hier_order(top->fast_hier()));
+  EXPECT_EQ(hier_order(top->grouped_hierarchy().nodes(hhds::Node_order::forward)), hier_order(top->grouped_hierarchy().nodes()));
 }
 
-TEST(GraphApiContract, FastFlatTouchesForwardFlatNodes) {
+TEST(GraphApiContract, DefinitionStorageAndForwardVisitSameNodes) {
   hhds::GraphLibrary glib;
 
   auto leaf_io = glib.create_io("leaf_flat_order");
@@ -263,8 +262,8 @@ TEST(GraphApiContract, FastFlatTouchesForwardFlatNodes) {
   inst1.set_subnode(leaf_io);
   inst2.set_subnode(leaf_io);
 
-  auto forward = flat_order(top->forward_flat());
-  auto fast    = flat_order(top->fast_flat());
+  auto forward = flat_order(top->definitions().nodes(hhds::Node_order::forward));
+  auto fast    = flat_order(top->definitions().nodes());
   std::sort(forward.begin(), forward.end());
   std::sort(fast.begin(), fast.end());
   EXPECT_EQ(forward, fast);
@@ -315,7 +314,7 @@ TEST(GraphApiContract, CustomAttributeDeclarations) {
   using hhds::attrs::name;
 
   // Flat attributes work from class traversal.
-  for (auto n : g->forward_class()) {
+  for (auto n : g->body().nodes(hhds::Node_order::forward)) {
     n.attr(name).set("adder");
     n.attr(bits).set(32);
   }
@@ -579,9 +578,9 @@ TEST(GraphApiContract, FineGrainedDeletion) {
   EXPECT_TRUE(g_c.is_valid());
   EXPECT_TRUE(g_y2.is_valid());
 
-  // forward_class skips tombstones.
+  // Ordered body traversal skips tombstones.
   std::vector<std::string> survivors;
-  for (auto node : g->forward_class()) {
+  for (auto node : g->body().nodes(hhds::Node_order::forward)) {
     EXPECT_TRUE(node.is_valid());
     if (node.attr(name).has()) {
       survivors.push_back(std::string(node.attr(name).get()));
@@ -592,9 +591,9 @@ TEST(GraphApiContract, FineGrainedDeletion) {
 }
 
 // Sample Example 3 (hier storage): hier attributes are keyed by hierarchy
-// position, so the same leaf node visited at two instantiations has two
+// occurrence path, so the same leaf node visited at two instantiations has two
 // independent values.
-TEST(GraphApiContract, HierAttributesAreKeyedByHierPosition) {
+TEST(GraphApiContract, HierAttributesAreKeyedByOccurrence) {
   hhds::GraphLibrary glib;
 
   auto leaf_io = glib.create_io("leaf");
@@ -611,9 +610,9 @@ TEST(GraphApiContract, HierAttributesAreKeyedByHierPosition) {
   using contract_attrs::hbits;
   using hhds::attrs::name;
 
-  // forward_hier enters the leaf body once per instantiation.
-  std::vector<hhds::Node> leaf_instances;
-  for (auto node : top->forward_hier()) {
+  // The grouped hierarchy enters the leaf body once per instantiation.
+  std::vector<hhds::Occurrence_node> leaf_instances;
+  for (auto node : top->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
     if (node.get_current_gid() == leaf->get_gid() && node.get_debug_nid() == leaf_n.get_debug_nid()) {
       leaf_instances.push_back(node);
     }
@@ -621,8 +620,8 @@ TEST(GraphApiContract, HierAttributesAreKeyedByHierPosition) {
   ASSERT_EQ(leaf_instances.size(), 2u);
 
   // Flat attr is shared across instances.
-  leaf_instances[0].attr(name).set("leaf_internal");
-  EXPECT_EQ(leaf_instances[1].attr(name).get(), "leaf_internal");
+  leaf_instances[0].base_node().attr(name).set("leaf_internal");
+  EXPECT_EQ(leaf_instances[1].base_node().attr(name).get(), "leaf_internal");
 
   // Hier attr is independent per instance.
   leaf_instances[0].attr(hbits).set(11);
@@ -632,7 +631,7 @@ TEST(GraphApiContract, HierAttributesAreKeyedByHierPosition) {
 }
 
 // A node reached via Pin_class::get_master_node() must expose the same edges as
-// one yielded by forward_class iteration — never a silently-empty range
+// one yielded by body iteration — never a silently-empty range
 // (small_todo.md). Build a -> b -> c, reach node b through a driver pin (not by
 // iterating), and confirm inp_edges()/out_edges() still see b's fan-in/fan-out.
 TEST(GraphApiContract, GetMasterNodeResolvesEdges) {

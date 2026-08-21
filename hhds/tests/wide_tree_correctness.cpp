@@ -40,13 +40,13 @@ inline IntNode add_child(hhds::Tree& tree, std::vector<int>& values, IntNode par
 inline int get_value(const std::vector<int>& values, IntNode node) { return values[static_cast<size_t>(node.get_debug_nid())]; }
 
 inline void preorder_values(const hhds::Tree& tree, const std::vector<int>& values, std::vector<int>& out) {
-  for (auto node : tree.pre_order()) {
+  for (auto node : tree.body().nodes(hhds::Tree_order::preorder)) {
     out.push_back(get_value(values, node));
   }
 }
 
 inline void postorder_values(hhds::Tree& tree, const std::vector<int>& values, std::vector<int>& out) {
-  for (auto node : tree.post_order()) {
+  for (auto node : tree.body().nodes(hhds::Tree_order::postorder)) {
     out.push_back(get_value(values, node));
   }
 }

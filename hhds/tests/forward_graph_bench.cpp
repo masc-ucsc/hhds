@@ -98,7 +98,7 @@ void drain(Span&& span) {
       hhds::GraphLibrary lib;                                  \
       auto               g = build_chain(lib, "top", N, LOOP); \
       state.ResumeTiming();                                    \
-      drain(g->forward_class());                               \
+      drain(g->body().nodes(hhds::Node_order::forward));       \
     }                                                          \
   }                                                            \
   BENCHMARK(bench_forward_class_##NAME);                       \
@@ -108,7 +108,7 @@ void drain(Span&& span) {
       hhds::GraphLibrary lib;                                  \
       auto               g = build_chain(lib, "top", N, LOOP); \
       state.ResumeTiming();                                    \
-      drain(g->fast_class());                                  \
+      drain(g->body().nodes());                                \
     }                                                          \
   }                                                            \
   BENCHMARK(bench_fast_class_##NAME);
@@ -116,46 +116,46 @@ void drain(Span&& span) {
 FWD_CHAIN_BENCH(chain_1k_straight, 1000, false)
 FWD_CHAIN_BENCH(chain_1k_loop, 1000, true)
 
-#define FWD_HIER_BENCH(NAME, K, M, LOOP)                    \
-  void bench_forward_flat_##NAME(benchmark::State& state) { \
-    for (auto _ : state) {                                  \
-      state.PauseTiming();                                  \
-      hhds::GraphLibrary lib;                               \
-      auto               top = build_hier(lib, K, M, LOOP); \
-      state.ResumeTiming();                                 \
-      drain(top->forward_flat());                           \
-    }                                                       \
-  }                                                         \
-  BENCHMARK(bench_forward_flat_##NAME);                     \
-  void bench_fast_flat_##NAME(benchmark::State& state) {    \
-    for (auto _ : state) {                                  \
-      state.PauseTiming();                                  \
-      hhds::GraphLibrary lib;                               \
-      auto               top = build_hier(lib, K, M, LOOP); \
-      state.ResumeTiming();                                 \
-      drain(top->fast_flat());                              \
-    }                                                       \
-  }                                                         \
-  BENCHMARK(bench_fast_flat_##NAME);                        \
-  void bench_forward_hier_##NAME(benchmark::State& state) { \
-    for (auto _ : state) {                                  \
-      state.PauseTiming();                                  \
-      hhds::GraphLibrary lib;                               \
-      auto               top = build_hier(lib, K, M, LOOP); \
-      state.ResumeTiming();                                 \
-      drain(top->forward_hier());                           \
-    }                                                       \
-  }                                                         \
-  BENCHMARK(bench_forward_hier_##NAME);                     \
-  void bench_fast_hier_##NAME(benchmark::State& state) {    \
-    for (auto _ : state) {                                  \
-      state.PauseTiming();                                  \
-      hhds::GraphLibrary lib;                               \
-      auto               top = build_hier(lib, K, M, LOOP); \
-      state.ResumeTiming();                                 \
-      drain(top->fast_hier());                              \
-    }                                                       \
-  }                                                         \
+#define FWD_HIER_BENCH(NAME, K, M, LOOP)                                \
+  void bench_forward_flat_##NAME(benchmark::State& state) {             \
+    for (auto _ : state) {                                              \
+      state.PauseTiming();                                              \
+      hhds::GraphLibrary lib;                                           \
+      auto               top = build_hier(lib, K, M, LOOP);             \
+      state.ResumeTiming();                                             \
+      drain(top->definitions().nodes(hhds::Node_order::forward));       \
+    }                                                                   \
+  }                                                                     \
+  BENCHMARK(bench_forward_flat_##NAME);                                 \
+  void bench_fast_flat_##NAME(benchmark::State& state) {                \
+    for (auto _ : state) {                                              \
+      state.PauseTiming();                                              \
+      hhds::GraphLibrary lib;                                           \
+      auto               top = build_hier(lib, K, M, LOOP);             \
+      state.ResumeTiming();                                             \
+      drain(top->definitions().nodes());                                \
+    }                                                                   \
+  }                                                                     \
+  BENCHMARK(bench_fast_flat_##NAME);                                    \
+  void bench_forward_hier_##NAME(benchmark::State& state) {             \
+    for (auto _ : state) {                                              \
+      state.PauseTiming();                                              \
+      hhds::GraphLibrary lib;                                           \
+      auto               top = build_hier(lib, K, M, LOOP);             \
+      state.ResumeTiming();                                             \
+      drain(top->grouped_hierarchy().nodes(hhds::Node_order::forward)); \
+    }                                                                   \
+  }                                                                     \
+  BENCHMARK(bench_forward_hier_##NAME);                                 \
+  void bench_fast_hier_##NAME(benchmark::State& state) {                \
+    for (auto _ : state) {                                              \
+      state.PauseTiming();                                              \
+      hhds::GraphLibrary lib;                                           \
+      auto               top = build_hier(lib, K, M, LOOP);             \
+      state.ResumeTiming();                                             \
+      drain(top->grouped_hierarchy().nodes());                          \
+    }                                                                   \
+  }                                                                     \
   BENCHMARK(bench_fast_hier_##NAME);
 
 FWD_HIER_BENCH(hier_100x100_straight, 100, 100, false)

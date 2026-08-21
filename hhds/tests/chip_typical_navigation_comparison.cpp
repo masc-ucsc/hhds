@@ -38,7 +38,7 @@ void build_hhds_tree(hhds::Tree& tree, int depth_val) {
 uint64_t test_hhds_navigation(const hhds::Tree& tree) {
   uint64_t operation_count = 0;
 
-  for (auto node : tree.pre_order()) {
+  for (auto node : tree.body().nodes(hhds::Tree_order::preorder)) {
     if (node.parent().is_valid()) {
       operation_count++;
     }

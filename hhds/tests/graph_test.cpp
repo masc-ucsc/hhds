@@ -47,21 +47,20 @@ std::vector<std::pair<hhds::Gid, hhds::Nid>> collect_gid_nids(Range&& range) {
 
 constexpr hhds::Nid node_of(hhds::Nid nid) { return nid & ~static_cast<hhds::Nid>(3); }
 
-// Resolve the hier-context Node_class for the user node (gid, nid) as visited by
-// top->forward_hier(). The cross-boundary tests below use distinct leaf modules,
-// so (gid, nid) identifies a node uniquely across the whole hierarchy walk.
-hhds::Node_class find_hier_node(hhds::Graph* top, hhds::Gid gid, hhds::Nid nid) {
-  hhds::Node_class found;
-  bool             ok   = false;
-  const hhds::Nid  want = node_of(nid);
-  for (auto n : top->forward_hier()) {
+// Resolve the occurrence for the user node (gid, nid). The cross-boundary
+// tests below use distinct leaf modules, so that pair identifies one node.
+hhds::Occurrence_node find_hier_node(hhds::Graph* top, hhds::Gid gid, hhds::Nid nid) {
+  hhds::Occurrence_node found;
+  bool                  ok   = false;
+  const hhds::Nid       want = node_of(nid);
+  for (auto n : top->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
     if (n.get_current_gid() == gid && node_of(n.get_debug_nid()) == want) {
       assert(!ok && "find_hier_node: node visited more than once");
       found = n;
       ok    = true;
     }
   }
-  assert(ok && "find_hier_node: node not found in forward_hier walk");
+  assert(ok && "find_hier_node: node not found in grouped hierarchy walk");
   return found;
 }
 
@@ -193,7 +192,7 @@ void test_native_subnode_loop_group_and_order() {
   }
   assert((indexes == std::vector<int64_t>{10, 8, 6, 4}));
 
-  const auto order = collect_nids(top->forward_class());
+  const auto order = collect_nids(top->body().nodes(hhds::Node_order::forward));
   assert(order.size() == 2);
   assert(order[0] == sub.get_debug_nid());
   assert(order[1] == consumer.get_debug_nid());
@@ -891,7 +890,7 @@ void test_out_edges_lazy_range() {
   }
 }
 
-void test_forward_class_returns_wrappers() {
+void test_body_forward_returns_wrappers() {
   hhds::GraphLibrary lib;
   auto               gio   = lib.create_io("top");
   auto               graph = gio->create_graph();
@@ -901,7 +900,7 @@ void test_forward_class_returns_wrappers() {
   n1.create_driver_pin().connect_sink(n2.create_sink_pin());
 
   std::vector<hhds::Nid> order;
-  for (auto node : graph->forward_class()) {
+  for (auto node : graph->body().nodes(hhds::Node_order::forward)) {
     assert(node.get_graph() == graph.get());
     assert(node.is_class());
     order.push_back(node.get_debug_nid());
@@ -912,7 +911,7 @@ void test_forward_class_returns_wrappers() {
   assert(order[1] == n2.get_debug_nid());
 }
 
-void test_backward_class_returns_wrappers() {
+void test_body_reverse_returns_wrappers() {
   hhds::GraphLibrary lib;
   auto               gio   = lib.create_io("top");
   auto               graph = gio->create_graph();
@@ -922,7 +921,7 @@ void test_backward_class_returns_wrappers() {
   n1.create_driver_pin().connect_sink(n2.create_sink_pin());
 
   std::vector<hhds::Nid> order;
-  for (auto node : graph->backward_class()) {
+  for (auto node : graph->body().nodes(hhds::Node_order::reverse)) {
     assert(node.get_graph() == graph.get());
     assert(node.is_class());
     order.push_back(node.get_debug_nid());
@@ -935,66 +934,66 @@ void test_backward_class_returns_wrappers() {
 
 void test_traversal_contexts_use_one_node_type() {
   hhds::GraphLibrary lib;
-  auto               leaf_io = lib.create_io("leaf");
-  auto               leaf    = leaf_io->create_graph();
-  auto               leaf_n  = leaf->create_node();
+  auto               leaf_io  = lib.create_io("leaf");
+  auto               leaf     = leaf_io->create_graph();
+  auto               leaf_n   = leaf->create_node();
+  auto               leaf_in  = leaf_n.create_sink_pin();
+  auto               leaf_out = leaf_n.create_driver_pin();
 
   auto top_io = lib.create_io("top");
   auto top    = top_io->create_graph();
   auto inst   = top->create_node();
   inst.set_subnode(leaf_io);
 
-  for (auto node : top->forward_class()) {
+  for (auto node : top->body().nodes(hhds::Node_order::forward)) {
     assert(node.is_class());
     assert(!node.is_flat());
     assert(!node.is_hier());
   }
 
   bool saw_flat_leaf = false;
-  for (auto node : top->forward_flat()) {
-    assert(node.is_flat());
+  for (auto node : top->definitions().nodes(hhds::Node_order::forward)) {
+    assert(node.is_class());
     assert(!node.is_hier());
-    if (node.get_debug_nid() == leaf_n.get_debug_nid()) {
-      auto pin = node.create_sink_pin();
-      assert(pin.is_flat());
+    if (node.get_graph() == leaf.get() && node.get_debug_nid() == leaf_n.get_debug_nid()) {
+      auto pin = node.get_sink_pin(leaf_in.get_port_id());
+      assert(pin.is_class());
       saw_flat_leaf = true;
     }
   }
   assert(saw_flat_leaf);
 
   bool saw_hier_leaf = false;
-  for (auto node : top->forward_hier()) {
-    assert(node.is_hier());
-    if (node.get_debug_nid() == leaf_n.get_debug_nid()) {
-      auto pin = node.create_driver_pin();
-      assert(pin.is_hier());
+  for (auto node : top->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
+    if (node.get_graph() == leaf.get() && node.get_debug_nid() == leaf_n.get_debug_nid()) {
+      auto pin = node.get_driver_pin(leaf_out.get_port_id());
+      assert(pin.path() == node.path());
       saw_hier_leaf = true;
     }
   }
   assert(saw_hier_leaf);
 
-  bool saw_backward_flat_leaf = false;
-  for (auto node : top->backward_flat()) {
-    assert(node.is_flat());
+  bool saw_reverse_definition_leaf = false;
+  for (auto node : top->definitions().nodes(hhds::Node_order::reverse)) {
+    assert(node.is_class());
     assert(!node.is_hier());
-    if (node.get_debug_nid() == leaf_n.get_debug_nid()) {
-      auto pin = node.create_sink_pin();
-      assert(pin.is_flat());
-      saw_backward_flat_leaf = true;
+    if (node.get_graph() == leaf.get() && node.get_debug_nid() == leaf_n.get_debug_nid()) {
+      auto pin = node.get_sink_pin(leaf_in.get_port_id());
+      assert(pin.is_class());
+      saw_reverse_definition_leaf = true;
     }
   }
-  assert(saw_backward_flat_leaf);
+  assert(saw_reverse_definition_leaf);
 
-  bool saw_backward_hier_leaf = false;
-  for (auto node : top->backward_hier()) {
-    assert(node.is_hier());
-    if (node.get_debug_nid() == leaf_n.get_debug_nid()) {
-      auto pin = node.create_driver_pin();
-      assert(pin.is_hier());
-      saw_backward_hier_leaf = true;
+  bool saw_reverse_grouped_leaf = false;
+  for (auto node : top->grouped_hierarchy().nodes(hhds::Node_order::reverse)) {
+    if (node.get_graph() == leaf.get() && node.get_debug_nid() == leaf_n.get_debug_nid()) {
+      auto pin = node.get_driver_pin(leaf_out.get_port_id());
+      assert(pin.path() == node.path());
+      saw_reverse_grouped_leaf = true;
     }
   }
-  assert(saw_backward_hier_leaf);
+  assert(saw_reverse_grouped_leaf);
 }
 
 void test_forward_loop_break_is_source() {
@@ -1022,7 +1021,7 @@ void test_forward_loop_break_is_source() {
   assert(!n2.is_loop_break());
 
   std::vector<hhds::Nid> order;
-  for (auto node : graph->forward_class()) {
+  for (auto node : graph->body().nodes(hhds::Node_order::forward)) {
     order.push_back(node.get_debug_nid());
   }
   assert(order.size() == 3);
@@ -1046,7 +1045,7 @@ void test_backward_loop_break_is_sink() {
   n3.create_driver_pin().connect_sink(n2.create_sink_pin());
 
   std::vector<hhds::Nid> order;
-  for (auto node : graph->backward_class()) {
+  for (auto node : graph->body().nodes(hhds::Node_order::reverse)) {
     order.push_back(node.get_debug_nid());
   }
   assert(order.size() == 3);
@@ -1079,14 +1078,14 @@ void test_forward_loop_break_visit_flags() {
   using V      = std::vector<hhds::Nid>;
 
   // Default == (loop_break_first=true, loop_break_last=false): flop visited first.
-  assert(collect_nids(graph->forward_class()) == (V{a, b, c}));
-  assert(collect_nids(graph->forward_class(true, false)) == (V{a, b, c}));
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::forward)) == (V{a, b, c}));
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::forward, hhds::Cut_placement::first)) == (V{a, b, c}));
   // See the flop only at the end.
-  assert(collect_nids(graph->forward_class(false, true)) == (V{a, c, b}));
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::forward, hhds::Cut_placement::last)) == (V{a, c, b}));
   // See the flop both first and last.
-  assert(collect_nids(graph->forward_class(true, true)) == (V{a, b, c, b}));
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::forward, hhds::Cut_placement::both)) == (V{a, b, c, b}));
   // Never see the flop (but it still breaks the cycle for n3).
-  assert(collect_nids(graph->forward_class(false, false)) == (V{a, c}));
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::forward, hhds::Cut_placement::omit)) == (V{a, c}));
 }
 
 void test_backward_loop_break_visit_flags() {
@@ -1110,14 +1109,14 @@ void test_backward_loop_break_visit_flags() {
   const auto c = n3.get_debug_nid();
   using V      = std::vector<hhds::Nid>;
 
-  assert(collect_nids(graph->backward_class()) == (V{c, b, a}));
-  assert(collect_nids(graph->backward_class(true, false)) == (V{c, b, a}));
-  assert(collect_nids(graph->backward_class(false, true)) == (V{c, a, b}));
-  assert(collect_nids(graph->backward_class(true, true)) == (V{c, b, a, b}));
-  assert(collect_nids(graph->backward_class(false, false)) == (V{c, a}));
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse)) == (V{c, b, a}));
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse, hhds::Cut_placement::first)) == (V{c, b, a}));
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse, hhds::Cut_placement::last)) == (V{c, a, b}));
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse, hhds::Cut_placement::both)) == (V{c, b, a, b}));
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse, hhds::Cut_placement::omit)) == (V{c, a}));
 }
 
-void test_forward_hier_loop_break_both_descends_once() {
+void test_grouped_forward_cut_both_descends_once() {
   // A loop_break flop instance emitted both first and last (loop_break_first &&
   // loop_break_last) must have its subnode body walked only once — on the
   // first emission, not the LoopLast replay.
@@ -1139,11 +1138,11 @@ void test_forward_hier_loop_break_both_descends_once() {
       {leaf->get_gid(),    leaf_n.get_debug_nid()},
       { top->get_gid(), flop_inst.get_debug_nid()},
   };
-  assert(collect_gid_nids(top->forward_hier(/*loop_break_first=*/true, /*loop_break_last=*/true)) == expected);
+  assert(collect_gid_nids(top->grouped_hierarchy().nodes(hhds::Node_order::forward, hhds::Cut_placement::both)) == expected);
 }
 
-void test_forward_hier_globally_topological_across_stateful_sub() {
-  // Regression: forward_hier must be a flat-module TOPOLOGICAL order — a driver
+void test_grouped_forward_globally_topological_across_stateful_sub() {
+  // Regression: ordered grouped hierarchy must be a global TOPOLOGICAL order — a driver
   // precedes its consumer even ACROSS a module boundary. The old per-body DFS
   // emitted a stateful (loop_break) submodule's whole subtree at the
   // loop_break_first slot, so the submodule's INPUT-side combinational logic came
@@ -1176,24 +1175,24 @@ void test_forward_hier_globally_topological_across_stateful_sub() {
   g.create_sink_pin().connect_driver(top->get_input_pin("top_in"));
   s.create_sink_pin("din").connect_driver(g.create_driver_pin());  // g drives S.din
 
-  const auto order = collect_gid_nids(top->forward_hier());
+  const auto order = collect_gid_nids(top->grouped_hierarchy().nodes(hhds::Node_order::forward));
   auto       pos   = [&](hhds::Gid gid, hhds::Nid nid) -> size_t {
     for (size_t i = 0; i < order.size(); ++i) {
       if (order[i].first == gid && node_of(order[i].second) == node_of(nid)) {
         return i;
       }
     }
-    assert(false && "node not found in forward_hier walk");
+    assert(false && "node not found in grouped forward walk");
     return 0;
   };
   // g (drives S.din) must precede cs (reads S.din), though cs lives inside the
   // loop_break submodule. The buggy DFS yielded [S, cs, g] (cs before g).
   assert(pos(top->get_gid(), g.get_debug_nid()) < pos(reg->get_gid(), cs.get_debug_nid())
-         && "forward_hier: cross-boundary driver must precede its consumer");
+         && "grouped forward: cross-boundary driver must precede its consumer");
 }
 
-void test_backward_hier_globally_topological_across_stateful_sub() {
-  // Symmetric regression for backward_hier: a flat-module REVERSE topological
+void test_grouped_reverse_globally_topological_across_stateful_sub() {
+  // Symmetric regression: a grouped REVERSE topological
   // order, so a CONSUMER precedes its driver even across a module boundary. The
   // old DFS emitted a stateful submodule's OUTPUT-side logic before the parent
   // node that consumes the submodule output.
@@ -1213,19 +1212,19 @@ void test_backward_hier_globally_topological_across_stateful_sub() {
   auto g = top->create_node();
   g.create_sink_pin().connect_driver(s.create_driver_pin("dout"));  // g reads S.dout
 
-  const auto order = collect_gid_nids(top->backward_hier());
+  const auto order = collect_gid_nids(top->grouped_hierarchy().nodes(hhds::Node_order::reverse));
   auto       pos   = [&](hhds::Gid gid, hhds::Nid nid) -> size_t {
     for (size_t i = 0; i < order.size(); ++i) {
       if (order[i].first == gid && node_of(order[i].second) == node_of(nid)) {
         return i;
       }
     }
-    assert(false && "node not found in backward_hier walk");
+    assert(false && "node not found in grouped reverse walk");
     return 0;
   };
   // g (reads S.dout) must precede cs (drives S.dout inside the submodule).
   assert(pos(top->get_gid(), g.get_debug_nid()) < pos(reg->get_gid(), cs.get_debug_nid())
-         && "backward_hier: cross-boundary consumer must precede its driver");
+         && "grouped reverse: cross-boundary consumer must precede its driver");
 }
 
 void test_forward_out_of_order_uses_pending_list() {
@@ -1244,7 +1243,7 @@ void test_forward_out_of_order_uses_pending_list() {
   n3.create_driver_pin().connect_sink(n1.create_sink_pin());
 
   std::vector<hhds::Nid> order;
-  for (auto node : graph->forward_class()) {
+  for (auto node : graph->body().nodes(hhds::Node_order::forward)) {
     order.push_back(node.get_debug_nid());
   }
   assert(order.size() == 3);
@@ -1266,7 +1265,7 @@ void test_backward_out_of_order_uses_pending_list() {
   n3.create_driver_pin().connect_sink(n1.create_sink_pin());
 
   std::vector<hhds::Nid> order;
-  for (auto node : graph->backward_class()) {
+  for (auto node : graph->body().nodes(hhds::Node_order::reverse)) {
     order.push_back(node.get_debug_nid());
   }
   assert(order.size() == 3);
@@ -1293,13 +1292,13 @@ void test_backward_cache_invalidates_after_set_type() {
   n2.create_driver_pin().connect_sink(n1.create_sink_pin());
 
   const std::vector<hhds::Nid> before{n2.get_debug_nid(), n1.get_debug_nid()};
-  assert(collect_nids(graph->backward_class()) == before);
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse)) == before);
 
   n2.set_type(3);
   assert(n2.is_loop_break());
 
   const std::vector<hhds::Nid> after{n2.get_debug_nid(), n1.get_debug_nid()};
-  assert(collect_nids(graph->backward_class()) == after);
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse)) == after);
 }
 
 void test_backward_cache_invalidates_after_edge_mutation() {
@@ -1312,12 +1311,12 @@ void test_backward_cache_invalidates_after_edge_mutation() {
   auto n3 = graph->create_node();
 
   const std::vector<hhds::Nid> initial{n3.get_debug_nid(), n2.get_debug_nid(), n1.get_debug_nid()};
-  assert(collect_nids(graph->backward_class()) == initial);
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse)) == initial);
 
   n3.create_driver_pin().connect_sink(n1.create_sink_pin());
 
   const std::vector<hhds::Nid> after_edge{n2.get_debug_nid(), n1.get_debug_nid(), n3.get_debug_nid()};
-  assert(collect_nids(graph->backward_class()) == after_edge);
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse)) == after_edge);
 }
 
 void test_backward_diamond_fan_in() {
@@ -1344,7 +1343,7 @@ void test_backward_diamond_fan_in() {
       n2.get_debug_nid(),
       n1.get_debug_nid(),
   };
-  assert(collect_nids(graph->backward_class()) == expected);
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse)) == expected);
 }
 
 void test_backward_named_pin_and_declared_io_edges() {
@@ -1362,7 +1361,7 @@ void test_backward_named_pin_and_declared_io_edges() {
   n2.create_driver_pin(9).connect_sink(graph->get_output_pin("out"));
 
   const std::vector<hhds::Nid> expected{n2.get_debug_nid(), n1.get_debug_nid()};
-  assert(collect_nids(graph->backward_class()) == expected);
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse)) == expected);
 }
 
 void test_backward_skips_tombstones_after_delete() {
@@ -1375,12 +1374,12 @@ void test_backward_skips_tombstones_after_delete() {
   auto n3 = graph->create_node();
 
   const std::vector<hhds::Nid> initial{n3.get_debug_nid(), n2.get_debug_nid(), n1.get_debug_nid()};
-  assert(collect_nids(graph->backward_class()) == initial);
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse)) == initial);
 
   n2.del_node();
 
   const std::vector<hhds::Nid> after_delete{n3.get_debug_nid(), n1.get_debug_nid()};
-  assert(collect_nids(graph->backward_class()) == after_delete);
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse)) == after_delete);
 }
 
 void test_backward_cycle_tail_without_loop_break() {
@@ -1395,7 +1394,7 @@ void test_backward_cycle_tail_without_loop_break() {
   n2.create_driver_pin().connect_sink(n1.create_sink_pin());
 
   const std::vector<hhds::Nid> expected{n2.get_debug_nid(), n1.get_debug_nid()};
-  assert(collect_nids(graph->backward_class()) == expected);
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse)) == expected);
 }
 
 // Incremental cache patching: deleting an edge after a traversal must keep
@@ -1417,8 +1416,8 @@ void test_traversal_caches_after_edge_delete() {
   // Prime both caches.
   const std::vector<hhds::Nid> fwd_chain{n1.get_debug_nid(), n2.get_debug_nid(), n3.get_debug_nid()};
   const std::vector<hhds::Nid> bwd_chain{n3.get_debug_nid(), n2.get_debug_nid(), n1.get_debug_nid()};
-  assert(collect_nids(graph->forward_class()) == fwd_chain);
-  assert(collect_nids(graph->backward_class()) == bwd_chain);
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::forward)) == fwd_chain);
+  assert(collect_nids(graph->body().nodes(hhds::Node_order::reverse)) == bwd_chain);
 
   // Delete the n1→n2 edge. n1 and {n2,n3} are now disconnected.
   for (auto e : n1d.out_edges()) {
@@ -1430,8 +1429,8 @@ void test_traversal_caches_after_edge_delete() {
 
   // All nodes still emit. Forward must list n1 before n2 is unconstrained but
   // n2 before n3 still holds; backward is symmetric.
-  auto fwd = collect_nids(graph->forward_class());
-  auto bwd = collect_nids(graph->backward_class());
+  auto fwd = collect_nids(graph->body().nodes(hhds::Node_order::forward));
+  auto bwd = collect_nids(graph->body().nodes(hhds::Node_order::reverse));
   assert(fwd.size() == 3 && bwd.size() == 3);
   auto pos
       = [](const std::vector<hhds::Nid>& v, hhds::Nid x) { return std::distance(v.begin(), std::find(v.begin(), v.end(), x)); };
@@ -1455,14 +1454,14 @@ void test_traversal_caches_after_pin_delete() {
   n2d.connect_sink(n3.create_sink_pin());
 
   // Prime caches.
-  (void)collect_nids(graph->forward_class());
-  (void)collect_nids(graph->backward_class());
+  (void)collect_nids(graph->body().nodes(hhds::Node_order::forward));
+  (void)collect_nids(graph->body().nodes(hhds::Node_order::reverse));
 
   // Removing n2's driver pin severs n2→n3.
   n2d.del_pin();
 
-  auto fwd = collect_nids(graph->forward_class());
-  auto bwd = collect_nids(graph->backward_class());
+  auto fwd = collect_nids(graph->body().nodes(hhds::Node_order::forward));
+  auto bwd = collect_nids(graph->body().nodes(hhds::Node_order::reverse));
   assert(fwd.size() == 3 && bwd.size() == 3);
   auto pos
       = [](const std::vector<hhds::Nid>& v, hhds::Nid x) { return std::distance(v.begin(), std::find(v.begin(), v.end(), x)); };
@@ -1483,12 +1482,12 @@ void test_traversal_caches_after_back_edge_add() {
   auto n3 = graph->create_node();
 
   // Prime caches with no edges.
-  (void)collect_nids(graph->forward_class());
+  (void)collect_nids(graph->body().nodes(hhds::Node_order::forward));
 
   // n3 (later idx) → n1 (earlier idx): driver after sink in cached order.
   n3.create_driver_pin().connect_sink(n1.create_sink_pin());
 
-  auto fwd = collect_nids(graph->forward_class());
+  auto fwd = collect_nids(graph->body().nodes(hhds::Node_order::forward));
   assert(fwd.size() == 3);
   auto pos
       = [](const std::vector<hhds::Nid>& v, hhds::Nid x) { return std::distance(v.begin(), std::find(v.begin(), v.end(), x)); };
@@ -1496,7 +1495,7 @@ void test_traversal_caches_after_back_edge_add() {
   assert(pos(fwd, n3.get_debug_nid()) < pos(fwd, n1.get_debug_nid()));
 }
 
-void test_backward_flat_exact_order_and_shared_body_dedup() {
+void test_reverse_definitions_are_caller_first_and_deduplicated() {
   hhds::GraphLibrary lib;
 
   auto leaf_io = lib.create_io("leaf");
@@ -1514,14 +1513,14 @@ void test_backward_flat_exact_order_and_shared_body_dedup() {
 
   const std::vector<std::pair<hhds::Gid, hhds::Nid>> expected{
       { top->get_gid(),   inst2.get_debug_nid()},
+      { top->get_gid(),   inst1.get_debug_nid()},
       {leaf->get_gid(), leaf_n2.get_debug_nid()},
       {leaf->get_gid(), leaf_n1.get_debug_nid()},
-      { top->get_gid(),   inst1.get_debug_nid()},
   };
-  assert(collect_gid_nids(top->backward_flat()) == expected);
+  assert(collect_gid_nids(top->definitions().nodes(hhds::Node_order::reverse)) == expected);
 }
 
-void test_backward_hier_exact_order_and_shared_body_per_instance() {
+void test_reverse_grouped_hierarchy_visits_shared_body_per_instance() {
   hhds::GraphLibrary lib;
 
   auto leaf_io = lib.create_io("leaf");
@@ -1538,21 +1537,21 @@ void test_backward_hier_exact_order_and_shared_body_per_instance() {
   inst2.set_subnode(leaf_io);
 
   const std::vector<std::pair<hhds::Gid, hhds::Nid>> expected{
-      { top->get_gid(),   inst2.get_debug_nid()},
-      {leaf->get_gid(), leaf_n2.get_debug_nid()},
-      {leaf->get_gid(), leaf_n1.get_debug_nid()},
       { top->get_gid(),   inst1.get_debug_nid()},
       {leaf->get_gid(), leaf_n2.get_debug_nid()},
       {leaf->get_gid(), leaf_n1.get_debug_nid()},
+      { top->get_gid(),   inst2.get_debug_nid()},
+      {leaf->get_gid(), leaf_n2.get_debug_nid()},
+      {leaf->get_gid(), leaf_n1.get_debug_nid()},
   };
-  assert(collect_gid_nids(top->backward_hier()) == expected);
+  assert(collect_gid_nids(top->grouped_hierarchy().nodes(hhds::Node_order::reverse)) == expected);
 }
 
-void test_backward_hier_descends_into_nested_subnodes() {
-  // 3-level nesting: top -> mid -> leaf. backward_hier from top must yield
+void test_grouped_reverse_descends_into_nested_subnodes() {
+  // 3-level nesting: top -> mid -> leaf. Reverse grouped traversal must yield
   // each instance node first, then recurse into its body in backward order,
   // popping back to the parent's CONST. Mirrors the forward
-  // test_hier_range_descends_into_nested_subnodes shape.
+  // the same hierarchy shape as the instance-group traversal.
   hhds::GraphLibrary lib;
 
   auto leaf_gio = lib.create_io("leaf");
@@ -1572,7 +1571,7 @@ void test_backward_hier_descends_into_nested_subnodes() {
       {top->get_gid(),  top_inst_of_mid.get_debug_nid()},
       {mid->get_gid(), mid_inst_of_leaf.get_debug_nid()},
   };
-  assert(collect_gid_nids(top->backward_hier()) == expected);
+  assert(collect_gid_nids(top->grouped_hierarchy().nodes(hhds::Node_order::reverse)) == expected);
 }
 
 void test_subnode_with_loop_break_pin_marks_node() {
@@ -1604,8 +1603,8 @@ void test_subnode_with_loop_break_pin_marks_node() {
   assert((buf_inst.get_type() & 1) == 0);
 }
 
-void test_hier_range_flat_graph_is_empty() {
-  // A graph with no subnodes should produce an empty hier_range — even when
+void test_instance_groups_flat_graph_is_empty() {
+  // A graph with no subnodes should produce no instance groups — even when
   // it has plain (non-subnode) graph nodes and IO pins.
   hhds::GraphLibrary lib;
   auto               gio = lib.create_io("flat");
@@ -1616,16 +1615,16 @@ void test_hier_range_flat_graph_is_empty() {
   (void)graph->create_node();
 
   size_t count = 0;
-  for (auto inst : graph->hier_range()) {
+  for (auto inst : graph->grouped_hierarchy().instances()) {
     (void)inst;
     ++count;
   }
   assert(count == 0);
 }
 
-void test_hier_range_yields_one_per_subnode() {
+void test_instance_groups_yield_one_per_subnode() {
   // Two leaf submodules, three top-level instances (two of leaf_a, one of
-  // leaf_b). hier_range should yield exactly 3 entries — one per instance,
+  // leaf_b). instances() should yield exactly 3 entries — one per instance,
   // even when multiple instances share a GraphIO.
   hhds::GraphLibrary lib;
 
@@ -1646,7 +1645,7 @@ void test_hier_range_yields_one_per_subnode() {
 
   std::vector<hhds::Gid> targets;
   std::vector<hhds::Nid> parents;
-  for (auto inst : top->hier_range()) {
+  for (auto inst : top->grouped_hierarchy().instances()) {
     targets.push_back(inst.get_target_gid());
     parents.push_back(inst.get_parent_nid());
     assert(inst.get_parent_graph() == top.get());
@@ -1662,8 +1661,8 @@ void test_hier_range_yields_one_per_subnode() {
   assert(parents[2] == i3.get_debug_nid());
 }
 
-void test_hier_range_descends_into_nested_subnodes() {
-  // top contains mid; mid contains leaf. hier_range from top should yield
+void test_instance_groups_descend_into_nested_subnodes() {
+  // top contains mid; mid contains leaf. instances() from top should yield
   // both the mid instance AND the leaf instance (seen through mid's body),
   // in that order (mid first, then leaf via recursion).
   hhds::GraphLibrary lib;
@@ -1682,7 +1681,7 @@ void test_hier_range_descends_into_nested_subnodes() {
   top_inst_of_mid.set_subnode(mid_gio);
 
   std::vector<hhds::Gid> targets;
-  for (auto inst : top->hier_range()) {
+  for (auto inst : top->grouped_hierarchy().instances()) {
     targets.push_back(inst.get_target_gid());
   }
   assert(targets.size() == 2);
@@ -1691,11 +1690,11 @@ void test_hier_range_descends_into_nested_subnodes() {
 }
 
 #ifdef NDEBUG
-void test_hier_range_cycle_guard() {
+void test_instance_groups_cycle_guard() {
   // Release-only: structure-tree cycles are blocked at insert time by the
   // debug assertion in set_subnode (would_create_cycle). When asserts are
-  // off, the runtime guard in HierIterator (active_graphs_) is the sole
-  // line of defense — verify it still terminates on a self-referencing
+  // off, the hierarchy view walker's `active` graph set is the sole line
+  // of defense — verify it still terminates on a self-referencing
   // submodule and doesn't infinite-loop.
   hhds::GraphLibrary lib;
 
@@ -1705,16 +1704,16 @@ void test_hier_range_cycle_guard() {
   inst.set_subnode(self_gio);
 
   size_t count = 0;
-  for (auto it : self->hier_range()) {
+  for (auto it : self->grouped_hierarchy().instances()) {
     assert(it.get_target_gid() == self_gio->get_gid());
     ++count;
-    assert(count < 100 && "cycle guard failed — hier_range is not terminating");
+    assert(count < 100 && "cycle guard failed — instance traversal is not terminating");
   }
   assert(count == 1);
 }
 #endif
 
-void test_hier_range_target_graph_and_parent_node() {
+void test_instance_group_target_graph_and_parent_node() {
   // get_target_graph() should resolve to the actual body, and
   // get_parent_node() should return a valid hier-context Node_class usable
   // for attribute queries.
@@ -1727,7 +1726,7 @@ void test_hier_range_target_graph_and_parent_node() {
   auto inst    = top->create_node();
   inst.set_subnode(leaf_gio);
 
-  auto hier = top->hier_range();
+  auto hier = top->grouped_hierarchy().instances();
   auto it   = hier.begin();
   assert(it != hier.end());
   auto handle = *it;
@@ -1740,7 +1739,7 @@ void test_hier_range_target_graph_and_parent_node() {
 
 void test_set_subnode_linear_deep_chain_ok() {
   // Linear chain a -> b -> c -> d. No cycle, so set_subnode must succeed
-  // at every level. Walking a's hier_range yields 3 instances.
+  // at every level. Walking a's instance groups yields 3 instances.
   hhds::GraphLibrary lib;
   auto               a_gio = lib.create_io("a");
   auto               a     = a_gio->create_graph();
@@ -1756,7 +1755,7 @@ void test_set_subnode_linear_deep_chain_ok() {
   c->create_node().set_subnode(d_gio);
 
   size_t count = 0;
-  for (auto inst : a->hier_range()) {
+  for (auto inst : a->grouped_hierarchy().instances()) {
     (void)inst;
     ++count;
   }
@@ -1784,7 +1783,7 @@ void test_set_subnode_diamond_ok() {
 
   // top -> b1 -> leaf, top -> b2 -> leaf : 4 instances total.
   size_t count = 0;
-  for (auto inst : top->hier_range()) {
+  for (auto inst : top->grouped_hierarchy().instances()) {
     (void)inst;
     ++count;
   }
@@ -1828,6 +1827,53 @@ void test_set_subnode_self_cycle_aborts() {
   assert(aborted && "self-cycle did not trigger the set_subnode assertion");
 }
 
+// A view (Body_view / Grouped_hierarchy_view / ...) holds a raw Graph* and is
+// freely copyable, so it can outlive the delete_graph() that gutted its graph.
+// Graph::body() asserts when the view is handed out; these pin the re-check at
+// the point of USE, which is what a stale view actually hits. The library keeps
+// no shared_ptr after delete_graph, so the local `g` is what keeps the
+// tombstoned Graph object alive for the assert to read.
+void test_stale_body_view_aborts() {
+  const bool aborted = expect_assert_abort([]() {
+    hhds::GraphLibrary lib;
+    auto               gio = lib.create_io("victim");
+    auto               g   = gio->create_graph();
+    (void)g->create_node();
+    auto view = g->body();
+    lib.delete_graph(g);
+    (void)view.nodes(hhds::Node_order::forward);
+  });
+  assert(aborted && "stale Body_view::nodes(forward) did not assert");
+}
+
+void test_stale_body_view_storage_order_aborts() {
+  const bool aborted = expect_assert_abort([]() {
+    hhds::GraphLibrary lib;
+    auto               gio = lib.create_io("victim");
+    auto               g   = gio->create_graph();
+    (void)g->create_node();
+    auto view = g->body();
+    lib.delete_graph(g);
+    for (auto node : view.nodes()) {
+      (void)node;
+    }
+  });
+  assert(aborted && "stale Body_view::nodes() did not assert");
+}
+
+void test_stale_hierarchy_view_aborts() {
+  const bool aborted = expect_assert_abort([]() {
+    hhds::GraphLibrary lib;
+    auto               gio = lib.create_io("victim");
+    auto               g   = gio->create_graph();
+    (void)g->create_node();
+    auto view = g->grouped_hierarchy();
+    lib.delete_graph(g);
+    (void)view.nodes();
+  });
+  assert(aborted && "stale Grouped_hierarchy_view::nodes() did not assert");
+}
+
 void test_set_subnode_indirect_cycle_aborts() {
   // Indirect cycle: a contains b, then b tries to contain a. Exercises the
   // BFS path of would_create_cycle (not just the self-gid short circuit).
@@ -1863,7 +1909,7 @@ void test_set_subnode_retarget_ok() {
 
   size_t    count       = 0;
   hhds::Gid last_target = hhds::Gid_invalid;
-  for (auto h : a->hier_range()) {
+  for (auto h : a->grouped_hierarchy().instances()) {
     last_target = h.get_target_gid();
     ++count;
   }
@@ -2013,7 +2059,7 @@ void test_copy_from() {
     }
     auto   g = lib.get_graph(gio->get_gid());
     size_t c = 0;
-    for (auto n : g->fast_class()) {
+    for (auto n : g->body().nodes()) {
       (void)n;
       ++c;
     }
@@ -2172,7 +2218,7 @@ void test_hier_edges_cross_one_boundary_EXPECTED() {
   // inp_edges: driver resolves up to src (top), NOT leaf's input pin "a".
   const auto ins = buf_h.inp_edges();
   assert(ins.size() == 1);
-  const auto drv = ins[0].driver;
+  const auto drv = ins.front().driver;
   assert(drv.get_current_gid() == top->get_gid());
   assert(node_of(drv.get_master_node().get_debug_nid()) == node_of(src.get_debug_nid()));
   assert(drv.is_driver());
@@ -2241,7 +2287,7 @@ void test_hier_edges_cross_up_then_down_EXPECTED() {
   {
     const auto ins = bufB_h.inp_edges();
     assert(ins.size() == 1);
-    const auto drv = ins[0].driver;
+    const auto drv = ins.front().driver;
     assert(drv.get_current_gid() == leafA->get_gid());
     assert(node_of(drv.get_master_node().get_debug_nid()) == node_of(bufA.get_debug_nid()));
     assert(drv.is_driver());
@@ -2250,7 +2296,7 @@ void test_hier_edges_cross_up_then_down_EXPECTED() {
   {
     const auto ins = bufA_h.inp_edges();
     assert(ins.size() == 1);
-    const auto drv = ins[0].driver;
+    const auto drv = ins.front().driver;
     assert(drv.get_current_gid() == top->get_gid());
     assert(node_of(drv.get_master_node().get_debug_nid()) == node_of(top->get_input_node().get_debug_nid()));
     assert(drv.get_pin_name() == "pi");
@@ -2307,7 +2353,7 @@ void test_hier_edges_three_levels_EXPECTED() {
   {
     const auto ins = bufL_h.inp_edges();
     assert(ins.size() == 1);
-    const auto drv = ins[0].driver;
+    const auto drv = ins.front().driver;
     assert(drv.get_current_gid() == top->get_gid());
     assert(node_of(drv.get_master_node().get_debug_nid()) == node_of(top->get_input_node().get_debug_nid()));
     assert(drv.get_pin_name() == "pi");
@@ -2401,8 +2447,8 @@ void test_hier_edges_reused_cell_distinct_paths_EXPECTED() {
   top->get_input_pin("pi").connect_sink(mi.create_sink_pin(1));           // top.pi -> mi.a
 
   // Both B-instance copies of bufR appear in the hier walk with DISTINCT chains.
-  std::vector<hhds::Node_class> matches;
-  for (auto n : top->forward_hier()) {
+  std::vector<hhds::Occurrence_node> matches;
+  for (auto n : top->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
     if (n.get_current_gid() == b->get_gid() && node_of(n.get_debug_nid()) == node_of(bufR.get_debug_nid())) {
       matches.push_back(n);
     }
@@ -2411,17 +2457,16 @@ void test_hier_edges_reused_cell_distinct_paths_EXPECTED() {
 
   int checked = 0;
   for (const auto& n : matches) {
-    const auto path = n.get_hier_path();
-    assert(path);
-    const auto ins = n.inp_edges();
+    const auto& path = n.path();
+    const auto  ins  = n.inp_edges();
     assert(ins.size() == 1);
-    const auto drv = ins[0].driver;
-    if (path->size() == 1) {  // shallow: top -> bdir -> B
+    const auto drv = ins.front().driver;
+    if (path.steps().size() == 1) {  // shallow: top -> bdir -> B
       assert(drv.get_current_gid() == top->get_gid());
       assert(node_of(drv.get_master_node().get_debug_nid()) == node_of(src_shallow.get_debug_nid()));
       ++checked;
     } else {  // deep: top -> mi -> mid -> bi -> B
-      assert(path->size() == 2);
+      assert(path.steps().size() == 2);
       assert(drv.get_current_gid() == top->get_gid());
       assert(node_of(drv.get_master_node().get_debug_nid()) == node_of(top->get_input_node().get_debug_nid()));
       assert(drv.get_pin_name() == "pi");
@@ -2471,7 +2516,7 @@ void test_get_hier_name_EXPECTED() {
   assert(li_h.get_hier_name() == "u_mi.u_li");
 
   // Pin (node-as-pin == the node, no port suffix); carries the same chain.
-  assert(buf_h.create_driver_pin().get_hier_name() == "u_mi.u_li.u_buf");
+  assert(buf_h.get_driver_pin(0).get_hier_name() == "u_mi.u_li.u_buf");
 
   // Transparent path level: an UNNAMED path instance contributes NO component
   // (not the module name, not "n<id>"), so a re-partition wrapper with anonymous
@@ -2512,16 +2557,16 @@ void test_get_hier_name_resolved_leaves_EXPECTED() {
   top->create_constant().connect_sink(r2.create_sink_pin(1));  // constant -> r2.a
 
   std::vector<std::string> names;
-  for (auto n : top->forward_hier()) {
+  for (auto n : top->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
     if (n.get_current_gid() != l->get_gid() || node_of(n.get_debug_nid()) != node_of(buf.get_debug_nid())) {
       continue;
     }
     const auto ins = n.inp_edges();
     assert(ins.size() == 1);
-    const auto drv = ins[0].driver;
+    const auto drv = ins.front().driver;
     names.push_back(drv.get_hier_name());
     // get_master_node() must keep the resolved leaf's instance chain (no drop).
-    assert(drv.get_master_node().get_hier_path() == drv.get_hier_path());
+    assert(drv.get_master_node().path() == drv.path());
   }
   std::sort(names.begin(), names.end());
   assert((names == std::vector<std::string>{"clk", "const"}));  // not "n1.clk" / "n3"
@@ -2607,7 +2652,7 @@ size_t hier_pos_of(const std::vector<std::pair<hhds::Gid, hhds::Nid>>& order, hh
   return found;
 }
 
-void test_forward_hier_comb_and_flop_outputs_of_stateful_sub() {
+void test_grouped_forward_comb_and_flop_outputs_of_stateful_sub() {
   // The whole point of loop_break being a LEAF property: a submodule that mixes
   // combinational and stateful outputs must not have its combinational cone
   // dragged to the flop's slot. `add` (o1 = a + b) is ordinary logic and stays
@@ -2622,7 +2667,7 @@ void test_forward_hier_comb_and_flop_outputs_of_stateful_sub() {
   assert(f.inst.is_loop_break());
   assert(!f.use1.is_loop_break() && !f.use2.is_loop_break());
 
-  const auto order   = collect_gid_nids(f.top->forward_hier());
+  const auto order   = collect_gid_nids(f.top->grouped_hierarchy().nodes(hhds::Node_order::forward));
   const auto sub_gid = f.sub->get_gid();
   const auto top_gid = f.top->get_gid();
   // Every node is visited exactly once — the counter's self-edge must not make
@@ -2664,7 +2709,7 @@ void test_forward_hier_comb_and_flop_outputs_of_stateful_sub() {
   const auto use1_h  = find_hier_node(f.top.get(), top_gid, f.use1.get_debug_nid());
   const auto use1_in = use1_h.inp_edges();
   assert(use1_in.size() == 1);
-  const auto use1_drv = use1_in[0].driver.get_master_node();
+  const auto use1_drv = use1_in.front().driver.get_master_node();
   assert(use1_drv.get_current_gid() == sub_gid);
   assert(node_of(use1_drv.get_debug_nid()) == node_of(f.add.get_debug_nid()));
 
@@ -2672,12 +2717,12 @@ void test_forward_hier_comb_and_flop_outputs_of_stateful_sub() {
   const auto use2_h  = find_hier_node(f.top.get(), top_gid, f.use2.get_debug_nid());
   const auto use2_in = use2_h.inp_edges();
   assert(use2_in.size() == 1);
-  const auto use2_drv = use2_in[0].driver.get_master_node();
+  const auto use2_drv = use2_in.front().driver.get_master_node();
   assert(use2_drv.get_current_gid() == sub_gid);
   assert(node_of(use2_drv.get_debug_nid()) == node_of(f.cnt.get_debug_nid()));
 }
 
-void test_forward_hier_stateful_sub_cut_placement_flags() {
+void test_grouped_forward_stateful_sub_cut_placement() {
   // The loop_break_first/last flags move only the CUT nodes (the leaf register
   // and the stateful instance that wraps it). The combinational cone inside the
   // same instance stays topologically ordered either way — the bug this pins
@@ -2687,7 +2732,7 @@ void test_forward_hier_stateful_sub_cut_placement_flags() {
   const auto    sub_gid = f.sub->get_gid();
   const auto    top_gid = f.top->get_gid();
 
-  const auto tail = collect_gid_nids(f.top->forward_hier(/*loop_break_first=*/false, /*loop_break_last=*/true));
+  const auto tail = collect_gid_nids(f.top->grouped_hierarchy().nodes(hhds::Node_order::forward, hhds::Cut_placement::last));
   assert(tail.size() == 7 && "each node exactly once: cut nodes deferred, not duplicated");
   const size_t t_src  = hier_pos_of(tail, top_gid, f.src.get_debug_nid());
   const size_t t_add  = hier_pos_of(tail, sub_gid, f.add.get_debug_nid());
@@ -2702,7 +2747,7 @@ void test_forward_hier_stateful_sub_cut_placement_flags() {
 
   // (true,true): the cut nodes are seen up front AND replayed at the end, and
   // the body of the loop_break instance is walked only once.
-  const auto both = collect_gid_nids(f.top->forward_hier(/*loop_break_first=*/true, /*loop_break_last=*/true));
+  const auto both = collect_gid_nids(f.top->grouped_hierarchy().nodes(hhds::Node_order::forward, hhds::Cut_placement::both));
   assert(both.size() == 9 && "7 nodes + the 2 cut nodes replayed");
   size_t add_hits = 0;
   for (const auto& [gid, nid] : both) {
@@ -2711,11 +2756,11 @@ void test_forward_hier_stateful_sub_cut_placement_flags() {
   assert(add_hits == 1 && "a replayed cut instance must not re-walk its body");
 }
 
-void test_backward_hier_comb_and_flop_outputs_of_stateful_sub() {
+void test_grouped_reverse_comb_and_flop_outputs_of_stateful_sub() {
   // Mirror: consumers precede drivers across the boundary, with the cut node
   // acting as a sink instead of a source.
   CntModFixture f;
-  const auto    order   = collect_gid_nids(f.top->backward_hier());
+  const auto    order   = collect_gid_nids(f.top->grouped_hierarchy().nodes(hhds::Node_order::reverse));
   const auto    sub_gid = f.sub->get_gid();
   const auto    top_gid = f.top->get_gid();
   assert(order.size() == 7);
@@ -2732,12 +2777,9 @@ void test_backward_hier_comb_and_flop_outputs_of_stateful_sub() {
   assert(p_use2 < p_cnt && "consumer precedes the register it reads");
 }
 
-// --- visit_io hierarchical traversal tests ----------------------------------
-
-// (gid, nid, kind) where kind is 'I' for a boundary INPUT_NODE, 'O' for a
-// boundary OUTPUT_NODE, and '.' for an ordinary body node. Reads the kind via
-// the public Node_class::is_input_node()/is_output_node() predicates so these
-// tests also cover the helpers.
+// (gid, nid, kind) where kind distinguishes boundary nodes from ordinary body
+// nodes. Hierarchy views enumerate body nodes; boundary IO is crossed by the
+// occurrence edge resolver rather than emitted as nodes.
 template <typename Range>
 std::vector<std::tuple<hhds::Gid, hhds::Nid, char>> collect_gid_nid_kind(Range&& range) {
   std::vector<std::tuple<hhds::Gid, hhds::Nid, char>> order;
@@ -2776,31 +2818,15 @@ struct IoFixture {
     top  = top_io->create_graph();
     inst = top->create_node();
     inst.set_subnode(leaf_io);
+    top->get_input_pin("pi").connect_sink(inst.create_sink_pin(1));
+    inst.create_driver_pin(1).connect_sink(top->get_output_pin("po"));
   }
 };
 
-void test_fast_hier_visit_io_storage_order() {
-  IoFixture                 f;
-  const std::vector<IoStep> expected{
-      { f.top->get_gid(),  hhds::Graph::INPUT_NODE, 'I'},
-      { f.top->get_gid(),   f.inst.get_debug_nid(), '.'},
-      {f.leaf->get_gid(),  hhds::Graph::INPUT_NODE, 'I'},
-      {f.leaf->get_gid(), f.leaf_n.get_debug_nid(), '.'},
-      {f.leaf->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'},
-      { f.top->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'},
-  };
-  assert(collect_gid_nid_kind(f.top->fast_hier(/*visit_io=*/true)) == expected);
-}
-
-// ── fast_hier opacity ───────────────────────────────────────────────────────
 // An opaque subnode is yielded as a LEAF Sub: the instance node itself is still
-// emitted, but its body is NOT descended into. fast_hier MUST agree with
-// forward_hier and the cross-boundary edge resolver here — if it descended into a
-// sub the resolver black-boxes, a caller that blackboxes an instance (pass/lec
-// --collapse) would still cut the state inside it while modelling its boundary as
-// free => false PROVEN.
+// emitted, but its body is not descended into.
 
-void test_fast_hier_opaque_explicit_not_descended() {
+void test_grouped_hierarchy_opaque_not_descended() {
   IoFixture                               f;
   ankerl::unordered_dense::set<hhds::Gid> opaque{f.inst.get_subnode_gid()};
 
@@ -2808,84 +2834,27 @@ void test_fast_hier_opaque_explicit_not_descended() {
   const std::vector<IoStep> expected{
       {f.top->get_gid(), f.inst.get_debug_nid(), '.'},
   };
-  assert(collect_gid_nid_kind(f.top->fast_hier(/*visit_io=*/false, &opaque)) == expected);
+  assert(collect_gid_nid_kind(f.top->grouped_hierarchy(&opaque).nodes()) == expected);
 
   // Control: with no opacity the SAME walk descends into the leaf body.
   const std::vector<IoStep> expected_open{
       { f.top->get_gid(),   f.inst.get_debug_nid(), '.'},
       {f.leaf->get_gid(), f.leaf_n.get_debug_nid(), '.'},
   };
-  assert(collect_gid_nid_kind(f.top->fast_hier()) == expected_open);
+  assert(collect_gid_nid_kind(f.top->grouped_hierarchy().nodes()) == expected_open);
 }
 
-void test_fast_hier_honors_ambient_opaque_scope() {
-  IoFixture                               f;
-  ankerl::unordered_dense::set<hhds::Gid> opaque{f.inst.get_subnode_gid()};
-  const std::vector<IoStep>               expected{
-      {f.top->get_gid(), f.inst.get_debug_nid(), '.'},
-  };
-  {
-    hhds::Hier_opaque_scope sc(&opaque);  // ambient, no explicit argument
-    assert(collect_gid_nid_kind(f.top->fast_hier()) == expected);
-  }
-  // Scope popped => descends again (the RAII really restores).
-  assert(collect_gid_nid_kind(f.top->fast_hier()).size() == 2);
-}
-
-void test_fast_hier_opaque_matches_forward_hier_node_set() {
-  // The contract fast_hier documents: ordering is the ONLY difference from
-  // forward_hier — the node SET is identical, opacity included.
+void test_grouped_hierarchy_ordering_preserves_node_set() {
   IoFixture                                      f;
   const ankerl::unordered_dense::set<hhds::Gid>  opaque{f.inst.get_subnode_gid()};
   const ankerl::unordered_dense::set<hhds::Gid>* cases[] = {nullptr, &opaque};
   for (const auto* opq : cases) {
-    auto fast = collect_gid_nid_kind(f.top->fast_hier(false, opq));
-    auto fwd  = collect_gid_nid_kind(f.top->forward_hier(true, false, opq));
-    std::sort(fast.begin(), fast.end());
+    auto storage = collect_gid_nid_kind(f.top->grouped_hierarchy(opq).nodes());
+    auto fwd     = collect_gid_nid_kind(f.top->grouped_hierarchy(opq).nodes(hhds::Node_order::forward));
+    std::sort(storage.begin(), storage.end());
     std::sort(fwd.begin(), fwd.end());
-    assert(fast == fwd);
+    assert(storage == fwd);
   }
-}
-
-void test_fast_hier_opaque_emits_no_boundary_io() {
-  // Documented: an opaque sub contributes no boundary IO under visit_io, because
-  // the body is never entered. Only the ROOT bracket remains.
-  IoFixture                               f;
-  ankerl::unordered_dense::set<hhds::Gid> opaque{f.inst.get_subnode_gid()};
-  const std::vector<IoStep>               expected{
-      {f.top->get_gid(),  hhds::Graph::INPUT_NODE, 'I'},
-      {f.top->get_gid(),   f.inst.get_debug_nid(), '.'},
-      {f.top->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'},
-  };
-  assert(collect_gid_nid_kind(f.top->fast_hier(/*visit_io=*/true, &opaque)) == expected);
-}
-
-void test_fast_hier_opaque_explicit_unions_with_ambient() {
-  // forward_hier's rule, mirrored: explicit OR ambient (never an override).
-  IoFixture                               f;
-  ankerl::unordered_dense::set<hhds::Gid> ambient{f.inst.get_subnode_gid()};
-  ankerl::unordered_dense::set<hhds::Gid> unrelated;  // explicit set that matches nothing
-  const std::vector<IoStep>               expected{
-      {f.top->get_gid(), f.inst.get_debug_nid(), '.'},
-  };
-  hhds::Hier_opaque_scope sc(&ambient);
-  // An explicit set that does NOT list the sub must not re-enable descent.
-  assert(collect_gid_nid_kind(f.top->fast_hier(false, &unrelated)) == expected);
-}
-
-void test_hier_visit_io_flat_top_only() {
-  // A flat top (no subnodes) still emits its own root IO bracket around its body.
-  hhds::GraphLibrary lib;
-  auto               top_io = lib.create_io("top");
-  auto               top    = top_io->create_graph();
-  auto               n1     = top->create_node();
-
-  const std::vector<IoStep> expected{
-      {top->get_gid(),  hhds::Graph::INPUT_NODE, 'I'},
-      {top->get_gid(),       n1.get_debug_nid(), '.'},
-      {top->get_gid(), hhds::Graph::OUTPUT_NODE, 'O'},
-  };
-  assert(collect_gid_nid_kind(top->fast_hier(true)) == expected);
 }
 
 }  // namespace
@@ -2904,16 +2873,16 @@ int main() {
   test_node_port0_self_loop_edge_survives();
   test_pin_get_driver_pins();
   test_out_edges_lazy_range();
-  test_forward_class_returns_wrappers();
-  test_backward_class_returns_wrappers();
+  test_body_forward_returns_wrappers();
+  test_body_reverse_returns_wrappers();
   test_traversal_contexts_use_one_node_type();
   test_forward_loop_break_is_source();
   test_backward_loop_break_is_sink();
   test_forward_loop_break_visit_flags();
   test_backward_loop_break_visit_flags();
-  test_forward_hier_loop_break_both_descends_once();
-  test_forward_hier_globally_topological_across_stateful_sub();
-  test_backward_hier_globally_topological_across_stateful_sub();
+  test_grouped_forward_cut_both_descends_once();
+  test_grouped_forward_globally_topological_across_stateful_sub();
+  test_grouped_reverse_globally_topological_across_stateful_sub();
   test_forward_out_of_order_uses_pending_list();
   test_backward_out_of_order_uses_pending_list();
   test_backward_cache_invalidates_after_set_type();
@@ -2925,19 +2894,19 @@ int main() {
   test_traversal_caches_after_edge_delete();
   test_traversal_caches_after_pin_delete();
   test_traversal_caches_after_back_edge_add();
-  test_backward_flat_exact_order_and_shared_body_dedup();
-  test_backward_hier_exact_order_and_shared_body_per_instance();
-  test_backward_hier_descends_into_nested_subnodes();
+  test_reverse_definitions_are_caller_first_and_deduplicated();
+  test_reverse_grouped_hierarchy_visits_shared_body_per_instance();
+  test_grouped_reverse_descends_into_nested_subnodes();
   test_subnode_with_loop_break_pin_marks_node();
-  test_hier_range_flat_graph_is_empty();
-  test_hier_range_yields_one_per_subnode();
-  test_hier_range_descends_into_nested_subnodes();
+  test_instance_groups_flat_graph_is_empty();
+  test_instance_groups_yield_one_per_subnode();
+  test_instance_groups_descend_into_nested_subnodes();
 #ifdef NDEBUG
   // In debug builds, set_subnode asserts on the cycle. The runtime
   // iterator guard is only the active line of defense in release.
-  test_hier_range_cycle_guard();
+  test_instance_groups_cycle_guard();
 #endif
-  test_hier_range_target_graph_and_parent_node();
+  test_instance_group_target_graph_and_parent_node();
   test_set_subnode_linear_deep_chain_ok();
   test_set_subnode_diamond_ok();
   test_set_subnode_retarget_ok();
@@ -2946,6 +2915,11 @@ int main() {
   // crash inside set_subnode; parent verifies the child died via SIGABRT.
   test_set_subnode_self_cycle_aborts();
   test_set_subnode_indirect_cycle_aborts();
+  // A view used after its graph was deleted must assert, not walk a
+  // gutted graph and silently report an empty body.
+  test_stale_body_view_aborts();
+  test_stale_body_view_storage_order_aborts();
+  test_stale_hierarchy_view_aborts();
 #endif
   test_load_merge();
   test_save_prunes_stale_bodies();
@@ -2953,12 +2927,9 @@ int main() {
   test_shared_source_map();
   // Cross-boundary hier edge resolution: drivers/sinks hop module boundaries
   // until a real leaf (or the root's own IO) is reached.
-  // fast_hier opacity: opaque subs are leaves, matching forward_hier + the resolver.
-  test_fast_hier_opaque_explicit_not_descended();
-  test_fast_hier_honors_ambient_opaque_scope();
-  test_fast_hier_opaque_matches_forward_hier_node_set();
-  test_fast_hier_opaque_emits_no_boundary_io();
-  test_fast_hier_opaque_explicit_unions_with_ambient();
+  // Opaque grouped views yield the call site but do not enter its body.
+  test_grouped_hierarchy_opaque_not_descended();
+  test_grouped_hierarchy_ordering_preserves_node_set();
   test_hier_edges_cross_one_boundary_EXPECTED();
   test_hier_edges_cross_up_then_down_EXPECTED();
   test_hier_edges_three_levels_EXPECTED();
@@ -2966,11 +2937,9 @@ int main() {
   test_hier_edges_reused_cell_distinct_paths_EXPECTED();
   test_get_hier_name_EXPECTED();
   test_get_hier_name_resolved_leaves_EXPECTED();
-  test_fast_hier_visit_io_storage_order();
-  test_hier_visit_io_flat_top_only();
-  test_forward_hier_comb_and_flop_outputs_of_stateful_sub();
-  test_forward_hier_stateful_sub_cut_placement_flags();
-  test_backward_hier_comb_and_flop_outputs_of_stateful_sub();
+  test_grouped_forward_comb_and_flop_outputs_of_stateful_sub();
+  test_grouped_forward_stateful_sub_cut_placement();
+  test_grouped_reverse_comb_and_flop_outputs_of_stateful_sub();
   std::cout << "graph_test passed\n";
   return 0;
 }

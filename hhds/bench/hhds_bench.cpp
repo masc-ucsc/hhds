@@ -235,7 +235,7 @@ OpResult op_traverse_forward_class(const hhds_bench::GraphSpec& spec) {
 
   auto    t0    = std::chrono::steady_clock::now();
   int64_t count = 0;
-  for (auto node : bg.graph->forward_class()) {
+  for (auto node : bg.graph->body().nodes(hhds::Node_order::forward)) {
     benchmark::DoNotOptimize(node);
     ++count;
   }
@@ -252,7 +252,7 @@ OpResult op_traverse_fast_class(const hhds_bench::GraphSpec& spec) {
 
   auto    t0    = std::chrono::steady_clock::now();
   int64_t count = 0;
-  for (auto node : bg.graph->fast_class()) {
+  for (auto node : bg.graph->body().nodes()) {
     benchmark::DoNotOptimize(node);
     ++count;
   }
@@ -312,7 +312,7 @@ OpResult op_traverse_forward_flat(const hhds_bench::GraphSpec& spec) {
 
   auto    t0    = std::chrono::steady_clock::now();
   int64_t count = 0;
-  for (auto node : top->forward_flat()) {
+  for (auto node : top->definitions().nodes(hhds::Node_order::forward)) {
     benchmark::DoNotOptimize(node);
     ++count;
   }
@@ -327,7 +327,7 @@ OpResult op_traverse_fast_flat(const hhds_bench::GraphSpec& spec) {
 
   auto    t0    = std::chrono::steady_clock::now();
   int64_t count = 0;
-  for (auto node : top->fast_flat()) {
+  for (auto node : top->definitions().nodes()) {
     benchmark::DoNotOptimize(node);
     ++count;
   }
@@ -374,7 +374,7 @@ OpResult op_traverse_forward_hier(const hhds_bench::GraphSpec& spec) {
 
   auto    t0    = std::chrono::steady_clock::now();
   int64_t count = 0;
-  for (auto node : top->forward_hier()) {
+  for (auto node : top->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
     benchmark::DoNotOptimize(node);
     ++count;
   }
@@ -389,7 +389,7 @@ OpResult op_traverse_fast_hier(const hhds_bench::GraphSpec& spec) {
 
   auto    t0    = std::chrono::steady_clock::now();
   int64_t count = 0;
-  for (auto node : top->fast_hier()) {
+  for (auto node : top->grouped_hierarchy().nodes()) {
     benchmark::DoNotOptimize(node);
     ++count;
   }
@@ -408,7 +408,7 @@ OpResult op_traverse_hier_range(const hhds_bench::GraphSpec& spec) {
 
   auto    t0    = std::chrono::steady_clock::now();
   int64_t count = 0;
-  for (auto inst : top->hier_range()) {
+  for (auto inst : top->grouped_hierarchy().instances()) {
     benchmark::DoNotOptimize(inst);
     ++count;
   }

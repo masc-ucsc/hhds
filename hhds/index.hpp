@@ -106,7 +106,6 @@ private:
   friend class Grouped_hierarchy_view;
   friend class Occurrences_view;
   friend class Subnode_occurrence;
-  friend class HierIterator;
   friend class Hier_instance;
   friend struct detail::Hierarchy_view_state;
   friend struct detail::Occurrence_path_storage;

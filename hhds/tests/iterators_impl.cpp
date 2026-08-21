@@ -63,7 +63,7 @@ TEST(GraphTraversalApi, ForwardClassUsesNodeWrappers) {
   n2.create_driver_pin().connect_sink(n3.create_sink_pin());
 
   std::vector<hhds::Nid> order;
-  for (auto node : graph->forward_class()) {
+  for (auto node : graph->body().nodes(hhds::Node_order::forward)) {
     EXPECT_EQ(node.get_graph(), graph.get());
     order.push_back(node.get_debug_nid());
   }
@@ -87,7 +87,7 @@ TEST(GraphTraversalApi, BackwardClassUsesNodeWrappers) {
   n2.create_driver_pin().connect_sink(n3.create_sink_pin());
 
   std::vector<hhds::Nid> order;
-  for (auto node : graph->backward_class()) {
+  for (auto node : graph->body().nodes(hhds::Node_order::reverse)) {
     EXPECT_EQ(node.get_graph(), graph.get());
     order.push_back(node.get_debug_nid());
   }

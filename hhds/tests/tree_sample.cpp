@@ -25,7 +25,7 @@ int main() {
   nested.set_type(2);
 
   std::cout << "Pre-order traversal\n";
-  for (auto node : tree->pre_order()) {
+  for (auto node : tree->body().nodes(hhds::Tree_order::preorder)) {
     std::cout << "  pos=" << node.get_debug_nid() << " name=" << names[node] << " type=" << node.get_type() << "\n";
   }
 

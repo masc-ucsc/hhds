@@ -19,8 +19,6 @@
 
 // TODO:
 // 8-Benchmark against boost library for some example similar to hardware
-// 9-Iterator single graph (fast, fwd, bwd)
-// 10-Iterator hierarchical across graphs (fast, fwd, bwd)
 
 // DONE:
 // 1-Use namespace hhds like tree
@@ -31,6 +29,8 @@
 // 5-Add a better unit test for add_pin/node/edge for single graph. Make sure that it does not have bugs
 // 6-Add the graph_id class
 // 7_Add inter-graph connections (set_subnode)
+// 9-Traversal: the body()/definitions()/grouped_hierarchy()/occurrences() views,
+//   single-graph and hierarchical, forward and reverse (see docs/iterators.md)
 
 namespace hhds {
 
@@ -124,6 +124,7 @@ struct Hierarchy_view_state : public std::enable_shared_from_this<Hierarchy_view
     contexts.push_back(Body_context{0, Node_class(), std::nullopt});
     paths->entries.front().structural_hash = occurrence_path_root_hash(root_gid());
     if (root != nullptr) {
+      root->assert_accessible();
       if (const auto io = root->get_io()) {
         library = io->get_library();
         if (library != nullptr) {
@@ -180,8 +181,13 @@ struct Hierarchy_view_state : public std::enable_shared_from_this<Hierarchy_view
     if (const auto it = verdicts.find(key); it != verdicts.end()) {
       return it->second;
     }
+    // Explicit set UNION the ambient RAII Hier_opaque_scope. Both must be
+    // honored: resolve_hier_driver (the cross-boundary edge resolver) black-
+    // boxes an ambient-opaque subnode, so a view that still descended into it
+    // would model the instance boundary as free while cutting state inside it.
+    const Gid       target = site.get_subnode_gid();
     Instance_action result = Instance_action::descend;
-    if (opaque != nullptr && opaque->contains(site.get_subnode_gid())) {
+    if ((opaque != nullptr && opaque->contains(target)) || hier_is_opaque(target)) {
       result = Instance_action::opaque;
     } else if (policy) {
       const Instance_site instance(path(parent_handle), site.subnode_group());
@@ -253,8 +259,8 @@ struct Hierarchy_view_state : public std::enable_shared_from_this<Hierarchy_view
       // operator==/AbslHashValue key on (parent_graph, tree_pos, hier_pos), so
       // hardcoding ROOT made every instance in a body compare equal — two
       // distinct sites collided, and so did the same site reached through two
-      // different parents. Same semantics HierIterator uses: tree_pos is this
-      // site's own position, hier_pos is the parent site's.
+      // different parents. tree_pos is this site's own position, hier_pos is
+      // the parent site's.
       const auto     tp_it    = graph->subnode_tree_pos_.find(node.get_debug_nid() & ~static_cast<Nid>(3));
       const Tree_pos tree_pos = tp_it != graph->subnode_tree_pos_.end() ? tp_it->second : static_cast<Tree_pos>(ROOT);
       out.emplace_back(graph, root_gid(), parent_tree_pos, tree_pos, node.get_debug_nid(), path(handle), multiplicity);
@@ -695,7 +701,12 @@ std::vector<Occurrence_pin> Hierarchy_view_state::resolve_driver(Pin_class drive
     }
 
     std::vector<Occurrence_pin> result;
-    const auto                  site_pin = site.get_sink_pin(port);
+    auto* const                 site_graph = site.get_graph();
+    const Pid                   site_pid   = site_graph->find_pin_or_zero(site.get_debug_nid(), port, /*driver=*/false);
+    if (site_pid == 0) {
+      return result;  // unconnected call-site input
+    }
+    const auto site_pin = site_graph->make_pin_class(site_pid);
     for (const auto& edge : site_pin.inp_edges()) {
       if (edge.driver.get_master_node().get_debug_nid() == site.get_debug_nid()) {
         // A compact carry self-edge is visible only in the grouped view. In
@@ -773,11 +784,16 @@ std::vector<Occurrence_pin> Hierarchy_view_state::resolve_sink(Pin_class sink, u
     // can intern a new occurrence path (append_path -> contexts.push_back) and
     // reallocate the vector, so a reference bound here would dangle on the
     // second iteration. resolve_driver copies for the same reason.
-    const auto                  site     = contexts[body_handle].site;
-    const auto                  parent   = contexts[body_handle].parent_handle;
-    const auto                  site_nid = site.get_debug_nid();
+    const auto                  site       = contexts[body_handle].site;
+    const auto                  parent     = contexts[body_handle].parent_handle;
+    const auto                  site_nid   = site.get_debug_nid();
+    auto* const                 site_graph = site.get_graph();
     std::vector<Occurrence_pin> result;
-    const auto                  site_driver = site.get_driver_pin(sink.get_port_id());
+    const Pid                   site_pid = site_graph->find_pin_or_zero(site_nid, sink.get_port_id(), /*driver=*/true);
+    if (site_pid == 0) {
+      return result;  // unconnected call-site output
+    }
+    const auto site_driver = site_graph->make_pin_class(site_pid);
     for (const auto& edge : site_driver.out_edges()) {
       if (edge.sink.get_master_node().get_debug_nid() == site_nid) {
         continue;
@@ -789,7 +805,8 @@ std::vector<Occurrence_pin> Hierarchy_view_state::resolve_sink(Pin_class sink, u
   }
 
   if (master.get_subnode_io()) {
-    if (action(body_handle, master) == Instance_action::prune) {
+    const auto verdict = action(body_handle, master);
+    if (verdict == Instance_action::prune) {
       return {};
     }
     const auto group   = master.subnode_group();
@@ -808,9 +825,33 @@ std::vector<Occurrence_pin> Hierarchy_view_state::resolve_sink(Pin_class sink, u
         handles.resize(1);
       }
     }
+    // A grouped compact loop keeps the stored call-site carry edge visible.
+    // Physical occurrences replace that edge with virtual inter-ordinal
+    // dependencies and can descend through the callee input normally. All of
+    // this is per-instance-invariant, so resolve the callee boundary pin once
+    // instead of once per handle.
+    std::shared_ptr<Graph> child;
+    Pid                    child_input_pid = 0;
+    if (verdict == Instance_action::descend && (expand_loops || !group.is_loop())) {
+      child = subgraph(master);
+      if (child) {
+        // find_pin_or_zero, not get_driver_pin: a port the callee body never
+        // reads has no INPUT_NODE pin, and get_driver_pin asserts on that.
+        child_input_pid = child->find_pin_or_zero(Graph::INPUT_NODE, port, /*driver=*/true);
+      }
+    }
     std::vector<Occurrence_pin> result;
-    result.reserve(handles.size());
     for (const uint32_t handle : handles) {
+      if (child) {
+        if (child_input_pid != 0) {
+          for (const auto& edge : child->make_pin_class(child_input_pid).out_edges()) {
+            auto resolved = resolve_sink(edge.sink, handle, depth + 1);
+            result.insert(result.end(), resolved.begin(), resolved.end());
+          }
+        }
+        continue;  // descended: the leaf sinks (if any) live inside the callee
+      }
+      // Opaque or declaration-only instance: the site pin is the visible leaf.
       result.push_back(make_pin(sink, handle, body_handle));
     }
     return result;
@@ -971,10 +1012,15 @@ std::string Occurrence_node::get_hier_name() const {
   if (!io || io->get_library() == nullptr) {
     return occurrence_local_name(node_, {});
   }
-  std::string result            = format_occurrence_path(*io->get_library(), path_);
-  const auto  steps             = path_.steps();
-  const bool  node_is_last_site = !steps.empty() && steps.back().subnode == node_.get_definition_index();
-  if (!node_is_last_site) {
+  std::string result                   = format_occurrence_path(*io->get_library(), path_);
+  const auto  steps                    = path_.steps();
+  const bool  node_is_last_site        = !steps.empty() && steps.back().subnode == node_.get_definition_index();
+  // A named instance already contributes its name as the last path step, and so
+  // does an anonymous COMPACT-LOOP site (its ordinal suffix keeps that segment
+  // non-empty). Only a fully transparent anonymous instance contributes nothing
+  // to the path, and there the module name is the leaf's local fallback.
+  const bool  last_site_is_transparent = node_is_last_site && node_.get_name().empty() && !steps.back().ordinal.has_value();
+  if (!node_is_last_site || last_site_is_transparent) {
     const auto local = occurrence_local_name(node_, {});
     if (!local.empty()) {
       if (!result.empty()) {
@@ -1934,7 +1980,6 @@ void Graph::invalidate_from_library() noexcept {
     tree_->clear();
   }
   subnode_tree_pos_.clear();
-  tree_pos_to_nid_.clear();
   subnode_loops_.clear();
   input_pins_.clear();
   output_pins_.clear();
@@ -1961,7 +2006,6 @@ void Graph::clear_graph() {
   }
   (void)tree_->add_root();
   subnode_tree_pos_.clear();
-  tree_pos_to_nid_.clear();
   subnode_loops_.clear();
 #ifndef NDEBUG
   validated_loop_carries_.clear();
@@ -2017,7 +2061,6 @@ void Graph::clear() {
   }
   (void)tree_->add_root();
   subnode_tree_pos_.clear();
-  tree_pos_to_nid_.clear();
   subnode_loops_.clear();
 #ifndef NDEBUG
   validated_loop_carries_.clear();
@@ -3386,8 +3429,7 @@ void Graph::set_subnode(Nid nid, Gid gid) {
   }
 
   // Debug-only structural cycle check. Cycles are explicitly disallowed —
-  // they make hier traversal nonsensical (and previously could infinite-loop
-  // fast_hier/forward_hier, which have no runtime guard). Catching at the
+  // they make hierarchy traversal nonsensical. Catching at the
   // call site that creates the cycle gives a localized failure instead of
   // an infinite loop deep inside an iterator. Compiled out under NDEBUG.
   assert(!would_create_cycle(gid) && "set_subnode: structure-tree cycle detected");
@@ -3408,7 +3450,6 @@ void Graph::set_subnode(Nid nid, Gid gid) {
   if (tree_ && subnode_tree_pos_.find(nid) == subnode_tree_pos_.end()) {
     const Tree_pos child_pos = tree_->add_child(static_cast<Tree_pos>(ROOT));
     subnode_tree_pos_.emplace(nid, child_pos);
-    tree_pos_to_nid_.emplace(child_pos, nid);
   }
 
   // Stamp node type so the forward iterator can O(1) tell whether this
@@ -3448,7 +3489,7 @@ void Graph::set_subnode(Nid nid, Gid gid) {
       // is not yet materialized falls through to "not loop_break"; re-running
       // set_subnode once the body exists corrects the stamp.
       if (auto body = subnode_gio->get_graph(); body != nullptr) {
-        for (auto bn : body->fast_class()) {
+        for (auto bn : body->body().nodes()) {
           if (bn.is_loop_break()) {
             has_loop_break = true;
             break;
@@ -3465,7 +3506,7 @@ void Graph::set_subnode(Nid nid, Gid gid) {
 bool Graph::would_create_cycle(Gid target_gid) const noexcept {
   if (target_gid == Gid_invalid || self_gid_ == Gid_invalid || owner_lib_ == nullptr) {
     // Orphan or unbound graphs have no library context to walk; the runtime
-    // active_graphs_ guard in HierIterator covers them as a fallback.
+    // `active` guard in Hierarchy_view_state::visit_* covers them as a fallback.
     return false;
   }
   if (target_gid == self_gid_) {
@@ -3493,8 +3534,8 @@ bool Graph::would_create_cycle(Gid target_gid) const noexcept {
     }
     // Walking subnode_tree_pos_ touches one entry per live submodule
     // instance (≪ node_table size). Stale entries left by delete_node are
-    // gated by is_alive() + has_subnode() — same defensive check
-    // HierIterator uses.
+    // gated by is_alive() + has_subnode() — the same defensive check the
+    // hierarchy view walker applies.
     for (const auto& [nid, tree_pos] : graph->subnode_tree_pos_) {
       (void)tree_pos;
       const auto* entry = graph->ref_node(nid);
@@ -3538,8 +3579,6 @@ void Graph::del_edge(Pin_class driver_pin, Pin_class sink_pin) {
   debug_revalidate_loop_edge_mutation(driver_vid, sink_vid);
 #endif
 }
-
-FastClassRange Graph::fast_class() const noexcept { return FastClassRange(const_cast<Graph*>(this)); }
 
 Body_view Graph::body() const noexcept {
   assert_accessible();
@@ -3705,15 +3744,19 @@ const Occurrence_node& OccurrenceNodeRange::front() const {
   return *front_cache_;
 }
 
-FastClassRange    Body_view::nodes() const noexcept { return graph_->fast_class(); }
-FastClassRange    Body_view::nodes(Node_order::storage_t) const noexcept { return graph_->fast_class(); }
+FastClassRange Body_view::nodes() const noexcept {
+  assert_graph_alive();
+  return FastClassRange(graph_);
+}
 ForwardClassRange Body_view::nodes(Node_order::forward_t, Cut_placement cuts) const noexcept {
+  assert_graph_alive();
   const auto [first, last] = cut_flags(cuts);
-  return graph_->forward_class(first, last);
+  return ForwardClassRange(graph_, first, last);
 }
 BackwardClassRange Body_view::nodes(Node_order::reverse_t, Cut_placement cuts) const noexcept {
+  assert_graph_alive();
   const auto [first, last] = cut_flags(cuts);
-  return graph_->backward_class(first, last);
+  return BackwardClassRange(graph_, first, last);
 }
 
 namespace {
@@ -3734,10 +3777,23 @@ std::vector<Occurrence_node> order_occurrence_nodes(std::vector<Occurrence_node>
   std::vector<uint32_t>              indegree(count, 0);
   std::vector<std::vector<uint32_t>> successors(count);
   for (uint32_t i = 0; i < count; ++i) {
-    if (nodes[i].is_loop_break()) {
+    // A cut node breaks every cycle it sits on, in BOTH directions — the
+    // difference is only which side of the cut is dropped:
+    //   forward: the cut is a SOURCE, so its own in-edges are ignored (skip i).
+    //   reverse: the cut is a SINK, so it keeps the "consumers precede me"
+    //            dependencies from its out-edges, and instead the edges that
+    //            would place it BEFORE its drivers are dropped (skip any
+    //            dependency that is itself a cut).
+    // Dropping the wrong side in reverse left every node of a real flop loop at
+    // in-degree > 0, so nothing seeded the queue: the order degenerated to raw
+    // storage order and the cut node was never emitted at all.
+    if (forward && nodes[i].is_loop_break()) {
       continue;
     }
     const auto add_dependency = [&](const Occurrence_node& dependency) {
+      if (!forward && dependency.is_loop_break()) {
+        return;
+      }
       const auto it = index.find(dependency.get_occurrence_index());
       if (it == index.end() || it->second == i) {
         return;
@@ -3789,8 +3845,11 @@ std::vector<Occurrence_node> order_occurrence_nodes(std::vector<Occurrence_node>
       }
     }
   }
+  // Cycle tail: a comb loop with no cut on it never reaches in-degree zero.
+  // Emit the survivors in storage order using the SAME rule as the main loop,
+  // so a cut node stranded behind such a loop is not silently dropped.
   for (uint32_t i = 0; i < count; ++i) {
-    if (!emitted[i] && !nodes[i].is_loop_break()) {
+    if (!emitted[i] && (!nodes[i].is_loop_break() || emit_cuts_first)) {
       ordered.push_back(nodes[i]);
     }
   }
@@ -3886,6 +3945,7 @@ std::vector<std::shared_ptr<Graph>> definition_graphs(Graph* root, const std::sh
 }  // namespace
 
 std::shared_ptr<detail::Hierarchy_view_state> Definitions_view::state() const {
+  assert_graph_alive();
   if (!state_) {
     state_ = make_hierarchy_state(graph_, false, policy_, nullptr);
   }
@@ -3900,9 +3960,7 @@ Entity_range<std::shared_ptr<Graph>> Definitions_view::graphs(Node_order::revers
   return Entity_range<std::shared_ptr<Graph>>(definition_graphs(graph_, state(), true));
 }
 
-DefinitionNodeRange Definitions_view::nodes() const { return nodes(Node_order::storage); }
-
-DefinitionNodeRange Definitions_view::nodes(Node_order::storage_t) const {
+DefinitionNodeRange Definitions_view::nodes() const {
   std::vector<Definition_node> result;
   for (const auto& graph : graphs()) {
     for (const auto node : graph->body().nodes()) {
@@ -3932,16 +3990,15 @@ DefinitionNodeRange Definitions_view::nodes(Node_order::reverse_t, Cut_placement
   return DefinitionNodeRange(std::move(result));
 }
 
-OccurrenceNodeRange Grouped_hierarchy_view::nodes() const { return nodes(Node_order::storage); }
+OccurrenceNodeRange Grouped_hierarchy_view::nodes() const { return OccurrenceNodeRange::streaming(state()); }
 
 std::shared_ptr<detail::Hierarchy_view_state> Grouped_hierarchy_view::state() const {
+  assert_graph_alive();
   if (!state_) {
     state_ = make_hierarchy_state(graph_, false, policy_, opaque_);
   }
   return state_;
 }
-
-OccurrenceNodeRange Grouped_hierarchy_view::nodes(Node_order::storage_t) const { return OccurrenceNodeRange::streaming(state()); }
 
 OccurrenceNodeRange Grouped_hierarchy_view::nodes(Node_order::forward_t, Cut_placement cuts) const {
   auto hierarchy = state();
@@ -3982,16 +4039,15 @@ uint64_t Grouped_hierarchy_view::physical_node_count_hint() const {
   return physical_node_count_exact().value_or(std::numeric_limits<uint64_t>::max());
 }
 
-OccurrenceNodeRange Occurrences_view::nodes() const { return nodes(Node_order::storage); }
+OccurrenceNodeRange Occurrences_view::nodes() const { return OccurrenceNodeRange::streaming(state()); }
 
 std::shared_ptr<detail::Hierarchy_view_state> Occurrences_view::state() const {
+  assert_graph_alive();
   if (!state_) {
     state_ = make_hierarchy_state(graph_, true, policy_, opaque_);
   }
   return state_;
 }
-
-OccurrenceNodeRange Occurrences_view::nodes(Node_order::storage_t) const { return OccurrenceNodeRange::streaming(state()); }
 
 OccurrenceNodeRange Occurrences_view::nodes(Node_order::forward_t, Cut_placement cuts) const {
   auto hierarchy = state();
@@ -4021,22 +4077,6 @@ std::optional<uint64_t> Occurrences_view::size_exact() const { return state()->c
 
 uint64_t Occurrences_view::size_hint() const { return size_exact().value_or(std::numeric_limits<uint64_t>::max()); }
 
-ForwardClassRange Graph::forward_class(bool loop_break_first, bool loop_break_last) const noexcept {
-  assert_accessible();
-  return ForwardClassRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
-}
-
-BackwardClassRange Graph::backward_class(bool loop_break_first, bool loop_break_last) const noexcept {
-  assert_accessible();
-  return BackwardClassRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
-}
-
-FastFlatRange Graph::fast_flat() const noexcept { return FastFlatRange(const_cast<Graph*>(this)); }
-
-FastHierRange Graph::fast_hier(bool visit_io, const ankerl::unordered_dense::set<Gid>* opaque) const noexcept {
-  return FastHierRange(const_cast<Graph*>(this), visit_io, opaque);
-}
-
 // --- FastClassIterator ---
 
 FastClassIterator::FastClassIterator(Graph* graph, size_t idx, size_t end) noexcept : graph_(graph), idx_(idx), end_(end) {
@@ -4061,6 +4101,7 @@ FastClassIterator FastClassRange::begin() const noexcept {
   if (graph_ == nullptr) {
     return FastClassIterator{};
   }
+  graph_->assert_accessible();
   return FastClassIterator(graph_, kFirstUserNodeIdx, graph_->node_table.size());
 }
 
@@ -4068,214 +4109,14 @@ FastClassIterator FastClassRange::end() const noexcept {
   if (graph_ == nullptr) {
     return FastClassIterator{};
   }
+  graph_->assert_accessible();
   const size_t n = graph_->node_table.size();
   return FastClassIterator(graph_, n, n);
-}
-
-// --- FastFlatIterator ---
-
-FastFlatIterator::FastFlatIterator(Graph* root_graph) {
-  if (root_graph == nullptr) {
-    return;
-  }
-  root_graph->assert_accessible();
-  top_graph_ = root_graph->self_gid_;
-  if (top_graph_ != Gid_invalid) {
-    active_graphs_.insert(top_graph_);
-  }
-  stack_.push_back(Frame{root_graph, kFirstUserNodeIdx, root_graph->node_table.size()});
-  advance();
-}
-
-void FastFlatIterator::advance() {
-  while (!stack_.empty()) {
-    Frame& frame = stack_.back();
-    if (frame.node_idx >= frame.end) {
-      stack_.pop_back();
-      continue;
-    }
-    const auto& entry = frame.graph->node_table[frame.node_idx];
-    if (!entry.is_alive()) {
-      ++frame.node_idx;
-      continue;
-    }
-    return;  // positioned at an emittable node
-  }
-}
-
-auto FastFlatIterator::operator*() const -> Node_class {
-  const Frame& frame   = stack_.back();
-  const Nid    raw_nid = static_cast<Nid>(frame.node_idx) << 2;
-  return Node_class(frame.graph, top_graph_, raw_nid);
-}
-
-auto FastFlatIterator::operator++() -> FastFlatIterator& {
-  Frame&      frame = stack_.back();
-  const auto& entry = frame.graph->node_table[frame.node_idx];
-  if (entry.has_subnode() && frame.graph->owner_lib_ != nullptr) {
-    const Gid   sub = entry.get_subnode();
-    const auto* lib = frame.graph->owner_lib_;
-    if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
-      Graph* child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
-      ++frame.node_idx;  // parent resumes past this subnode on pop
-      active_graphs_.insert(sub);
-      stack_.push_back(Frame{child_graph, kFirstUserNodeIdx, child_graph->node_table.size()});
-      advance();
-      return *this;
-    }
-  }
-  ++frame.node_idx;
-  advance();
-  return *this;
-}
-
-FastFlatIterator FastFlatRange::begin() const { return FastFlatIterator(graph_); }
-
-// --- FastHierIterator ---
-
-FastHierIterator::FastHierIterator(Graph* root_graph, bool visit_io, const ankerl::unordered_dense::set<Gid>* opaque)
-    : visit_io_(visit_io), opaque_(opaque) {
-  if (root_graph == nullptr) {
-    return;
-  }
-  root_graph->assert_accessible();
-  root_gid_ = root_graph->self_gid_;
-
-  if (root_gid_ != Gid_invalid) {
-    active_graphs_.insert(root_gid_);
-  }
-  // Root frame: top-level nodes share hier_pos = ROOT (the root graph's own
-  // structure-tree root) and an empty instance chain. Under visit_io the frame
-  // opens in Enter so the body's INPUT_NODE is emitted before its nodes.
-  stack_.push_back(Frame{root_graph,
-                         kFirstUserNodeIdx,
-                         root_graph->node_table.size(),
-                         static_cast<Tree_pos>(ROOT),
-                         std::make_shared<std::vector<Nid>>(),
-                         visit_io_ ? Hier_io_phase::Enter : Hier_io_phase::Body});
-  advance();
-}
-
-void FastHierIterator::pop_frame() {
-  const Gid popped = stack_.back().graph->self_gid_;
-  stack_.pop_back();
-  if (popped != Gid_invalid) {
-    active_graphs_.erase(popped);
-  }
-}
-
-void FastHierIterator::advance() {
-  while (!stack_.empty()) {
-    Frame& frame = stack_.back();
-    // Enter/Leave are already positioned on a boundary IO node (visit_io only).
-    if (frame.io_phase == Hier_io_phase::Enter || frame.io_phase == Hier_io_phase::Leave) {
-      return;
-    }
-    if (frame.node_idx >= frame.end) {
-      if (visit_io_) {  // body drained -> emit this frame's OUTPUT_NODE, then pop
-        frame.io_phase = Hier_io_phase::Leave;
-        return;
-      }
-      pop_frame();
-      continue;
-    }
-    const auto& entry = frame.graph->node_table[frame.node_idx];
-    if (!entry.is_alive()) {
-      ++frame.node_idx;
-      continue;
-    }
-    return;
-  }
-}
-
-auto FastHierIterator::operator*() const -> Node_class {
-  const Frame& frame = stack_.back();
-  Nid          raw_nid;
-  if (frame.io_phase == Hier_io_phase::Enter) {
-    raw_nid = Graph::INPUT_NODE;
-  } else if (frame.io_phase == Hier_io_phase::Leave) {
-    raw_nid = Graph::OUTPUT_NODE;
-  } else {
-    raw_nid = static_cast<Nid>(frame.node_idx) << 2;
-  }
-  return Node_class(frame.graph, root_gid_, frame.hier_pos, raw_nid, frame.path);
-}
-
-auto FastHierIterator::operator++() -> FastHierIterator& {
-  Frame& frame = stack_.back();
-  if (frame.io_phase == Hier_io_phase::Enter) {  // INPUT emitted -> start the body
-    frame.io_phase = Hier_io_phase::Body;
-    advance();
-    return *this;
-  }
-  if (frame.io_phase == Hier_io_phase::Leave) {  // OUTPUT emitted -> this body is done
-    pop_frame();
-    advance();
-    return *this;
-  }
-  const auto& entry = frame.graph->node_table[frame.node_idx];
-  if (entry.has_subnode() && frame.graph->owner_lib_ != nullptr) {
-    const Gid   sub       = entry.get_subnode();
-    const auto* lib       = frame.graph->owner_lib_;
-    // `opaque_` (explicit) or the ambient Hier_opaque_scope subnodes are NOT
-    // descended into (yielded as leaf Sub nodes) — the SAME rule as
-    // ForwardHierIterator and the cross-boundary edge resolver. All three must
-    // agree: if this walk descended into a sub the edge resolver black-boxes, a
-    // caller would cut state inside an instance whose boundary it models as free
-    // (pass/lec --collapse => false PROVEN). They contribute no boundary IO under
-    // visit_io (we never enter the body).
-    const bool  is_opaque = (opaque_ != nullptr && opaque_->find(sub) != opaque_->end()) || hier_is_opaque(sub);
-    if (lib->has_graph(sub) && !is_opaque && active_graphs_.find(sub) == active_graphs_.end()) {
-      Graph*         child_graph = const_cast<Graph*>(lib->get_graph(sub).get());
-      const Nid      subnode_nid = static_cast<Nid>(frame.node_idx) << 2;
-      // Stable Tree_pos from the structure tree that set_subnode built.
-      auto           it          = frame.graph->subnode_tree_pos_.find(subnode_nid);
-      const Tree_pos child_pos   = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
-      auto           child_path  = std::make_shared<std::vector<Nid>>(*frame.path);
-      child_path->push_back(subnode_nid);
-      ++frame.node_idx;
-      active_graphs_.insert(sub);
-      stack_.push_back(Frame{child_graph,
-                             kFirstUserNodeIdx,
-                             child_graph->node_table.size(),
-                             child_pos,
-                             std::move(child_path),
-                             visit_io_ ? Hier_io_phase::Enter : Hier_io_phase::Body});
-      advance();
-      return *this;
-    }
-  }
-  ++frame.node_idx;
-  advance();
-  return *this;
-}
-
-FastHierIterator FastHierRange::begin() const { return FastHierIterator(graph_, visit_io_, opaque_); }
-
-ForwardFlatRange Graph::forward_flat(bool loop_break_first, bool loop_break_last) const noexcept {
-  assert_accessible();
-  return ForwardFlatRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
-}
-
-ForwardHierRange Graph::forward_hier(bool loop_break_first, bool loop_break_last,
-                                     const ankerl::unordered_dense::set<Gid>* opaque) const noexcept {
-  assert_accessible();
-  return ForwardHierRange(const_cast<Graph*>(this), loop_break_first, loop_break_last, opaque);
 }
 
 const ankerl::unordered_dense::set<Gid>*& hier_opaque_ref() noexcept {
   thread_local const ankerl::unordered_dense::set<Gid>* p = nullptr;
   return p;
-}
-
-BackwardFlatRange Graph::backward_flat(bool loop_break_first, bool loop_break_last) const noexcept {
-  assert_accessible();
-  return BackwardFlatRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
-}
-
-BackwardHierRange Graph::backward_hier(bool loop_break_first, bool loop_break_last) const noexcept {
-  assert_accessible();
-  return BackwardHierRange(const_cast<Graph*>(this), loop_break_first, loop_break_last);
 }
 
 // --- ForwardClassIterator ---
@@ -4292,6 +4133,7 @@ ForwardClassIterator::ForwardClassIterator(Graph* graph, bool loop_break_first, 
     phase_ = Phase::End;
     return;
   }
+  graph_->assert_accessible();
   graph_->ensure_forward_caches();
   node_count_ = graph_->node_table.size();
   if (node_count_ <= kFirstUserNodeIdx) {
@@ -4545,286 +4387,6 @@ Node_class ForwardClassRange::front() const {
 
 bool ForwardClassRange::empty() const { return begin() == end(); }
 
-// --- ForwardFlatIterator ---
-
-ForwardFlatIterator::ForwardFlatIterator(Graph* root_graph, bool loop_break_first, bool loop_break_last)
-    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {
-  if (root_graph == nullptr) {
-    return;
-  }
-  root_graph->assert_accessible();
-  top_graph_ = root_graph->self_gid_;
-  if (top_graph_ != Gid_invalid) {
-    active_graphs_.insert(top_graph_);
-  }
-  stack_.push_back(Frame{root_graph, ForwardClassIterator(root_graph, loop_break_first_, loop_break_last_)});
-  advance();
-}
-
-void ForwardFlatIterator::advance() {
-  while (!stack_.empty()) {
-    auto& frame = stack_.back();
-    if (frame.it == ForwardClassIterator{}) {
-      stack_.pop_back();
-      continue;
-    }
-    return;  // positioned
-  }
-}
-
-Node_class ForwardFlatIterator::operator*() const {
-  const auto& frame   = stack_.back();
-  const Nid   raw_nid = (*frame.it).get_debug_nid();
-  return Node_class(frame.graph, top_graph_, raw_nid);
-}
-
-ForwardFlatIterator& ForwardFlatIterator::operator++() {
-  auto&       frame    = stack_.back();
-  const Nid   cur_nid  = (*frame.it).get_debug_nid();
-  const auto& entry    = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
-  const auto* lib      = frame.graph->owner_lib_;
-  // A loop_break subnode emitted both first and last (loop_break_first_ &&
-  // loop_break_last_) must be descended into only once — on its first
-  // emission. Skip the descent when this emission is the LoopLast replay.
-  const bool  skip_sub = loop_break_first_ && frame.it.current_is_loop_break_replay();
-  ++frame.it;
-  if (entry.has_subnode() && lib != nullptr && !skip_sub) {
-    const Gid sub = entry.get_subnode();
-    if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
-      Graph* child = const_cast<Graph*>(lib->get_graph(sub).get());
-      active_graphs_.insert(sub);
-      stack_.push_back(Frame{child, ForwardClassIterator(child, loop_break_first_, loop_break_last_)});
-    }
-  }
-  advance();
-  return *this;
-}
-
-ForwardFlatIterator ForwardFlatRange::begin() const { return ForwardFlatIterator(graph_, loop_break_first_, loop_break_last_); }
-
-// Reorder a hier walk's collected leaf nodes into a flat-module (reverse-)
-// topological order. forward=true: drivers before consumers (like a single
-// forward_class); forward=false: consumers before drivers (backward_class).
-// Loops are broken at the LEAF loop_break nodes (flops/memories, wherever they
-// sit in the hierarchy) — so a stateful submodule no longer drags its whole
-// subtree to a single loop_break slot, and the din-cone of a deep flop is
-// ordered after its drivers. Dependencies use the hier-resolved edges
-// (inp_edges/out_edges), which honor the ambient Hier_opaque_scope, so the same
-// opaque set that shaped the walk also shapes the ordering graph.
-static std::vector<Node_class> hier_topo_reorder(std::vector<Node_class> raw, bool forward, bool loop_break_first,
-                                                 bool loop_break_last) {
-  // Hier identity key: the instance nid-path plus the node's own nid. NOT
-  // get_hier_name — that collapses to the subnode's TYPE name for unnamed
-  // instances, so two instances of the same module would collide; the nid-path
-  // distinguishes them and is identical between a DFS-collected node and the
-  // same node reached as a resolved edge endpoint. (root_gid is constant across
-  // one walk, so it is omitted.)
-  const auto key_of = [](const Node_class& nd) {
-    std::string k;
-    if (const auto& path = nd.get_hier_path()) {
-      for (const auto pnid : *path) {
-        k += std::to_string(static_cast<uint64_t>(pnid));
-        k += '.';
-      }
-    }
-    k += '#';
-    k += std::to_string(static_cast<uint64_t>(nd.get_debug_nid()));
-    return k;
-  };
-
-  // Dedup by hier identity, building the key->index map in the same pass. The
-  // collected DFS already contains any loop_break LoopLast replays (a cut node
-  // twice); keep the first occurrence and re-apply loop_break_last at the end so
-  // the emitted multiset matches the flat class iterator.
-  ankerl::unordered_dense::map<std::string, uint32_t> key2idx;
-  key2idx.reserve(raw.size());
-  std::vector<Node_class> nodes;
-  nodes.reserve(raw.size());
-  for (auto& nd : raw) {
-    if (key2idx.emplace(key_of(nd), static_cast<uint32_t>(nodes.size())).second) {
-      nodes.push_back(std::move(nd));
-    }
-  }
-  const size_t n = nodes.size();
-  if (n == 0) {
-    return nodes;
-  }
-
-  std::vector<uint32_t>              indeg(n, 0);
-  std::vector<std::vector<uint32_t>> succ(n);
-  for (uint32_t i = 0; i < static_cast<uint32_t>(n); ++i) {
-    if (nodes[i].is_loop_break()) {
-      continue;  // cut point: no ordering edges lead INTO it (it is a source)
-    }
-    const auto add_dep = [&](const std::string& dep_key) {
-      auto it = key2idx.find(dep_key);
-      if (it == key2idx.end() || it->second == i) {
-        return;  // a boundary (primary IO) or a self-edge — not an intra-set order
-      }
-      succ[it->second].push_back(i);
-      ++indeg[i];
-    };
-    if (forward) {
-      for (const auto& e : nodes[i].inp_edges()) {
-        add_dep(key_of(e.driver.get_master_node()));
-      }
-    } else {
-      for (const auto& e : nodes[i].out_edges()) {
-        add_dep(key_of(e.sink.get_master_node()));
-      }
-    }
-  }
-
-  std::vector<Node_class> out;
-  out.reserve(n);
-  std::vector<char>                                                    emitted(n, 0);
-  // STABLE Kahn: a min-heap keyed by the original (DFS-collected) index, so an
-  // input that is already topological is reproduced verbatim and only nodes that
-  // genuinely violate the order (a driver emitted after its consumer across a
-  // module boundary) are moved. Keeps the per-body grouping the class iterators
-  // produce while guaranteeing drivers precede consumers.
-  std::priority_queue<uint32_t, std::vector<uint32_t>, std::greater<>> ready;
-  for (uint32_t i = 0; i < static_cast<uint32_t>(n); ++i) {
-    // Cut nodes are sources of the ordering DAG regardless of where they are
-    // EMITTED, so they must always be seeded — otherwise everything downstream
-    // of a flop keeps in-degree > 0 under !loop_break_first and drops into the
-    // raw-DFS residual below, out of topological order.
-    if (indeg[i] == 0) {
-      ready.push(i);
-    }
-  }
-  while (!ready.empty()) {
-    const uint32_t i = ready.top();
-    ready.pop();
-    if (emitted[i]) {
-      continue;
-    }
-    emitted[i] = 1;
-    if (loop_break_first || !nodes[i].is_loop_break()) {
-      out.push_back(nodes[i]);
-    }
-    for (const uint32_t s : succ[i]) {
-      if (indeg[s] > 0 && --indeg[s] == 0) {
-        ready.push(s);
-      }
-    }
-  }
-  // Residual — cycle-tails (should not occur once loops are flop-broken). Emit
-  // them in the collected (DFS) order so the result is deterministic. Cut nodes
-  // are excluded when they are not wanted up front: the loop_break_last replay
-  // below is the single place they appear, so they are never emitted twice.
-  for (uint32_t i = 0; i < static_cast<uint32_t>(n); ++i) {
-    if (!emitted[i] && (loop_break_first || !nodes[i].is_loop_break())) {
-      out.push_back(nodes[i]);
-    }
-  }
-  if (loop_break_last) {  // class-iterator parity: replay the cut nodes at the tail
-    for (uint32_t i = 0; i < static_cast<uint32_t>(n); ++i) {
-      if (nodes[i].is_loop_break()) {
-        out.push_back(nodes[i]);
-      }
-    }
-  }
-  return out;
-}
-
-// --- ForwardHierIterator ---
-
-ForwardHierIterator::ForwardHierIterator(Graph* root_graph, bool loop_break_first, bool loop_break_last,
-                                         const ankerl::unordered_dense::set<Gid>* opaque)
-    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last), opaque_(opaque) {
-  if (root_graph == nullptr) {
-    return;
-  }
-  root_graph->assert_accessible();
-  root_gid_ = root_graph->self_gid_;
-  if (root_gid_ != Gid_invalid) {
-    active_graphs_.insert(root_gid_);
-  }
-  stack_.push_back(Frame{root_graph,
-                         ForwardClassIterator(root_graph, loop_break_first_, loop_break_last_),
-                         static_cast<Tree_pos>(ROOT),
-                         std::make_shared<std::vector<Nid>>()});
-  advance();
-
-  // Flat-module TOPOLOGICAL order: drain the per-body DFS once, then reorder so
-  // drivers precede consumers across module boundaries (loop-breaks at the leaf
-  // flops/mems). This is forward_hier's whole contract — always on.
-  std::vector<Node_class> dfs;
-  while (!stack_.empty()) {
-    dfs.push_back(descend_deref());
-    descend_step();
-  }
-  topo_     = hier_topo_reorder(std::move(dfs), /*forward=*/true, loop_break_first_, loop_break_last_);
-  topo_pos_ = 0;
-}
-
-void ForwardHierIterator::pop_frame() {
-  const Gid popped = stack_.back().graph->self_gid_;
-  stack_.pop_back();
-  if (popped != Gid_invalid) {
-    active_graphs_.erase(popped);
-  }
-}
-
-void ForwardHierIterator::advance() {
-  while (!stack_.empty()) {
-    auto& frame = stack_.back();
-    if (frame.it == ForwardClassIterator{}) {
-      pop_frame();
-      continue;
-    }
-    return;
-  }
-}
-
-Node_class ForwardHierIterator::operator*() const { return topo_[topo_pos_]; }
-
-ForwardHierIterator& ForwardHierIterator::operator++() {
-  ++topo_pos_;
-  return *this;
-}
-
-Node_class ForwardHierIterator::descend_deref() const {
-  const auto& frame = stack_.back();
-  return Node_class(frame.graph, root_gid_, frame.hier_pos, (*frame.it).get_debug_nid(), frame.path);
-}
-
-void ForwardHierIterator::descend_step() {
-  auto&       frame    = stack_.back();
-  const Nid   cur_nid  = (*frame.it).get_debug_nid();
-  const auto& entry    = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
-  const auto* lib      = frame.graph->owner_lib_;
-  // Descend into a loop_break subnode only on its first emission (see the
-  // flat iterator for the rationale); skip on the LoopLast replay.
-  const bool  skip_sub = loop_break_first_ && frame.it.current_is_loop_break_replay();
-  ++frame.it;
-  if (entry.has_subnode() && lib != nullptr && !skip_sub) {
-    const Gid  sub       = entry.get_subnode();
-    // `opaque_` (explicit) or the ambient Hier_opaque_scope subnodes are NOT
-    // descended into (yielded as leaf Sub nodes) — the caller (pass/lec --collapse)
-    // blackboxes them instead of flattening the body. They contribute no
-    // boundary IO under visit_io (we never enter the body).
-    const bool is_opaque = (opaque_ != nullptr && opaque_->find(sub) != opaque_->end()) || hier_is_opaque(sub);
-    if (lib->has_graph(sub) && !is_opaque && active_graphs_.find(sub) == active_graphs_.end()) {
-      Graph*         child      = const_cast<Graph*>(lib->get_graph(sub).get());
-      auto           it         = frame.graph->subnode_tree_pos_.find(cur_nid);
-      const Tree_pos child_pos  = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
-      auto           child_path = std::make_shared<std::vector<Nid>>(*frame.path);
-      child_path->push_back(cur_nid & ~static_cast<Nid>(3));
-      active_graphs_.insert(sub);
-      stack_.push_back(
-          Frame{child, ForwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos, std::move(child_path)});
-    }
-  }
-  advance();
-  return;
-}
-
-ForwardHierIterator ForwardHierRange::begin() const {
-  return ForwardHierIterator(graph_, loop_break_first_, loop_break_last_, opaque_);
-}
-
 // --- BackwardClassIterator ---
 //
 // Replays the reverse topological emission order using backward_pass2_cache_ and
@@ -4836,6 +4398,7 @@ BackwardClassIterator::BackwardClassIterator(Graph* graph, bool loop_break_first
     phase_ = Phase::End;
     return;
   }
+  graph_->assert_accessible();
   graph_->ensure_backward_caches();
   node_count_ = graph_->node_table.size();
   if (node_count_ <= kFirstUserNodeIdx) {
@@ -5017,145 +4580,6 @@ Node_class BackwardClassRange::front() const {
 
 bool BackwardClassRange::empty() const { return begin() == end(); }
 
-// --- BackwardFlatIterator ---
-
-BackwardFlatIterator::BackwardFlatIterator(Graph* root_graph, bool loop_break_first, bool loop_break_last)
-    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {
-  if (root_graph == nullptr) {
-    return;
-  }
-  root_graph->assert_accessible();
-  top_graph_ = root_graph->self_gid_;
-  if (top_graph_ != Gid_invalid) {
-    active_graphs_.insert(top_graph_);
-  }
-  stack_.push_back(Frame{root_graph, BackwardClassIterator(root_graph, loop_break_first_, loop_break_last_)});
-  advance();
-}
-
-void BackwardFlatIterator::advance() {
-  while (!stack_.empty()) {
-    auto& frame = stack_.back();
-    if (frame.it == BackwardClassIterator{}) {
-      stack_.pop_back();
-      continue;
-    }
-    return;  // positioned
-  }
-}
-
-Node_class BackwardFlatIterator::operator*() const {
-  const auto& frame   = stack_.back();
-  const Nid   raw_nid = (*frame.it).get_debug_nid();
-  return Node_class(frame.graph, top_graph_, raw_nid);
-}
-
-BackwardFlatIterator& BackwardFlatIterator::operator++() {
-  auto&       frame    = stack_.back();
-  const Nid   cur_nid  = (*frame.it).get_debug_nid();
-  const auto& entry    = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
-  const auto* lib      = frame.graph->owner_lib_;
-  const bool  skip_sub = loop_break_first_ && frame.it.current_is_loop_break_replay();
-  ++frame.it;
-  if (entry.has_subnode() && lib != nullptr && !skip_sub) {
-    const Gid sub = entry.get_subnode();
-    if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
-      Graph* child = const_cast<Graph*>(lib->get_graph(sub).get());
-      active_graphs_.insert(sub);
-      stack_.push_back(Frame{child, BackwardClassIterator(child, loop_break_first_, loop_break_last_)});
-    }
-  }
-  advance();
-  return *this;
-}
-
-BackwardFlatIterator BackwardFlatRange::begin() const { return BackwardFlatIterator(graph_, loop_break_first_, loop_break_last_); }
-
-// --- BackwardHierIterator ---
-
-BackwardHierIterator::BackwardHierIterator(Graph* root_graph, bool loop_break_first, bool loop_break_last)
-    : loop_break_first_(loop_break_first), loop_break_last_(loop_break_last) {
-  if (root_graph == nullptr) {
-    return;
-  }
-  root_graph->assert_accessible();
-  root_gid_ = root_graph->self_gid_;
-  if (root_gid_ != Gid_invalid) {
-    active_graphs_.insert(root_gid_);
-  }
-  stack_.push_back(Frame{root_graph,
-                         BackwardClassIterator(root_graph, loop_break_first_, loop_break_last_),
-                         static_cast<Tree_pos>(ROOT),
-                         std::make_shared<std::vector<Nid>>()});
-  advance();
-
-  // Flat-module REVERSE topological order (mirrors forward): drain the per-body
-  // DFS once, then reorder so consumers precede drivers across module boundaries.
-  std::vector<Node_class> dfs;
-  while (!stack_.empty()) {
-    dfs.push_back(descend_deref());
-    descend_step();
-  }
-  topo_     = hier_topo_reorder(std::move(dfs), /*forward=*/false, loop_break_first_, loop_break_last_);
-  topo_pos_ = 0;
-}
-
-void BackwardHierIterator::pop_frame() {
-  const Gid popped = stack_.back().graph->self_gid_;
-  stack_.pop_back();
-  if (popped != Gid_invalid) {
-    active_graphs_.erase(popped);
-  }
-}
-
-void BackwardHierIterator::advance() {
-  while (!stack_.empty()) {
-    auto& frame = stack_.back();
-    if (frame.it == BackwardClassIterator{}) {
-      pop_frame();
-      continue;
-    }
-    return;
-  }
-}
-
-Node_class BackwardHierIterator::operator*() const { return topo_[topo_pos_]; }
-
-BackwardHierIterator& BackwardHierIterator::operator++() {
-  ++topo_pos_;
-  return *this;
-}
-
-Node_class BackwardHierIterator::descend_deref() const {
-  const auto& frame = stack_.back();
-  return Node_class(frame.graph, root_gid_, frame.hier_pos, (*frame.it).get_debug_nid(), frame.path);
-}
-
-void BackwardHierIterator::descend_step() {
-  auto&       frame    = stack_.back();
-  const Nid   cur_nid  = (*frame.it).get_debug_nid();
-  const auto& entry    = frame.graph->node_table[static_cast<size_t>(cur_nid >> 2)];
-  const auto* lib      = frame.graph->owner_lib_;
-  const bool  skip_sub = loop_break_first_ && frame.it.current_is_loop_break_replay();
-  ++frame.it;
-  if (entry.has_subnode() && lib != nullptr && !skip_sub) {
-    const Gid sub = entry.get_subnode();
-    if (lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
-      Graph*         child      = const_cast<Graph*>(lib->get_graph(sub).get());
-      auto           it         = frame.graph->subnode_tree_pos_.find(cur_nid);
-      const Tree_pos child_pos  = (it != frame.graph->subnode_tree_pos_.end()) ? it->second : static_cast<Tree_pos>(ROOT);
-      auto           child_path = std::make_shared<std::vector<Nid>>(*frame.path);
-      child_path->push_back(cur_nid & ~static_cast<Nid>(3));
-      active_graphs_.insert(sub);
-      stack_.push_back(
-          Frame{child, BackwardClassIterator(child, loop_break_first_, loop_break_last_), child_pos, std::move(child_path)});
-    }
-  }
-  advance();
-}
-
-BackwardHierIterator BackwardHierRange::begin() const { return BackwardHierIterator(graph_, loop_break_first_, loop_break_last_); }
-
 // --- Hier_instance members ---
 
 Gid Hier_instance::get_target_gid() const {
@@ -5190,8 +4614,7 @@ Node_class Hier_instance::get_parent_node() const {
   if (!is_valid()) {
     return Node_class();
   }
-  // Build a hier-context Node_class matching the key that fast_hier/forward_hier
-  // would assign to this same subnode node during their traversal — hier_pos
+  // Build a hier-context Node_class for this same subnode node — hier_pos
   // is the parent frame's hier_pos, not this instance's own tree_pos.
   return Node_class(parent_graph_, root_gid_, hier_pos_, parent_nid_);
 }
@@ -5220,161 +4643,6 @@ bool Hier_instance::is_valid() const noexcept {
   }
   const auto* entry = parent_graph_->ref_node(parent_nid_);
   return entry->has_subnode();
-}
-
-// --- HierIterator / HierRange ---
-//
-// The walker keeps one Frame per currently-open tree level. advance_to_next
-// _instance moves the top frame's pre-order cursor forward until it lands on
-// a Tree_pos whose reverse-lookup hit is still a live subnode (stale tombstone
-// tree positions left behind by delete_node are silently skipped). When a
-// frame's iterator reaches end, the frame pops and its Gid is released from
-// active_graphs_. operator++ is responsible for pushing the target-graph
-// frame when the yielded instance expands into an as-yet-unvisited subgraph.
-
-HierIterator::HierIterator(Graph* root_graph) {
-  if (root_graph == nullptr || root_graph->tree_ == nullptr) {
-    return;
-  }
-  root_gid_                                      = root_graph->self_gid_;
-  path_storage_                                  = std::make_shared<detail::Occurrence_path_storage>();
-  path_storage_->entries.front().structural_hash = detail::occurrence_path_root_hash(root_gid_);
-  // Seed the top frame with pre_order over the root graph's tree, plus a
-  // hier_pos of ROOT so the yielded instances match the top-level naming that
-  // fast_hier and forward_hier produce (their root frame also uses ROOT).
-  auto* tree                                     = root_graph->tree_.get();
-  stack_.push_back(Frame{root_graph,
-                         Tree::pre_order_iterator(static_cast<Tree_pos>(ROOT), tree, false),
-                         Tree::pre_order_iterator(INVALID, tree, false),
-                         static_cast<Tree_pos>(ROOT),
-                         0,
-                         1});
-  if (root_gid_ != Gid_invalid) {
-    active_graphs_.insert(root_gid_);
-  }
-  advance_to_next_instance();
-}
-
-void HierIterator::advance_to_next_instance() {
-  while (!stack_.empty()) {
-    Frame& frame = stack_.back();
-    while (frame.cur != frame.end) {
-      const Tree_pos pos = (*frame.cur).get_debug_nid();
-      if (pos == static_cast<Tree_pos>(ROOT)) {
-        // ROOT is a structural placeholder — it never corresponds to a
-        // subnode. Skip it silently.
-        ++frame.cur;
-        continue;
-      }
-      auto it = frame.graph->tree_pos_to_nid_.find(pos);
-      if (it == frame.graph->tree_pos_to_nid_.end()) {
-        // Orphan tree node (shouldn't happen in normal operation — every
-        // tree node is inserted by set_subnode, which also updates the map).
-        // Skip defensively so a future tree-only API can't hang iteration.
-        ++frame.cur;
-        continue;
-      }
-      const Nid owner_nid = it->second;
-      if (!frame.graph->is_node_valid(owner_nid)) {
-        // Stale entry left after delete_node — the node is tombstoned but
-        // the tree position / map entry weren't cleaned up (current
-        // delete_node doesn't touch the structure tree). Skip.
-        ++frame.cur;
-        continue;
-      }
-      const auto* entry = frame.graph->ref_node(owner_nid);
-      if (!entry->has_subnode()) {
-        ++frame.cur;
-        continue;
-      }
-      return;
-    }
-    const Gid popped = frame.graph->self_gid_;
-    stack_.pop_back();
-    if (popped != Gid_invalid) {
-      active_graphs_.erase(popped);
-    }
-  }
-}
-
-Hier_instance HierIterator::operator*() const {
-  const Frame&   frame       = stack_.back();
-  const Tree_pos pos         = (*frame.cur).get_debug_nid();
-  auto           nid_it      = frame.graph->tree_pos_to_nid_.find(pos);
-  const Nid      owner_nid   = nid_it->second;
-  auto           storage     = path_storage_;
-  uint32_t       path_handle = 0;
-  if (memo_graph_ == frame.graph && memo_pos_ == pos && memo_parent_ == frame.path_handle) {
-    path_handle = memo_path_handle_;  // same cursor: reuse the interned entry
-  } else {
-    detail::Occurrence_path_storage::Entry path_entry;
-    path_entry.parent       = frame.path_handle;
-    path_entry.step.subnode = Definition_index{frame.graph->self_gid_, owner_nid};
-    path_entry.step.ordinal = std::nullopt;
-    path_entry.structural_hash
-        = detail::occurrence_path_extend_hash(storage->entries[frame.path_handle].structural_hash, path_entry.step);
-    storage->entries.push_back(std::move(path_entry));
-    path_handle       = static_cast<uint32_t>(storage->entries.size() - 1);
-    memo_graph_       = frame.graph;
-    memo_pos_         = pos;
-    memo_parent_      = frame.path_handle;
-    memo_path_handle_ = path_handle;
-  }
-
-  uint64_t site_size = 1;
-  if (const auto loop = frame.graph->subnode_loops_.find(owner_nid); loop != frame.graph->subnode_loops_.end()) {
-    site_size = loop->second.count;
-  }
-  uint64_t multiplicity = 0;
-  if (site_size != 0 && frame.multiplicity > std::numeric_limits<uint64_t>::max() / site_size) {
-    multiplicity = std::numeric_limits<uint64_t>::max();
-  } else {
-    multiplicity = frame.multiplicity * site_size;
-  }
-  return Hier_instance(frame.graph,
-                       root_gid_,
-                       frame.hier_pos,
-                       pos,
-                       owner_nid,
-                       Occurrence_path(root_gid_, std::move(storage), path_handle),
-                       multiplicity);
-}
-
-HierIterator& HierIterator::operator++() {
-  const Hier_instance current   = operator*();
-  Frame&              frame     = stack_.back();
-  const Tree_pos      this_pos  = (*frame.cur).get_debug_nid();
-  auto                it        = frame.graph->tree_pos_to_nid_.find(this_pos);
-  const Nid           owner_nid = (it != frame.graph->tree_pos_to_nid_.end()) ? it->second : static_cast<Nid>(0);
-  const auto*         entry     = frame.graph->ref_node(owner_nid);
-  const Gid           sub       = entry->get_subnode();
-  const auto*         lib       = frame.graph->owner_lib_;
-  ++frame.cur;
-  if (sub != Gid_invalid && lib != nullptr && lib->has_graph(sub) && active_graphs_.find(sub) == active_graphs_.end()) {
-    Graph* child = const_cast<Graph*>(lib->get_graph(sub).get());
-    if (child->tree_ != nullptr) {
-      auto* child_tree = child->tree_.get();
-      active_graphs_.insert(sub);
-      // this_pos is the parent subnode's tree_pos within frame.graph — it
-      // becomes the hier_pos for every instance yielded from the child
-      // frame, matching fast_hier's semantics.
-      stack_.push_back(Frame{child,
-                             Tree::pre_order_iterator(static_cast<Tree_pos>(ROOT), child_tree, false),
-                             Tree::pre_order_iterator(INVALID, child_tree, false),
-                             this_pos,
-                             current.path().interned_handle(),
-                             current.multiplicity()});
-    }
-  }
-  advance_to_next_instance();
-  return *this;
-}
-
-HierIterator HierRange::begin() const { return HierIterator(graph_); }
-
-HierRange Graph::hier_range() const noexcept {
-  assert_accessible();
-  return HierRange(const_cast<Graph*>(this));
 }
 
 void Graph::del_edge_int(Vid driver_id, Vid sink_id) {
@@ -5688,7 +4956,7 @@ void Graph::resolve_hier_driver(Graph* g, std::vector<HierInst> path, Pid driver
       // into the body's OUTPUT_NODE sink for the same port — UNLESS the subnode is
       // hierarchically opaque (pass/lec --collapse), in which case the read stops
       // here at the instance boundary (the box's output IS the leaf driver), so it
-      // agrees with forward_hier leaving the body undescended.
+      // agrees with an opaque hierarchy view leaving the body undescended.
       const Gid   child_gid = entry->get_subnode();
       const auto* lib       = g->owner_lib_;
       if (lib->has_graph(child_gid) && !hier_is_opaque(child_gid)) {
@@ -6443,7 +5711,7 @@ void Graph::display_next_pin_of_node() const {
 void Graph::print(std::ostream& os) const {
   assert_accessible();
   os << name_ << " {\n";
-  for (auto node : forward_class()) {
+  for (auto node : body().nodes(Node_order::forward)) {
     const Nid raw_nid = node.get_debug_nid() & ~static_cast<Nid>(3);
     const Nid actual  = raw_nid >> 2;
     if (actual < 4) {
@@ -6757,7 +6025,7 @@ void Graph::load_body(const std::string& dir_path) {
   // The edge-adjacency contents (overflow.bin, or legacy overflow_<i>.bin) are
   // NOT read here. overflow_storage_ is sized above; the actual read happens on
   // the first edge traversal via ensure_overflow_loaded() (reached through
-  // overflow_sets()). A structure-only walk — fast_class + subnode + node count,
+  // overflow_sets()). A structure-only walk — body nodes + subnode + node count,
   // e.g. `lhd tools tree` — never traverses edges, so it never opens these files.
   // On a legacy library that alone is the difference between ~1.2M file opens and
   // none. overflow_count==0 => nothing to defer.
@@ -6802,7 +6070,6 @@ void Graph::rebuild_derived_after_body() {
   }
   (void)tree_->add_root();
   subnode_tree_pos_.clear();
-  tree_pos_to_nid_.clear();
   for (size_t i = 1; i < node_table.size(); ++i) {
     if (!node_table[i].is_alive() || !node_table[i].has_subnode()) {
       continue;
@@ -6810,7 +6077,6 @@ void Graph::rebuild_derived_after_body() {
     const Nid      subnode_nid = static_cast<Nid>(i) << 2;
     const Tree_pos child_pos   = tree_->add_child(static_cast<Tree_pos>(ROOT));
     subnode_tree_pos_.emplace(subnode_nid, child_pos);
-    tree_pos_to_nid_.emplace(child_pos, subnode_nid);
   }
 
   // Reconcile the name->Pid IO maps against the LOADED pin table. The maps were
@@ -7336,7 +6602,7 @@ void GraphLibrary::load_merge(const std::string& db_path) {
     // Rewrite each Sub's subnode gid through the remap (identity → no-op, which
     // is the all-name-hash case). A subnode gid absent from the remap is an
     // external reference satisfied by another input at the same canonical gid.
-    for (auto node : graph->fast_class()) {
+    for (auto node : graph->body().nodes()) {
       const Gid old = node.get_subnode_gid();
       if (old == Gid_invalid) {
         continue;

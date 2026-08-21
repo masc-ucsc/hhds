@@ -50,13 +50,13 @@ as its own `op` so the comparison can isolate the cost of each axis
 
 | op | hhds API called | What it visits | When to use |
 |---|---|---|---|
-| `traverse_forward_class` | `forward_class()` | All nodes of the top graph in topological order | Single-graph topo-sort cost |
-| `traverse_fast_class`    | `fast_class()`    | All nodes of the top graph, visit-once unordered | Single-graph fast pass cost |
-| `traverse_forward_flat`  | `forward_flat()`  | All nodes across all submodule instances, topo-ordered | Hier-flattening with order |
-| `traverse_fast_flat`     | `fast_flat()`     | All nodes across all instances, unordered | Hier-flattening fast |
-| `traverse_forward_hier`  | `forward_hier()`  | All nodes per-instance, topo-ordered, with hier context | Hier-aware ordered walk |
-| `traverse_fast_hier`     | `fast_hier()`     | All nodes per-instance, unordered | Hier-aware fast walk |
-| `traverse_hier_range`    | `hier_range()`    | One yield per submodule instance only (no inner nodes) | Module-tree / instance count |
+| `traverse_forward_class` | `body().nodes(Node_order::forward)` | All nodes of the top graph in topological order | Single-graph topo-sort cost |
+| `traverse_fast_class`    | `body().nodes()` | All nodes of the top graph, visit-once unordered | Single-graph storage walk cost |
+| `traverse_forward_flat`  | `definitions().nodes(Node_order::forward)` | All nodes in unique reachable definitions, topo-ordered | Definition traversal with order |
+| `traverse_fast_flat`     | `definitions().nodes()` | All nodes in unique reachable definitions, unordered | Definition traversal |
+| `traverse_forward_hier`  | `grouped_hierarchy().nodes(Node_order::forward)` | All nodes per stored instance, topo-ordered | Hierarchy-aware ordered walk |
+| `traverse_fast_hier`     | `grouped_hierarchy().nodes()` | All nodes per stored instance, unordered | Hierarchy-aware storage walk |
+| `traverse_hier_range`    | `grouped_hierarchy().instances()` | One yield per stored submodule instance group | Module-tree / instance count |
 
 For Boost.Graph: only `traverse_forward_class` and `traverse_fast_class`
 have direct counterparts (BGL has no native hierarchy). The other five

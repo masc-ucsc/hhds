@@ -73,7 +73,7 @@ TEST(TreeWrappers, TraversalsYieldNodeClass) {
   auto grand  = child1.add_child();
 
   std::vector<hhds::Tree::Node_class> preorder;
-  for (auto node : tree->pre_order()) {
+  for (auto node : tree->body().nodes(hhds::Tree_order::preorder)) {
     preorder.push_back(node);
   }
   ASSERT_EQ(preorder.size(), 4U);
@@ -91,7 +91,7 @@ TEST(TreeWrappers, TraversalsYieldNodeClass) {
   EXPECT_EQ(sibling_order[1], child2);
 
   std::vector<hhds::Tree::Node_class> postorder;
-  for (auto node : root.post_order_class()) {
+  for (auto node : root.body().nodes(hhds::Tree_order::postorder)) {
     postorder.push_back(node);
   }
   ASSERT_EQ(postorder.size(), 4U);

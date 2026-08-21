@@ -439,7 +439,7 @@ TEST(SourceLocatorPersist, LoadLazyDefersParseToFirstUse) {
 
   // The data-loss trap: save() while the parse is still deferred must fold
   // the on-disk table into the rewrite, not clobber it with emptiness.
-  const auto dir2 = fresh_dir("hhds_srcloc_lazy_resave");
+  const auto     dir2 = fresh_dir("hhds_srcloc_lazy_resave");
   Source_locator untouched;
   ASSERT_TRUE(untouched.load_lazy(dir.string()));
   untouched.save(dir2.string());
@@ -658,7 +658,7 @@ TEST(SourceLocatorGraph, LibrarySaveLoadCarriesProvenance) {
   auto g2 = lib2.find_io("alu")->get_graph();
   ASSERT_TRUE(g2);
   bool found = false;
-  for (auto node : g2->fast_class()) {
+  for (auto node : g2->body().nodes()) {
     if (!node.attr(hhds::attrs::srcid).has()) {
       continue;
     }
@@ -845,7 +845,7 @@ TEST(SourceLocatorGraph, SaveFoldRemapRewritesStampedAttrs) {
   auto g2 = lib2.find_io("alu")->get_graph();
   ASSERT_TRUE(g2);
   std::vector<SourceId> stamped;
-  for (auto node : g2->fast_class()) {
+  for (auto node : g2->body().nodes()) {
     if (node.attr(hhds::attrs::srcid).has()) {
       stamped.push_back(node.attr(hhds::attrs::srcid).get());
     }
@@ -891,7 +891,7 @@ TEST(SourceLocatorGraph, LoadMergeRemapRewritesAbsorbedAttrs) {
   auto g = c.find_io("foo")->get_graph();
   ASSERT_TRUE(g);
   bool found = false;
-  for (auto node : g->fast_class()) {
+  for (auto node : g->body().nodes()) {
     if (!node.attr(hhds::attrs::srcid).has()) {
       continue;
     }

@@ -182,7 +182,7 @@ TEST(GraphStorage, EdgeAndNodeDeletionTombstones) {
   EXPECT_EQ(s.inp_edges().size(), 0u);
 
   std::vector<hhds::Nid> visited;
-  for (auto node : graph->forward_class()) {
+  for (auto node : graph->body().nodes(hhds::Node_order::forward)) {
     visited.push_back(node.get_debug_nid());
   }
   EXPECT_EQ(visited.size(), 1u);
@@ -200,7 +200,7 @@ TEST(GraphStorage, ClearSemantics) {
   EXPECT_TRUE(node.is_invalid());
   EXPECT_TRUE(gio->has_graph());
   EXPECT_TRUE(graph->get_input_pin("a").is_valid());
-  EXPECT_TRUE(graph->forward_class().empty());
+  EXPECT_TRUE(graph->body().nodes(hhds::Node_order::forward).empty());
   auto node_after_clear = graph->create_node();
   EXPECT_TRUE(node.is_invalid());
   EXPECT_TRUE(node_after_clear.is_valid());
@@ -391,8 +391,8 @@ TEST(GraphAttrs, HierAttrUsesHierarchyContext) {
   inst1.set_subnode(leaf_io);
   inst2.set_subnode(leaf_io);
 
-  std::vector<hhds::Node_class> leaf_instances;
-  for (auto node : top->forward_hier()) {
+  std::vector<hhds::Occurrence_node> leaf_instances;
+  for (auto node : top->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
     if (node.get_current_gid() == leaf->get_gid() && node.get_debug_nid() == leaf_n.get_debug_nid()) {
       leaf_instances.push_back(node);
     }
@@ -400,11 +400,11 @@ TEST(GraphAttrs, HierAttrUsesHierarchyContext) {
 
   ASSERT_EQ(leaf_instances.size(), 2u);
 
-  leaf_instances[0].attr(hhds::attrs::name).set("leaf_internal");
+  leaf_instances[0].base_node().attr(hhds::attrs::name).set("leaf_internal");
   leaf_instances[0].attr(test_attrs::hbits).set(11);
   leaf_instances[1].attr(test_attrs::hbits).set(22);
 
-  EXPECT_EQ(leaf_instances[1].attr(hhds::attrs::name).get(), "leaf_internal");
+  EXPECT_EQ(leaf_instances[1].base_node().attr(hhds::attrs::name).get(), "leaf_internal");
   EXPECT_EQ(leaf_instances[0].attr(test_attrs::hbits).get(), 11);
   EXPECT_EQ(leaf_instances[1].attr(test_attrs::hbits).get(), 22);
 }
@@ -742,9 +742,9 @@ TEST(GraphPersistence, LazyLoadMaterializesOnDemand) {
   const std::string test_dir = "/tmp/hhds_test_lazy_load";
   fs::remove_all(test_dir);
 
-  hhds::GraphLibrary            lib;
-  std::vector<hhds::Gid>        gids;
-  std::vector<hhds::Nid>        hub_nids;
+  hhds::GraphLibrary     lib;
+  std::vector<hhds::Gid> gids;
+  std::vector<hhds::Nid> hub_nids;
   for (const char* nm : {"g0", "g1"}) {
     auto [gid, hub_nid] = make_overflow_graph(lib, nm);
     gids.push_back(gid);
@@ -794,8 +794,8 @@ TEST(GraphPersistence, LazyLoadSaveAsPreservesUntouchedBodies) {
   lib.save(src_dir);
 
   hhds::GraphLibrary lib2;
-  lib2.load(src_dir);   // lazy
-  lib2.save(dst_dir);   // both bodies still pending -> copied verbatim
+  lib2.load(src_dir);  // lazy
+  lib2.save(dst_dir);  // both bodies still pending -> copied verbatim
 
   hhds::GraphLibrary lib3;
   lib3.load(dst_dir);

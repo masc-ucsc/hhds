@@ -122,10 +122,9 @@ using Tid      = Tree_pos;
 //                      Safe only when the containing map scope is limited
 //                      to a single tree body.
 //   Tree_flat_index  — forest-wide key. Two integers: (tid, current_pos).
+//   Tree_hier_index  — per-instance key. Two integers: (hier_pos, current_pos),
+//                      so two instantiations of one body stay distinct.
 //
-// Tree_hier_index is intentionally absent: Tree::Node_class does not yet
-// carry hierarchy context (unlike Graph::Node_class). Add it alongside the
-// machinery that tracks hier_pos in the tree handle.
 struct Tree_class_index {
   Tree_pos value = 0;
 
@@ -178,6 +177,16 @@ static constexpr int16_t  CHUNK_SIZE  = 1 << CHUNK_SHIFT;  // Size of a chunk in
 static constexpr int16_t  CHUNK_MASK  = CHUNK_SIZE - 1;    // Mask for chunk offset
 static constexpr Tree_pos INVALID     = 0;                 // This is invalid for all pointers other than parent
 static constexpr Tree_pos ROOT        = 1 << CHUNK_SHIFT;  // ROOT ID
+
+// Tree traversal order. Graphs use Node_order::forward/reverse because their
+// order follows dependencies; trees use structural preorder/postorder.
+struct Tree_order {
+  struct preorder_t {};
+  struct postorder_t {};
+
+  inline static constexpr preorder_t  preorder{};
+  inline static constexpr postorder_t postorder{};
+};
 
 class Forest;
 class TreeIO;
@@ -411,6 +420,9 @@ private:
 
 public:
   class Node_class;
+  class Body_view;
+  class Definitions_view;
+  class Occurrences_view;
 
   struct PrintContext;
 
@@ -521,13 +533,10 @@ public:
     [[nodiscard]] Tree*      get_subnode() const;
     [[nodiscard]] Tid        get_subnode_tid() const;
 
-    [[nodiscard]] auto pre_order_class() const;
-    [[nodiscard]] auto post_order_class() const;
-    [[nodiscard]] auto sibling_order() const;
-    [[nodiscard]] auto pre_order_flat() const;
-    [[nodiscard]] auto pre_order_hier() const;
-    [[nodiscard]] auto post_order_flat() const;
-    [[nodiscard]] auto post_order_hier() const;
+    [[nodiscard]] Body_view        body() const;
+    [[nodiscard]] Definitions_view definitions() const;
+    [[nodiscard]] Occurrences_view occurrences() const;
+    [[nodiscard]] auto             sibling_order() const;
 
     template <Attribute Tag>
     [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
@@ -972,9 +981,6 @@ private:
   pre_order_range pre_order(Tree_pos start) const { return pre_order_range(start, this, false); }
 
 public:
-  pre_order_range pre_order() const { return pre_order_range(ROOT, this, false); }
-  pre_order_range pre_order(Node_class start) const { return pre_order_range(start.get_debug_nid(), this, false); }
-
   class pre_order_iterator_with_subtrees : public traversal_iterator_base<pre_order_iterator_with_subtrees> {
   public:
     std::set<Tree_pos>    visited_subtrees;
@@ -1126,7 +1132,8 @@ public:
     using pointer           = void;
     using reference         = Node_class;
 
-    post_order_iterator(Tree_pos start_pos, Tree* tree, bool follow_refs) : base(start_pos, tree, follow_refs), start(start_pos) {
+    post_order_iterator(Tree_pos start_pos, const Tree* tree, bool follow_refs)
+        : base(start_pos, tree, follow_refs), start(start_pos) {
       descend_to_first_post_order();
     }
 
@@ -1154,39 +1161,37 @@ public:
 
   class post_order_range {
   private:
-    Tree_pos m_start;
-    Tree*    m_tree_ptr;
-    bool     m_follow_subtrees;
+    Tree_pos    m_start;
+    const Tree* m_tree_ptr;
+    bool        m_follow_subtrees;
 
   public:
-    post_order_range(Tree_pos start, Tree* tree, bool follow_subtrees = false)
+    post_order_range(Tree_pos start, const Tree* tree, bool follow_subtrees = false)
         : m_start(start), m_tree_ptr(tree), m_follow_subtrees(follow_subtrees) {}
 
-    post_order_iterator begin() {
+    post_order_iterator begin() const {
       const Tree_pos start = (m_tree_ptr != nullptr && m_tree_ptr->_contains_data(m_start)) ? m_start : INVALID;
       return post_order_iterator(start, m_tree_ptr, m_follow_subtrees);
     }
-    post_order_iterator end() { return post_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
+    post_order_iterator end() const { return post_order_iterator(INVALID, m_tree_ptr, m_follow_subtrees); }
   };
 
 private:
-  post_order_range post_order(Tree_pos start, bool follow_subtrees = false) {
+  // const: the iterator only reads the tree (traversal_iterator_base already
+  // stores a const Tree*). Without this, Tree::body() -- which is const and
+  // const_casts -- would silently hand a const Tree to a non-const traversal.
+  post_order_range post_order(Tree_pos start, bool follow_subtrees = false) const {
     return post_order_range(start, this, follow_subtrees);
   }
 
 public:
-  post_order_range post_order(bool follow_subtrees = false) { return post_order_range(ROOT, this, follow_subtrees); }
-  post_order_range post_order(Node_class start, bool follow_subtrees = false) {
-    return post_order_range(start.get_debug_nid(), this, follow_subtrees);
-  }
-
   // Flat/hier traversals — cross subnode references across the forest.
   //
-  // pre_order_flat / post_order_flat visit each unique subtree body exactly
+  // Definition traversal visits each unique subtree body exactly
   // once (deduplicated by Tid). Nodes are emitted with Flat context, so
   // get_flat_index() is the natural map key.
   //
-  // pre_order_hier / post_order_hier visit each *instance* of a subtree body
+  // Occurrence traversal visits each *instance* of a subtree body
   // in its caller context — same body can appear multiple times. Nodes are
   // emitted with Hier context backed by an auxiliary expansion tree; two
   // instances get different Tree_hier_index values because their hier_pos
@@ -1196,7 +1201,7 @@ public:
   // an "active on stack" Tid set. Returned vectors own their own state —
   // hier additionally pins the expansion tree via shared_ptr on each Node.
 private:
-  [[nodiscard]] std::vector<Node_class> pre_order_flat(Tree_pos start) const {
+  [[nodiscard]] std::vector<Node_class> definitions_preorder(Tree_pos start) const {
     std::vector<Node_class> out;
     if (!_contains_data(start)) {
       return out;
@@ -1209,12 +1214,8 @@ private:
     return out;
   }
 
-public:
-  [[nodiscard]] std::vector<Node_class> pre_order_flat() const { return pre_order_flat(static_cast<Tree_pos>(ROOT)); }
-  [[nodiscard]] std::vector<Node_class> pre_order_flat(Node_class start) const { return pre_order_flat(start.get_debug_nid()); }
-
 private:
-  [[nodiscard]] std::vector<Node_class> post_order_flat(Tree_pos start) const {
+  [[nodiscard]] std::vector<Node_class> definitions_postorder(Tree_pos start) const {
     std::vector<Node_class> out;
     if (!_contains_data(start)) {
       return out;
@@ -1227,12 +1228,8 @@ private:
     return out;
   }
 
-public:
-  [[nodiscard]] std::vector<Node_class> post_order_flat() const { return post_order_flat(static_cast<Tree_pos>(ROOT)); }
-  [[nodiscard]] std::vector<Node_class> post_order_flat(Node_class start) const { return post_order_flat(start.get_debug_nid()); }
-
 private:
-  [[nodiscard]] std::vector<Node_class> pre_order_hier(Tree_pos start) const {
+  [[nodiscard]] std::vector<Node_class> occurrences_preorder(Tree_pos start) const {
     std::vector<Node_class> out;
     if (!_contains_data(start)) {
       return out;
@@ -1252,12 +1249,8 @@ private:
     return out;
   }
 
-public:
-  [[nodiscard]] std::vector<Node_class> pre_order_hier() const { return pre_order_hier(static_cast<Tree_pos>(ROOT)); }
-  [[nodiscard]] std::vector<Node_class> pre_order_hier(Node_class start) const { return pre_order_hier(start.get_debug_nid()); }
-
 private:
-  [[nodiscard]] std::vector<Node_class> post_order_hier(Tree_pos start) const {
+  [[nodiscard]] std::vector<Node_class> occurrences_postorder(Tree_pos start) const {
     std::vector<Node_class> out;
     if (!_contains_data(start)) {
       return out;
@@ -1278,8 +1271,61 @@ private:
   }
 
 public:
-  [[nodiscard]] std::vector<Node_class> post_order_hier() const { return post_order_hier(static_cast<Tree_pos>(ROOT)); }
-  [[nodiscard]] std::vector<Node_class> post_order_hier(Node_class start) const { return post_order_hier(start.get_debug_nid()); }
+  // Tree traversal mirrors the graph API: choose an identity scope first,
+  // then select an order with nodes(). A view may start at the tree root or at
+  // an arbitrary node, which makes Node_class::body()/definitions()/occurrences()
+  // natural subtree traversals.
+  class Body_view {
+  public:
+    [[nodiscard]] pre_order_range  nodes() const { return tree_->pre_order(start_); }
+    [[nodiscard]] pre_order_range  nodes(Tree_order::preorder_t) const { return tree_->pre_order(start_); }
+    [[nodiscard]] post_order_range nodes(Tree_order::postorder_t) const { return tree_->post_order(start_); }
+
+  private:
+    Body_view(const Tree* tree, Tree_pos start) : tree_(tree), start_(start) {}
+
+    const Tree* tree_  = nullptr;
+    Tree_pos    start_ = INVALID;
+
+    friend class Tree;
+    friend class Node_class;
+  };
+
+  class Definitions_view {
+  public:
+    [[nodiscard]] std::vector<Node_class> nodes() const { return tree_->definitions_preorder(start_); }
+    [[nodiscard]] std::vector<Node_class> nodes(Tree_order::preorder_t) const { return tree_->definitions_preorder(start_); }
+    [[nodiscard]] std::vector<Node_class> nodes(Tree_order::postorder_t) const { return tree_->definitions_postorder(start_); }
+
+  private:
+    Definitions_view(const Tree* tree, Tree_pos start) : tree_(tree), start_(start) {}
+
+    const Tree* tree_  = nullptr;
+    Tree_pos    start_ = INVALID;
+
+    friend class Tree;
+    friend class Node_class;
+  };
+
+  class Occurrences_view {
+  public:
+    [[nodiscard]] std::vector<Node_class> nodes() const { return tree_->occurrences_preorder(start_); }
+    [[nodiscard]] std::vector<Node_class> nodes(Tree_order::preorder_t) const { return tree_->occurrences_preorder(start_); }
+    [[nodiscard]] std::vector<Node_class> nodes(Tree_order::postorder_t) const { return tree_->occurrences_postorder(start_); }
+
+  private:
+    Occurrences_view(const Tree* tree, Tree_pos start) : tree_(tree), start_(start) {}
+
+    const Tree* tree_  = nullptr;
+    Tree_pos    start_ = INVALID;
+
+    friend class Tree;
+    friend class Node_class;
+  };
+
+  [[nodiscard]] Body_view        body() const { return Body_view(this, ROOT); }
+  [[nodiscard]] Definitions_view definitions() const { return Definitions_view(this, ROOT); }
+  [[nodiscard]] Occurrences_view occurrences() const { return Occurrences_view(this, ROOT); }
 
 private:
   [[nodiscard]] bool     has_subnode(Tree_pos node_pos) const { return get_subnode(node_pos) < 0; }
@@ -1580,39 +1626,24 @@ inline Tree* Tree::Node_class::get_subnode() const {
   return tree_ptr->_get_forest_tree(tid);
 }
 
-inline auto Tree::Node_class::pre_order_class() const {
-  I(tree_ptr != nullptr, "pre_order_class: node is not attached to a tree");
-  return tree_ptr->pre_order(*this);
+inline Tree::Body_view Tree::Node_class::body() const {
+  I(tree_ptr != nullptr, "body: node is not attached to a tree");
+  return Body_view(tree_ptr, current_pos);
 }
 
-inline auto Tree::Node_class::post_order_class() const {
-  I(tree_ptr != nullptr, "post_order_class: node is not attached to a tree");
-  return tree_ptr->post_order(*this);
+inline Tree::Definitions_view Tree::Node_class::definitions() const {
+  I(tree_ptr != nullptr, "definitions: node is not attached to a tree");
+  return Definitions_view(tree_ptr, current_pos);
+}
+
+inline Tree::Occurrences_view Tree::Node_class::occurrences() const {
+  I(tree_ptr != nullptr, "occurrences: node is not attached to a tree");
+  return Occurrences_view(tree_ptr, current_pos);
 }
 
 inline auto Tree::Node_class::sibling_order() const {
   I(tree_ptr != nullptr, "sibling_order: node is not attached to a tree");
   return tree_ptr->sibling_order(*this);
-}
-
-inline auto Tree::Node_class::pre_order_flat() const {
-  I(tree_ptr != nullptr, "pre_order_flat: node is not attached to a tree");
-  return tree_ptr->pre_order_flat(*this);
-}
-
-inline auto Tree::Node_class::pre_order_hier() const {
-  I(tree_ptr != nullptr, "pre_order_hier: node is not attached to a tree");
-  return tree_ptr->pre_order_hier(*this);
-}
-
-inline auto Tree::Node_class::post_order_flat() const {
-  I(tree_ptr != nullptr, "post_order_flat: node is not attached to a tree");
-  return tree_ptr->post_order_flat(*this);
-}
-
-inline auto Tree::Node_class::post_order_hier() const {
-  I(tree_ptr != nullptr, "post_order_hier: node is not attached to a tree");
-  return tree_ptr->post_order_hier(*this);
 }
 
 class Forest : public std::enable_shared_from_this<Forest> {

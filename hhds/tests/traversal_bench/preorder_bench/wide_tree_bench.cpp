@@ -25,21 +25,21 @@ void build_hhds_tree(hhds::Tree& tree, std::vector<int>& values, int num_nodes) 
 
 void preorder_traversal_hhds(hhds::Tree& tree) {
   int cnt = 0;
-  for (auto node : tree.pre_order()) {
+  for (auto node : tree.body().nodes(hhds::Tree_order::preorder)) {
     benchmark::DoNotOptimize(node);
     ++cnt;
   }
   benchmark::DoNotOptimize(cnt);
 }
 
-#define DEFINE_TRAVERSAL_WIDE_BENCH(NAME, COUNT)                \
-  void test_wide_tree_##NAME##_hhds(benchmark::State& state) {  \
-    auto            tree = hhds::Tree::create();                \
-    std::vector<int> values;                                    \
-    build_hhds_tree(*tree, values, COUNT);                      \
-    for (auto _ : state) {                                      \
-      preorder_traversal_hhds(*tree);                           \
-    }                                                           \
+#define DEFINE_TRAVERSAL_WIDE_BENCH(NAME, COUNT)               \
+  void test_wide_tree_##NAME##_hhds(benchmark::State& state) { \
+    auto             tree = hhds::Tree::create();              \
+    std::vector<int> values;                                   \
+    build_hhds_tree(*tree, values, COUNT);                     \
+    for (auto _ : state) {                                     \
+      preorder_traversal_hhds(*tree);                          \
+    }                                                          \
   }
 
 DEFINE_TRAVERSAL_WIDE_BENCH(10, 10)

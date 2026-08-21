@@ -62,7 +62,7 @@ TEST(TreeApiContract, BasicsAttributesAndTraversal) {
 
   // Pre-order starting at root: program, assign, literal, expr.
   std::vector<std::string> pre_names;
-  for (auto node : root.pre_order_class()) {
+  for (auto node : root.body().nodes(hhds::Tree_order::preorder)) {
     pre_names.push_back(std::string(node.attr(name).get()));
   }
   EXPECT_EQ(pre_names, (std::vector<std::string>{"program", "assign", "literal", "expr"}));
@@ -70,14 +70,14 @@ TEST(TreeApiContract, BasicsAttributesAndTraversal) {
   // Starting pre-order from a non-root node walks only the subtree rooted at
   // that node.
   std::vector<std::string> sub_names;
-  for (auto node : lhs.pre_order_class()) {
+  for (auto node : lhs.body().nodes(hhds::Tree_order::preorder)) {
     sub_names.push_back(std::string(node.attr(name).get()));
   }
   EXPECT_EQ(sub_names, (std::vector<std::string>{"assign", "literal"}));
 
   // Post-order: literal, assign, expr, program.
   std::vector<std::string> post_names;
-  for (auto node : root.post_order_class()) {
+  for (auto node : root.body().nodes(hhds::Tree_order::postorder)) {
     post_names.push_back(std::string(node.attr(name).get()));
   }
   EXPECT_EQ(post_names, (std::vector<std::string>{"literal", "assign", "expr", "program"}));
@@ -123,7 +123,7 @@ TEST(TreeApiContract, SubtreeDeletionRemovesChildrenAndAttributes) {
 
   // Iteration skips deleted nodes.
   std::vector<std::string> visited;
-  for (auto node : root.pre_order_class()) {
+  for (auto node : root.body().nodes(hhds::Tree_order::preorder)) {
     EXPECT_TRUE(node.is_valid());
     visited.push_back(std::string(node.attr(name).get()));
   }
@@ -179,7 +179,7 @@ TEST(TreeApiContract, ForestHierarchySubnodeReferences) {
 
   // Traversal within this tree only (does not enter the subnode).
   std::vector<std::string> class_names;
-  for (auto node : froot.pre_order_class()) {
+  for (auto node : froot.body().nodes(hhds::Tree_order::preorder)) {
     class_names.push_back(std::string(node.attr(name).get()));
   }
   EXPECT_EQ(class_names, (std::vector<std::string>{"func_main", "assign", "inline_expr"}));
@@ -329,7 +329,7 @@ struct TreeIndexFixture {
 
 }  // namespace
 
-// pre_order_class stays inside the top tree body. The handles it yields have
+// body().nodes() stays inside the top tree body. The handles it yields have
 // Class context, and the only index that is valid at that level is
 // Tree_class_index (scoped to this single body).
 TEST(TreeIndexContract, ClassOrderStaysInTopBody) {
@@ -337,7 +337,7 @@ TEST(TreeIndexContract, ClassOrderStaysInTopBody) {
 
   std::vector<std::string>                                visited;
   std::unordered_map<hhds::Tree_class_index, std::string> by_class;
-  for (auto node : f.top_root.pre_order_class()) {
+  for (auto node : f.top_root.body().nodes(hhds::Tree_order::preorder)) {
     EXPECT_TRUE(node.is_class());
     visited.push_back(std::string(node.attr(hhds::attrs::name).get()));
     by_class[node.get_class_index()] = std::string(node.attr(hhds::attrs::name).get());
@@ -346,7 +346,7 @@ TEST(TreeIndexContract, ClassOrderStaysInTopBody) {
   EXPECT_EQ(by_class.size(), 3u);
 }
 
-// pre_order_flat crosses subnode references, but enters each unique subtree
+// definitions().nodes() crosses subnode references, but enters each unique subtree
 // body exactly once. Both inst1 and inst2 reference "bottom" via set_subnode,
 // so bottom is visited once total. Handles carry Flat context so
 // get_flat_index() is the canonical map key; every handle for the same
@@ -357,7 +357,7 @@ TEST(TreeIndexContract, FlatOrderEntersSharedSubtreeOnce) {
   std::vector<std::string>                               visited;
   std::unordered_set<hhds::Tree_flat_index>              bottom_keys;
   std::unordered_map<hhds::Tree_flat_index, std::string> by_flat;
-  for (auto node : f.top->pre_order_flat()) {
+  for (auto node : f.top->definitions().nodes(hhds::Tree_order::preorder)) {
     EXPECT_TRUE(node.is_flat());
     visited.push_back(std::string(node.attr(hhds::attrs::name).get()));
     if (node.get_current_tid() == f.bottom->get_tid()) {
@@ -373,7 +373,7 @@ TEST(TreeIndexContract, FlatOrderEntersSharedSubtreeOnce) {
   EXPECT_EQ(by_flat.size(), 5u);
 }
 
-// pre_order_hier enters the shared body once per instantiation. Two
+// occurrences().nodes() enters the shared body once per instantiation. Two
 // traversals of bottom happen (via inst1 and via inst2), and the per-visit
 // Tree_hier_index distinguishes them — while Tree_flat_index collapses them.
 TEST(TreeIndexContract, HierOrderDistinguishesInstantiations) {
@@ -382,7 +382,7 @@ TEST(TreeIndexContract, HierOrderDistinguishesInstantiations) {
   std::vector<hhds::Tree::Node_class>                    bottom_leaf_visits;
   std::unordered_map<hhds::Tree_hier_index, std::string> by_hier;
   std::vector<std::string>                               visited;
-  for (auto node : f.top->pre_order_hier()) {
+  for (auto node : f.top->occurrences().nodes(hhds::Tree_order::preorder)) {
     EXPECT_TRUE(node.is_hier());
     visited.push_back(std::string(node.attr(hhds::attrs::name).get()));
     by_hier[node.get_hier_index()] = std::string(node.attr(hhds::attrs::name).get());
@@ -404,14 +404,14 @@ TEST(TreeIndexContract, HierOrderDistinguishesInstantiations) {
   EXPECT_EQ(by_hier.size(), 7u);
 }
 
-// post_order_flat / post_order_hier — children first, then parent. Used when
+// definitions()/occurrences() in postorder — children first, then parent. Used when
 // a bottom-up rewrite must finish the subtree before touching the container
 // node. Same dedup rules as the pre-order variants.
 TEST(TreeIndexContract, PostOrderFlatAndHierMirrorPreOrder) {
   TreeIndexFixture f;
 
   std::vector<std::string> flat_visited;
-  for (auto node : f.top->post_order_flat()) {
+  for (auto node : f.top->definitions().nodes(hhds::Tree_order::postorder)) {
     EXPECT_TRUE(node.is_flat());
     flat_visited.push_back(std::string(node.attr(hhds::attrs::name).get()));
   }
@@ -419,7 +419,7 @@ TEST(TreeIndexContract, PostOrderFlatAndHierMirrorPreOrder) {
   EXPECT_EQ(flat_visited, (std::vector<std::string>{"bottom_leaf", "bottom_root", "inst1", "inst2", "top_root"}));
 
   std::vector<std::string> hier_visited;
-  for (auto node : f.top->post_order_hier()) {
+  for (auto node : f.top->occurrences().nodes(hhds::Tree_order::postorder)) {
     EXPECT_TRUE(node.is_hier());
     hier_visited.push_back(std::string(node.attr(hhds::attrs::name).get()));
   }
@@ -433,4 +433,4 @@ TEST(TreeIndexContract, PostOrderFlatAndHierMirrorPreOrder) {
 // assert but the handle has no expansion tree. Documented here as a
 // negative example; not exercised at runtime.
 //
-//   for (auto n : f.top->pre_order_class()) n.get_hier_index();  // aborts
+//   for (auto n : f.top->body().nodes()) n.get_hier_index();  // aborts

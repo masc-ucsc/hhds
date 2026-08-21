@@ -129,9 +129,9 @@ TEST(NamePersistence, GraphSubnodeSurvivesDeleteRecreateAcrossSaveLoad) {
     inst.set_subnode(leaf_gio);  // stores leaf_gid_before in top's body
 
     std::vector<std::string> hier;
-    for (auto n : top->forward_hier()) {
-      if (n.attr(name).has()) {
-        hier.push_back(std::string(n.attr(name).get()));
+    for (auto n : top->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
+      if (n.base_node().attr(name).has()) {
+        hier.push_back(std::string(n.base_node().attr(name).get()));
       }
     }
     EXPECT_EQ(hier, (std::vector<std::string>{"leaf_instance", "leaf_internal_v1"}));
@@ -173,9 +173,9 @@ TEST(NamePersistence, GraphSubnodeSurvivesDeleteRecreateAcrossSaveLoad) {
     auto top = top_gio->get_graph();
 
     std::vector<std::string> hier;
-    for (auto n : top->forward_hier()) {
-      if (n.attr(name).has()) {
-        hier.push_back(std::string(n.attr(name).get()));
+    for (auto n : top->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
+      if (n.base_node().attr(name).has()) {
+        hier.push_back(std::string(n.base_node().attr(name).get()));
       }
     }
     EXPECT_EQ(hier, (std::vector<std::string>{"leaf_instance", "leaf_internal_v2"}));

@@ -40,7 +40,7 @@ inline IntNode add_child(hhds::Tree& tree, std::vector<int>& values, IntNode par
 inline int get_value(const std::vector<int>& values, IntNode node) { return values[static_cast<size_t>(node.get_debug_nid())]; }
 
 inline void postorder_values(hhds::Tree& tree, const std::vector<int>& values, std::vector<int>& out) {
-  for (auto node : tree.post_order()) {
+  for (auto node : tree.body().nodes(hhds::Tree_order::postorder)) {
     out.push_back(get_value(values, node));
   }
 }
@@ -61,7 +61,7 @@ int generate_random_int(std::default_random_engine& generator, int min, int max)
 
 void preorder_traversal_hhds(hhds::Tree& tree, const std::vector<int>& values, std::vector<int>& result) {
   hhds_sibling_data.clear();
-  for (auto node : tree.pre_order()) {
+  for (auto node : tree.body().nodes(hhds::Tree_order::preorder)) {
     result.push_back(hhds_test::get_value(values, node));
     if (node == tree.get_root_node()) {
       continue;

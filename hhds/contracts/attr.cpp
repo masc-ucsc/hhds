@@ -2,27 +2,19 @@
 //
 // HHDS index-keyed map contract examples.
 //
-// Nodes and pins return *handles* (Node_class / Pin_class) that carry
-// traversal context (graph pointer, hierarchy state, shared_ptr). Those
-// handles are fine to pass around, but they are the wrong thing to use as
-// a key in a user-owned std::unordered_map / absl::flat_hash_map — each
-// probe would copy the shared_ptr and hash fields that are not part of
-// the node's identity.
+// Traversal handles are fine to pass around, but user-owned maps should use
+// the explicit identity type matching the selected scope.
 //
-// The three index types in hhds/index.hpp are small, plain-data, hashable
-// keys. Each one captures exactly the identity that a given traversal
-// context can see:
+// The index types in hhds/index.hpp are small, plain-data, hashable keys:
 //
 //   Class_index — per-graph-body. One int: the raw nid/pid. Same for both
 //                 instantiations of a re-used body (since they share it).
-//   Flat_index  — library-wide. Two ints: (gid, nid). Same for both
-//                 instantiations of a re-used body.
-//   Hier_index  — per-instance. Two ints: (hier_pos, nid). Different for
-//                 each instantiation because hier_pos differs.
+//   Definition_index — library-wide (gid, nid), shared by all instances.
+//   Occurrence_index — full occurrence path plus definition identity.
 //
 // The graph below is the canonical "top with bottom instantiated twice"
-// shape. Flat/class keys collapse both bottom instances to the same entry;
-// hier keys keep them distinct.
+// shape. Class/definition keys collapse both bottom instances; occurrence
+// keys keep them distinct.
 
 #include "hhds/attr.hpp"
 
@@ -82,7 +74,7 @@ TEST(IndexContract, ClassIndexKeysSingleGraphBody) {
   std::unordered_map<hhds::Class_index, int>          std_cost;
   absl::flat_hash_map<hhds::Class_index, std::string> absl_label;
 
-  for (auto node : f.top->forward_class()) {
+  for (auto node : f.top->body().nodes(hhds::Node_order::forward)) {
     if (!node.attr(hhds::attrs::name).has()) {
       continue;
     }
@@ -102,63 +94,55 @@ TEST(IndexContract, ClassIndexKeysSingleGraphBody) {
   // by the type system.
 }
 
-// Flat_index: library-wide. Two instantiations of the same body map to the
-// *same* Flat_index because they share the body's (gid, nid).
-TEST(IndexContract, FlatIndexSharesKeyAcrossInstantiations) {
+// Definition_index is library-wide. All instantiations of the same node share
+// the same (gid, nid) identity.
+TEST(IndexContract, DefinitionIndexSharesKeyAcrossInstantiations) {
   Fixture f;
 
-  std::unordered_map<hhds::Flat_index, int>          std_hits;
-  absl::flat_hash_map<hhds::Flat_index, std::string> absl_trace;
+  std::unordered_map<hhds::Definition_index, int>          std_hits;
+  absl::flat_hash_map<hhds::Definition_index, std::string> absl_trace;
 
-  std::vector<hhds::Node> bottom_visits;
-  for (auto node : f.top->forward_flat()) {
+  std::vector<hhds::Node_class> bottom_visits;
+  for (auto node : f.top->definitions().nodes(hhds::Node_order::forward)) {
     if (node.get_current_gid() == f.bottom->get_gid() && node.get_debug_nid() == f.bottom_body_node.get_debug_nid()) {
       bottom_visits.push_back(node);
     }
-    ++std_hits[node.get_flat_index()];
-    absl_trace[node.get_flat_index()].append("x");
+    ++std_hits[node.get_definition_index()];
+    absl_trace[node.get_definition_index()].append("x");
   }
 
-  // forward_flat enters the bottom body exactly once, so only one visit.
+  // definitions() enters the bottom body exactly once.
   ASSERT_EQ(bottom_visits.size(), 1u);
-  EXPECT_EQ(std_hits[bottom_visits.front().get_flat_index()], 1);
+  EXPECT_EQ(std_hits[bottom_visits.front().get_definition_index()], 1);
 
-  // The bottom instance reached via forward_flat shares its Flat_index
-  // with the bottom body node visited directly from inside bottom.
+  // The library-wide view and the direct body view agree on definition identity.
   bool matched = false;
-  for (auto body_node : f.bottom->forward_flat()) {
-    if (body_node.get_flat_index() == bottom_visits.front().get_flat_index()) {
+  for (auto body_node : f.bottom->definitions().nodes(hhds::Node_order::forward)) {
+    if (body_node.get_definition_index() == bottom_visits.front().get_definition_index()) {
       matched = true;
     }
   }
   EXPECT_TRUE(matched);
-
-  // get_flat_index is illegal from class context — the handle has no gid.
-  // (Release builds skip the assert; this line is here to document the
-  // contract, not to be exercised at runtime.)
-  //
-  //   for (auto n : f.top->forward_class()) n.get_flat_index();  // aborts
 }
 
-// Hier_index: per-instance. Two instantiations of the same body get
-// *different* Hier_index values because hier_pos differs between them.
-TEST(IndexContract, HierIndexDistinguishesInstantiations) {
+// Occurrence_index distinguishes separate instantiations of the same body.
+TEST(IndexContract, OccurrenceIndexDistinguishesInstantiations) {
   Fixture f;
 
-  std::unordered_map<hhds::Hier_index, int>          std_delay;
-  absl::flat_hash_map<hhds::Hier_index, std::string> absl_path;
+  std::unordered_map<hhds::Occurrence_index, int>          std_delay;
+  absl::flat_hash_map<hhds::Occurrence_index, std::string> absl_path;
 
-  std::vector<hhds::Node> bottom_instances;
-  for (auto node : f.top->forward_hier()) {
+  std::vector<hhds::Occurrence_node> bottom_instances;
+  for (auto node : f.top->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
     if (node.get_current_gid() == f.bottom->get_gid() && node.get_debug_nid() == f.bottom_body_node.get_debug_nid()) {
       bottom_instances.push_back(node);
     }
   }
 
-  // forward_hier enters the body once per instantiation.
+  // The grouped hierarchy enters the body once per instantiation.
   ASSERT_EQ(bottom_instances.size(), 2u);
-  const auto hi0 = bottom_instances[0].get_hier_index();
-  const auto hi1 = bottom_instances[1].get_hier_index();
+  const auto hi0 = bottom_instances[0].get_occurrence_index();
+  const auto hi1 = bottom_instances[1].get_occurrence_index();
   EXPECT_NE(hi0, hi1);
 
   // Per-instance values survive independently in the map.
@@ -173,9 +157,8 @@ TEST(IndexContract, HierIndexDistinguishesInstantiations) {
   EXPECT_EQ(absl_path[hi0], "top/inst1/bottom_cell");
   EXPECT_EQ(absl_path[hi1], "top/inst2/bottom_cell");
 
-  // Flat_index collapses both instances to the same key — contrast with
-  // Hier_index above.
-  EXPECT_EQ(bottom_instances[0].get_flat_index(), bottom_instances[1].get_flat_index());
+  // Definition identity collapses both instances.
+  EXPECT_EQ(bottom_instances[0].get_definition_index(), bottom_instances[1].get_definition_index());
 }
 
 // Pins carry the same identity machinery as nodes and expose the same three
@@ -191,9 +174,9 @@ TEST(IndexContract, PinIndexesUseSameKeySpaceAsNodes) {
   auto                    bottom_out = f.bottom_body_node.create_driver_pin(pin_port);
 
   // Per-instance timing on each bottom_out pin.
-  absl::flat_hash_map<hhds::Hier_index, float> per_inst_delay;
-  std::vector<hhds::Pin>                       seen_pins;
-  for (auto node : f.top->forward_hier()) {
+  absl::flat_hash_map<hhds::Occurrence_index, float> per_inst_delay;
+  std::vector<hhds::Occurrence_pin>                  seen_pins;
+  for (auto node : f.top->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
     if (node.get_current_gid() != f.bottom->get_gid()) {
       continue;
     }
@@ -202,16 +185,16 @@ TEST(IndexContract, PinIndexesUseSameKeySpaceAsNodes) {
     }
     auto pin = node.get_driver_pin(pin_port);
     seen_pins.push_back(pin);
-    per_inst_delay[pin.get_hier_index()] = static_cast<float>(seen_pins.size());
+    per_inst_delay[pin.get_occurrence_index()] = static_cast<float>(seen_pins.size());
   }
   ASSERT_EQ(seen_pins.size(), 2u);
 
-  // Both visits land on the same shared pin body, so class/flat keys match.
+  // Both visits land on the same shared pin body, so class/definition keys match.
   EXPECT_EQ(seen_pins[0].get_class_index(), seen_pins[1].get_class_index());
-  EXPECT_EQ(seen_pins[0].get_flat_index(), seen_pins[1].get_flat_index());
+  EXPECT_EQ(seen_pins[0].get_definition_index(), seen_pins[1].get_definition_index());
 
-  // Hier keys differ per instantiation.
-  EXPECT_NE(seen_pins[0].get_hier_index(), seen_pins[1].get_hier_index());
+  // Occurrence keys differ per instantiation.
+  EXPECT_NE(seen_pins[0].get_occurrence_index(), seen_pins[1].get_occurrence_index());
   EXPECT_EQ(per_inst_delay.size(), 2u);
 
   // A pin's class key and the master node's class key are distinct because
