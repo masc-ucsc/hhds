@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <functional>
@@ -682,16 +683,22 @@ public:
   template <Attribute Tag>
   auto& attr_store(Tag = {}) {
     const auto slot = attr_tag_slot<Tag>();  // cached integer; no type_index hashing
-    if (slot >= attr_stores_.size()) {
-      attr_stores_.resize(static_cast<std::size_t>(slot) + 1);
+    if (slot >= attr_stores_.size() || !attr_stores_[slot]) {
+      // Cold path only: grow the slot vector / mint the store the first time this
+      // Tag is written on this host. The resize is the write that freed the
+      // vector under a concurrent clone_attr_stores_from (see the detector note
+      // below), so it is scoped; the steady-state set/del path never gets here,
+      // leaving the hot path the same two predictable branches as before.
+      [[maybe_unused]] const Attr_debug_write_guard guard(*this);
+      if (slot >= attr_stores_.size()) {
+        attr_stores_.resize(static_cast<std::size_t>(slot) + 1);
+      }
+      auto& minted = attr_stores_[slot];
+      if (!minted) {
+        minted = detail::Attr_tag_registry::instance().ensure_tag<Tag>().factory();
+      }
     }
-    auto& store = attr_stores_[slot];
-    if (!store) {
-      // Cold path only: mint the store the first time this Tag is written on
-      // this host. The steady-state set/del path finds it already present.
-      store = detail::Attr_tag_registry::instance().ensure_tag<Tag>().factory();
-    }
-    auto* typed = static_cast<detail::Attr_store_impl<Tag>*>(store.get());
+    auto* typed = static_cast<detail::Attr_store_impl<Tag>*>(attr_stores_[slot].get());
     return typed->map();
   }
 
@@ -707,6 +714,10 @@ public:
 
   template <Attribute Tag>
   void attr_clear(Tag = {}) {
+    // clear() frees the map buffer a concurrent clone() would be copying, so this
+    // is a coarse writer even though attr_stores_ itself is untouched.
+    [[maybe_unused]] const Attr_debug_write_guard guard(*this);
+
     auto& store = attr_store(Tag{});
     store.clear();
     attr_note_modified();
@@ -719,7 +730,13 @@ public:
   }
 
 protected:
+  // On the per-node and per-pin delete path, so unlike the other coarse
+  // operations this one is not once-per-graph -- it costs a scope per deleted
+  // object in dbg. Kept instrumented anyway: it erases from EVERY store while a
+  // concurrent clone_attr_stores_from walks the same stores, so it is precisely
+  // the writer that reader must be able to see.
   void erase_attr_object(Attr_key key) noexcept {
+    [[maybe_unused]] const Attr_debug_write_guard guard(*this);
     for (auto& store : attr_stores_) {
       if (store) {
         store->erase_object(key);
@@ -727,9 +744,22 @@ protected:
     }
   }
 
-  void discard_attr_stores() noexcept { attr_stores_.clear(); }
+  void discard_attr_stores() noexcept {
+    [[maybe_unused]] const Attr_debug_write_guard guard(*this);
+    attr_stores_.clear();
+  }
 
+  // `other` is the shared object: livehd's hierarchical LEC has one taskflow
+  // worker per definition, each deep-copying the same source graph into its own
+  // scratch library, so several threads run this loop over one `other` at once.
+  // That is legal and stays legal (readers do not exclude readers); a WRITER on
+  // `other` at the same time is what frees the vector this loop is walking.
+  // The write scope on *this is taken first so the nested discard_attr_stores
+  // below (and, in the degenerate &other == *this case, the read scope) are seen
+  // as this thread re-entering rather than as a second thread arriving.
   void clone_attr_stores_from(const Attr_host& other) {
+    [[maybe_unused]] const Attr_debug_write_guard dst_guard(*this);
+    [[maybe_unused]] const Attr_debug_read_guard  src_guard(other);
     discard_attr_stores();
     attr_stores_.resize(other.attr_stores_.size());
     for (std::size_t i = 0; i < other.attr_stores_.size(); ++i) {
@@ -740,6 +770,10 @@ protected:
   }
 
   void save_attr_stores(std::ostream& os) const {
+    // Read-only, but it walks every store: a concurrent writer on this host
+    // invalidates the walk exactly as it would a clone.
+    [[maybe_unused]] const Attr_debug_read_guard guard(*this);
+
     uint64_t store_count = 0;
     for (const auto& store : attr_stores_) {
       if (store && !store->empty()) {
@@ -767,6 +801,7 @@ protected:
   }
 
   void load_attr_stores(std::istream& is, bool legacy_hier = false) {
+    [[maybe_unused]] const Attr_debug_write_guard guard(*this);
     discard_attr_stores();
 
     uint64_t store_count = 0;
@@ -809,10 +844,133 @@ protected:
 private:
   virtual void attr_note_modified() noexcept = 0;
 
+  // ---- debug-only attribute-store overlap detector -------------------------
+  //
+  // hhds's rule is "graph bodies are single-threaded per pointer" -- see
+  // GraphLibrary::registry_mu_, which deliberately guards only the registry
+  // containers and not the bodies. Nothing enforced that for attributes, and a
+  // violation is silent in release: livehd's hierarchical LEC ran one taskflow
+  // worker per definition, each deep-copying the SAME source graph into its own
+  // scratch library (clone_attr_stores_from, walking other.attr_stores_) while a
+  // sibling worker stamped a match id onto that shared graph (attr_store's
+  // resize, reallocating attr_stores_). The reader's virtual clone() call then
+  // dispatched through a freed slot -- SIGSEGV in ~5% of opt runs, at an address
+  // that happened to spell a port name. These counters turn that into a loud,
+  // near-deterministic abort in dbg/fastbuild instead.
+  //
+  // Concurrent READERS stay legal on purpose: N workers cloning one shared
+  // source library is the correct shape of that pass. Only reader-vs-writer and
+  // writer-vs-writer overlap is a bug, which is why this counts temporal overlap
+  // rather than pinning an owner thread to the host -- a graph built on thread A
+  // and then processed on thread B is a sequential hand-off with no overlap and
+  // must stay silent (hhds's own forest/graph concurrency tests and livehd's
+  // split_selfref worker are exactly that shape).
+  //
+  // The scopes nest on the owning thread, hence the token: clone_attr_stores_from
+  // and load_attr_stores both open with discard_attr_stores, so writer-inside-
+  // writer is ordinary single-threaded code and only the outermost scope claims
+  // the host. The token is live only while a scope is open, so it never turns
+  // into a sticky owner.
+  //
+  // Two blind spots worth naming rather than pretending away. (1) The
+  // process-wide detail::Attr_tag_registry: first-touch registration mutates its
+  // maps with no lock, so two workers first-writing DIFFERENT tags race there.
+  // livehd works around it by registering its tags at static init; a tag first
+  // written inside a worker reopens the hole and nothing here will fire.
+  // (2) Callers that take attr_store()'s map by reference and then mutate it
+  // directly (the srcid re-mint loops in GraphLibrary): only the cold mint/resize
+  // is scoped, the map writes that follow are not.
+#ifndef NDEBUG
+  // Per-thread identity, minted on first use. Only ever compared while a scope
+  // is open, which is what keeps sequential hand-off between threads silent.
+  [[nodiscard]] static uint64_t attr_debug_thread_token() noexcept {
+    static std::atomic<uint64_t>       next_token{1};
+    static thread_local const uint64_t token = next_token.fetch_add(1, std::memory_order_relaxed);
+    return token;
+  }
+
+  class Attr_debug_write_guard {
+  public:
+    explicit Attr_debug_write_guard(const Attr_host& host) noexcept : host_(&host) {
+      assert(host_->attr_debug_readers_.load(std::memory_order_relaxed) == 0
+             && "attr race: another thread is cloning/saving this host's attribute stores");
+      const auto self = attr_debug_thread_token();
+      const auto prev = host_->attr_debug_writers_.fetch_add(1, std::memory_order_relaxed);
+      assert((prev == 0 || host_->attr_debug_writer_.load(std::memory_order_relaxed) == self)
+             && "attr race: two threads are restructuring this host's attribute stores");
+      host_->attr_debug_writer_.store(self, std::memory_order_relaxed);
+    }
+    ~Attr_debug_write_guard() {
+      if (host_->attr_debug_writers_.fetch_sub(1, std::memory_order_relaxed) == 1) {
+        host_->attr_debug_writer_.store(0, std::memory_order_relaxed);
+      }
+    }
+
+    Attr_debug_write_guard(const Attr_debug_write_guard&)            = delete;
+    Attr_debug_write_guard& operator=(const Attr_debug_write_guard&) = delete;
+
+  private:
+    const Attr_host* host_;
+  };
+
+  class Attr_debug_read_guard {
+  public:
+    explicit Attr_debug_read_guard(const Attr_host& host) noexcept : host_(&host) {
+      assert((host_->attr_debug_writers_.load(std::memory_order_relaxed) == 0
+              || host_->attr_debug_writer_.load(std::memory_order_relaxed) == attr_debug_thread_token())
+             && "attr race: another thread is restructuring this host's attribute stores");
+      host_->attr_debug_readers_.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~Attr_debug_read_guard() { host_->attr_debug_readers_.fetch_sub(1, std::memory_order_relaxed); }
+
+    Attr_debug_read_guard(const Attr_debug_read_guard&)            = delete;
+    Attr_debug_read_guard& operator=(const Attr_debug_read_guard&) = delete;
+
+  private:
+    const Attr_host* host_;
+  };
+#else
+  // Release: both guards are empty objects, so every scope above disappears.
+  class Attr_debug_write_guard {
+  public:
+    explicit Attr_debug_write_guard(const Attr_host&) noexcept {}
+  };
+  class Attr_debug_read_guard {
+  public:
+    explicit Attr_debug_read_guard(const Attr_host&) noexcept {}
+  };
+#endif
+
+  // A per-key set/del mutates the store's MAP and never touches attr_stores_, so
+  // none of the coarse scopes above can see it -- yet the rehash it can trigger
+  // frees the very buffer a concurrent clone() is copying, one level below the
+  // crash described above and far more common (the resize fires once per tag per
+  // host; every later write is steady state). Two relaxed loads of counters that
+  // are ~always zero, and literally nothing under NDEBUG, so the -c opt hot path
+  // is untouched. Pure reads (has/get/try_get) are deliberately NOT checked: a
+  // race needs a writer, and every writer is checked from its own side.
+  void attr_debug_check_key_write() const noexcept {
+#ifndef NDEBUG
+    assert(attr_debug_readers_.load(std::memory_order_relaxed) == 0
+           && "attr race: another thread is cloning/saving this host's attributes while this thread writes one");
+    assert((attr_debug_writers_.load(std::memory_order_relaxed) == 0
+            || attr_debug_writer_.load(std::memory_order_relaxed) == attr_debug_thread_token())
+           && "attr race: another thread is restructuring this host's attribute stores while this thread writes one");
+#endif
+  }
+
   // Per-tag stores indexed by attr_tag_slot<Tag>() — a vector, not a hash map,
   // so a store lookup is a bounds-checked index with no std::type_index hashing.
   // Sparse: a slot stays null until that Tag is first written on this host.
   std::vector<std::unique_ptr<detail::Attr_store_base>> attr_stores_;
+
+#ifndef NDEBUG
+  // Atomic because the detector is read and written from the very threads it is
+  // watching: plain counters would make it the race that a tsan run reports.
+  mutable std::atomic<uint32_t> attr_debug_readers_{0};
+  mutable std::atomic<uint32_t> attr_debug_writers_{0};
+  mutable std::atomic<uint64_t> attr_debug_writer_{0};  // token of the outermost write scope's thread
+#endif
 
   template <Attribute Tag>
   friend class AttrRef;
@@ -875,7 +1033,8 @@ inline void AttrRef<Tag>::set(const value_type& value) {
   if constexpr (attr_is_dense<Tag>()) {
     assert(!(value == value_type{}) && "AttrRef::set: dense_layout reserves value_type{} as not-present; use del()");
   }
-  auto& map  = host_->attr_store(Tag{});
+  auto& map = host_->attr_store(Tag{});
+  host_->attr_debug_check_key_write();
   map[key()] = value;
   host_->attr_note_modified();
 }
@@ -885,7 +1044,8 @@ inline void AttrRef<Tag>::set(value_type&& value) {
   if constexpr (attr_is_dense<Tag>()) {
     assert(!(value == value_type{}) && "AttrRef::set: dense_layout reserves value_type{} as not-present; use del()");
   }
-  auto& map  = host_->attr_store(Tag{});
+  auto& map = host_->attr_store(Tag{});
+  host_->attr_debug_check_key_write();
   map[key()] = std::move(value);
   host_->attr_note_modified();
 }
@@ -893,6 +1053,7 @@ inline void AttrRef<Tag>::set(value_type&& value) {
 template <Attribute Tag>
 inline void AttrRef<Tag>::del() {
   auto& map = host_->attr_store(Tag{});
+  host_->attr_debug_check_key_write();
   map.erase(key());
   host_->attr_note_modified();
 }

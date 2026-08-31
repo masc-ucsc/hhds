@@ -5845,6 +5845,11 @@ void Graph::save_body(const std::string& dir_path) const {
         ofs.write(reinterpret_cast<const char*>(&*loop.next_active_output), sizeof(Port_id));
       }
     }
+    // Where the attribute tail begins. The tables above are a pure function of
+    // the body, so while dirty_ stays false they re-serialize to the identical
+    // bytes and this offset remains valid -- which is what makes save_attrs_only
+    // able to rewrite from here.
+    attr_offset_ = ofs.tellp();
     save_attr_stores(ofs);
   }
 
@@ -5872,7 +5877,48 @@ void Graph::save_body(const std::string& dir_path) const {
     }
   }
 
-  dirty_ = false;
+  dirty_       = false;
+  attrs_dirty_ = false;
+}
+
+// Rewrite only the attribute tail of an existing body.bin. See the header for
+// when this is valid; the caller (GraphLibrary::save) owns that decision.
+void Graph::save_attrs_only(const std::string& dir_path) const {
+  namespace fs = std::filesystem;
+  const auto path = fs::path(dir_path) / "body.bin";
+  std::error_code ec;
+  if (attr_offset_ < 0 || !fs::exists(path, ec)) {
+    save_body(dir_path);  // never saved here before: nothing to patch
+    return;
+  }
+  ensure_overflow_loaded();
+  {
+    // in|out keeps the existing prefix; without ios::in the stream truncates and
+    // the node/pin tables would be lost.
+    std::fstream fs_out(path, std::ios::binary | std::ios::in | std::ios::out);
+    if (!fs_out.good()) {
+      save_body(dir_path);
+      return;
+    }
+    fs_out.seekp(attr_offset_);
+    save_attr_stores(fs_out);
+    const auto end = fs_out.tellp();
+    fs_out.flush();
+    if (!fs_out.good()) {
+      fs_out.close();
+      save_body(dir_path);
+      return;
+    }
+    fs_out.close();
+    // An attribute set that SHRANK leaves stale bytes past `end`; load reads the
+    // tail to EOF, so they must go.
+    fs::resize_file(path, static_cast<std::uintmax_t>(end), ec);
+    if (ec) {
+      save_body(dir_path);
+      return;
+    }
+  }
+  attrs_dirty_ = false;
 }
 
 // Read the deferred overflow (edge-adjacency) sets that load_body left unread.
@@ -6015,6 +6061,7 @@ void Graph::load_body(const std::string& dir_path) {
       sync_loop_presence();
     }
 
+    attr_offset_ = ifs.tellg();  // same tail position save_body would write to
     load_attr_stores(ifs, version < 5);
     if (!ifs) {
       throw std::runtime_error("load_body: truncated or corrupt graph body");
@@ -6055,7 +6102,8 @@ void Graph::load_body(const std::string& dir_path) {
       throw std::runtime_error("load_body: next-active role requires activation input");
     }
   }
-  dirty_ = false;
+  dirty_       = false;
+  attrs_dirty_ = false;
 }
 
 void Graph::rebuild_derived_after_body() {
@@ -6126,6 +6174,17 @@ void Graph::rebuild_derived_after_body() {
 }
 
 void Graph::copy_body_from(const Graph& src) {
+  if (&src == this) {
+    // A self-copy has to be a no-op, but the sequence below is not: it
+    // self-assigns the tables and then clone_attr_stores_from DISCARDS our
+    // stores before reading them, so every attribute is silently lost. Reachable
+    // through replace_body_from whenever the cached body already lives in the
+    // destination library (pass/abc's incremental reuse reads a same-run hit
+    // straight out of the output library). Still mark dirty: callers use the
+    // call itself as the "this body changed, persist it" signal.
+    dirty_ = true;
+    return;
+  }
   // src's edge-adjacency sets may still be lazily deferred on disk; force them in
   // before the raw vector copy or spilled overflow edges would be silently lost.
   src.ensure_overflow_loaded();
@@ -6260,11 +6319,22 @@ void GraphLibrary::save(const std::string& db_path) const {
   // --- graph body directories ---
   for (const Gid gid : io_gids) {
     const auto it = graphs_.find(gid);
-    if (it == graphs_.end() || !it->second || it->second->deleted_ || !it->second->dirty_) {
+    if (it == graphs_.end() || !it->second || it->second->deleted_) {
       continue;
     }
+    auto& g = *it->second;
+    if (!g.dirty_ && !g.attrs_dirty_) {
+      continue;  // nothing changed at all
+    }
     const auto dir = fs::path(db_path) / ("graph_" + std::to_string(gid));
-    it->second->save_body(dir.string());
+    if (g.dirty_) {
+      g.save_body(dir.string());
+    } else {
+      // Only attribute VALUES moved. The node/pin tables would serialize to the
+      // same bytes, so rewriting them is pure cost -- a colouring pass changes
+      // one attribute per node and nothing else.
+      g.save_attrs_only(dir.string());
+    }
   }
 
   // --- pending (never-materialized) bodies (hhds lazy-load) ---
@@ -6646,6 +6716,39 @@ bool GraphLibrary::copy_from(const GraphLibrary& src, std::string_view module_na
     return false;
   }
 
+  if (&src == this) {
+    // The replace-stale branch below would tombstone the very module we are
+    // about to read: delete_graphio_unlocked -> Graph::invalidate_from_library()
+    // clears node_table/pin_table and discards the attr stores, while the local
+    // shared_ptr keeps the emptied body alive -- so the copy would "succeed"
+    // into an empty module. The module is already here; nothing to do.
+    return true;
+  }
+
+  // Snapshot src's IO declarations under SRC's registry lock and release it again
+  // before taking ours. GraphIO::invalidate_from_library() clears these vectors
+  // while holding src's lock (delete_graphio, and copy_from's own replace-stale
+  // branch), so a sibling thread running src.copy_from(other, module_name) would
+  // otherwise clear them out from under the copy loop below. Holding nothing
+  // across the two locks is what keeps A.copy_from(B) racing B.copy_from(A)
+  // deadlock-free, and the snapshot must call no src API: Prefer_writer_shared_
+  // mutex is writer-preferring, so even a nested SHARED acquire hangs as soon as
+  // a writer queues between the two.
+  //
+  // This does not make a shared src safe in general, and is not what fixed the
+  // attribute crash: every public decl mutator (add_input / delete_input /
+  // set_bits / ...) edits these same vectors with no lock at all, and the body
+  // copy further down is unsynchronized by design (bodies are single-threaded per
+  // pointer -- see Graph::copy_body_from). It closes exactly the
+  // delete/replace-vs-read race.
+  std::vector<GraphIO::DeclaredIoPin> src_input_decls;
+  std::vector<GraphIO::DeclaredIoPin> src_output_decls;
+  {
+    std::shared_lock src_lock(src.registry_mu_);
+    src_input_decls  = src_gio->input_pin_decls_;
+    src_output_decls = src_gio->output_pin_decls_;
+  }
+
   std::unique_lock lock(registry_mu_);
 
   // Replace-stale: drop any existing module of this name, then recreate it at the
@@ -6664,19 +6767,19 @@ bool GraphLibrary::copy_from(const GraphLibrary& src, std::string_view module_na
   }
   auto dst_gio = create_io_impl_unlocked(dst_gid, module_name);
 
-  // Copy the IO declarations (mirrors load_merge's new-entry decl copy at the
-  // name-new branch).
-  for (const auto& d : src_gio->input_pin_decls_) {
-    dst_gio->input_pin_decls_.push_back(d);
-    dst_gio->declared_io_pins_.emplace(
-        dst_gio->input_pin_decls_.back().name,
-        GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Input, dst_gio->input_pin_decls_.size() - 1});
+  // Install the IO declarations (mirrors load_merge's new-entry decl copy at the
+  // name-new branch). dst_gio was just created, so its decl vectors are empty and
+  // the snapshot can be moved in -- one deep copy of the names in total, same as
+  // the pre-snapshot code paid.
+  dst_gio->input_pin_decls_ = std::move(src_input_decls);
+  for (std::size_t i = 0; i < dst_gio->input_pin_decls_.size(); ++i) {
+    dst_gio->declared_io_pins_.emplace(dst_gio->input_pin_decls_[i].name,
+                                       GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Input, i});
   }
-  for (const auto& d : src_gio->output_pin_decls_) {
-    dst_gio->output_pin_decls_.push_back(d);
-    dst_gio->declared_io_pins_.emplace(
-        dst_gio->output_pin_decls_.back().name,
-        GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Output, dst_gio->output_pin_decls_.size() - 1});
+  dst_gio->output_pin_decls_ = std::move(src_output_decls);
+  for (std::size_t i = 0; i < dst_gio->output_pin_decls_.size(); ++i) {
+    dst_gio->declared_io_pins_.emplace(dst_gio->output_pin_decls_[i].name,
+                                       GraphIO::DeclaredIoPinRef{GraphIO::IoDirection::Output, i});
   }
 
   // Materialize a fresh body and deep-copy the source body in-memory (no disk).

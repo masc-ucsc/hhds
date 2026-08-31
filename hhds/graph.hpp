@@ -10,6 +10,7 @@
 #include <ctime>
 #include <deque>
 #include <filesystem>
+#include <ios>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -63,7 +64,10 @@ using OverflowSet = ankerl::unordered_dense::set<Vid>;
 // std::shared_lock keep working unchanged. It is NOT recursive: a thread must
 // not re-acquire it while already holding it (GraphLibrary always takes the
 // registry lock once per public call and delegates to *_unlocked helpers, so
-// this invariant holds).
+// this invariant holds). Writer preference makes even a nested SHARED acquire
+// hang, which is the non-obvious half: lock_shared() waits while
+// writers_waiting_ != 0, so one writer queueing between the two shared
+// acquires deadlocks the thread against itself.
 class Prefer_writer_shared_mutex {
 public:
   void lock() { // exclusive
@@ -1551,7 +1555,13 @@ public:
   [[nodiscard]] std::string print() const;
 
 private:
-  void attr_note_modified() noexcept override { dirty_ = true; }
+  // An attribute write does NOT make the BODY dirty. The node/pin tables are
+  // unchanged by it, so re-serializing them just to record a colour or a
+  // "proven" stamp is pure waste -- and a colouring pass writes one attribute
+  // per node and nothing else. Marking only attrs_dirty_ lets save() rewrite
+  // just the attribute section (see save_attrs_only). Structural mutators set
+  // dirty_ themselves; hhds/tests/dirty_tracking_test.cpp pins that they do.
+  void attr_note_modified() noexcept override { attrs_dirty_ = true; }
   [[nodiscard]] OverflowPool get_overflow_pool() {
     return {overflow_sets(), overflow_free_};
   }
@@ -1602,11 +1612,34 @@ private:
   // Binary persistence — saves/loads body data (node_table, pin_table, overflow
   // sets). dir_path is the graph-specific directory (e.g., "db/graph_1/").
   void save_body(const std::string &dir_path) const;
+  // Rewrite ONLY the attribute tail of an already-saved body.bin. Valid when the
+  // node/pin tables are unchanged since the last save/load, i.e. when dirty_ is
+  // false -- the tables then serialize to identical bytes, so the tail still
+  // starts at the recorded offset. Falls back to a full save_body() when no
+  // offset is on record. The file is truncated to the new end, so an attribute
+  // set that SHRANK does not leave stale bytes behind.
+  void save_attrs_only(const std::string &dir_path) const;
   void load_body(const std::string &dir_path);
   // In-memory sibling of load_body: replace this body's contents with a deep
   // copy of `src`'s (node/pin tables, overflow sets, every attr store), then
   // rebuild the derived structures. No disk I/O; marks the body dirty. Used by
-  // GraphLibrary::copy_from for a single-module cross-library copy.
+  // GraphLibrary::copy_from for a single-module cross-library copy. Copying a
+  // body onto itself is a no-op (it would otherwise discard its own attr
+  // stores before reading them).
+  //
+  // `src` must be EXCLUSIVELY OWNED for the whole call -- not merely
+  // unmodified, because READING a graph mutates it and the const& says
+  // otherwise. ensure_overflow_loaded() drops src's deferred-overflow flag and
+  // refills its storage through a const_cast; the forward/backward traversal
+  // caches are `mutable` and get rebuilt by any plain walk of src; and
+  // debug_mark_loop_validated() writes another `mutable` map the first time a
+  // hierarchy view crosses a loop Sub. None of it is synchronized -- bodies are
+  // single-threaded per pointer, which is exactly why GraphLibrary's registry
+  // lock covers only the registry containers. So two workers copying (or even
+  // just traversing) one shared src corrupt it silently, and pre-loading the
+  // overflow sets is NOT enough to make sharing safe. Attribute-store overlap
+  // is caught in dbg by Attr_host's detector; these three paths are not, so
+  // this contract is all that guards them.
   void copy_body_from(const Graph &src);
   // Rebuild the tree_ / subnode / name->Pid derived structures from node_table
   // + pin_table + the GraphIO decls. Shared by load_body (after a disk read)
@@ -1828,7 +1861,14 @@ private:
   std::weak_ptr<GraphIO> graphio_owner_;
   Gid self_gid_ = Gid_invalid;
   bool deleted_ = false;
+  // dirty_      : the node/pin tables (or overflow sets) changed -> full save.
+  // attrs_dirty_: only attribute values changed -> the attribute TAIL of
+  //               body.bin can be rewritten in place, leaving the tables alone.
+  // attr_offset_: where that tail starts in body.bin, recorded by the last
+  //               save/load. -1 means unknown, which forces a full save.
   mutable bool dirty_ = true;
+  mutable bool attrs_dirty_ = true;
+  mutable std::streamoff attr_offset_ = -1;
   // Set by commit(). When true, the writer asked to publish the graph;
   // single-threaded — only the writer has a writable handle.
   bool frozen_ = false;
@@ -2939,6 +2979,12 @@ public:
   // stay valid). Returns false if the module is absent from this library. Used
   // by abc incremental reuse to fill a freshly-partitioned region shell from a
   // cached mapped body without a node-by-node clone or a port stitch.
+  //
+  // `src` arrives as a bare Graph reference with no handle on its owning
+  // library, so this entry point cannot lock it even in principle: the caller
+  // owes copy_body_from's exclusive-ownership contract in full. Naming this
+  // library's own graph for `module_name` is tolerated (copy_body_from
+  // early-outs) rather than silently wiping its attributes.
   [[nodiscard]] bool replace_body_from(std::string_view module_name,
                                        const Graph &src) {
     std::unique_lock lock(registry_mu_);
