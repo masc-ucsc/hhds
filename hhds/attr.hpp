@@ -755,9 +755,17 @@ protected:
   // That is legal and stays legal (readers do not exclude readers); a WRITER on
   // `other` at the same time is what frees the vector this loop is walking.
   // The write scope on *this is taken first so the nested discard_attr_stores
-  // below (and, in the degenerate &other == *this case, the read scope) are seen
-  // as this thread re-entering rather than as a second thread arriving.
+  // below is seen as this thread re-entering rather than as a second thread
+  // arriving. The degenerate &other == *this case never reaches the scopes.
   void clone_attr_stores_from(const Attr_host& other) {
+    if (&other == this) {
+      // Self-clone is a no-op: the loop below discards our stores before it
+      // reads them, so it would wipe every attribute. It also cannot be
+      // instrumented -- the read scope this would take on `other` IS a read
+      // scope on *this, which the nested discard_attr_stores' write scope then
+      // reports as a reader-vs-writer overlap. Early-out on both counts.
+      return;
+    }
     [[maybe_unused]] const Attr_debug_write_guard dst_guard(*this);
     [[maybe_unused]] const Attr_debug_read_guard  src_guard(other);
     discard_attr_stores();

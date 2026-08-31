@@ -2372,6 +2372,14 @@ void Graph::ensure_backward_caches() const {
 }
 
 void Graph::patch_traversal_caches_for_edge(Vid driver_id, Vid sink_id, int32_t delta) noexcept {
+  // FIRST, and unconditionally: this is the only place add_edge/del_edge record
+  // that the body changed. It used to sit at the bottom, below the early return
+  // -- so an edge added to a graph whose traversal caches were still invalid
+  // (every freshly loaded graph, until something walks it) left dirty_ false and
+  // GraphLibrary::save silently dropped the edge. Attribute writes used to set
+  // dirty_ too and hid this in practice; they no longer do.
+  note_body_mutation();
+
   if (!forward_caches_valid_ && !backward_caches_valid_) {
     return;
   }
@@ -2425,11 +2433,6 @@ void Graph::patch_traversal_caches_for_edge(Vid driver_id, Vid sink_id, int32_t 
         }
       }
     }
-  }
-
-  dirty_ = true;
-  if (owner_lib_ != nullptr) {
-    owner_lib_->note_graph_mutation();
   }
 }
 
@@ -2828,6 +2831,10 @@ void Graph::delete_pin(Pid pin_pid) {
   }
 
   pin_table[actual_id] = PinEntry();
+  // Unlinking + tombstoning the pin entry is a structural change in its own
+  // right: an EDGELESS pin runs the loop above zero times, so without this the
+  // delete was never marked for save and never bumped the mutation epoch.
+  note_body_mutation();
 }
 
 auto Pin_class::get_master_node() const -> Node_class {
@@ -5848,7 +5855,8 @@ void Graph::save_body(const std::string& dir_path) const {
     // Where the attribute tail begins. The tables above are a pure function of
     // the body, so while dirty_ stays false they re-serialize to the identical
     // bytes and this offset remains valid -- which is what makes save_attrs_only
-    // able to rewrite from here.
+    // able to rewrite from here. Paired with body_dir_ below: the offset only
+    // means anything for the body.bin in THIS directory.
     attr_offset_ = ofs.tellp();
     save_attr_stores(ofs);
   }
@@ -5879,46 +5887,59 @@ void Graph::save_body(const std::string& dir_path) const {
 
   dirty_       = false;
   attrs_dirty_ = false;
+  body_dir_    = dir_path;
+  {
+    std::error_code size_ec;
+    body_size_ = fs::file_size(fs::path(dir_path) / "body.bin", size_ec);
+    if (size_ec) {
+      body_size_ = 0;  // unknown size means not patchable: the next save rewrites
+    }
+  }
 }
 
 // Rewrite only the attribute tail of an existing body.bin. See the header for
 // when this is valid; the caller (GraphLibrary::save) owns that decision.
 void Graph::save_attrs_only(const std::string& dir_path) const {
   namespace fs = std::filesystem;
-  const auto path = fs::path(dir_path) / "body.bin";
+  assert(!dirty_ && "save_attrs_only: the node/pin tables moved — the recorded tail offset is stale");
+
+  // attr_offset_ is meaningless anywhere but the directory it was recorded
+  // against: a graph_<gid>/body.bin left by a DIFFERENT library at the same
+  // path would be patched mid-table and truncated. body_dir_ says we once wrote
+  // THIS file; body_size_ is what says nothing has rewritten it since (two
+  // GraphLibrary objects over one db directory is enough -- the other one's save
+  // moves the tail, and our offset then points into the middle of its tables).
+  // Anything else gets the whole body written out.
+  const auto      path = fs::path(dir_path) / "body.bin";
   std::error_code ec;
-  if (attr_offset_ < 0 || !fs::exists(path, ec)) {
-    save_body(dir_path);  // never saved here before: nothing to patch
-    return;
-  }
-  ensure_overflow_loaded();
-  {
+  std::error_code size_ec;
+  const auto      on_disk = fs::file_size(path, size_ec);
+  const bool      patchable
+      = attr_offset_ >= 0 && body_dir_ == dir_path && body_size_ != 0 && !size_ec && on_disk == body_size_ && fs::exists(path, ec);
+  if (patchable) {
     // in|out keeps the existing prefix; without ios::in the stream truncates and
     // the node/pin tables would be lost.
     std::fstream fs_out(path, std::ios::binary | std::ios::in | std::ios::out);
-    if (!fs_out.good()) {
-      save_body(dir_path);
-      return;
-    }
-    fs_out.seekp(attr_offset_);
-    save_attr_stores(fs_out);
-    const auto end = fs_out.tellp();
-    fs_out.flush();
-    if (!fs_out.good()) {
+    if (fs_out.good()) {
+      fs_out.seekp(attr_offset_);
+      save_attr_stores(fs_out);
+      const std::streamoff end = fs_out.tellp();
+      fs_out.flush();
+      const bool wrote = fs_out.good() && end >= attr_offset_;
       fs_out.close();
-      save_body(dir_path);
-      return;
-    }
-    fs_out.close();
-    // An attribute set that SHRANK leaves stale bytes past `end`; load reads the
-    // tail to EOF, so they must go.
-    fs::resize_file(path, static_cast<std::uintmax_t>(end), ec);
-    if (ec) {
-      save_body(dir_path);
-      return;
+      if (wrote) {
+        // An attribute set that SHRANK leaves stale bytes past `end`; load reads
+        // the tail to EOF, so they must go.
+        fs::resize_file(path, static_cast<std::uintmax_t>(end), ec);
+        if (!ec) {
+          body_size_   = static_cast<std::uintmax_t>(end);
+          attrs_dirty_ = false;
+          return;
+        }
+      }
     }
   }
-  attrs_dirty_ = false;
+  save_body(dir_path);  // no usable offset here, or the patch did not land
 }
 
 // Read the deferred overflow (edge-adjacency) sets that load_body left unread.
@@ -6061,7 +6082,13 @@ void Graph::load_body(const std::string& dir_path) {
       sync_loop_presence();
     }
 
-    attr_offset_ = ifs.tellg();  // same tail position save_body would write to
+    // Same tail position save_body would write to -- but ONLY for a current
+    // -version file. A v3/v4 body decodes hier attribute entries with the
+    // legacy layout (load_attr_stores' legacy_hier arm), so patching its tail
+    // with a current-format one would desync the next load; leaving the offset
+    // unset routes such a body through a full save_body, which also upgrades
+    // the header and consolidates the legacy overflow_<i>.bin files.
+    attr_offset_ = (version == GRAPH_BODY_VERSION) ? std::streamoff{ifs.tellg()} : std::streamoff{-1};
     load_attr_stores(ifs, version < 5);
     if (!ifs) {
       throw std::runtime_error("load_body: truncated or corrupt graph body");
@@ -6104,6 +6131,14 @@ void Graph::load_body(const std::string& dir_path) {
   }
   dirty_       = false;
   attrs_dirty_ = false;
+  body_dir_    = dir_path;
+  {
+    std::error_code size_ec;
+    body_size_ = fs::file_size(fs::path(dir_path) / "body.bin", size_ec);
+    if (size_ec) {
+      body_size_ = 0;  // unknown size means not patchable: the next save rewrites
+    }
+  }
 }
 
 void Graph::rebuild_derived_after_body() {
@@ -6194,6 +6229,8 @@ void Graph::copy_body_from(const Graph& src) {
   overflow_free_     = src.overflow_free_;
   overflow_deferred_ = false;
   overflow_src_dir_.clear();
+  body_dir_.clear();  // nothing on disk holds THIS body any more
+  body_size_     = 0;
   subnode_loops_ = src.subnode_loops_;
 #ifndef NDEBUG
   validated_loop_carries_.clear();
@@ -6322,12 +6359,18 @@ void GraphLibrary::save(const std::string& db_path) const {
     if (it == graphs_.end() || !it->second || it->second->deleted_) {
       continue;
     }
-    auto& g = *it->second;
-    if (!g.dirty_ && !g.attrs_dirty_) {
-      continue;  // nothing changed at all
+    auto&      g            = *it->second;
+    const auto dir          = fs::path(db_path) / ("graph_" + std::to_string(gid));
+    // "Clean" only means clean RELATIVE to where this body already sits. A
+    // save-as writes somewhere the body has never been, and a materialized
+    // graph is no longer in pending_body_dir_ for the verbatim-copy loop below
+    // to catch — so skipping it on dirty_/attrs_dirty_ alone would silently
+    // drop every module the caller merely touched.
+    const bool already_here = (g.body_dir_ == dir.string());
+    if (!g.dirty_ && !g.attrs_dirty_ && already_here) {
+      continue;  // nothing changed, and the body is already at the destination
     }
-    const auto dir = fs::path(db_path) / ("graph_" + std::to_string(gid));
-    if (g.dirty_) {
+    if (g.dirty_ || !already_here) {
       g.save_body(dir.string());
     } else {
       // Only attribute VALUES moved. The node/pin tables would serialize to the

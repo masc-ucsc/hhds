@@ -12,8 +12,12 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <istream>
 #include <mutex>
 #include <ostream>
 #include <sstream>
@@ -30,12 +34,21 @@ struct probe_tag {
   using storage    = hhds::flat_storage;
 };
 
+// A tag this host has never seen, so attr_store() must take its cold-path
+// write scope to mint the store (the attr_stores_.resize() the file header
+// blames for the LEC SIGSEGV).
+struct cold_tag {
+  using value_type = uint64_t;
+  using storage    = hhds::flat_storage;
+};
+
 // Attr_host is abstract and its coarse operations are protected; the detector is
 // a property of Attr_host itself, so the test drives it directly rather than
 // through Graph or Tree.
 class Test_host : public hhds::Attr_host {
 public:
   using hhds::Attr_host::clone_attr_stores_from;
+  using hhds::Attr_host::load_attr_stores;
   using hhds::Attr_host::save_attr_stores;
 
   [[nodiscard]] hhds::AttrRef<probe_tag> probe(uint64_t raw_id) {
@@ -51,13 +64,31 @@ private:
 // reliance on scheduling luck.
 class Blocking_streambuf : public std::streambuf {
 public:
+  // Bounded: if the stream ever stops routing its first output through this
+  // parker, the caller must fail rather than hang the death test forever.
   void wait_until_inside() {
     std::unique_lock<std::mutex> lk(mu_);
-    cv_.wait(lk, [this] { return inside_; });
+    if (!cv_.wait_for(lk, std::chrono::seconds(30), [this] { return inside_; })) {
+      std::fprintf(stderr, "Blocking_streambuf: writer never entered the parked buffer\n");
+      std::abort();
+    }
   }
 
 protected:
   std::streamsize xsputn(const char*, std::streamsize count) override {
+    park();
+    return count;
+  }
+
+  // save_attr_stores uses os.write() today, which routes to xsputn; park here
+  // too so a switch to operator<< / sputc does not silently stop parking.
+  int overflow(int ch) override {
+    park();
+    return traits_type::not_eof(ch);
+  }
+
+private:
+  void park() {
     {
       std::lock_guard<std::mutex> lk(mu_);
       inside_ = true;
@@ -66,12 +97,47 @@ protected:
     // Never released: the process is expected to abort while we hold the scope.
     std::unique_lock<std::mutex> lk(mu_);
     cv_.wait(lk, [] { return false; });
+  }
+
+  std::mutex              mu_;
+  std::condition_variable cv_;
+  bool                    inside_ = false;
+};
+
+// The input-side twin: parks the first READ, pinning a thread inside
+// load_attr_stores -- i.e. holding a coarse WRITE scope on the host.
+class Blocking_istreambuf : public std::streambuf {
+public:
+  void wait_until_inside() {
+    std::unique_lock<std::mutex> lk(mu_);
+    if (!cv_.wait_for(lk, std::chrono::seconds(30), [this] { return inside_; })) {
+      std::fprintf(stderr, "Blocking_istreambuf: reader never entered the parked buffer\n");
+      std::abort();
+    }
+  }
+
+protected:
+  std::streamsize xsgetn(char*, std::streamsize count) override {
+    park();
     return count;
   }
 
-  int overflow(int ch) override { return ch; }
+  int underflow() override {
+    park();
+    return traits_type::eof();
+  }
 
 private:
+  void park() {
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      inside_ = true;
+    }
+    cv_.notify_all();
+    std::unique_lock<std::mutex> lk(mu_);
+    cv_.wait(lk, [] { return false; });
+  }
+
   std::mutex              mu_;
   std::condition_variable cv_;
   bool                    inside_ = false;
@@ -179,6 +245,49 @@ TEST(AttrRaceDeathTest, WriteWhileAnotherThreadWalksTheStores) {
         buf->wait_until_inside();
 
         host->probe(2).set(22);  // must abort: a walk of this host is in flight
+      },
+      "attr race");
+}
+
+// The ORIGIN crash, and the only test that reaches attr_store()'s cold path:
+// one worker walks the shared host's stores while another first-writes a tag on
+// it, so attr_stores_.resize() reallocates the vector the walk is indexing.
+// Without attr_store()'s write scope this mint is invisible -- a plain
+// attr_store() call takes no per-key check to fall back on.
+TEST(AttrRaceDeathTest, ColdMintWhileAnotherThreadWalksTheStores) {
+  EXPECT_DEATH(
+      {
+        auto* host = new Test_host();  // leaked on purpose: the reader never returns
+        host->probe(1).set(11);
+
+        auto*        buf = new Blocking_streambuf();
+        std::ostream parked(buf);
+        std::thread  reader([host, &parked] { host->save_attr_stores(parked); });
+        reader.detach();
+        buf->wait_until_inside();
+
+        (void)host->attr_store(cold_tag{});  // must abort: resizes attr_stores_
+      },
+      "attr race");
+}
+
+// The other half of that pair, from the reader's side: a clone must refuse to
+// walk a host another thread is restructuring. The writer is parked inside
+// load_attr_stores, which holds the coarse write scope across its whole read.
+TEST(AttrRaceDeathTest, CloneWhileAnotherThreadRestructuresTheSource) {
+  EXPECT_DEATH(
+      {
+        auto* source = new Test_host();  // leaked on purpose: the writer never returns
+        source->probe(1).set(11);
+
+        auto*        buf = new Blocking_istreambuf();
+        std::istream parked(buf);
+        std::thread  writer([source, &parked] { source->load_attr_stores(parked); });
+        writer.detach();
+        buf->wait_until_inside();
+
+        Test_host dst;
+        dst.clone_attr_stores_from(*source);  // must abort: source is being rebuilt
       },
       "attr race");
 }

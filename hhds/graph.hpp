@@ -10,8 +10,8 @@
 #include <ctime>
 #include <deque>
 #include <filesystem>
-#include <ios>
 #include <fstream>
+#include <ios>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -1560,7 +1560,10 @@ private:
   // "proven" stamp is pure waste -- and a colouring pass writes one attribute
   // per node and nothing else. Marking only attrs_dirty_ lets save() rewrite
   // just the attribute section (see save_attrs_only). Structural mutators set
-  // dirty_ themselves; hhds/tests/dirty_tracking_test.cpp pins that they do.
+  // dirty_ themselves, through note_body_mutation(); that used to be covered
+  // for free by this hook, so hhds/tests/dirty_tracking_test.cpp exercises the
+  // shapes that have no attribute write of their own -- a bare node, and an
+  // edge between two pins of a graph nothing has walked yet.
   void attr_note_modified() noexcept override { attrs_dirty_ = true; }
   [[nodiscard]] OverflowPool get_overflow_pool() {
     return {overflow_sets(), overflow_free_};
@@ -1615,9 +1618,13 @@ private:
   // Rewrite ONLY the attribute tail of an already-saved body.bin. Valid when the
   // node/pin tables are unchanged since the last save/load, i.e. when dirty_ is
   // false -- the tables then serialize to identical bytes, so the tail still
-  // starts at the recorded offset. Falls back to a full save_body() when no
-  // offset is on record. The file is truncated to the new end, so an attribute
-  // set that SHRANK does not leave stale bytes behind.
+  // starts at the recorded offset. Falls back to a full save_body() when the
+  // recorded offset does not belong to the body.bin sitting at `dir_path`
+  // (never saved/loaded there, a stale file left by a DIFFERENT library at the
+  // same graph_<gid> path, or one whose size shows something rewrote it since
+  // we last read it -- patching any of those at our offset would shred them).
+  // The file is truncated to the new end, so an attribute set that SHRANK does
+  // not leave stale bytes behind.
   void save_attrs_only(const std::string &dir_path) const;
   void load_body(const std::string &dir_path);
   // In-memory sibling of load_body: replace this body's contents with a deep
@@ -1699,6 +1706,13 @@ private:
   void set_name(std::string_view name) { name_ = name; }
   void
   invalidate_traversal_caches() noexcept; // defined inline at end of header
+  // "The stored body changed": mark it for re-save and bump the library's
+  // mutation epoch so in-flight iterators notice. Every structural mutator owes
+  // this call — invalidate_traversal_caches() makes it on the callers' behalf,
+  // but the paths that only PATCH the traversal caches (add_edge / del_edge)
+  // and delete_pin must make it themselves. Defined inline at end of header
+  // (needs a complete GraphLibrary).
+  void note_body_mutation() noexcept;
   // Incremental patch for a single edge add/delete. delta = +1 for add, -1 for
   // delete. Bumps forward_remaining_in_cache_[sink_idx] and
   // backward_remaining_out_cache_[driver_idx] using the same filters the cache
@@ -1865,10 +1879,24 @@ private:
   // attrs_dirty_: only attribute values changed -> the attribute TAIL of
   //               body.bin can be rewritten in place, leaving the tables alone.
   // attr_offset_: where that tail starts in body.bin, recorded by the last
-  //               save/load. -1 means unknown, which forces a full save.
+  //               save/load. -1 means unknown, which forces a full save. Only
+  //               recorded for the CURRENT body version: a legacy (v3/v4) file
+  //               decodes hier attribute entries differently, so patching one
+  //               with a current-format tail would desync the next load.
+  // body_dir_   : the directory attr_offset_ was recorded against, and the only
+  //               place body.bin is known to hold THIS body. Empty = nowhere;
+  //               a save anywhere else must write the whole body.
+  // body_size_  : the size body.bin had when this body last wrote or read it.
+  //               body_dir_ says WE once wrote that file; only a matching size
+  //               says nothing has rewritten it since. Two GraphLibrary objects
+  //               over one db directory are enough to break that -- the other
+  //               one's save moves the tail, and patching at our now-stale
+  //               offset lands mid-table and truncates the rest away.
   mutable bool dirty_ = true;
   mutable bool attrs_dirty_ = true;
   mutable std::streamoff attr_offset_ = -1;
+  mutable std::string body_dir_;
+  mutable std::uintmax_t body_size_ = 0;
   // Set by commit(). When true, the writer asked to publish the graph;
   // single-threaded — only the writer has a writable handle.
   bool frozen_ = false;
@@ -3793,13 +3821,17 @@ inline Port_id GraphIO::get_output_port_id(std::string_view name) const {
   return output_pin_decls_[it->second.index].port_id;
 }
 
-inline void Graph::invalidate_traversal_caches() noexcept {
+inline void Graph::note_body_mutation() noexcept {
   dirty_ = true;
-  forward_caches_valid_ = false;
-  backward_caches_valid_ = false;
   if (owner_lib_ != nullptr) {
     owner_lib_->note_graph_mutation();
   }
+}
+
+inline void Graph::invalidate_traversal_caches() noexcept {
+  forward_caches_valid_ = false;
+  backward_caches_valid_ = false;
+  note_body_mutation();
 }
 
 } // namespace hhds
