@@ -20,7 +20,7 @@ bazel_dep(name = "abseil-cpp", version = "20250814.2") # 20240722.0.bcr.2")
 # file, so keep this commit in step with livehd's MODULE.bazel hlop pin.
 git_repository(
     name = "hlop",
-    commit = "fd3028fccd3b92e58445002a3b089024e5574e5a",
+    commit = "8b41bfaab3546b49984adbcb935fc98ed44f78b2",
     remote = "https://github.com/masc-ucsc/hlop.git",
 )
 # For local co-development: local_repository(name = "hlop", path = "../hlop")
