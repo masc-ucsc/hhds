@@ -3,6 +3,7 @@
 #include <strings.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <ctime>
 #include <functional>
 #include <iostream>
@@ -10,6 +11,7 @@
 #include <map>
 #include <queue>
 #include <sstream>
+#include <stdexcept>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -1830,12 +1832,6 @@ auto Graph::NodeEntry::get_edges(Nid nid, const OverflowVec& overflow) const noe
 
 Graph::Graph() {
   register_attr_tag<attrs::name_t>("hhds::attrs::name");
-  // Eager registration only (attr_tag_slot registers under the tag's default
-  // persistence id if nobody registered it yet). NOT register_attr_tag with an
-  // explicit id: a client that persists this payload under its own identifier
-  // registers it from a static initializer, i.e. before the first Graph is
-  // built, and re-registering here would fight that rename.
-  (void)attr_tag_slot<attrs::const_payload_t>();
   clear_graph();
 }
 
@@ -1892,7 +1888,7 @@ void Graph::release_storage() noexcept {
 #ifndef NDEBUG
   validated_loop_carries_.clear();
 #endif
-  constant_pin_index_.clear();
+  const_pool_.clear();
   sync_loop_presence();
 }
 
@@ -2022,7 +2018,7 @@ void Graph::clear() {
   overflow_deferred_ = false;
   discard_attr_stores();
   srcloc_.clear();  // provenance is body content: dropped with the attrs (base kept)
-  constant_pin_index_.clear();
+  const_pool_.clear();
 
   for (auto& pin : pin_table) {
     pin = PinEntry();
@@ -2503,15 +2499,29 @@ auto Graph::find_pin(Node_class node, Port_id port_id, bool driver) const -> Pin
   return {};
 }
 
+// Every route to a CONST_NODE pin handle that is not Graph::create_constant.
+// A CONST pin without a pool slot is a constant with no value: const_value()
+// answers nullptr while get_master_node() still says CONST_NODE, so the two
+// standard "is this a constant?" idioms disagree -- the silent-0 landmine the
+// pool exists to kill. This covers port 0 as well (the node-as-pin(0) handle,
+// which is what the pre-pool `create_constant()` used to hand out), because
+// port 0 is not a pool slot either: slots are dense 1..N.
+void Graph::reject_constant_pin_mint(Nid self_nid, const char* who) {
+  if (self_nid == CONST_NODE) {
+    throw std::logic_error(std::string(who) + ": CONST_NODE pins are minted only by Graph::create_constant");
+  }
+}
+
 auto Graph::find_or_create_pin(Node_class node, Port_id port_id) -> Pin_class {
   assert_node_exists(node);
   assert(port_id != 0 && "find_or_create_pin: port_id 0 is the node itself");
-  const Nid self_nid    = node.get_debug_nid() & ~static_cast<Nid>(2);
-  auto*     self        = ref_node(self_nid);
+  const Nid self_nid = node.get_debug_nid() & ~static_cast<Nid>(2);
+  reject_constant_pin_mint(self_nid, "find_or_create_pin");
+  auto* self        = ref_node(self_nid);
   // The pin linked list is kept sorted by ascending port_id. Find the predecessor whose
   // port_id is just below `port_id`, and stop early if a greater-or-equal port_id is found.
-  Pid       prev_pin_id = 0;  // canonical Pid of predecessor (0 = insert at head)
-  Pid       cur_pin     = self->get_next_pin_id();
+  Pid   prev_pin_id = 0;  // canonical Pid of predecessor (0 = insert at head)
+  Pid   cur_pin     = self->get_next_pin_id();
   while (cur_pin != 0) {
     const Pid  canonical_pin = (cur_pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
     auto*      pin           = ref_pin(canonical_pin);
@@ -2538,11 +2548,6 @@ auto Graph::find_or_create_pin(Node_class node, Port_id port_id) -> Pin_class {
     node_table[self_nid >> 2].set_next_pin_id(new_pid_canonical);
   } else {
     pin_table[prev_pin_id >> 2].set_next_pin_id(new_pid_canonical);
-  }
-  if (self_nid == CONST_NODE) {
-    // A caller bypassed intern_constant(). Rebuild lazily so a later intern
-    // sees this pin and the true list tail.
-    constant_pin_index_.clear();
   }
   invalidate_traversal_caches();
   return Pin_class(this, new_pid_canonical);
@@ -2578,55 +2583,157 @@ auto Graph::append_driver_pin(Node_class node, Port_id port_id, Pid tail_pin) ->
   return Pin_class(this, canonical | static_cast<Pid>(2));
 }
 
-void Graph::rebuild_constant_pin_index(Port_id first_payload_port) {
-  auto& index = constant_pin_index_;
-  index.by_hash.clear();
-  index.next_port = std::max<Port_id>(first_payload_port, 1);
-  index.tail_pin  = 0;
-
-  auto* node = ref_node(CONST_NODE);
-  for (Pid cur = node->get_next_pin_id(); cur != 0;) {
-    const Pid canonical = (cur & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-    auto*     entry     = ref_pin(canonical);
-    index.tail_pin      = canonical;
-    index.next_port     = std::max<Port_id>(index.next_port, entry->get_port_id() + 1);
-    auto pin            = make_pin_class(canonical);
-    auto payload        = pin.attr(attrs::const_payload);
-    if (payload.has()) {
-      const auto& text = payload.get();
-      index.by_hash[rapidhash(text.data(), text.size())].push_back(canonical);
-    }
-    cur = entry->get_next_pin_id();
-  }
-  index.valid = true;
+// A CONST_NODE pin without a pool slot is a constant with no value: a mint
+// that bypassed create_constant, or a corrupt body. Never answer "not a
+// constant" for it -- that is the silent-0 landmine this pool exists to kill.
+[[noreturn]] static void constant_pool_corrupt(const char* what) {
+  std::fprintf(stderr, "hhds: constant pool invariant violated: %s\n", what);
+  std::abort();
 }
 
-auto Graph::intern_constant(std::string_view payload, Port_id first_payload_port) -> Pin_class {
-  assert_accessible();
-  if (!constant_pin_index_.valid) {
-    rebuild_constant_pin_index(first_payload_port);
-  } else if (constant_pin_index_.next_port < first_payload_port) {
-    constant_pin_index_.next_port = first_payload_port;
+auto Pin_class::const_value() const noexcept -> const Dlop* {
+  if (graph_ == nullptr || (pin_pid & static_cast<Pid>(1)) == 0 || graph_->deleted_) {
+    return nullptr;  // detached, a node-as-pin(0) handle, or a library tombstone
   }
+  const Pid idx = pin_pid >> 2;
+  if (idx == 0 || idx >= graph_->pin_table.size()) {
+    return nullptr;
+  }
+  const auto& entry = graph_->pin_table[idx];
+  if (entry.get_master_nid() != Graph::CONST_NODE) {
+    return nullptr;
+  }
+  const Port_id port = entry.get_port_id();
+  if (port == 0 || port > graph_->const_pool_.values.size()) {
+    constant_pool_corrupt("CONST_NODE pin has no pool slot");
+  }
+  return &graph_->const_pool_.values[port - 1];
+}
 
-  const uint64_t hash = rapidhash(payload.data(), payload.size());
-  if (const auto it = constant_pin_index_.by_hash.find(hash); it != constant_pin_index_.by_hash.end()) {
-    for (const Pid canonical : it->second) {
-      auto pin  = make_pin_class(canonical);
-      auto attr = pin.attr(attrs::const_payload);
-      if (attr.has() && attr.get() == payload) {
-        return Pin_class(this, canonical | static_cast<Pid>(2));
-      }
+// Walk the CONST_NODE pin chain once: ports are minted 1..N in chain order, so
+// the chain and the pool must describe the same pins. Rebuilds the dedup index
+// and the append point; writer-side only (called from create_constant).
+void Graph::rebuild_constant_hash_index() {
+  auto& pool = const_pool_;
+  pool.by_hash.clear();
+  pool.tail_pin = 0;
+  size_t seen   = 0;
+  for (Pid cur = ref_node(CONST_NODE)->get_next_pin_id(); cur != 0;) {
+    const Pid     canonical = (cur & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    const auto*   entry     = ref_pin(canonical);
+    const Port_id port      = entry->get_port_id();
+    if (port != seen + 1 || port > pool.values.size()) {
+      constant_pool_corrupt("CONST_NODE pin chain does not match the pool");
+    }
+    pool.by_hash[pool.values[port - 1].hash()].push_back(canonical);
+    pool.tail_pin = canonical;
+    ++seen;
+    cur = entry->get_next_pin_id();
+  }
+  if (seen != pool.values.size()) {
+    constant_pool_corrupt("CONST_NODE pin chain is shorter than the pool");
+  }
+  pool.by_hash_valid = true;
+}
+
+auto Graph::create_constant(const Dlop& value) -> Pin_class {
+  assert_accessible();
+  if (value.is_invalid() || value.is_nil()) {
+    throw std::invalid_argument("create_constant: Invalid/Nil is not a value");
+  }
+  if (!const_pool_.by_hash_valid) {
+    rebuild_constant_hash_index();
+  }
+  auto& bucket = const_pool_.by_hash[value.hash()];
+  for (const Pid canonical : bucket) {
+    const Port_id port = pin_table[canonical >> 2].get_port_id();
+    if (const_pool_.values[port - 1].same_repr(value)) {
+      return Pin_class(this, canonical | static_cast<Pid>(2));
     }
   }
-
-  assert(static_cast<uint64_t>(constant_pin_index_.next_port) < (uint64_t{1} << Port_bits)
-         && "intern_constant: exhausted CONST_NODE port ids");
-  auto pin = append_driver_pin(get_constant_node(), constant_pin_index_.next_port++, constant_pin_index_.tail_pin);
-  constant_pin_index_.tail_pin = (pin.get_debug_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-  pin.attr(attrs::const_payload).set(std::string(payload));
-  constant_pin_index_.by_hash[hash].push_back(constant_pin_index_.tail_pin);
+  const auto port = static_cast<Port_id>(const_pool_.values.size() + 1);
+  if (static_cast<uint64_t>(port) >= (uint64_t{1} << Port_bits)) {
+    throw std::length_error("create_constant: exhausted CONST_NODE port ids");
+  }
+  // Value first (deque push_back never relocates and has the strong
+  // guarantee), then the pin: a CONST pin must never exist without its slot --
+  // and a slot must never outlive a failed mint, or the dense 1..N port
+  // sequence the chain validation relies on is broken for good.
+  const_pool_.values.emplace_back(value);
+  Pin_class pin;
+  try {
+    pin = append_driver_pin(get_constant_node(), port, const_pool_.tail_pin);
+  } catch (...) {
+    const_pool_.values.pop_back();
+    throw;
+  }
+  const_pool_.tail_pin = (pin.get_debug_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+  bucket.push_back(const_pool_.tail_pin);
   return pin;
+}
+
+// body.bin section: [u64 n] then n x [u32 len][len bytes of Dlop::serialize()].
+// hhds does not interpret the bytes; hlop owns the encoding.
+void Graph::save_constant_pool(std::ostream& os) const {
+  const uint64_t n = const_pool_.values.size();
+  os.write(reinterpret_cast<const char*>(&n), sizeof(n));
+  for (const auto& v : const_pool_.values) {
+    const std::string bytes = v.serialize();
+    const auto        len   = static_cast<uint32_t>(bytes.size());
+    os.write(reinterpret_cast<const char*>(&len), sizeof(len));
+    os.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  }
+}
+
+void Graph::load_constant_pool(std::istream& is) {
+  const_pool_.clear();
+  // Dlop::serialize is [type:1][size:2 big-endian][size x 8 base][size x 8
+  // extra], and `size` is an int16_t word count -- so an entry is at most
+  // 3 + 16 * 32767 bytes. Bound `len` BEFORE the resize: a corrupt or
+  // truncated file must not talk us into a multi-GB allocation first and only
+  // fail on the read that follows.
+  constexpr uint32_t max_entry_bytes = 3 + 16 * 32767;
+  uint64_t           n               = 0;
+  is.read(reinterpret_cast<char*>(&n), sizeof(n));
+  if (!is) {
+    throw std::runtime_error("load_body: truncated constant pool");
+  }
+  std::string bytes;
+  for (uint64_t i = 0; i < n; ++i) {
+    uint32_t len = 0;
+    is.read(reinterpret_cast<char*>(&len), sizeof(len));
+    if (!is || len < 3 || len > max_entry_bytes) {
+      throw std::runtime_error("load_body: corrupt constant pool entry");
+    }
+    bytes.resize(len);
+    is.read(bytes.data(), static_cast<std::streamsize>(len));
+    if (!is) {
+      throw std::runtime_error("load_body: truncated constant pool");
+    }
+    // The decoder only asserts the length relation, so check it here too --
+    // asserts are compiled out of a -c opt load.
+    const auto words = static_cast<size_t>((static_cast<uint8_t>(bytes[1]) << 8) | static_cast<uint8_t>(bytes[2]));
+    if (bytes.size() != 3 + 16 * words) {
+      throw std::runtime_error("load_body: corrupt constant pool entry");
+    }
+    auto d = Dlop::unserialize(bytes);  // spool_ptr: copied out, released on this thread
+    const_pool_.values.emplace_back(*d);
+  }
+  // The pin chain (already loaded) must be exactly ports 1..n in order; fail
+  // the load cleanly rather than publish a body whose constants mismatch.
+  size_t seen = 0;
+  for (Pid cur = ref_node(CONST_NODE)->get_next_pin_id(); cur != 0;) {
+    const Pid   canonical = (cur & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+    const auto* entry     = ref_pin(canonical);
+    if (entry->get_port_id() != seen + 1) {
+      throw std::runtime_error("load_body: CONST_NODE pin chain does not match the constant pool");
+    }
+    ++seen;
+    cur = entry->get_next_pin_id();
+  }
+  if (seen != const_pool_.values.size()) {
+    throw std::runtime_error("load_body: constant pool size does not match the CONST_NODE pin chain");
+  }
 }
 
 auto Graph::resolve_driver_port(Node_class node, std::string_view name) const -> Port_id {
@@ -2765,6 +2872,10 @@ void Graph::delete_pin(Pid pin_pid) {
   const Pid pin_lookup = (pin_pid & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
   const Pid actual_id  = pin_lookup >> 2;
   assert(actual_id > 0 && actual_id < pin_table.size() && "delete_pin: pin handle is invalid for this graph");
+  if (pin_table[actual_id].get_master_nid() == CONST_NODE) {
+    // A constant pin is a pool slot; ports are dense 1..N and never recycled.
+    throw std::logic_error("delete_pin: CONST_NODE pins are constant-pool slots and cannot be deleted");
+  }
 
   auto* pin = &pin_table[actual_id];
   assert(pin->get_master_nid() != 0 && "delete_pin: pin already deleted");
@@ -3286,7 +3397,8 @@ auto Node_class::create_driver_pin(Port_id port_id) const -> Pin_class {
   if (port_id == 0) {
     // Node itself acts as driver pin(0)
     const Nid nid = raw_nid & ~static_cast<Nid>(2);
-    auto      pin = Pin_class(graph_, nid | static_cast<Pid>(2));
+    Graph::reject_constant_pin_mint(nid, "create_driver_pin");
+    auto pin = Pin_class(graph_, nid | static_cast<Pid>(2));
     inherit_pin_context(pin, *this);
     return pin;
   }
@@ -3305,7 +3417,8 @@ auto Node_class::create_sink_pin(Port_id port_id) const -> Pin_class {
   if (port_id == 0) {
     // Node itself acts as sink pin(0)
     const Nid nid = raw_nid & ~static_cast<Nid>(2);
-    auto      pin = Pin_class(graph_, nid);
+    Graph::reject_constant_pin_mint(nid, "create_sink_pin");
+    auto pin = Pin_class(graph_, nid);
     inherit_pin_context(pin, *this);
     return pin;
   }
@@ -5766,7 +5879,7 @@ std::string Graph::print() const {
 // --------------------------------------------------------------------------
 
 static constexpr uint32_t GRAPH_BODY_MAGIC     = 0x48484742;  // "HHGB"
-static constexpr uint32_t GRAPH_BODY_VERSION   = 5;
+static constexpr uint32_t GRAPH_BODY_VERSION   = 6;           // 6: constant pool section (Dlop values)
 static constexpr uint32_t SUBNODE_LOOP_VERSION = 1;
 static constexpr uint32_t ENDIAN_CHECK         = 0x01020304;
 
@@ -5820,6 +5933,7 @@ void Graph::save_body(const std::string& dir_path) const {
     // Bulk write node_table and pin_table — pointer-free POD arrays.
     ofs.write(reinterpret_cast<const char*>(node_table.data()), static_cast<std::streamsize>(node_count * sizeof(NodeEntry)));
     ofs.write(reinterpret_cast<const char*>(pin_table.data()), static_cast<std::streamsize>(pin_count * sizeof(PinEntry)));
+    save_constant_pool(ofs);
 
     // Native compact-loop descriptors. Write in nid order so persistence is a
     // pure function of stored structure, independent of hash-map iteration.
@@ -6002,8 +6116,15 @@ void Graph::load_body(const std::string& dir_path) {
     if (magic != GRAPH_BODY_MAGIC) {
       throw std::runtime_error("load_body: bad graph-body magic");
     }
-    if (version < 3 || version > GRAPH_BODY_VERSION) {
-      throw std::runtime_error("load_body: unsupported graph-body version " + std::to_string(version));
+    // Exactly ONE accepted version. Bodies before 6 predate the constant pool:
+    // their CONST_NODE pins have no pool slot, so there is no faithful upgrade
+    // and reading one would publish constants with no value. Widen this back
+    // into a range (and reinstate the per-version arms below) only when a bump
+    // is genuinely readable by the current decoder.
+    if (version != GRAPH_BODY_VERSION) {
+      throw std::runtime_error(
+          "load_body: unsupported graph-body version " + std::to_string(version)
+          + (version < GRAPH_BODY_VERSION ? " (predates the constant pool: regenerate the library)" : " (newer than this build)"));
     }
     if (endian != ENDIAN_CHECK) {
       throw std::runtime_error("load_body: endian mismatch — file from different platform");
@@ -6020,6 +6141,7 @@ void Graph::load_body(const std::string& dir_path) {
 
     pin_table.resize(pin_count);
     ifs.read(reinterpret_cast<char*>(pin_table.data()), static_cast<std::streamsize>(pin_count * sizeof(PinEntry)));
+    load_constant_pool(ifs);
 
     // Size the overflow vector (holes included) but DEFER reading the set
     // contents — see below.
@@ -6031,21 +6153,18 @@ void Graph::load_body(const std::string& dir_path) {
     validated_loop_carries_.clear();
 #endif
     sync_loop_presence();
-    if (version >= 4) {
+    {
       uint64_t loop_count = 0;
       ifs.read(reinterpret_cast<char*>(&loop_count), sizeof(loop_count));
       for (uint64_t i = 0; i < loop_count; ++i) {
         Nid          nid = 0;
         Subnode_loop loop;
-        uint32_t     descriptor_version = 1;
+        uint32_t     descriptor_version = 0;  // 0 is never valid: a failed read must not read as SUBNODE_LOOP_VERSION
         uint8_t      flags              = 0;
         ifs.read(reinterpret_cast<char*>(&nid), sizeof(nid));
-        if (version >= 5) {
-          ifs.read(reinterpret_cast<char*>(&descriptor_version), sizeof(descriptor_version));
-          if (descriptor_version != SUBNODE_LOOP_VERSION) {
-            throw std::runtime_error("load_body: unsupported subnode-loop descriptor version "
-                                     + std::to_string(descriptor_version));
-          }
+        ifs.read(reinterpret_cast<char*>(&descriptor_version), sizeof(descriptor_version));
+        if (descriptor_version != SUBNODE_LOOP_VERSION) {
+          throw std::runtime_error("load_body: unsupported subnode-loop descriptor version " + std::to_string(descriptor_version));
         }
         ifs.read(reinterpret_cast<char*>(&loop.first), sizeof(loop.first));
         ifs.read(reinterpret_cast<char*>(&loop.step), sizeof(loop.step));
@@ -6082,14 +6201,13 @@ void Graph::load_body(const std::string& dir_path) {
       sync_loop_presence();
     }
 
-    // Same tail position save_body would write to -- but ONLY for a current
-    // -version file. A v3/v4 body decodes hier attribute entries with the
-    // legacy layout (load_attr_stores' legacy_hier arm), so patching its tail
-    // with a current-format one would desync the next load; leaving the offset
-    // unset routes such a body through a full save_body, which also upgrades
-    // the header and consolidates the legacy overflow_<i>.bin files.
-    attr_offset_ = (version == GRAPH_BODY_VERSION) ? std::streamoff{ifs.tellg()} : std::streamoff{-1};
-    load_attr_stores(ifs, version < 5);
+    // Same tail position save_body would write to. Only a current-version body
+    // gets here (the check above refuses every other one), so the offset the
+    // save side would produce and the one we just read to are the same file
+    // layout -- which is what makes save_attrs_only's in-place tail rewrite
+    // safe. Re-guard this on `version` the moment more than one version loads.
+    attr_offset_ = std::streamoff{ifs.tellg()};
+    load_attr_stores(ifs);
     if (!ifs) {
       throw std::runtime_error("load_body: truncated or corrupt graph body");
     }
@@ -6142,7 +6260,7 @@ void Graph::load_body(const std::string& dir_path) {
 }
 
 void Graph::rebuild_derived_after_body() {
-  constant_pin_index_.clear();
+  const_pool_.by_hash_valid = false;  // the pool itself was loaded/copied with the body
   // Rebuild structure tree: save/load only persists node_table (which holds
   // each subnode's target Gid in ledge0). Walk the live entries and
   // reconstruct tree_ + subnode_tree_pos_ so hier traversal works.
@@ -6236,6 +6354,10 @@ void Graph::copy_body_from(const Graph& src) {
   validated_loop_carries_.clear();
 #endif
   sync_loop_presence();
+  const_pool_.values = src.const_pool_.values;  // deep Dlop copies; pin ids line up 1:1 with pin_table
+  const_pool_.by_hash.clear();
+  const_pool_.by_hash_valid = false;
+  const_pool_.tail_pin      = 0;
   clone_attr_stores_from(src);  // deep-copy every attr store (srcid/name/lut/pin_*)
   rebuild_derived_after_body();
   dirty_ = true;

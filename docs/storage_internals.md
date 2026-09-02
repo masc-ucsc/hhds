@@ -403,18 +403,48 @@ Forest
  Offset  Size     Field
  ──────────────────────────────────────────
  0       4B       magic: 0x48484742 ("HHGB")
- 4       4B       version: 1
+ 4       4B       version: 6
  8       4B       endian_check: 0x01020304
  12      8B       node_count (uint64_t)
  20      8B       pin_count (uint64_t)
  28      8B       overflow_count (uint64_t)
  36      N*32B    node_table (NodeEntry[node_count])
  36+N*32 M*32B    pin_table (PinEntry[pin_count])
+ ...     var      constant pool   (§5.3.1)
+ ...     var      subnode-loop descriptors
+ ...     var      attribute stores (the "attr tail", see attr_offset_)
 ```
 
 NodeEntry and PinEntry are written as-is from memory. The `sedges_` union
 contains either packed short edges (when `use_overflow == 0`) or an
 `overflow_idx` (when `use_overflow == 1`). No pointers are stored on disk.
+
+`load_body` accepts **exactly one** version (`GRAPH_BODY_VERSION`). Anything
+older is refused rather than upgraded: bodies before 6 predate the constant
+pool, so their `CONST_NODE` pins carry no pool slot and decoding one would
+publish constants with no value. Regenerate the library instead.
+
+Everything from `attr_offset_` on is the attribute tail, which
+`save_attrs_only` rewrites in place when a body is attribute-dirty but
+structurally clean — so every section above it must be a pure function of the
+stored structure.
+
+#### 5.3.1 Constant Pool
+
+```
+ Size     Field
+ ─────────────────────────────────────────
+ 8B       count (uint64_t)
+ per entry:
+   4B     len (uint32_t)
+   len B  Dlop::serialize() bytes
+```
+
+`values[port - 1]` is the `Dlop` of the `CONST_NODE` driver pin with that port
+id; ports are dense `1..count` and match the `CONST_NODE` pin chain in order,
+which `load_body` verifies before publishing the body. hhds does not interpret
+the payload — hlop owns the encoding (`[type:1][size:2 big-endian][size*8 base]
+[size*8 extra]`); only the length relation is re-checked on load.
 
 ### 5.4 Overflow Set Format (`overflow_<idx>.bin`)
 

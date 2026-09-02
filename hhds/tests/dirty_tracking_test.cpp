@@ -221,15 +221,16 @@ int main() {
     fs::remove_all(other);
   }
 
-  // --- a LEGACY-version body.bin must never be tail-patched. load_body accepts
-  // versions 3..GRAPH_BODY_VERSION and decodes hier attribute entries with the
-  // old layout whenever version < 5, while save_attr_stores always emits the
-  // current one. So patching such a file's tail in place, with its header left
-  // at the old version, desyncs the next load. The body must be rewritten whole
-  // (which upgrades the header) instead. A body with no subnode loops is
-  // byte-identical under v4 and v5, so stamping the version field down to 4
-  // yields a genuine v4 file to load back.
+  // --- a body from an OLDER format version must be refused, not decoded.
+  // load_body accepts exactly GRAPH_BODY_VERSION: bodies before 6 predate the
+  // constant pool, so their CONST_NODE pins carry no pool slot and there is no
+  // faithful upgrade -- reading one would publish constants with no value.
+  // (This replaces the old v3..v5 "never tail-patch a legacy header" round:
+  // with a single accepted version there is no legacy file left to patch.)
+  // Bump `kBodyVersion` in step with GRAPH_BODY_VERSION in graph.cpp.
   {
+    constexpr uint32_t kBodyVersion = 6;
+
     const auto legacy = fs::temp_directory_path() / (tag + "_legacy");
     fs::remove_all(legacy);
     {
@@ -249,33 +250,52 @@ int main() {
       std::printf("FAIL: no graph body directory was written for the legacy round\n");
       return 1;
     }
-    if (version_of(body) != 5) {
-      std::printf("FAIL: expected a freshly saved body to be version 5\n");
+    if (version_of(body) != kBodyVersion) {
+      std::printf("FAIL: expected a freshly saved body to be version %u, got %u\n", kBodyVersion, version_of(body));
       return 1;
     }
-    stamp_version(body, 4);  // now a genuine v4 file: no loop descriptors above
 
-    {
+    stamp_version(body, kBodyVersion - 1);
+    bool refused = false;
+    try {
       hhds::GraphLibrary eighth;
-      eighth.load(legacy.string());
-      auto g8 = eighth.find_io("m")->get_graph();
-      (*g8->body().nodes(hhds::Node_order::forward).begin()).attr(mark_t{}).set(int32_t{99});
-      eighth.save(legacy.string());  // attribute-only: must NOT take the tail patch
+      eighth.load(legacy.string());  // lazy: the body is read on first get_graph()
+      (void)eighth.find_io("m")->get_graph();
+    } catch (const std::exception&) {
+      refused = true;
+    }
+    if (!refused) {
+      std::printf("FAIL: a body one version older than the loader was decoded anyway\n");
+      return 1;
+    }
+    if (version_of(body) != kBodyVersion - 1) {
+      std::printf("FAIL: the refused load rewrote the body it could not read\n");
+      return 1;
     }
 
-    if (version_of(body) != 5) {
-      std::printf("FAIL: an attribute-only save patched a v%u body in place instead of rewriting it\n", version_of(body));
+    // Same bytes, current header: still a perfectly good body, and an
+    // attribute-only save on it takes the in-place tail rewrite.
+    stamp_version(body, kBodyVersion);
+    {
+      hhds::GraphLibrary ninth;
+      ninth.load(legacy.string());
+      auto g9 = ninth.find_io("m")->get_graph();
+      (*g9->body().nodes(hhds::Node_order::forward).begin()).attr(mark_t{}).set(int32_t{99});
+      ninth.save(legacy.string());
+    }
+    if (version_of(body) != kBodyVersion) {
+      std::printf("FAIL: an attribute-only save left the body at version %u\n", version_of(body));
       return 1;
     }
-    hhds::GraphLibrary ninth;
-    ninth.load(legacy.string());
-    auto g9 = ninth.find_io("m")->get_graph();
-    auto n9 = g9->body().nodes(hhds::Node_order::forward).begin();
-    if (!(*n9).attr(mark_t{}).has() || (*n9).attr(mark_t{}).get() != 99 || live_nodes(g9.get()) != 2) {
-      std::printf("FAIL: the legacy body did not survive an attribute-only save\n");
+    hhds::GraphLibrary tenth_again;
+    tenth_again.load(legacy.string());
+    auto g10 = tenth_again.find_io("m")->get_graph();
+    auto n10 = g10->body().nodes(hhds::Node_order::forward).begin();
+    if (!(*n10).attr(mark_t{}).has() || (*n10).attr(mark_t{}).get() != 99 || live_nodes(g10.get()) != 2) {
+      std::printf("FAIL: the body did not survive the version stamp round-trip\n");
       return 1;
     }
-    std::printf("ok: a legacy-version body is rewritten whole, not tail-patched\n");
+    std::printf("ok: a body from an older format version is refused, not decoded\n");
     fs::remove_all(legacy);
   }
 

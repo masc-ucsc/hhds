@@ -13,6 +13,17 @@ bazel_dep(name = "googletest", version = "1.18.0.bcr.1")
 bazel_dep(name = "google_benchmark", version = "1.9.5")
 
 bazel_dep(name = "abseil-cpp", version = "20250814.2") # 20240722.0.bcr.2")
+
+# hlop: the Dlop value type held by Graph's constant pool. Fetched as a PLAIN
+# git repo (its BUILD labels @iassert / @abseil-cpp resolve through the deps
+# above). livehd fetches hhds and hlop the same way and does not evaluate this
+# file, so keep this commit in step with livehd's MODULE.bazel hlop pin.
+git_repository(
+    name = "hlop",
+    commit = "fd3028fccd3b92e58445002a3b089024e5574e5a",
+    remote = "https://github.com/masc-ucsc/hlop.git",
+)
+# For local co-development: local_repository(name = "hlop", path = "../hlop")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
 
 # Boost.Graph — header-only baseline used by hhds/bench/boost_*_bench to

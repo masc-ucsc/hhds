@@ -181,7 +181,7 @@ TEST(GraphApiContract, DefaultTraversalsSkipBuiltinNodes) {
 
   // A constant feeding n1: created on CONST_NODE, identifiable as constant
   // by master-node identity alone.
-  auto k = g->create_constant();
+  auto k = g->create_constant(*Dlop::create_integer(1));
   EXPECT_EQ(k.get_master_node().get_debug_nid(), hhds::Graph::CONST_NODE);
   k.connect_sink(n1.create_sink_pin());
 
@@ -218,7 +218,7 @@ TEST(GraphApiContract, BuiltinNodeAccessors) {
   auto n = g->create_node();
   g->get_input_pin("in").connect_sink(n.create_sink_pin());
   n.create_driver_pin().connect_sink(g->get_output_pin("out"));
-  auto k = g->create_constant();
+  auto k = g->create_constant(*Dlop::create_integer(1));
   k.connect_sink(n.create_sink_pin());
 
   // Connectivity is inspectable through the standard edge API.

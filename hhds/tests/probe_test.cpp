@@ -219,7 +219,7 @@ static void probe_const_driver() {
   auto top    = top_io->create_graph();
   auto r      = top->create_node();
   r.set_subnode(leaf_io);
-  auto k = top->create_constant();  // CONST_NODE driver pin
+  auto k = top->create_constant(*Dlop::create_integer(1));  // CONST_NODE driver pin
   k.connect_sink(r.create_sink_pin(1));
 
   auto buf_h = find_hier_node(top.get(), leaf->get_gid(), buf.get_debug_nid());

@@ -28,11 +28,11 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
 #include "attr.hpp"
-#include "attrs/const_payload.hpp"
 #include "attrs/name.hpp"
 #include "attrs/srcid.hpp"
 #include "function_ref.hpp"
 #include "graph_sizing.hpp"
+#include "hlop/dlop.hpp"
 #include "iassert.hpp"
 #include "index.hpp"
 #include "rapidhash.h"
@@ -360,6 +360,29 @@ public:
   // accessors use. Asymmetric on purpose: a driver's fanout (out_edges) can be
   // huge, so there is no eager get_sink_pins() companion here.
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_driver_pins() const;
+
+  // Value of a CONST_NODE driver pin; nullptr for an invalid, detached or
+  // non-constant pin. Only PINS carry values (Node_class has no such member
+  // on purpose). The pointer is stable until the owning body is replaced --
+  // load_body / copy_body_from / clear / library delete -- the same lifetime
+  // as the PinEntry itself; it survives later create_constant calls.
+  [[nodiscard]] const Dlop *const_value() const noexcept;
+  [[nodiscard]] bool is_const() const noexcept { return const_value() != nullptr; }
+  // "is a constant AND ...": false for invalid / non-constant pins.
+  //
+  // These two are NOT complements. is_known_false is type gated
+  // (Dlop::is_known_zero accepts Integer/Boolean only), so a String constant
+  // is never "false"; is_known_true is hlop truthiness with no type gate, so
+  // that same String IS "known true". A value with unknown bits can be
+  // neither. Ask the one you mean, and never derive one from the other.
+  [[nodiscard]] bool is_known_false() const noexcept {
+    const auto *v = const_value();
+    return v != nullptr && v->is_known_zero();
+  }
+  [[nodiscard]] bool is_known_true() const noexcept {
+    const auto *v = const_value();
+    return v != nullptr && v->is_known_true();
+  }
 
   template <Attribute Tag> [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
     assert(graph_ != nullptr && "attr: pin is not attached to a graph");
@@ -1046,6 +1069,12 @@ public:
   [[nodiscard]] bool is_invalid() const noexcept { return !is_valid(); }
   [[nodiscard]] bool is_driver() const noexcept { return pin_.is_driver(); }
   [[nodiscard]] bool is_sink() const noexcept { return pin_.is_sink(); }
+  // Constants are per definition (CONST_NODE never crosses an instance
+  // boundary), so an occurrence reads its base pin's value.
+  [[nodiscard]] const Dlop *const_value() const noexcept { return pin_.const_value(); }
+  [[nodiscard]] bool is_const() const noexcept { return pin_.is_const(); }
+  [[nodiscard]] bool is_known_false() const noexcept { return pin_.is_known_false(); }
+  [[nodiscard]] bool is_known_true() const noexcept { return pin_.is_known_true(); }
   [[nodiscard]] OccurrenceEdgeRange out_edges() const;
   [[nodiscard]] OccurrenceEdgeRange inp_edges() const;
   [[nodiscard]] OccurrencePinRange get_driver_pins() const;
@@ -1519,18 +1548,27 @@ public:
   [[nodiscard]] Node_class get_constant_node() const noexcept {
     return Node_class(const_cast<Graph *>(this), CONST_NODE);
   }
-  // Return the canonical CONST_NODE driver for an opaque serialized payload.
-  // Existing pins are indexed in one linear scan on first use after load/copy;
-  // new payload ports are then appended in O(1). first_payload_port reserves a
-  // caller-defined prefix for values encoded directly in their port id.
-  [[nodiscard]] Pin_class intern_constant(
-      std::string_view payload, Port_id first_payload_port = 1);
-  // Fresh driver pin on CONST_NODE. The caller attaches whatever value
-  // representation it wants via the standard pin attr() API; the iterator
-  // skips CONST_NODE itself, so this pin is only seen as a driver on its
-  // sink's inp_edges().
-  [[nodiscard]] Pin_class create_constant() {
-    return get_constant_node().create_driver_pin();
+  // The canonical CONST_NODE driver for `value`. Every constant is a Dlop
+  // held BY VALUE in the graph's constant pool, indexed by the pin's port id
+  // (dense 1..N); this is the ONLY way to mint a CONST_NODE pin. The value is
+  // stored verbatim -- any canonicalization (width, Boolean vs Integer) is
+  // the caller's policy.
+  //
+  // Dedup is on the stored REPRESENTATION, not on numeric equality: the bucket
+  // is Dlop::hash(), which mixes in `size`, so two values that same_repr each
+  // other across different word counts (hlop sign-extends there) land in
+  // different buckets and get two pins. Every Dlop hlop hands back is already
+  // normalized to its minimal size, so this only bites a caller that builds a
+  // widened Dlop by hand; call Dlop::normalize() first if you need
+  // value-level, not representation-level, interning.
+  //
+  // Invalid and Nil are not values and are refused (std::invalid_argument): a
+  // stored Invalid would make is_known_false() vacuously true. Structural
+  // mutation, same single-writer contract as add_edge.
+  [[nodiscard]] Pin_class create_constant(const Dlop &value);
+  // Constants minted in this body (== the highest CONST_NODE port id).
+  [[nodiscard]] Port_id constant_count() const noexcept {
+    return static_cast<Port_id>(const_pool_.values.size());
   }
 
   [[nodiscard]] Body_view body() const noexcept;
@@ -1667,10 +1705,17 @@ private:
   [[nodiscard]] Pid create_pin(Nid nid, Port_id port_id);
   [[nodiscard]] Pin_class find_pin(Node_class node, Port_id port_id,
                                    bool driver) const;
+  // Throws std::logic_error when `self_nid` is CONST_NODE: every CONST pin is
+  // a constant-pool slot, so create_constant is the only mint. Static because
+  // Node_class::create_driver_pin/create_sink_pin call it before touching the
+  // graph. Defined in graph.cpp next to find_or_create_pin.
+  static void reject_constant_pin_mint(Nid self_nid, const char *who);
   [[nodiscard]] Pin_class find_or_create_pin(Node_class node, Port_id port_id);
   [[nodiscard]] Pin_class append_driver_pin(Node_class node, Port_id port_id,
                                             Pid tail_pin);
-  void rebuild_constant_pin_index(Port_id first_payload_port);
+  void rebuild_constant_hash_index();
+  void save_constant_pool(std::ostream &os) const;
+  void load_constant_pool(std::istream &is);
   [[nodiscard]] Port_id resolve_driver_port(Node_class node,
                                             std::string_view name) const;
   [[nodiscard]] Port_id resolve_sink_port(Node_class node,
@@ -1810,20 +1855,26 @@ private:
 
   std::vector<NodeEntry> node_table;
   std::vector<PinEntry> pin_table;
-  struct Constant_pin_index {
-    bool valid = false;
-    Port_id next_port = 1;
-    Pid tail_pin = 0;
+  // The constant pool: values[port - 1] is the Dlop of the CONST_NODE driver
+  // pin with that port id. std::deque so a `const Dlop*` handed out by
+  // Pin_class::const_value() survives later create_constant calls (push_back
+  // never relocates); it dies only with the body. by_hash / tail_pin are
+  // WRITER-ONLY derived state: touched inside create_constant and rebuilt
+  // there lazily after a load/copy, so concurrent readers never see them.
+  struct Constant_pool {
+    std::deque<Dlop> values;
     ankerl::unordered_dense::map<uint64_t, absl::InlinedVector<Pid, 1>>
-        by_hash;
+        by_hash; // Dlop::hash() -> canonical Pids
+    bool by_hash_valid = false;
+    Pid tail_pin = 0; // canonical Pid of the last CONST pin (append point)
 
     void clear() {
-      valid = false;
-      next_port = 1;
-      tail_pin = 0;
+      values.clear();
       by_hash.clear();
+      by_hash_valid = false;
+      tail_pin = 0;
     }
-  } constant_pin_index_;
+  } const_pool_;
   // Edge-adjacency overflow sets. LAZY: load_body sizes this vector but defers
   // reading the set CONTENTS (the overflow.bin / overflow_<i>.bin files) until
   // an edge is actually traversed — a pure structure walk (body nodes + subnode

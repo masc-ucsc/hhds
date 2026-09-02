@@ -2554,7 +2554,7 @@ void test_get_hier_name_resolved_leaves_EXPECTED() {
   top->get_input_pin("clk").connect_sink(r1.create_sink_pin(1));  // primary input -> r1.a
   auto r2 = top->create_node();
   r2.set_subnode(l_io);
-  top->create_constant().connect_sink(r2.create_sink_pin(1));  // constant -> r2.a
+  top->create_constant(*Dlop::create_integer(1)).connect_sink(r2.create_sink_pin(1));  // constant -> r2.a
 
   std::vector<std::string> names;
   for (auto n : top->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
