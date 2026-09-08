@@ -29,6 +29,17 @@ DeclaredTree create_rooted_tree(const std::shared_ptr<hhds::Forest>& forest, std
 
 }  // namespace
 
+TEST(ForestCorrectness, InvalidNodeIndexContextThrows) {
+  // TESTING makes invariant failures throw; index accessors must let those
+  // exceptions reach the caller instead of terminating through noexcept.
+  const hhds::Tree::Node_class detached;
+  EXPECT_THROW((void)detached.get_flat_index(), std::runtime_error);
+
+  auto tree = hhds::Tree::create();
+  auto root = tree->add_root_node();
+  EXPECT_THROW((void)root.get_hier_index(), std::runtime_error);
+}
+
 TEST(ForestCorrectness, BasicForestOperations) {
   auto forest = hhds::Forest::create();
 
@@ -78,8 +89,8 @@ TEST(ForestCorrectness, SubtreeReferences) {
   auto sub_root  = sub_tree.tree->get_root_node();
 
   auto child1 = main_root.add_child();
-  main_root.add_child();
-  sub_root.add_child();
+  (void)main_root.add_child();
+  (void)sub_root.add_child();
 
   child1.set_subnode(sub_tree.tio);
 
@@ -107,9 +118,9 @@ TEST(ForestCorrectness, TreeTraversalWithSubtrees) {
   auto sub_root  = sub_tree.tree->get_root_node();
 
   auto child1 = main_root.add_child();
-  main_root.add_child();
-  sub_root.add_child();
-  sub_root.add_child();
+  (void)main_root.add_child();
+  (void)sub_root.add_child();
+  (void)sub_root.add_child();
 
   child1.set_subnode(sub_tree.tio);
 

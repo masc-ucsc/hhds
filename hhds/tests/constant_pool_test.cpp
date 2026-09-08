@@ -77,8 +77,8 @@ TEST(ConstantPool, NonConstantsAnswerWithoutAPoolSlot) {
   EXPECT_FALSE(g->get_input_pin("a").is_const()) << "graph input";
   EXPECT_EQ(hhds::Pin_class{}.const_value(), nullptr) << "detached handle";
 
-  EXPECT_THROW(g->create_constant(Dlop{}), std::invalid_argument) << "Invalid is not a value";
-  EXPECT_THROW(g->create_constant(*Dlop::from_pyrope("nil")), std::invalid_argument) << "Nil is not a value";
+  EXPECT_THROW((void)g->create_constant(Dlop{}), std::invalid_argument) << "Invalid is not a value";
+  EXPECT_THROW((void)g->create_constant(*Dlop::from_pyrope("nil")), std::invalid_argument) << "Nil is not a value";
 
   // Every route to a CONST_NODE pin that is not create_constant is refused --
   // port 0 included. A node-as-pin(0) handle on CONST_NODE is not a pool slot

@@ -505,11 +505,11 @@ public:
     // Opaque, hashable keys for use in user-owned maps. Prefer these over using
     // Node_class directly as a map key.
     [[nodiscard]] Tree_class_index get_class_index() const noexcept { return Tree_class_index{current_pos}; }
-    [[nodiscard]] Tree_flat_index  get_flat_index() const noexcept {
+    [[nodiscard]] Tree_flat_index  get_flat_index() const {
       I(tree_ptr != nullptr, "get_flat_index: node is not attached to a tree");
       return Tree_flat_index{tree_ptr->get_tid(), current_pos};
     }
-    [[nodiscard]] Tree_hier_index get_hier_index() const noexcept {
+    [[nodiscard]] Tree_hier_index get_hier_index() const {
       I(context_ == Context::Hier, "get_hier_index: requires hier traversal context");
       return Tree_hier_index{hier_pos_, current_pos};
     }
