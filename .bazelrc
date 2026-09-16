@@ -8,8 +8,14 @@ build --cxxopt="-std=c++23" --cxxopt="-fexceptions" --force_pic --build_tag_filt
 build --action_env=BAZEL_CXXOPTS="-std=c++23"
 # build --action_env=PATH
 
+# Use Command Line Tools without auto-selecting a separate Xcode installation.
+build:macos --xcode_version_config=//tools:command_line_tools
+
 # Set minimum macOS version to support C++23 features (requires 13.3+)
 # Only applies to macOS builds, ignored on other platforms
+# Align Bazel target triples for application code and build-time tools.
+build:macos --macos_minimum_os=13.3
+build:macos --host_macos_minimum_os=13.3
 build:macos --linkopt="-mmacosx-version-min=13.3"
 build:macos --copt="-mmacosx-version-min=13.3"
 build:macos --cxxopt="-mmacosx-version-min=13.3"

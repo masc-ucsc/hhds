@@ -2869,7 +2869,77 @@ void test_grouped_hierarchy_ordering_preserves_node_set() {
 
 }  // namespace
 
+// Node_class::inp_edges() is SORTED BY ASCENDING SINK PORT ID, port 0 first,
+// regardless of the order the sink pins were created in. Consumers rely on it
+// instead of copying the vector to re-sort it (see the contract in graph.hpp).
+void test_inp_edges_sorted_by_sink_port() {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_io("top");
+  auto               g   = gio->create_graph();
+
+  auto sink = g->create_node();
+
+  // Create the sink pins OUT OF ORDER, and connect them out of order too.
+  const hhds::Port_id create_order[] = {7, 2, 9, 1, 4};
+  for (auto port : create_order) {
+    auto src = g->create_node();
+    sink.create_sink_pin(port).connect_driver(src.create_driver_pin(port));
+  }
+  // ...plus the node-as-pin (port 0) sink, created LAST.
+  {
+    auto src = g->create_node();
+    sink.create_sink_pin().connect_driver(src.create_driver_pin());
+  }
+
+  auto edges = sink.inp_edges();
+  TEST_CHECK(edges.size() == 6);
+  hhds::Port_id prev = 0;
+  for (size_t i = 0; i < edges.size(); ++i) {
+    const auto port = edges[i].sink.get_port_id();
+    if (i == 0) {
+      TEST_CHECK(port == 0);  // port-0 edges come first
+    } else {
+      TEST_CHECK(port > prev);
+    }
+    prev = port;
+  }
+  TEST_CHECK(prev == 9);
+}
+
+// try_get_{sink,driver}_pin answers with an INVALID pin instead of asserting.
+void test_try_get_pin_misses_are_invalid() {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_io("top");
+  auto               g   = gio->create_graph();
+
+  auto node = g->create_node();
+  auto s5   = node.create_sink_pin(5);
+  auto d3   = node.create_driver_pin(3);
+
+  TEST_CHECK(node.try_get_sink_pin(5) == s5);
+  TEST_CHECK(node.try_get_driver_pin(3) == d3);
+
+  // Below, between and above the created ports -- the sorted chain has to stop
+  // at the first larger port id in every case.
+  TEST_CHECK(node.try_get_sink_pin(1).is_invalid());
+  TEST_CHECK(node.try_get_sink_pin(4).is_invalid());
+  TEST_CHECK(node.try_get_sink_pin(99).is_invalid());
+  TEST_CHECK(node.try_get_driver_pin(99).is_invalid());
+  TEST_CHECK(node.try_get_sink_pin(hhds::Port_invalid).is_invalid());
+
+  // Port 0 is the node-as-pin and always exists.
+  TEST_CHECK(node.try_get_sink_pin(0).is_valid());
+  TEST_CHECK(node.try_get_driver_pin(0).is_valid());
+
+  // A node with NO pins at all still answers rather than asserting.
+  auto bare = g->create_node();
+  TEST_CHECK(bare.try_get_sink_pin(2).is_invalid());
+  TEST_CHECK(bare.try_get_driver_pin(2).is_invalid());
+}
+
 int main() {
+  test_inp_edges_sorted_by_sink_port();
+  test_try_get_pin_misses_are_invalid();
   test_declaration_api();
   test_subnode_accessors_round_trip_with_set_subnode();
   test_wrapper_pin_connect_api();

@@ -15,4 +15,8 @@ using Port_id = uint32_t;
 
 static constexpr Gid Gid_invalid = static_cast<Gid>(~Gid{0});
 
+// "No such port". The port_id field is Port_bits wide, so the largest value it
+// can hold is reserved as the sentinel and can never name a real pin.
+static constexpr Port_id Port_invalid = (Port_id{1} << Port_bits) - 1;
+
 }  // namespace hhds

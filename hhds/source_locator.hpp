@@ -46,6 +46,7 @@
 #include <atomic>
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -231,11 +232,20 @@ public:
     for (const auto& a : rs.anchors) {
       if (file_content(a.path) == nullptr) {
         if (auto content = src.file_content(a.path); content != nullptr) {
-          set_file_content(a.path, std::move(content));
+          // adopt, NOT set_file_content: the latter shares the bytes but still
+          // re-hashes them and rebuilds the line table from scratch. This runs
+          // once PER IMPORTING UNIT (uPass_tolg::Tolg::build imports each
+          // module's anchors), so re-deriving cost O(units x file_bytes) all
+          // over again -- 1040 modules over one 190 MB source wanted ~66 GB of
+          // line tables and threw bad_alloc inside derive_line_offsets. `src`
+          // already holds the hash and the table that belong to these exact
+          // bytes, so carry all three by pointer.
+          adopt_file_content(a.path, std::move(content), src.file_content_hash(a.path),
+                             src.file_line_offsets_shared(a.path));
         } else {
           if (file_line_offsets(a.path) == nullptr) {
-            if (const auto* offs = src.file_line_offsets(a.path); offs != nullptr) {
-              set_file_line_offsets(a.path, *offs);
+            if (auto offs = src.file_line_offsets_shared(a.path); offs != nullptr) {
+              set_file_line_offsets(a.path, std::move(offs));  // pointer carry, not a copy
             }
           }
           if (file_content_hash(a.path) == 0) {
@@ -381,10 +391,17 @@ public:
   // along. Looks through the base chain like every other lookup.
   [[nodiscard]] const std::vector<uint64_t>* file_line_offsets(std::string_view path) const {
     const File* f = find_file(path);
-    if (f == nullptr || f->line_offsets.empty()) {
+    if (f == nullptr || f->line_offsets == nullptr || f->line_offsets->empty()) {
       return nullptr;
     }
-    return &f->line_offsets;
+    return f->line_offsets.get();
+  }
+
+  // Pointer form, for a carrier that wants to SHARE the table rather than copy
+  // it (see set_file_line_offsets's shared overload).
+  [[nodiscard]] std::shared_ptr<const std::vector<uint64_t>> file_line_offsets_shared(std::string_view path) const {
+    const File* f = find_file(path);
+    return f == nullptr ? nullptr : f->line_offsets;
   }
 
   // Optional per-file metadata. The line-offset table (byte offset of each line
@@ -400,6 +417,10 @@ public:
   }
 
   void set_file_line_offsets(std::string_view path, std::vector<uint64_t> offsets) {
+    files_[intern_file(path)].line_offsets = std::make_shared<const std::vector<uint64_t>>(std::move(offsets));
+  }
+
+  void set_file_line_offsets(std::string_view path, std::shared_ptr<const std::vector<uint64_t>> offsets) {
     files_[intern_file(path)].line_offsets = std::move(offsets);
   }
 
@@ -449,7 +470,7 @@ public:
     assert(file_id < files_.size() && "abort_file: bad file id");
     evict_file_entries(file_id);
     files_[file_id].content_hash = 0;
-    files_[file_id].line_offsets.clear();
+    files_[file_id].line_offsets = nullptr;
     files_[file_id].content = nullptr;
   }
 
@@ -476,7 +497,22 @@ public:
     File& f        = files_[intern_file(path)];
     f.content      = std::move(content);
     f.content_hash = content_hash_of(*f.content);
-    f.line_offsets = derive_line_offsets(*f.content);
+    f.line_offsets = std::make_shared<const std::vector<uint64_t>>(derive_line_offsets(*f.content));
+  }
+
+  // Carry an ALREADY-INGESTED file into this locator by pointer: no byte copy,
+  // no re-hash, no second newline scan. For a producer that mints into many
+  // locators from one source buffer (inou.slang: one Lnast, and so one locator,
+  // per module) this is the difference between O(locators x file_bytes) and
+  // O(file_bytes). `hash` and `offsets` must belong to `content`; pass what a
+  // previous set_file_content on the same bytes produced.
+  void adopt_file_content(std::string_view path, std::shared_ptr<const std::string> content, uint64_t hash,
+                          std::shared_ptr<const std::vector<uint64_t>> offsets) {
+    assert(content != nullptr && "Source_locator::adopt_file_content: null content");
+    File& f        = files_[intern_file(path)];
+    f.content      = std::move(content);
+    f.content_hash = hash;
+    f.line_offsets = std::move(offsets);
   }
 
   // In-memory bytes (own files first, then the base chain); nullptr when this
@@ -520,10 +556,10 @@ public:
 
   [[nodiscard]] std::optional<Line_col> to_line_col(std::string_view path, uint64_t byte) const {
     const File* f = find_file(path);
-    if (f == nullptr || f->line_offsets.empty()) {
+    if (f == nullptr || f->line_offsets == nullptr || f->line_offsets->empty()) {
       return std::nullopt;
     }
-    const auto&  offs = f->line_offsets;
+    const auto&  offs = *f->line_offsets;
     const auto   it   = std::upper_bound(offs.begin(), offs.end(), byte);
     const size_t idx  = static_cast<size_t>(it - offs.begin());
     if (idx == 0) {
@@ -585,9 +621,9 @@ public:
       if (f.content_hash != 0) {
         ofs << "filehash " << fid << " " << f.content_hash << "\n";
       }
-      if (!f.line_offsets.empty()) {
-        ofs << "filelines " << fid << " " << f.line_offsets.size();
-        for (const uint64_t off : f.line_offsets) {
+      if (f.line_offsets != nullptr && !f.line_offsets->empty()) {
+        ofs << "filelines " << fid << " " << f.line_offsets->size();
+        for (const uint64_t off : *f.line_offsets) {
           ofs << " " << off;
         }
         ofs << "\n";
@@ -692,7 +728,12 @@ private:
   struct File {
     std::string                        path;
     uint64_t                           content_hash = 0;
-    std::vector<uint64_t>              line_offsets;  // ascending byte offsets of line starts
+    // Ascending byte offsets of line starts. SHARED, like `content`: one
+    // physical table per file no matter how many locators anchor into it. The
+    // slang reader builds one Lnast -- and so one locator -- PER MODULE, so a
+    // by-value table cost O(modules x file_bytes): 1040 modules over one
+    // concatenated 190 MB Verilog wanted ~46 GB of line tables alone.
+    std::shared_ptr<const std::vector<uint64_t>> line_offsets;
     // In-memory source bytes (never persisted). shared_ptr: cross-locator
     // carries are pointer copies, and views into *content outlive clear().
     std::shared_ptr<const std::string> content;
@@ -702,11 +743,27 @@ private:
   // to_line_col binary-searches.
   [[nodiscard]] static std::vector<uint64_t> derive_line_offsets(std::string_view content) {
     std::vector<uint64_t> offsets;
+    // One growth instead of ~log2(lines) reallocations-and-copies: a 190 MB
+    // source has 5.6 M lines, so the unreserved push_back loop moved ~100 MB of
+    // table around before settling. ~24 bytes/line is a deliberate
+    // OVER-estimate for source text (a short-lined file just leaves the tail
+    // unused; a long-lined one grows once).
+    offsets.reserve(content.size() / 24 + 16);
     offsets.push_back(0);
-    for (size_t i = 0; i < content.size(); ++i) {
-      if (content[i] == '\n') {
-        offsets.push_back(i + 1);
+    // memchr is vectorized; the byte-at-a-time loop was a second full pass over
+    // the file for every ingest.
+    const char* const base = content.data();
+    const char*       p    = base;
+    size_t            left = content.size();
+    while (left != 0) {
+      const auto* nl = static_cast<const char*>(std::memchr(p, '\n', left));
+      if (nl == nullptr) {
+        break;
       }
+      const size_t idx = static_cast<size_t>(nl - base) + 1;
+      offsets.push_back(idx);
+      left -= static_cast<size_t>(nl - p) + 1;
+      p     = nl + 1;
     }
     return offsets;
   }
@@ -1109,8 +1166,7 @@ private:
         if (!(ss >> fid >> count) || !valid_fid(fid)) {
           return false;
         }
-        auto& offs = files_[fid].line_offsets;
-        offs.clear();
+        std::vector<uint64_t> offs;
         offs.reserve(std::min(count, kReserveCap));
         for (size_t i = 0; i < count; ++i) {
           uint64_t off = 0;
@@ -1119,6 +1175,7 @@ private:
           }
           offs.push_back(off);
         }
+        files_[fid].line_offsets = std::make_shared<const std::vector<uint64_t>>(std::move(offs));
       } else if (line.rfind("span ", 0) == 0) {
         std::istringstream ss(line.substr(5));
         SourceId           id = 0;
@@ -1209,8 +1266,9 @@ private:
         if (mine.content_hash == 0 && f.content_hash != 0) {
           mine.content_hash = f.content_hash;
         }
-        if (mine.line_offsets.empty() && !f.line_offsets.empty()) {
-          mine.line_offsets = f.line_offsets;
+        if ((mine.line_offsets == nullptr || mine.line_offsets->empty()) && f.line_offsets != nullptr
+            && !f.line_offsets->empty()) {
+          mine.line_offsets = f.line_offsets;  // pointer copy
         }
         if (mine.content == nullptr && f.content != nullptr) {
           mine.content = f.content;

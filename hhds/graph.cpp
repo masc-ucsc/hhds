@@ -3454,6 +3454,28 @@ auto Node_class::get_sink_pin(std::string_view name) const -> Pin_class {
   return get_sink_pin(graph_->resolve_sink_port(*this, name));
 }
 
+auto Node_class::try_get_driver_pin(Port_id port_id) const -> Pin_class {
+  assert(graph_ != nullptr && "try_get_driver_pin: node is not attached to a graph");
+  const Pid pid = graph_->find_pin_or_zero(get_debug_nid(), port_id, /*driver=*/true);
+  if (pid == 0) {
+    return {};
+  }
+  Pin_class pin(graph_, pid);
+  inherit_pin_context(pin, *this);
+  return pin;
+}
+
+auto Node_class::try_get_sink_pin(Port_id port_id) const -> Pin_class {
+  assert(graph_ != nullptr && "try_get_sink_pin: node is not attached to a graph");
+  const Pid pid = graph_->find_pin_or_zero(get_debug_nid(), port_id, /*driver=*/false);
+  if (pid == 0) {
+    return {};
+  }
+  Pin_class pin(graph_, pid);
+  inherit_pin_context(pin, *this);
+  return pin;
+}
+
 void Node_class::del_node() const {
   assert(graph_ != nullptr && "del_node: node is not attached to a graph");
   graph_->delete_node(raw_nid);
@@ -3572,9 +3594,10 @@ void Graph::set_subnode(Nid nid, Gid gid) {
     subnode_tree_pos_.emplace(nid, child_pos);
   }
 
-  // Stamp node type so the forward iterator can O(1) tell whether this
-  // subnode is a loop_break boundary (a cut-point for forward/backward
-  // ordering). Bit 0 of Type encodes is_loop_break (odd == loop_break).
+  // Stamp bit 0 of the node type so the forward iterator can O(1) tell whether
+  // this subnode is a loop_break boundary (a cut-point for forward/backward
+  // ordering). ONLY bit 0 is touched: the caller owns the remaining bits (its
+  // own op encoding), and rewriting the whole Type here used to clobber it.
   //
   // The order is computed per-body from local edges and never descends, so a
   // sub-instance of a sequential module (inputs -> internal flop -> outputs)
@@ -3617,7 +3640,9 @@ void Graph::set_subnode(Nid nid, Gid gid) {
         }
       }
     }
-    ref_node(nid)->set_type(has_loop_break ? static_cast<Type>(3) : static_cast<Type>(2));
+    auto*      entry = ref_node(nid);
+    const Type kept  = static_cast<Type>(entry->get_type() & ~static_cast<Type>(1));
+    entry->set_type(static_cast<Type>(kept | (has_loop_break ? 1u : 0u)));
   }
 
   invalidate_traversal_caches();

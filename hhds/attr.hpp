@@ -32,12 +32,36 @@ namespace hhds {
 struct flat_storage {};
 struct hier_storage {};
 
+// PRESENCE-ONLY attribute payload. A tag spelled
+//
+//   struct my_flag_t { using value_type = hhds::flag; using storage = hhds::flat_storage; };
+//
+// stores nothing per object: the key's membership IS the whole value, and the
+// backing store is a bitset over the flat key. Its API is set() (no argument),
+// del() and has(); get()/try_get()/get_or() are rejected at compile time
+// because there is no value to hand back. Use it wherever the alternative is a
+// struct holding a dummy byte just to satisfy the Attribute concept.
+struct flag {
+  [[nodiscard]] constexpr bool operator==(const flag&) const noexcept = default;
+};
+
 template <class Tag>
 concept Attribute = requires {
   typename Tag::value_type;
   typename Tag::storage;
   requires std::is_same_v<typename Tag::storage, flat_storage> || std::is_same_v<typename Tag::storage, hier_storage>;
 };
+
+template <Attribute Tag>
+[[nodiscard]] constexpr bool attr_is_flag() noexcept {
+  if constexpr (std::is_same_v<typename Tag::value_type, flag>) {
+    static_assert(std::is_same_v<typename Tag::storage, flat_storage>,
+                  "a flag attribute is keyed by the flat key; hier_storage flags are not supported");
+    return true;
+  } else {
+    return false;
+  }
+}
 
 // Optional per-tag layout policy (`using layout = hhds::dense_layout;`).
 // Default is sparse (hash map). dense_layout backs the store with a plain
@@ -70,6 +94,9 @@ using attr_layout_t = typename attr_layout<Tag>::type;
 
 template <Attribute Tag>
 [[nodiscard]] constexpr bool attr_is_dense() noexcept {
+  if constexpr (attr_is_flag<Tag>()) {
+    return false;  // a flag has its own bitset store; it needs no sentinel value
+  }
   using Layout = attr_layout_t<Tag>;
   static_assert(std::is_same_v<Layout, sparse_layout> || std::is_same_v<Layout, dense_layout>,
                 "attribute Tag::layout must be hhds::sparse_layout or hhds::dense_layout");
@@ -193,7 +220,10 @@ private:
 
 template <typename T>
 void write_value(std::ostream& os, const T& value) {
-  if constexpr (std::is_same_v<T, std::string>) {
+  if constexpr (std::is_same_v<T, flag>) {
+    (void)os;
+    (void)value;  // presence-only: the key already carries the whole value
+  } else if constexpr (std::is_same_v<T, std::string>) {
     const uint64_t size = value.size();
     os.write(reinterpret_cast<const char*>(&size), sizeof(size));
     if (size != 0) {
@@ -208,7 +238,10 @@ void write_value(std::ostream& os, const T& value) {
 
 template <typename T>
 T read_value(std::istream& is) {
-  if constexpr (std::is_same_v<T, std::string>) {
+  if constexpr (std::is_same_v<T, flag>) {
+    (void)is;
+    return T{};
+  } else if constexpr (std::is_same_v<T, std::string>) {
     uint64_t size = 0;
     is.read(reinterpret_cast<char*>(&size), sizeof(size));
     std::string value(size, '\0');
@@ -224,6 +257,126 @@ T read_value(std::istream& is) {
     static_assert(dependent_false<T>::value, "Attribute persistence supports only std::string and trivially copyable values");
   }
 }
+
+// Bitset-backed store for `flag` attributes: one BIT per flat key, and the bit
+// itself is the value. Exposes the same subset of the unordered_map surface
+// Attr_store_impl and AttrRef use, so nothing above it needs to know which of
+// the three stores a tag resolved to. Iterators yield proxy entries by value
+// (bind with `auto&&` / `const auto&`, never `auto&`).
+class Flag_attr_map {
+public:
+  using key_type    = Attr_key;
+  using mapped_type = flag;
+
+  class const_iterator {
+  public:
+    struct entry {
+      Attr_key first;
+      flag     second;
+    };
+
+    struct arrow_proxy {
+      entry  value;
+      entry* operator->() noexcept { return &value; }
+    };
+
+    const_iterator() = default;
+    const_iterator(const std::vector<uint64_t>* words, size_t pos, size_t bit_end) : words_(words), pos_(pos), end_(bit_end) {
+      skip_absent();
+    }
+
+    [[nodiscard]] entry       operator*() const noexcept { return entry{static_cast<Attr_key>(pos_), flag{}}; }
+    [[nodiscard]] arrow_proxy operator->() const noexcept { return arrow_proxy{**this}; }
+
+    const_iterator& operator++() noexcept {
+      ++pos_;
+      skip_absent();
+      return *this;
+    }
+
+    [[nodiscard]] bool operator==(const const_iterator& other) const noexcept { return pos_ == other.pos_; }
+
+  private:
+    void skip_absent() noexcept {
+      while (pos_ < end_ && !test_(pos_)) {
+        ++pos_;
+      }
+      if (pos_ > end_) {
+        pos_ = end_;
+      }
+    }
+    [[nodiscard]] bool test_(size_t bit) const noexcept {
+      return words_ != nullptr && ((*words_)[bit / 64U] >> (bit % 64U) & 1U) != 0U;
+    }
+
+    const std::vector<uint64_t>* words_ = nullptr;
+    size_t                       pos_   = 0;
+    size_t                       end_   = 0;
+  };
+
+  using iterator = const_iterator;
+
+  [[nodiscard]] const_iterator begin() const noexcept { return const_iterator(&words_, 0, bit_end()); }
+  [[nodiscard]] const_iterator end() const noexcept { return const_iterator(&words_, bit_end(), bit_end()); }
+
+  [[nodiscard]] const_iterator find(Attr_key key) const noexcept {
+    if (test(key)) {
+      return const_iterator(&words_, static_cast<size_t>(key), bit_end());
+    }
+    return end();
+  }
+
+  [[nodiscard]] bool test(Attr_key key) const noexcept {
+    const size_t word = static_cast<size_t>(key) / 64U;
+    return word < words_.size() && ((words_[word] >> (static_cast<size_t>(key) % 64U)) & 1U) != 0U;
+  }
+
+  void set(Attr_key key) {
+    const size_t word = static_cast<size_t>(key) / 64U;
+    if (word >= words_.size()) {
+      words_.resize(word + 1, 0);
+    }
+    const uint64_t before  = words_[word];
+    words_[word]          |= uint64_t{1} << (static_cast<size_t>(key) % 64U);
+    if (before != words_[word]) {
+      ++count_;
+    }
+  }
+
+  // Parity with the map stores used by Attr_store_impl::load_entries.
+  template <typename V>
+  void emplace(Attr_key key, V&&) {
+    set(key);
+  }
+
+  size_t erase(Attr_key key) {
+    const size_t word = static_cast<size_t>(key) / 64U;
+    if (word >= words_.size()) {
+      return 0;
+    }
+    const uint64_t before  = words_[word];
+    words_[word]          &= ~(uint64_t{1} << (static_cast<size_t>(key) % 64U));
+    if (before == words_[word]) {
+      return 0;
+    }
+    --count_;
+    return 1;
+  }
+
+  void clear() noexcept {
+    words_.clear();
+    count_ = 0;
+  }
+
+  [[nodiscard]] size_t size() const noexcept { return count_; }
+  [[nodiscard]] bool   empty() const noexcept { return count_ == 0; }
+
+private:
+  [[nodiscard]] size_t bit_end() const noexcept { return words_.size() * 64U; }
+
+  std::vector<uint64_t> words_;
+  size_t                count_ = 0;
+};
 
 // Vector-backed store for dense_layout attributes. value_type{} marks an
 // absent entry (see the dense_layout contract above), so presence needs no
@@ -434,12 +587,13 @@ public:
 // erase-during-iteration loop relies on erase(it) returning the next iterator).
 template <Attribute Tag>
 using attr_map_t
-    = std::conditional_t<attr_is_dense<Tag>(), Dense_attr_map<typename Tag::value_type>,
+    = std::conditional_t<attr_is_flag<Tag>(), Flag_attr_map,
+      std::conditional_t<attr_is_dense<Tag>(), Dense_attr_map<typename Tag::value_type>,
                          std::conditional_t<std::is_same_v<typename Tag::storage, flat_storage>,
                                             std::conditional_t<std::is_trivially_copyable_v<typename Tag::value_type>,
                                                                absl::flat_hash_map<Attr_key, typename Tag::value_type>,
                                                                std::unordered_map<Attr_key, typename Tag::value_type>>,
-                                            std::unordered_map<Hier_attr_key, typename Tag::value_type, Hier_attr_key_hash>>>;
+                                            std::unordered_map<Hier_attr_key, typename Tag::value_type, Hier_attr_key_hash>>>>;
 
 template <Attribute Tag>
 class Attr_store_impl final : public Attr_store_base {
@@ -665,6 +819,8 @@ public:
   [[nodiscard]] value_type         get_or(value_type fallback) const;
   void                             set(const value_type& value);
   void                             set(value_type&& value);
+  // Presence-only form: the whole API of a `flag` tag alongside del()/has().
+  void                             set();
   void                             del();
 
 private:
@@ -1009,6 +1165,7 @@ inline bool AttrRef<Tag>::has() const {
 
 template <Attribute Tag>
 inline attr_result_t<Tag> AttrRef<Tag>::get() const {
+  static_assert(!attr_is_flag<Tag>(), "a flag attribute stores no value: use has()");
   const auto* map = host_ != nullptr ? host_->find_attr_store(Tag{}) : nullptr;
   assert(map != nullptr && "AttrRef::get: attribute store is not registered");
   const auto it = map->find(key());
@@ -1022,6 +1179,7 @@ inline attr_result_t<Tag> AttrRef<Tag>::get() const {
 
 template <Attribute Tag>
 inline const typename AttrRef<Tag>::value_type* AttrRef<Tag>::try_get() const {
+  static_assert(!attr_is_flag<Tag>(), "a flag attribute stores no value: use has()");
   const auto* map = host_ != nullptr ? host_->find_attr_store(Tag{}) : nullptr;
   if (map == nullptr) {
     return nullptr;
@@ -1032,12 +1190,23 @@ inline const typename AttrRef<Tag>::value_type* AttrRef<Tag>::try_get() const {
 
 template <Attribute Tag>
 inline typename AttrRef<Tag>::value_type AttrRef<Tag>::get_or(typename AttrRef<Tag>::value_type fallback) const {
+  static_assert(!attr_is_flag<Tag>(), "a flag attribute stores no value: use has()");
   const auto* p = try_get();
   return p != nullptr ? *p : std::move(fallback);
 }
 
 template <Attribute Tag>
+inline void AttrRef<Tag>::set() {
+  static_assert(attr_is_flag<Tag>(), "set() with no value is the flag-attribute form; pass the value otherwise");
+  auto& map = host_->attr_store(Tag{});
+  host_->attr_debug_check_key_write();
+  map.set(key());
+  host_->attr_note_modified();
+}
+
+template <Attribute Tag>
 inline void AttrRef<Tag>::set(const value_type& value) {
+  static_assert(!attr_is_flag<Tag>(), "a flag attribute stores no value: use set()");
   if constexpr (attr_is_dense<Tag>()) {
     assert(!(value == value_type{}) && "AttrRef::set: dense_layout reserves value_type{} as not-present; use del()");
   }
@@ -1049,6 +1218,7 @@ inline void AttrRef<Tag>::set(const value_type& value) {
 
 template <Attribute Tag>
 inline void AttrRef<Tag>::set(value_type&& value) {
+  static_assert(!attr_is_flag<Tag>(), "a flag attribute stores no value: use set()");
   if constexpr (attr_is_dense<Tag>()) {
     assert(!(value == value_type{}) && "AttrRef::set: dense_layout reserves value_type{} as not-present; use del()");
   }

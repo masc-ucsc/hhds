@@ -352,7 +352,8 @@ public:
   [[nodiscard]] OutEdgeRange out_edges() const;
   // inp_edges() stays eager: a sink's fan-in is small (usually a single
   // driver), so the heap-free InlinedVector is the right shape; [4] inline
-  // covers it.
+  // covers it. On a Pin_class every edge lands on this one sink pin, so there
+  // is nothing to order; see Node_class::inp_edges for the node-level contract.
   [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges() const;
   // Drivers feeding this sink pin (the far end of each inp edge). A sink's
   // fan-in is small — usually a single driver in a well-formed net — so this
@@ -524,11 +525,29 @@ public:
   [[nodiscard]] Pin_class get_driver_pin(std::string_view name) const;
   [[nodiscard]] Pin_class get_sink_pin(Port_id port_id) const;
   [[nodiscard]] Pin_class get_sink_pin(std::string_view name) const;
+  // "get it if it exists": an INVALID Pin_class when the pin was never created,
+  // where get_{driver,sink}_pin asserts. The pin chain is sorted by port id, so
+  // the miss is detected at the first larger port id -- same cost as the hit,
+  // and far cheaper than the inp_edges() walk callers used to emulate this with.
+  [[nodiscard]] Pin_class try_get_driver_pin(Port_id port_id) const;
+  [[nodiscard]] Pin_class try_get_sink_pin(Port_id port_id) const;
   void del_node() const;
   // Lazy, auto-scaling out-edge view (see OutEdgeRange / Pin_class::out_edges).
   // In Class/Flat context this walks live storage on demand; in Hier context it
   // resolves cross-boundary edges (materialized) behind the same range type.
   [[nodiscard]] OutEdgeRange out_edges() const;
+  // CONTRACT: the returned edges are SORTED BY ASCENDING SINK PORT ID, with the
+  // port-0 edges (the node-as-pin sink) first. This is not incidental -- the
+  // per-node pin chain is kept sorted by port id at insertion
+  // (find_or_create_pin), and inp_edges_local emits the port-0 edges and then
+  // walks that chain in order; inp_edges_hier maps the local list positionally.
+  // Consumers that need operands in cell-pin order (a Sum's `as` before its
+  // `bs`, a Hotmux's (control, value) pairs) may rely on it directly instead of
+  // copying the vector to re-sort it.
+  //
+  // NOT a contract: the relative order of SEVERAL DRIVERS OF ONE SINK PIN (a
+  // Sum's `as` fed by three nodes). That is edge storage order; a consumer that
+  // needs determinism there must still impose its own.
   [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges() const;
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> out_pins() const;
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> inp_pins() const;
@@ -1554,13 +1573,11 @@ public:
   // stored verbatim -- any canonicalization (width, Boolean vs Integer) is
   // the caller's policy.
   //
-  // Dedup is on the stored REPRESENTATION, not on numeric equality: the bucket
-  // is Dlop::hash(), which mixes in `size`, so two values that same_repr each
-  // other across different word counts (hlop sign-extends there) land in
-  // different buckets and get two pins. Every Dlop hlop hands back is already
-  // normalized to its minimal size, so this only bites a caller that builds a
-  // widened Dlop by hand; call Dlop::normalize() first if you need
-  // value-level, not representation-level, interning.
+  // Dedup is on the stored REPRESENTATION: the bucket is Dlop::hash(), which
+  // is WIDTH-CANONICAL (it hashes the minimal word count), so a value and its
+  // sign-extended wider twin -- same_repr equals -- share a bucket and a pin.
+  // What still separates two entries is the TYPE TAG: a Boolean is stored
+  // verbatim and never folds into the Integer with the same bits.
   //
   // Invalid and Nil are not values and are refused (std::invalid_argument): a
   // stored Invalid would make is_known_false() vacuously true. Structural
@@ -2696,6 +2713,32 @@ public:
   }
   [[nodiscard]] const std::vector<DeclaredIoPin> &get_output_pin_decls() const {
     return output_pin_decls_;
+  }
+
+  struct DeclaredIo {
+    const DeclaredIoPin *decl = nullptr;
+    bool is_input = false;
+  };
+  // Inputs and outputs MERGED and ordered by ascending port_id -- the Verilog
+  // module-header / positional-argument order. Every emitter used to build and
+  // sort this list itself; the two decl vectors are separate storage, so the
+  // merge is the only thing that genuinely needs an order here.
+  //
+  // The pointers alias the decl vectors, so they are invalidated by a later
+  // add_input / add_output. Consume the result before declaring more IO.
+  [[nodiscard]] std::vector<DeclaredIo> decls_in_port_order() const {
+    std::vector<DeclaredIo> out;
+    out.reserve(input_pin_decls_.size() + output_pin_decls_.size());
+    for (const auto &d : input_pin_decls_) {
+      out.push_back({&d, true});
+    }
+    for (const auto &d : output_pin_decls_) {
+      out.push_back({&d, false});
+    }
+    std::sort(out.begin(), out.end(), [](const DeclaredIo &a, const DeclaredIo &b) {
+      return a.decl->port_id < b.decl->port_id;
+    });
+    return out;
   }
 
   friend class Graph;

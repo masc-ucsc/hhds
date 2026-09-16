@@ -20,6 +20,7 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -203,4 +204,93 @@ TEST(IndexContract, PinIndexesUseSameKeySpaceAsNodes) {
   mixed[f.bottom_body_node.get_class_index()] = "node";
   mixed[bottom_out.get_class_index()]         = "pin";
   EXPECT_EQ(mixed.size(), 2u);
+}
+
+// ---------------------------------------------------------------------------
+// Presence-only (flag) attributes: hhds::flag stores ONE BIT per flat key, and
+// the bit IS the value. set() takes no argument; there is no get().
+// ---------------------------------------------------------------------------
+struct contract_flag_t {
+  using value_type = hhds::flag;
+  using storage    = hhds::flat_storage;
+};
+
+static_assert(hhds::attr_is_flag<contract_flag_t>());
+static_assert(!hhds::attr_is_dense<contract_flag_t>());
+static_assert(std::is_same_v<hhds::detail::attr_map_t<contract_flag_t>, hhds::detail::Flag_attr_map>);
+
+TEST(FlagAttrContract, SetHasDel) {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_io("top");
+  auto               g   = gio->create_graph();
+
+  auto n1  = g->create_node();
+  auto n2  = g->create_node();
+  auto pin = n1.create_driver_pin(3);
+
+  EXPECT_FALSE(n1.attr(contract_flag_t{}).has());
+  EXPECT_FALSE(pin.attr(contract_flag_t{}).has());
+
+  n1.attr(contract_flag_t{}).set();
+  pin.attr(contract_flag_t{}).set();
+
+  EXPECT_TRUE(n1.attr(contract_flag_t{}).has());
+  EXPECT_TRUE(pin.attr(contract_flag_t{}).has());
+  EXPECT_FALSE(n2.attr(contract_flag_t{}).has());
+
+  // Idempotent: a second set() does not double-count the entry.
+  n1.attr(contract_flag_t{}).set();
+  EXPECT_EQ(g->attr_store(contract_flag_t{}).size(), 2u);
+
+  n1.attr(contract_flag_t{}).del();
+  EXPECT_FALSE(n1.attr(contract_flag_t{}).has());
+  EXPECT_TRUE(pin.attr(contract_flag_t{}).has());
+  EXPECT_EQ(g->attr_store(contract_flag_t{}).size(), 1u);
+
+  // Deleting an absent key is a no-op, not an underflow.
+  n2.attr(contract_flag_t{}).del();
+  EXPECT_EQ(g->attr_store(contract_flag_t{}).size(), 1u);
+}
+
+TEST(FlagAttrContract, IterationAndPersistenceRoundTrip) {
+  hhds::GraphLibrary lib;
+  auto               gio = lib.create_io("top");
+  auto               g   = gio->create_graph();
+
+  std::vector<hhds::Node> marked;
+  for (int i = 0; i < 200; ++i) {
+    auto n = g->create_node();
+    if (i % 3 == 0) {
+      n.attr(contract_flag_t{}).set();
+      marked.push_back(n);
+    }
+  }
+  EXPECT_EQ(g->attr_store(contract_flag_t{}).size(), marked.size());
+
+  size_t walked = 0;
+  for (const auto& entry : g->attr_store(contract_flag_t{})) {
+    (void)entry.first;
+    ++walked;
+  }
+  EXPECT_EQ(walked, marked.size());
+
+  // Persistence: save the library and read it back in a fresh one. The flag
+  // store writes only the keys (write_value<flag> is a no-op), so the reload
+  // has to reconstruct presence from them alone.
+  namespace fs    = std::filesystem;
+  const auto base = fs::temp_directory_path() / "hhds_flag_attr_contract";
+  fs::remove_all(base);
+  const auto gid = gio->get_gid();
+  g.reset();  // publish the body before saving
+  lib.save(base.string());
+
+  hhds::GraphLibrary lib2;
+  lib2.load(base.string());
+  auto g2 = lib2.get_graph(gid);
+  ASSERT_TRUE(g2 != nullptr);
+  EXPECT_EQ(g2->attr_store(contract_flag_t{}).size(), marked.size());
+  for (const auto& n : marked) {
+    EXPECT_TRUE(g2->attr_store(contract_flag_t{}).test(hhds::make_node_attr_key(n.get_debug_nid() & ~static_cast<hhds::Nid>(3))));
+  }
+  fs::remove_all(base);
 }

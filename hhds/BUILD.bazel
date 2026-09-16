@@ -49,6 +49,7 @@ cc_library(
         "tree.hpp",
         "tree_print.hpp",
         "graph_sizing.hpp",
+        "hash_mix.hpp",
         "rapidhash.h",
         "serial_prune.hpp",
         "source_excerpt.hpp",
@@ -89,7 +90,9 @@ cc_library(
         "graph.hpp",
         "graph_sizing.hpp",
         "hash_set3.hpp",
+        "hash_mix.hpp",
         "index.hpp",
+        "node_hash.hpp",
         "rapidhash.h",
         "serial_prune.hpp",
         "source_excerpt.hpp",
@@ -226,6 +229,12 @@ cc_test(
         ":core",  # Forest::save/load for the shared source-map test
         ":graph",
     ],
+)
+
+cc_test(
+    name = "node_hash_test",
+    srcs = ["tests/node_hash_test.cpp"],
+    deps = [":graph"],
 )
 
 cc_test(
