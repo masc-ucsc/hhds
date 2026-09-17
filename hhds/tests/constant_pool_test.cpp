@@ -150,9 +150,11 @@ TEST(ConstantPool, CopiedWithTheBody) {
   auto g2 = dst.find_io("m")->get_graph();
   EXPECT_EQ(g2->constant_count(), 2u);
   for (auto node : g2->body().nodes()) {
-    for (const auto& e : node.inp_edges()) {
-      ASSERT_TRUE(e.driver.is_const());
-      EXPECT_NE(e.driver.const_value(), nullptr);
+    for (auto sink : node.inp_sorted_pins()) {
+      for (const auto& driver : sink.get_driver_pins()) {
+        ASSERT_TRUE(driver.is_const());
+        EXPECT_NE(driver.const_value(), nullptr);
+      }
     }
   }
   EXPECT_EQ(g2->create_constant(integer(3)).get_port_id(), 2u) << "the copied pool dedups";

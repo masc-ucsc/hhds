@@ -2,17 +2,18 @@
 //
 // HHDS graph public-API contract tests.
 //
-// These tests mirror the graph examples in sample.md. They serve two purposes:
+// These tests illustrate the graph API documented in docs/iterators.md:
 //   1. Freeze the public API surface that downstream users depend on.
 //   2. Act as a short, runnable tutorial for new users.
 //
 // Only hhds public types (GraphLibrary, GraphIO, Graph, Node, Pin, attrs) are
-// exercised. Internal types (Nid, Pid, raw storage entries) are not touched.
+// exercised. IDs identify expected nodes; raw storage entries are not touched.
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,6 +21,7 @@
 #include "hhds/attr.hpp"
 #include "hhds/attrs/name.hpp"
 #include "hhds/graph.hpp"
+#include "hhds/node_hash.hpp"
 
 namespace contract_attrs {
 
@@ -117,11 +119,11 @@ TEST(GraphApiContract, BasicsFlatAttributesForwardTraversal) {
 TEST(GraphApiContract, TraversalScopes) {
   hhds::GraphLibrary glib;
 
-  auto leaf_io = glib.create_io("leaf_fast");
+  auto leaf_io = glib.create_io("leaf_scope");
   auto leaf    = leaf_io->create_graph();
   auto leaf_n  = leaf->create_node();
 
-  auto top_io = glib.create_io("top_fast");
+  auto top_io = glib.create_io("top_scope");
   auto top    = top_io->create_graph();
   auto inst1  = top->create_node();
   auto inst2  = top->create_node();
@@ -183,14 +185,14 @@ TEST(GraphApiContract, DefaultTraversalsSkipBuiltinNodes) {
   // by master-node identity alone.
   auto k = g->create_constant(*Dlop::create_integer(1));
   EXPECT_EQ(k.get_master_node().get_debug_nid(), hhds::Graph::CONST_NODE);
-  k.connect_sink(n1.create_sink_pin());
+  k.connect_sink(n1.create_sink_pin(1));
 
   const auto forward = class_order(g->body().nodes(hhds::Node_order::forward));
-  const auto fast    = class_order(g->body().nodes());
+  const auto storage = class_order(g->body().nodes());
 
   ASSERT_EQ(forward.size(), 2u);
-  ASSERT_EQ(fast.size(), 2u);
-  EXPECT_EQ(forward, fast);
+  ASSERT_EQ(storage.size(), 2u);
+  EXPECT_EQ(forward, storage);
   EXPECT_EQ(forward.front(), n1.get_debug_nid());
 
   for (auto nid : forward) {
@@ -201,7 +203,7 @@ TEST(GraphApiContract, DefaultTraversalsSkipBuiltinNodes) {
 }
 
 // Built-in node accessors are direct singletons.
-// To inspect their connectivity, use the standard out_edges() / inp_edges()
+// To inspect their connectivity, use out_edges() / inp_sorted_pins()
 // from the returned Node_class.
 TEST(GraphApiContract, BuiltinNodeAccessors) {
   hhds::GraphLibrary glib;
@@ -219,11 +221,11 @@ TEST(GraphApiContract, BuiltinNodeAccessors) {
   g->get_input_pin("in").connect_sink(n.create_sink_pin());
   n.create_driver_pin().connect_sink(g->get_output_pin("out"));
   auto k = g->create_constant(*Dlop::create_integer(1));
-  k.connect_sink(n.create_sink_pin());
+  k.connect_sink(n.create_sink_pin(1));
 
-  // Connectivity is inspectable through the standard edge API.
+  // Connected-pin readers include the built-in nodes and their port-0 pins.
   EXPECT_EQ(g->get_input_node().out_edges().size(), 1u);
-  EXPECT_EQ(g->get_output_node().inp_edges().size(), 1u);
+  EXPECT_EQ(g->get_output_node().inp_sorted_pins().size(), 1u);
   EXPECT_EQ(g->get_constant_node().out_edges().size(), 1u);
 }
 
@@ -263,10 +265,10 @@ TEST(GraphApiContract, DefinitionStorageAndForwardVisitSameNodes) {
   inst2.set_subnode(leaf_io);
 
   auto forward = flat_order(top->definitions().nodes(hhds::Node_order::forward));
-  auto fast    = flat_order(top->definitions().nodes());
+  auto storage = flat_order(top->definitions().nodes());
   std::sort(forward.begin(), forward.end());
-  std::sort(fast.begin(), fast.end());
-  EXPECT_EQ(forward, fast);
+  std::sort(storage.begin(), storage.end());
+  EXPECT_EQ(forward, storage);
 }
 
 TEST(GraphApiContract, PinConnectPinApi) {
@@ -288,10 +290,10 @@ TEST(GraphApiContract, PinConnectPinApi) {
   dst0_in.connect_driver(src0_out);
   src1_out.connect_sink(dst1_in);
 
-  auto dst0_inp = dst0_in.inp_edges();
+  auto dst0_inp = dst0_in.get_driver_pins();
   ASSERT_EQ(dst0_inp.size(), 1u);
-  EXPECT_EQ(dst0_inp[0].driver, src0_out);
-  EXPECT_EQ(dst0_inp[0].sink, dst0_in);
+  EXPECT_EQ(dst0_inp[0], src0_out);
+  EXPECT_EQ(dst0_in.get_driver_pin(), src0_out);
 
   auto src1_outp = src1_out.out_edges();
   ASSERT_EQ(src1_outp.size(), 1u);
@@ -299,6 +301,160 @@ TEST(GraphApiContract, PinConnectPinApi) {
   const auto src1_edge = src1_outp.front();
   EXPECT_EQ(src1_edge.driver, src1_out);
   EXPECT_EQ(src1_edge.sink, dst1_in);
+  EXPECT_TRUE(dst0_in.has_driver());
+  EXPECT_TRUE(src0_out.has_sink());
+  EXPECT_EQ(src0_out.get_sink_pin(), dst0_in);
+
+  dst0_in.del_sink();
+  EXPECT_FALSE(dst0_in.has_driver());
+  EXPECT_TRUE(dst0_in.get_driver_pin().is_invalid());
+  EXPECT_FALSE(src0_out.has_sink());
+  EXPECT_TRUE(src0_out.get_sink_pin().is_invalid());
+
+  // A driver may fan out to several sinks; the singular convenience reader
+  // is only valid for zero or one sink.
+  src1_out.connect_sink(dst0_in);
+  EXPECT_EQ(src1.out_sorted_pins().size(), 1u);
+  EXPECT_EQ(src1_out.out_edges().size(), 2u);
+#ifndef NDEBUG
+  EXPECT_DEATH((void)src1_out.get_sink_pin(), "more than one sink");
+#else
+  EXPECT_TRUE(src1_out.get_sink_pin().is_invalid());
+#endif
+}
+
+TEST(GraphApiContract, SortedPinsAreConnectedOrderedViewsWithMutationSnapshots) {
+  hhds::GraphLibrary           lib;
+  auto                         g    = lib.create_io("pins")->create_graph();
+  auto                         node = g->create_node();
+  std::vector<hhds::Pin_class> upstream;
+  // Insertion order does not determine traversal order. Each port is used
+  // in both directions; the direction flags must not hide either handle.
+  for (hhds::Port_id port : {7, 0, 3}) {
+    auto driver = g->create_node().create_driver_pin();
+    node.create_sink_pin(port).connect_driver(driver);
+    upstream.push_back(driver);
+    node.create_driver_pin(port).connect_sink(g->create_node().create_sink_pin());
+  }
+  auto unused_sink   = node.create_sink_pin(2);
+  auto unused_driver = node.create_driver_pin(5);
+  EXPECT_TRUE(unused_sink.is_valid());
+  EXPECT_TRUE(unused_driver.is_valid());
+
+  std::vector<hhds::Port_id> inputs;
+  // An iterator owns its cursor even after the temporary range disappears.
+  auto                       it = node.inp_sorted_pins().begin();
+  for (; it != node.inp_sorted_pins().end(); ++it) {
+    const auto sink = *it;
+    EXPECT_TRUE(sink.is_sink());
+    EXPECT_TRUE(sink.get_driver_pin().is_valid());
+    inputs.push_back(sink.get_port_id());
+  }
+  std::vector<hhds::Port_id> outputs;
+  for (auto driver : node.out_sorted_pins()) {
+    EXPECT_TRUE(driver.is_driver());
+    EXPECT_TRUE(driver.get_sink_pin().is_valid());
+    outputs.push_back(driver.get_port_id());
+  }
+  EXPECT_EQ(inputs, (std::vector<hhds::Port_id>{0, 3, 7}));
+  EXPECT_EQ(outputs, inputs);
+
+  const auto sinks   = node.inp_pins_snapshot();
+  const auto drivers = node.out_pins_snapshot();
+  ASSERT_EQ(sinks.size(), 3u);
+  ASSERT_EQ(drivers.size(), 3u);
+  for (const auto& sink : sinks) {
+    sink.del_sink();
+  }
+  EXPECT_TRUE(node.inp_sorted_pins().empty());
+  EXPECT_EQ(node.out_sorted_pins().size(), 3u);
+  for (const auto& driver : upstream) {
+    EXPECT_FALSE(driver.has_sink());
+  }
+  for (const auto& driver : drivers) {
+    driver.del_driver();
+  }
+  EXPECT_TRUE(node.out_sorted_pins().empty());
+  // Snapshots retain handles, not the old connectivity.
+  for (const auto& sink : sinks) {
+    EXPECT_TRUE(sink.is_valid());
+    EXPECT_TRUE(sink.get_driver_pin().is_invalid());
+  }
+}
+
+TEST(GraphApiContract, CompactLoopCarryUsesPluralDriversAndOccurrenceBindings) {
+  hhds::GraphLibrary lib;
+  auto               callee = lib.create_io("loop_body");
+  callee->add_input("carry", 1);
+  callee->add_output("next", 2);
+  auto top_io = lib.create_io("top");
+  top_io->add_input("seed", 1);
+  auto top       = top_io->create_graph();
+  auto loop_node = top->create_node();
+  loop_node.set_subnode(callee, hhds::Subnode_loop{.first = 0, .step = 1, .count = 3});
+  auto carry    = loop_node.create_sink_pin("carry");
+  auto feedback = loop_node.create_driver_pin("next");
+  auto seed     = top->get_input_pin("seed");
+  carry.connect_driver(seed);
+  feedback.connect_sink(carry);
+  auto group = loop_node.subnode_group();
+  ASSERT_NO_THROW(group.validate());
+
+  auto connected = loop_node.inp_sorted_pins();
+  ASSERT_EQ(connected.size(), 1u);
+  EXPECT_EQ(connected.front(), carry);
+  const auto drivers = carry.get_driver_pins();
+  ASSERT_EQ(drivers.size(), 2u);
+  EXPECT_NE(std::find(drivers.begin(), drivers.end(), seed), drivers.end());
+  EXPECT_NE(std::find(drivers.begin(), drivers.end(), feedback), drivers.end());
+#ifndef NDEBUG
+  // The singular reader cannot represent a compact carry's seed plus feedback.
+  EXPECT_DEATH((void)carry.get_driver_pin(), "more than one driver");
+#endif
+
+  const auto                         body_before = class_order(top->body().nodes());
+  auto                               view        = top->occurrences();
+  std::vector<hhds::Occurrence_node> iterations;
+  for (const auto& node : view.nodes()) {
+    iterations.push_back(node);
+  }
+  ASSERT_EQ(iterations.size(), 3u);
+  for (size_t ordinal = 0; ordinal < iterations.size(); ++ordinal) {
+    auto pins = iterations[ordinal].inp_sorted_pins();
+    ASSERT_EQ(pins.size(), 1u);
+    auto resolved = pins.front().get_driver_pins();
+    ASSERT_EQ(resolved.size(), 1u);
+    const auto expected = ordinal == 0 ? view.lift(seed) : iterations[ordinal - 1].get_driver_pin(2);
+    EXPECT_EQ(resolved.front().get_occurrence_index(), expected.get_occurrence_index());
+  }
+  EXPECT_EQ(class_order(top->body().nodes()), body_before);
+  EXPECT_EQ(carry.get_driver_pins().size(), 2u);
+}
+
+// Hashes select candidates for structural comparison; equality of digests is
+// not a proof of equivalence. Groups are commutative internally and distinct
+// by role, with repeated operands retained.
+TEST(GraphHashContract, GroupFoldPreservesRolesAndMultiplicity) {
+  const std::map<int, std::vector<uint64_t>> original{
+      {0, {10, 20}},
+      {1,     {30}}
+  };
+  const std::map<int, std::vector<uint64_t>> reordered{
+      {0, {20, 10}},
+      {1,     {30}}
+  };
+  const std::map<int, std::vector<uint64_t>> swapped_roles{
+      {0,     {30}},
+      {1, {10, 20}}
+  };
+  const std::map<int, std::vector<uint64_t>> duplicated{
+      {0, {10, 20, 20}},
+      {1,         {30}}
+  };
+  EXPECT_EQ(hhds::group_fold(99, original), hhds::group_fold(99, reordered));
+  EXPECT_NE(hhds::group_fold(99, original), hhds::group_fold(99, swapped_roles));
+  EXPECT_NE(hhds::group_fold(99, original), hhds::group_fold(99, duplicated));
+  EXPECT_NE(hhds::group_fold(99, original), hhds::group_fold(100, original));
 }
 
 // Sample Example 3: declaring custom attributes. Flat vs hier storage
@@ -329,15 +485,16 @@ TEST(GraphApiContract, CustomAttributeDeclarations) {
 
 // Sample Example 4: pins, pin attributes, edge iteration.
 //
-// Note: the sink and driver pins use distinct non-zero port ids. Port 0 is a
-// special "node-as-pin" entity shared by the node and any port-0 pin, so
-// using port 0 for both an input and an output would alias them.
+// Each operand has its own sink port. Pin attributes share storage between
+// the sink and driver forms of a port, so use distinct ports for distinct
+// attribute values; port 0 additionally shares its storage with the node.
 TEST(GraphApiContract, PinsAttributesAndEdgeIteration) {
   hhds::GraphLibrary glib;
 
   auto and_gio = glib.create_io("and_gate");
   and_gio->add_input("a", 1);
-  and_gio->add_output("y", 2);
+  and_gio->add_input("b", 2);
+  and_gio->add_output("y", 3);
 
   auto top_gio = glib.create_io("top");
   top_gio->add_input("x", 1);
@@ -355,6 +512,7 @@ TEST(GraphApiContract, PinsAttributesAndEdgeIteration) {
 
   // String-form pin creation resolves through the subnode's GraphIO.
   auto and1_in  = and1.create_sink_pin("a");
+  auto and1_b   = and1.create_sink_pin("b");
   auto and1_out = and1.create_driver_pin("y");
 
   // get_* variants retrieve already-created pins.
@@ -379,25 +537,20 @@ TEST(GraphApiContract, PinsAttributesAndEdgeIteration) {
   EXPECT_EQ(g_z.get_master_node().get_debug_nid(), hhds::Graph::OUTPUT_NODE);
 
   and1_in.connect_driver(g_x);
-  and1_in.connect_driver(g_y);
+  and1_b.connect_driver(g_y);
   and1_out.connect_sink(g_z);
 
-  // Pin-level edge iteration: all inputs land on and1_in; all outputs leave
-  // from and1_out.
-  auto inp = and1_in.inp_edges();
-  EXPECT_EQ(inp.size(), 2u);
-  for (const auto& edge : inp) {
-    EXPECT_EQ(edge.sink, and1_in);
-  }
+  EXPECT_EQ(and1_in.get_driver_pin(), g_x);
+  EXPECT_EQ(and1_b.get_driver_pin(), g_y);
 
   auto outp = and1_out.out_edges();
-  EXPECT_EQ(outp.size(), 1u);
+  ASSERT_EQ(outp.size(), 1u);
   EXPECT_EQ(outp.front().driver, and1_out);
   EXPECT_EQ(outp.front().sink, g_z);
 
   // Pin iteration — enumerate pins on a node directly.
-  EXPECT_EQ(and1.inp_pins().size(), 1u);
-  EXPECT_EQ(and1.out_pins().size(), 1u);
+  EXPECT_EQ(and1.inp_sorted_pins().size(), 2u);
+  EXPECT_EQ(and1.out_sorted_pins().size(), 1u);
 }
 
 // Sample Example 5 (subset): attributes survive save/load, and attr_clear vs
@@ -471,24 +624,23 @@ TEST(GraphApiContract, PersistenceAndClearSemantics) {
 }
 
 // Sample Example 6: fine-grained deletion — edge vs pin-edge vs node.
-//
-//     a ─┐
-//        ├──→ [AND].a ──→ [AND].y ──→ [OR].a ──→ [OR].y ──→ y1
-//     b ─┘
-//              c ─────────→ [XOR].a ──→ [XOR].y ──→ y2
-//
-// Tests cover Edge::del_edge(), del_sink(), del_driver(), and del_node().
+// Each gate operand uses a distinct sink port. The AND output fans out to
+// both OR and XOR; XOR's second input is driven independently by graph input c.
+// Covers Edge_class::del_edge(), del_sink(driver), del_sink(), del_driver(),
+// and del_node(), preserving unrelated connections at each step.
 TEST(GraphApiContract, FineGrainedDeletion) {
   hhds::GraphLibrary glib;
 
   auto and_gio = glib.create_io("and_g");
   and_gio->add_input("a", 0);
+  and_gio->add_input("b", 1);
   and_gio->add_output("y", 0);
   auto or_gio = glib.create_io("or_g");
   or_gio->add_input("a", 0);
   or_gio->add_output("y", 0);
   auto xor_gio = glib.create_io("xor_g");
   xor_gio->add_input("a", 0);
+  xor_gio->add_input("b", 1);
   xor_gio->add_output("y", 0);
 
   auto top_gio = glib.create_io("top");
@@ -512,10 +664,12 @@ TEST(GraphApiContract, FineGrainedDeletion) {
   xor1.attr(name).set("xor1");
 
   auto and1_in  = and1.create_sink_pin("a");
+  auto and1_b   = and1.create_sink_pin("b");
   auto and1_out = and1.create_driver_pin("y");
   auto or1_in   = or1.create_sink_pin("a");
   auto or1_out  = or1.create_driver_pin("y");
   auto xor1_in  = xor1.create_sink_pin("a");
+  auto xor1_b   = xor1.create_sink_pin("b");
   auto xor1_out = xor1.create_driver_pin("y");
 
   auto g_a  = g->get_input_pin("a");
@@ -524,46 +678,58 @@ TEST(GraphApiContract, FineGrainedDeletion) {
   auto g_y1 = g->get_output_pin("y1");
   auto g_y2 = g->get_output_pin("y2");
 
-  // AND inputs: a and b both drive the single commutative input "a".
+  // AND inputs: one driver per operand pin.
   and1_in.connect_driver(g_a);
-  and1_in.connect_driver(g_b);
+  and1_b.connect_driver(g_b);
   // AND output fans out to OR and XOR.
   and1_out.connect_sink(or1_in);
   and1_out.connect_sink(xor1_in);
   // XOR also driven by c.
-  xor1_in.connect_driver(g_c);
+  xor1_b.connect_driver(g_c);
   // Final outputs.
   or1_out.connect_sink(g_y1);
   xor1_out.connect_sink(g_y2);
 
-  // State check before any deletes.
-  EXPECT_EQ(and1_out.out_edges().size(), 2u);  // AND.y → OR.a, AND.y → XOR.a
-  EXPECT_EQ(xor1_in.inp_edges().size(), 2u);   // AND.y → XOR.a, c → XOR.a
+  ASSERT_EQ(and1_out.out_edges().size(), 2u);
+  EXPECT_EQ(xor1_in.get_driver_pin(), and1_out);
+  EXPECT_EQ(xor1_b.get_driver_pin(), g_c);
 
-  // Edge::del_edge(): remove only that one enumerated edge.
-  for (const auto& edge : xor1_in.inp_edges()) {
-    if (edge.driver == and1_out) {
+  // Snapshot a live edge view before deleting one of its edges.
+  auto                                outgoing = and1_out.out_edges();
+  const std::vector<hhds::Edge_class> edges(outgoing.begin(), outgoing.end());
+  for (const auto& edge : edges) {
+    if (edge.sink == xor1_in) {
       edge.del_edge();
-      break;
     }
   }
-  EXPECT_EQ(xor1_in.inp_edges().size(), 1u);
+  EXPECT_FALSE(xor1_in.has_driver());
+  EXPECT_EQ(xor1_b.get_driver_pin(), g_c);
   EXPECT_EQ(and1_out.out_edges().size(), 1u);
   EXPECT_TRUE(xor1.is_valid());
   EXPECT_TRUE(xor1_in.is_valid());
 
-  // del_sink(): remove all edges into the sink; pins and node survive.
-  EXPECT_EQ(and1_in.inp_edges().size(), 2u);
-  and1_in.del_sink();
-  EXPECT_EQ(and1_in.inp_edges().size(), 0u);
+  // A named driver deletion leaves the other operand connected.
+  and1_in.del_sink(g_a);
+  EXPECT_TRUE(and1_in.get_driver_pin().is_invalid());
+  EXPECT_EQ(and1_b.get_driver_pin(), g_b);
+  and1_in.connect_driver(g_a);
+
+  // Snapshot the connected sink pins before mutating connectivity.
+  auto inputs = and1.inp_pins_snapshot();
+  ASSERT_EQ(inputs.size(), 2u);
+  for (auto sink : inputs) {
+    sink.del_sink();
+    EXPECT_TRUE(sink.is_valid());
+    EXPECT_TRUE(sink.get_driver_pins().empty());
+  }
+  EXPECT_TRUE(and1.inp_sorted_pins().empty());
   EXPECT_TRUE(and1.is_valid());
-  EXPECT_TRUE(and1_in.is_valid());
 
   // del_driver(): remove all edges from the driver.
   EXPECT_EQ(and1_out.out_edges().size(), 1u);
   and1_out.del_driver();
   EXPECT_EQ(and1_out.out_edges().size(), 0u);
-  EXPECT_EQ(or1_in.inp_edges().size(), 0u);
+  EXPECT_EQ(or1_in.get_driver_pins().size(), 0u);
   EXPECT_TRUE(and1.is_valid());
   EXPECT_TRUE(or1.is_valid());
 
@@ -571,6 +737,7 @@ TEST(GraphApiContract, FineGrainedDeletion) {
   xor1.del_node();
   EXPECT_TRUE(xor1.is_invalid());
   EXPECT_TRUE(xor1_in.is_invalid());
+  EXPECT_TRUE(xor1_b.is_invalid());
   EXPECT_TRUE(xor1_out.is_invalid());
   EXPECT_FALSE(xor1.attr(name).has());
 
@@ -633,7 +800,7 @@ TEST(GraphApiContract, HierAttributesAreKeyedByOccurrence) {
 // A node reached via Pin_class::get_master_node() must expose the same edges as
 // one yielded by body iteration — never a silently-empty range
 // (small_todo.md). Build a -> b -> c, reach node b through a driver pin (not by
-// iterating), and confirm inp_edges()/out_edges() still see b's fan-in/fan-out.
+// iterating), and confirm inp_sorted_pins()/out_edges() still see b's fan-in/fan-out.
 TEST(GraphApiContract, GetMasterNodeResolvesEdges) {
   hhds::GraphLibrary lib;
   auto               g = lib.create_io("top")->create_graph();
@@ -644,8 +811,8 @@ TEST(GraphApiContract, GetMasterNodeResolvesEdges) {
   b.create_driver_pin(1).connect_sink(c.create_sink_pin(1));  // b -> c
 
   // The reported footgun: take a driver pin off an edge and walk ITS master node.
-  auto b_via_master = c.inp_edges().at(0).driver.get_master_node();
+  auto b_via_master = c.get_sink_pin(1).get_driver_pin().get_master_node();
   EXPECT_EQ(b_via_master.get_debug_nid(), b.get_debug_nid());
-  EXPECT_EQ(b_via_master.inp_edges().size(), 1u);  // a -> b
-  EXPECT_EQ(b_via_master.out_edges().size(), 1u);  // b -> c
+  EXPECT_EQ(b_via_master.inp_sorted_pins().size(), 1u);  // a -> b
+  EXPECT_EQ(b_via_master.out_edges().size(), 1u);        // b -> c
 }

@@ -232,9 +232,30 @@ cc_test(
 )
 
 cc_test(
+    name = "sorted_pins_test",
+    srcs = ["tests/sorted_pins_test.cpp"],
+    deps = [":graph"],
+)
+
+cc_test(
+    name = "sorted_pins_fuzz_test",
+    srcs = ["tests/sorted_pins_fuzz_test.cpp"],
+    deps = [":graph"],
+)
+
+cc_test(
     name = "node_hash_test",
     srcs = ["tests/node_hash_test.cpp"],
     deps = [":graph"],
+)
+
+cc_test(
+    name = "pin_cursor_degree_test",
+    srcs = ["tests/pin_cursor_degree_test.cpp"],
+    deps = [
+        ":graph",
+        "@googletest//:gtest_main",
+    ],
 )
 
 cc_test(
@@ -377,6 +398,14 @@ cc_test(
     name = "dirty_tracking_test",
     size = "small",
     srcs = ["tests/dirty_tracking_test.cpp"],
+    copts = COPTS,
+    deps = [":graph"],
+)
+
+cc_test(
+    name = "forward_order_cache_test",
+    size = "small",
+    srcs = ["tests/forward_order_cache_test.cpp"],
     copts = COPTS,
     deps = [":graph"],
 )
@@ -613,3 +642,15 @@ cc_test(
 #     srcs = ["graph_main.cpp"],
 #     deps = [":graph_lib"],
 # )
+
+cc_test(
+    name = "field_combiner_test",
+    srcs = ["tests/field_combiner_test.cpp"],
+    deps = [":graph"],
+)
+
+cc_test(
+    name = "cone_hash_test",
+    srcs = ["tests/cone_hash_test.cpp"],
+    deps = [":graph"],
+)

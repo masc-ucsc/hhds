@@ -23,6 +23,32 @@
 
 namespace {
 
+// The pin-centric replacement for the DELETED Occurrence inp_edges(): every
+// driver of every sink pin, in sorted-pin order (node-as-pin/port 0 first, then
+// ascending port). Plural per sink, because one cross-boundary sink can resolve
+// to several drivers and a compact loop's carry-in legitimately has two.
+[[nodiscard]] std::vector<hhds::Occurrence_pin> hier_in_drivers(const hhds::Occurrence_node& n) {
+  std::vector<hhds::Occurrence_pin> out;
+  for (const auto& sink : n.inp_sorted_pins()) {
+    for (const auto& driver : sink.get_driver_pins()) {
+      out.push_back(driver);
+    }
+  }
+  return out;
+}
+
+// Same, but keeping the sink so a caller can filter on its port id.
+[[nodiscard]] std::vector<std::pair<hhds::Occurrence_pin, hhds::Occurrence_pin>> hier_in_pairs(
+    const hhds::Occurrence_node& n) {
+  std::vector<std::pair<hhds::Occurrence_pin, hhds::Occurrence_pin>> out;  // (sink, driver)
+  for (const auto& sink : n.inp_sorted_pins()) {
+    for (const auto& driver : sink.get_driver_pins()) {
+      out.emplace_back(sink, driver);
+    }
+  }
+  return out;
+}
+
 // Test checks must run even when NDEBUG disables the library's debug assertions.
 #define TEST_CHECK(condition)                                                            \
   do {                                                                                   \
@@ -120,11 +146,13 @@ void test_wrapper_pin_connect_api() {
   and1_in.connect_driver(y);
   and1_out.connect_sink(z);
 
-  auto input_edges = and1_in.inp_edges();
-  TEST_CHECK(input_edges.size() == 2);
-  for (const auto& edge : input_edges) {
-    TEST_CHECK(edge.sink == and1_in);
-  }
+  // NOTE: this pin deliberately carries TWO drivers -- the shape a legal body
+  // only has on a compact loop's carry-in -- so the PLURAL reader is the one
+  // that can see both.
+  auto input_drivers = and1_in.get_driver_pins();
+  TEST_CHECK(input_drivers.size() == 2);
+  TEST_CHECK(input_drivers[0] == x || input_drivers[1] == x);
+  TEST_CHECK(input_drivers[0] == y || input_drivers[1] == y);
 
   auto output_edges = and1_out.out_edges();
   TEST_CHECK(output_edges.size() == 1);
@@ -249,18 +277,18 @@ void test_native_subnode_loop_group_and_order() {
     if (node.get_definition_index() == inner.get_definition_index()) {
       const auto ordinal       = *node.path().steps().back().ordinal;
       size_t     carry_drivers = 0;
-      for (const auto& edge : node.inp_edges()) {
-        if (edge.sink.get_port_id() != 1) {
+      for (const auto& [e_sink, e_driver] : hier_in_pairs(node)) {
+        if (e_sink.get_port_id() != 1) {
           continue;
         }
         ++carry_drivers;
         // No physical occurrence may retain the compact Sub self-edge. The
         // first reads the external initial value; later occurrences read the
         // preceding body's real leaf producer.
-        TEST_CHECK(edge.driver.get_master_node().get_definition_index()
+        TEST_CHECK(e_driver.get_master_node().get_definition_index()
                    == (ordinal == 0 ? top->get_input_node().get_definition_index() : inner.get_definition_index()));
         if (ordinal != 0) {
-          TEST_CHECK(*edge.driver.path().steps().back().ordinal == ordinal - 1);
+          TEST_CHECK(*e_driver.path().steps().back().ordinal == ordinal - 1);
         }
       }
       TEST_CHECK(carry_drivers == 1);
@@ -496,13 +524,13 @@ void test_native_subnode_loop_activation_bindings() {
     const uint64_t ordinal               = *node.path().steps().front().ordinal;
     size_t         carry_drivers         = 0;
     bool           saw_compact_self_edge = false;
-    for (const auto& edge : node.inp_edges()) {
-      if (edge.sink.get_port_id() != 1) {
+    for (const auto& [e_sink, e_driver] : hier_in_pairs(node)) {
+      if (e_sink.get_port_id() != 1) {
         continue;
       }
       ++carry_drivers;
       saw_compact_self_edge
-          |= edge.driver.is_driver() && edge.driver.get_master_node().get_definition_index() == sub.get_definition_index();
+          |= e_driver.is_driver() && e_driver.get_master_node().get_definition_index() == sub.get_definition_index();
     }
     TEST_CHECK(!saw_compact_self_edge);
     TEST_CHECK(carry_drivers == (ordinal == 0 ? 1 : 2));
@@ -566,9 +594,9 @@ void test_zero_count_loop_bypasses_carries() {
 
   auto       physical   = top->occurrences();
   auto       result_pin = physical.lift(top->get_output_pin("result"));
-  const auto edges      = result_pin.inp_edges();
-  TEST_CHECK(edges.size() == 1);
-  TEST_CHECK(edges.front().driver.base_pin() == top->get_input_pin("seed"));
+  const auto drivers    = result_pin.get_driver_pins();
+  TEST_CHECK(drivers.size() == 1);
+  TEST_CHECK(drivers.front().base_pin() == top->get_input_pin("seed"));
 
   bool rejected_noncarry_reader = false;
   try {
@@ -691,9 +719,9 @@ void test_same_index_pin_to_node_port0_edge_survives() {
 
   // Sink-side half always survived.
   {
-    auto in = consumer.inp_edges();
+    auto in = snk.get_driver_pins();
     TEST_CHECK(in.size() == 1);
-    TEST_CHECK(in.front().driver == drv);
+    TEST_CHECK(in.front() == drv);
   }
 
   // Driver-side half: the regression. diff == 0 + flags 00 encoded to 0.
@@ -708,10 +736,10 @@ void test_same_index_pin_to_node_port0_edge_survives() {
   // The edge must also be deletable and re-addable through the spill slot.
   drv.out_edges().front().del_edge();
   TEST_CHECK(drv.out_edges().empty());
-  TEST_CHECK(consumer.inp_edges().empty());
+  TEST_CHECK(!consumer.has_inp_edges());
   snk.connect_driver(drv);
   TEST_CHECK(drv.out_edges().size() == 1);
-  TEST_CHECK(consumer.inp_edges().size() == 1);
+  TEST_CHECK(snk.get_driver_pins().size() == 1);
 }
 
 // Same encoding hole on NodeEntry: a port0 -> port0 self-loop stores
@@ -724,7 +752,7 @@ void test_node_port0_self_loop_edge_survives() {
   auto n = g->create_node();
   n.create_sink_pin().connect_driver(n.create_driver_pin());
 
-  TEST_CHECK(n.inp_edges().size() == 1);
+  TEST_CHECK(n.create_sink_pin().get_driver_pins().size() == 1);
   TEST_CHECK(n.out_edges().size() == 1);
   TEST_CHECK(n.out_edges().front().sink == n.create_sink_pin());
   TEST_CHECK(n.has_out_edges());
@@ -732,12 +760,12 @@ void test_node_port0_self_loop_edge_survives() {
 
   n.out_edges().front().del_edge();
   TEST_CHECK(n.out_edges().empty());
-  TEST_CHECK(n.inp_edges().empty());
+  TEST_CHECK(!n.has_inp_edges());
 }
 
 // Pin_class::get_driver_pins(): the drivers feeding a sink pin. Covers the
 // unconnected, single-driver, multi-driver, and node-as-pin(port 0) cases, and
-// checks it stays in lockstep with inp_edges()[].driver.
+// checks it stays in lockstep with the single-driver get_driver_pin().
 void test_pin_get_driver_pins() {
   hhds::GraphLibrary lib;
   auto               gio = lib.create_io("top");
@@ -786,13 +814,12 @@ void test_pin_get_driver_pins() {
     TEST_CHECK(drivers[0] == d2);
   }
 
-  // Stays in lockstep with inp_edges() (same drivers, same order).
+  // The singular reader is the front of the plural one whenever the pin is
+  // single-driven, which is every pin in a legal body.
   {
-    auto edges   = s_named.inp_edges();
     auto drivers = s_named.get_driver_pins();
-    TEST_CHECK(edges.size() == drivers.size());
-    for (size_t i = 0; i < edges.size(); ++i) {
-      TEST_CHECK(edges[i].driver == drivers[i]);
+    if (drivers.size() == 1) {
+      TEST_CHECK(s_named.get_driver_pin() == drivers.front());
     }
   }
 }
@@ -2226,9 +2253,9 @@ void test_hier_edges_cross_one_boundary_EXPECTED() {
   const auto buf_h = find_hier_node(top.get(), leaf->get_gid(), buf.get_debug_nid());
 
   // inp_edges: driver resolves up to src (top), NOT leaf's input pin "a".
-  const auto ins = buf_h.inp_edges();
+  const auto ins = hier_in_drivers(buf_h);
   TEST_CHECK(ins.size() == 1);
-  const auto drv = ins.front().driver;
+  const auto drv = ins.front();
   TEST_CHECK(drv.get_current_gid() == top->get_gid());
   TEST_CHECK(node_of(drv.get_master_node().get_debug_nid()) == node_of(src.get_debug_nid()));
   TEST_CHECK(drv.is_driver());
@@ -2295,18 +2322,18 @@ void test_hier_edges_cross_up_then_down_EXPECTED() {
   }
   // bufB.inp -> bufA driver (up out of leafB, down into leafA)
   {
-    const auto ins = bufB_h.inp_edges();
+    const auto ins = hier_in_drivers(bufB_h);
     TEST_CHECK(ins.size() == 1);
-    const auto drv = ins.front().driver;
+    const auto drv = ins.front();
     TEST_CHECK(drv.get_current_gid() == leafA->get_gid());
     TEST_CHECK(node_of(drv.get_master_node().get_debug_nid()) == node_of(bufA.get_debug_nid()));
     TEST_CHECK(drv.is_driver());
   }
   // bufA.inp -> top input "pi" (resolution stops at the starting graph's own IO)
   {
-    const auto ins = bufA_h.inp_edges();
+    const auto ins = hier_in_drivers(bufA_h);
     TEST_CHECK(ins.size() == 1);
-    const auto drv = ins.front().driver;
+    const auto drv = ins.front();
     TEST_CHECK(drv.get_current_gid() == top->get_gid());
     TEST_CHECK(node_of(drv.get_master_node().get_debug_nid()) == node_of(top->get_input_node().get_debug_nid()));
     TEST_CHECK(drv.get_pin_name() == "pi");
@@ -2361,9 +2388,9 @@ void test_hier_edges_three_levels_EXPECTED() {
 
   // inp_edges resolves up two boundaries to top input "pi".
   {
-    const auto ins = bufL_h.inp_edges();
+    const auto ins = hier_in_drivers(bufL_h);
     TEST_CHECK(ins.size() == 1);
-    const auto drv = ins.front().driver;
+    const auto drv = ins.front();
     TEST_CHECK(drv.get_current_gid() == top->get_gid());
     TEST_CHECK(node_of(drv.get_master_node().get_debug_nid()) == node_of(top->get_input_node().get_debug_nid()));
     TEST_CHECK(drv.get_pin_name() == "pi");
@@ -2468,9 +2495,9 @@ void test_hier_edges_reused_cell_distinct_paths_EXPECTED() {
   int checked = 0;
   for (const auto& n : matches) {
     const auto& path = n.path();
-    const auto  ins  = n.inp_edges();
+    const auto  ins  = hier_in_drivers(n);
     TEST_CHECK(ins.size() == 1);
-    const auto drv = ins.front().driver;
+    const auto drv = ins.front();
     if (path.steps().size() == 1) {  // shallow: top -> bdir -> B
       TEST_CHECK(drv.get_current_gid() == top->get_gid());
       TEST_CHECK(node_of(drv.get_master_node().get_debug_nid()) == node_of(src_shallow.get_debug_nid()));
@@ -2571,9 +2598,9 @@ void test_get_hier_name_resolved_leaves_EXPECTED() {
     if (n.get_current_gid() != l->get_gid() || node_of(n.get_debug_nid()) != node_of(buf.get_debug_nid())) {
       continue;
     }
-    const auto ins = n.inp_edges();
+    const auto ins = hier_in_drivers(n);
     TEST_CHECK(ins.size() == 1);
-    const auto drv = ins.front().driver;
+    const auto drv = ins.front();
     names.push_back(drv.get_hier_name());
     // get_master_node() must keep the resolved leaf's instance chain (no drop).
     TEST_CHECK(drv.get_master_node().path() == drv.path());
@@ -2707,8 +2734,8 @@ void test_grouped_forward_comb_and_flop_outputs_of_stateful_sub() {
   // The self-edge really is there and really is a self-edge (counter++).
   const auto cnt_h     = find_hier_node(f.top.get(), sub_gid, f.cnt.get_debug_nid());
   size_t     self_deps = 0;
-  for (const auto& e : cnt_h.inp_edges()) {
-    if (node_of(e.driver.get_master_node().get_debug_nid()) == node_of(f.cnt.get_debug_nid())) {
+  for (const auto& driver : hier_in_drivers(cnt_h)) {
+    if (node_of(driver.get_master_node().get_debug_nid()) == node_of(f.cnt.get_debug_nid())) {
       ++self_deps;
     }
   }
@@ -2717,17 +2744,17 @@ void test_grouped_forward_comb_and_flop_outputs_of_stateful_sub() {
   // The comb output resolves ACROSS the boundary to the real leaf producer, not
   // to the instance or the module's declared output pin.
   const auto use1_h  = find_hier_node(f.top.get(), top_gid, f.use1.get_debug_nid());
-  const auto use1_in = use1_h.inp_edges();
+  const auto use1_in = hier_in_drivers(use1_h);
   TEST_CHECK(use1_in.size() == 1);
-  const auto use1_drv = use1_in.front().driver.get_master_node();
+  const auto use1_drv = use1_in.front().get_master_node();
   TEST_CHECK(use1_drv.get_current_gid() == sub_gid);
   TEST_CHECK(node_of(use1_drv.get_debug_nid()) == node_of(f.add.get_debug_nid()));
 
   // ...and so does the flop output.
   const auto use2_h  = find_hier_node(f.top.get(), top_gid, f.use2.get_debug_nid());
-  const auto use2_in = use2_h.inp_edges();
+  const auto use2_in = hier_in_drivers(use2_h);
   TEST_CHECK(use2_in.size() == 1);
-  const auto use2_drv = use2_in.front().driver.get_master_node();
+  const auto use2_drv = use2_in.front().get_master_node();
   TEST_CHECK(use2_drv.get_current_gid() == sub_gid);
   TEST_CHECK(node_of(use2_drv.get_debug_nid()) == node_of(f.cnt.get_debug_nid()));
 }
@@ -2869,10 +2896,10 @@ void test_grouped_hierarchy_ordering_preserves_node_set() {
 
 }  // namespace
 
-// Node_class::inp_edges() is SORTED BY ASCENDING SINK PORT ID, port 0 first,
-// regardless of the order the sink pins were created in. Consumers rely on it
-// instead of copying the vector to re-sort it (see the contract in graph.hpp).
-void test_inp_edges_sorted_by_sink_port() {
+// Node_class::inp_sorted_pins() is SORTED BY ASCENDING SINK PORT ID, port 0
+// first, regardless of the order the sink pins were created in. Consumers rely
+// on it instead of re-sorting (see the contract in graph.hpp).
+void test_inp_sorted_pins_sorted_by_sink_port() {
   hhds::GraphLibrary lib;
   auto               gio = lib.create_io("top");
   auto               g   = gio->create_graph();
@@ -2891,17 +2918,19 @@ void test_inp_edges_sorted_by_sink_port() {
     sink.create_sink_pin().connect_driver(src.create_driver_pin());
   }
 
-  auto edges = sink.inp_edges();
-  TEST_CHECK(edges.size() == 6);
+  std::vector<hhds::Port_id> ports;
+  for (auto p : sink.inp_sorted_pins()) {
+    ports.push_back(p.get_port_id());
+  }
+  TEST_CHECK(ports.size() == 6);
   hhds::Port_id prev = 0;
-  for (size_t i = 0; i < edges.size(); ++i) {
-    const auto port = edges[i].sink.get_port_id();
+  for (size_t i = 0; i < ports.size(); ++i) {
     if (i == 0) {
-      TEST_CHECK(port == 0);  // port-0 edges come first
+      TEST_CHECK(ports[i] == 0);  // the node-as-pin comes first
     } else {
-      TEST_CHECK(port > prev);
+      TEST_CHECK(ports[i] > prev);
     }
-    prev = port;
+    prev = ports[i];
   }
   TEST_CHECK(prev == 9);
 }
@@ -2938,7 +2967,7 @@ void test_try_get_pin_misses_are_invalid() {
 }
 
 int main() {
-  test_inp_edges_sorted_by_sink_port();
+  test_inp_sorted_pins_sorted_by_sink_port();
   test_try_get_pin_misses_are_invalid();
   test_declaration_api();
   test_subnode_accessors_round_trip_with_set_subnode();

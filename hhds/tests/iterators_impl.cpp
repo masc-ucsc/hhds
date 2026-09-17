@@ -1,9 +1,119 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <vector>
 
 #include "hhds/graph.hpp"
 #include "hhds/tree.hpp"
+
+TEST(GraphWrapperApi, DeletePinDisconnectsBothDirectionsFromEitherHandle) {
+  for (hhds::Port_id port : {0, 7}) {
+    for (bool use_driver : {false, true}) {
+      hhds::GraphLibrary lib;
+      auto               graph    = lib.create_io("top")->create_graph();
+      auto               node     = graph->create_node();
+      auto               sink     = node.create_sink_pin(port);
+      auto               driver   = node.create_driver_pin(port);
+      auto               upstream = graph->create_node().create_driver_pin();
+      sink.connect_driver(upstream);
+      std::vector<hhds::Pin_class> downstream;
+      // Exercise overflow as well as the shared port-0 and real-pin entries.
+      for (int i = 0; i < 20; ++i) {
+        auto next = graph->create_node().create_sink_pin();
+        driver.connect_sink(next);
+        downstream.push_back(next);
+      }
+
+      (use_driver ? driver : sink).del_pin();
+
+      EXPECT_TRUE(sink.is_valid());
+      EXPECT_TRUE(driver.is_valid());
+      EXPECT_TRUE(node.inp_sorted_pins().empty());
+      EXPECT_TRUE(node.out_sorted_pins().empty());
+      EXPECT_TRUE(upstream.out_edges().empty());
+      for (const auto& next : downstream) {
+        EXPECT_TRUE(next.get_driver_pins().empty());
+      }
+    }
+  }
+}
+
+TEST(GraphTraversalApi, PinAndEdgeIteratorsCompareTheirPositions) {
+  EXPECT_TRUE(hhds::OutEdgeRange{}.empty());
+  EXPECT_TRUE(hhds::SortedPinRange{}.empty());
+
+  for (int fanout : {2, 20}) {
+    hhds::GraphLibrary lib;
+    auto               graph  = lib.create_io("top")->create_graph();
+    auto               source = graph->create_node();
+    auto               sink   = graph->create_node();
+    for (int i = 0; i < fanout; ++i) {
+      source.create_driver_pin().connect_sink(sink.create_sink_pin(static_cast<hhds::Port_id>(i)));
+    }
+    source.create_driver_pin(7).connect_sink(sink.create_sink_pin(30));
+
+    auto pins   = sink.inp_sorted_pins();
+    auto p      = pins.begin();
+    auto p_copy = p;
+    EXPECT_EQ(p, p_copy);
+    EXPECT_EQ(p, pins.begin());
+    auto old_p = p++;
+    EXPECT_EQ(old_p, p_copy);
+    EXPECT_NE(p, p_copy);
+    ++p_copy;
+    EXPECT_EQ(p, p_copy);
+    while (p != pins.end()) {
+      ++p;
+    }
+    EXPECT_EQ(p, hhds::SortedPinIterator{});
+
+    auto edges  = source.out_edges();
+    auto e      = edges.begin();
+    auto e_copy = e;
+    EXPECT_EQ(e, e_copy);
+    EXPECT_EQ(e, edges.begin());
+    auto old_e = e++;
+    EXPECT_EQ(old_e, e_copy);
+    EXPECT_NE(e, e_copy);
+    ++e_copy;
+    EXPECT_EQ(e, e_copy);
+    while (e != edges.end()) {
+      ++e;
+    }
+    EXPECT_EQ(e, hhds::OutEdgeIterator{});
+  }
+}
+
+TEST(GraphTraversalApi, BackwardReachabilityFollowsEveryInputOfDriverNodes) {
+  hhds::GraphLibrary lib;
+  auto               graph     = lib.create_io("top")->create_graph();
+  auto               a         = graph->create_node();
+  auto               b         = graph->create_node();
+  auto               c         = graph->create_node();
+  auto               extra     = graph->create_node();
+  auto               a_out     = a.create_driver_pin();
+  auto               b_out     = b.create_driver_pin(9);
+  auto               c_out     = c.create_driver_pin();
+  auto               extra_out = extra.create_driver_pin();
+  a_out.connect_sink(b.create_sink_pin());
+  extra_out.connect_sink(b.create_sink_pin());  // plural carry-shaped input
+  b_out.connect_sink(c.create_sink_pin(7));
+
+  auto view = graph->occurrences();
+  for (auto search : {hhds::Search_order::dfs, hhds::Search_order::bfs}) {
+    hhds::Reach_options options;
+    options.direction    = hhds::Direction::backward;
+    options.search_order = search;
+    std::vector<hhds::Pid> reached;
+    for (const auto& pin : view.reachable_pins({view.lift(c_out)}, options)) {
+      reached.push_back(pin.base_pin().get_debug_pid());
+    }
+    std::sort(reached.begin(), reached.end());
+    std::vector<hhds::Pid> expected{a_out.get_debug_pid(), b_out.get_debug_pid(), extra_out.get_debug_pid()};
+    std::sort(expected.begin(), expected.end());
+    EXPECT_EQ(reached, expected);
+  }
+}
 
 TEST(GraphDeclarationApi, CreateFindAndNavigate) {
   hhds::GraphLibrary lib;
@@ -17,6 +127,34 @@ TEST(GraphDeclarationApi, CreateFindAndNavigate) {
   EXPECT_EQ(graph->get_io(), gio);
   EXPECT_EQ(gio->get_graph(), graph);
 }
+
+#ifndef NDEBUG
+TEST(GraphTraversalApi, ActiveIteratorsRejectDeletedGraphs) {
+  hhds::GraphLibrary lib;
+  auto               graph = lib.create_io("top")->create_graph();
+  auto               a     = graph->create_node();
+  auto               b     = graph->create_node();
+  a.create_driver_pin().connect_sink(b.create_sink_pin());
+  auto forward = graph->body().nodes(hhds::Node_order::forward).begin();
+  auto reverse = graph->body().nodes(hhds::Node_order::reverse).begin();
+  auto edges   = a.out_edges();
+  auto edge    = edges.begin();
+  auto pins    = b.inp_sorted_pins();
+  auto pin     = pins.begin();
+  lib.delete_graph(graph);
+
+  EXPECT_DEATH((void)*forward, "graph is no longer valid");
+  EXPECT_DEATH(++forward, "graph is no longer valid");
+  EXPECT_DEATH((void)*reverse, "graph is no longer valid");
+  EXPECT_DEATH(++reverse, "graph is no longer valid");
+  EXPECT_DEATH((void)*edge, "graph is no longer valid");
+  EXPECT_DEATH(++edge, "graph is no longer valid");
+  EXPECT_DEATH((void)edges.begin(), "graph is no longer valid");
+  EXPECT_DEATH((void)*pin, "graph is no longer valid|structurally mutated");
+  EXPECT_DEATH(++pin, "graph is no longer valid|structurally mutated");
+  EXPECT_DEATH((void)pins.begin(), "graph is no longer valid");
+}
+#endif
 
 TEST(GraphWrapperApi, PinsConnectAndIterateEdges) {
   hhds::GraphLibrary lib;
@@ -44,8 +182,8 @@ TEST(GraphWrapperApi, PinsConnectAndIterateEdges) {
   in.connect_driver(top->get_input_pin("x"));
   out.connect_sink(top->get_output_pin("z"));
 
-  ASSERT_EQ(in.inp_edges().size(), 1);
-  EXPECT_EQ(in.inp_edges().front().sink, in);
+  ASSERT_EQ(in.get_driver_pins().size(), 1);
+  EXPECT_EQ(in.get_driver_pin(), top->get_input_pin("x"));
   ASSERT_EQ(out.out_edges().size(), 1);
   EXPECT_EQ(out.out_edges().front().driver, out);
 }

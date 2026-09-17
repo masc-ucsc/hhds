@@ -93,6 +93,9 @@ public:
     ++readers_;
   }
 
+  // NOT dead, despite having no explicit caller: std::shared_lock<> calls it
+  // through the SharedLockable concept, so removing it breaks every
+  // `std::shared_lock<Prefer_writer_shared_mutex>` in the tree.
   void unlock_shared() {
     bool last = false;
     {
@@ -100,9 +103,10 @@ public:
       last = (--readers_ == 0);
     }
     if (last) {
-      gate_.notify_all(); // wake a queued writer once the last reader leaves
+      gate_.notify_all();
     }
   }
+
 
 private:
   std::mutex mu_;
@@ -172,9 +176,11 @@ struct OverflowPool {
       uint32_t idx = free_list.back();
       free_list.pop_back();
       sets[idx].clear();
+      sets[idx].reserve(16);
       return idx;
     }
-    sets.emplace_back();
+    // Reserve for all migrated inline edges and some subsequent growth.
+    sets.emplace_back(16);
     return static_cast<uint32_t>(sets.size() - 1);
   }
 
@@ -202,6 +208,8 @@ class BackwardClassRange;
 class Hier_instance;
 class OutEdgeIterator;
 class OutEdgeRange;
+class SortedPinIterator;
+class SortedPinRange;
 class Subnode_group;
 class Subnode_occurrence;
 class SubnodeOccurrenceRange;
@@ -307,7 +315,7 @@ public:
   // Hier: full instance chain (subnode nids root..immediate-parent) that
   // locates this handle's body unambiguously even when its graph is
   // instantiated more than once. Empty/null for root-level or non-hier handles.
-  // Used by the cross-boundary edge resolver; see inp_edges/out_edges.
+  // Used by the cross-boundary edge resolver; see out_edges.
   [[nodiscard]] const std::shared_ptr<const std::vector<Nid>> &
   get_hier_path() const noexcept {
     return hier_path_;
@@ -350,17 +358,42 @@ public:
   // It is a view over live storage: snapshot before mutating during iteration
   // (see OutEdgeRange docs).
   [[nodiscard]] OutEdgeRange out_edges() const;
-  // inp_edges() stays eager: a sink's fan-in is small (usually a single
-  // driver), so the heap-free InlinedVector is the right shape; [4] inline
-  // covers it. On a Pin_class every edge lands on this one sink pin, so there
-  // is nothing to order; see Node_class::inp_edges for the node-level contract.
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges() const;
   // Drivers feeding this sink pin (the far end of each inp edge). A sink's
   // fan-in is small — usually a single driver in a well-formed net — so this
   // materializes into the same heap-free InlinedVector the other pin/node
   // accessors use. Asymmetric on purpose: a driver's fanout (out_edges) can be
   // huge, so there is no eager get_sink_pins() companion here.
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_driver_pins() const;
+
+  // --- The pin-centric reader (see Node_class::inp_sorted_pins) ------------
+  //
+  // ONE DRIVER PER SINK PIN. A sink pin is fed by exactly one driver pin; a
+  // cell that folds N commutative operands spends N CONSECUTIVE sink pids
+  // rather than piling N drivers onto one. So "the driver of this sink" is a
+  // value, not a list, and get_driver_pin() is the reader for it.
+  //
+  // A consumer handed a sink pin by inp_sorted_pins() MAY rely on the driver
+  // being present: that iterator yields only CONNECTED pins. A sink pin can be
+  // driverless only DURING a mutation (mid-construction, between a del_edge
+  // and the replacement add_edge, inside DCE), and whoever is mutating holds
+  // the handle to the pin it just made -- nobody reaches such a pin through an
+  // iterator. Outside that window a driverless sink pin is a malformed body,
+  // which is a legalize/verify finding, not something every reader re-checks.
+  //
+  // The disconnected answer is an INVALID Pin_class (not an abort), so a
+  // mutator mid-edit can still ask. Debug builds assert the sink carries no
+  // MORE than one driver; that is the invariant a verify pass owns in opt.
+  [[nodiscard]] Pin_class get_driver_pin() const;
+  // Symmetric case, and the asymmetry is real: a driver's fanout is a SET, and
+  // a big one (clock/reset reaches 100K+ sinks). This is well-defined only for
+  // a driver with exactly ONE sink; it returns an invalid Pin_class for zero
+  // and for two-or-more (debug builds assert the latter). Use out_edges() when
+  // the fanout can be plural.
+  [[nodiscard]] Pin_class get_sink_pin() const;
+  // Cheap connectivity probes: no edge id is decoded, the scan short-circuits
+  // on the first match. `has_driver` on a sink pin, `has_sink` on a driver.
+  [[nodiscard]] bool has_driver() const;
+  [[nodiscard]] bool has_sink() const;
 
   // Value of a CONST_NODE driver pin; nullptr for an invalid, detached or
   // non-constant pin. Only PINS carry values (Node_class has no such member
@@ -421,6 +454,7 @@ private:
   friend class Node_class;
   friend class OutEdgeIterator; // builds/stamps driver+sink pins while walking
                                 // out edges
+  friend class SortedPinIterator; // same, for the pin-list walk
   friend void inherit_pin_context(Pin_class &pin, const Node_class &node);
 };
 
@@ -528,7 +562,7 @@ public:
   // "get it if it exists": an INVALID Pin_class when the pin was never created,
   // where get_{driver,sink}_pin asserts. The pin chain is sorted by port id, so
   // the miss is detected at the first larger port id -- same cost as the hit,
-  // and far cheaper than the inp_edges() walk callers used to emulate this with.
+  // and far cheaper than the in-edge walk callers used to emulate this with.
   [[nodiscard]] Pin_class try_get_driver_pin(Port_id port_id) const;
   [[nodiscard]] Pin_class try_get_sink_pin(Port_id port_id) const;
   void del_node() const;
@@ -536,21 +570,72 @@ public:
   // In Class/Flat context this walks live storage on demand; in Hier context it
   // resolves cross-boundary edges (materialized) behind the same range type.
   [[nodiscard]] OutEdgeRange out_edges() const;
-  // CONTRACT: the returned edges are SORTED BY ASCENDING SINK PORT ID, with the
-  // port-0 edges (the node-as-pin sink) first. This is not incidental -- the
-  // per-node pin chain is kept sorted by port id at insertion
-  // (find_or_create_pin), and inp_edges_local emits the port-0 edges and then
-  // walks that chain in order; inp_edges_hier maps the local list positionally.
-  // Consumers that need operands in cell-pin order (a Sum's `as` before its
-  // `bs`, a Hotmux's (control, value) pairs) may rely on it directly instead of
-  // copying the vector to re-sort it.
-  //
-  // NOT a contract: the relative order of SEVERAL DRIVERS OF ONE SINK PIN (a
-  // Sum's `as` fed by three nodes). That is edge storage order; a consumer that
-  // needs determinism there must still impose its own.
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges() const;
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> out_pins() const;
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> inp_pins() const;
+
+  // --- The pin-centric readers --------------------------------------------
+  //
+  // THE in-edge readers. They iterate the node's OWN pin linked list, which
+  // find_or_create_pin already keeps sorted by ascending port_id, so the
+  // ascending-sink-port contract comes for free -- no sort, no vector, no
+  // Edge_class. They replaced a materializing inp_edges(), which is gone.
+  //
+  //   for (auto sink : n.inp_sorted_pins()) {
+  //     auto drv = sink.get_driver_pin();   // exactly one; see Pin_class
+  //     ...
+  //   }
+  //
+  // WHY THIS AND NOT AN EDGE LIST. A pin's edge set holds BOTH directions
+  // (Vid bit 1 says which), so the old node-level in-edge walk decoded every
+  // pin's every edge and threw the out-edges away. On minion that was 48.6% of
+  // every in-edge scan; worst case measured, an `eq` node with one in-edge and
+  // 12,168 out-edges paid 12,168 decodes to find the one. Here a pin whose
+  // PinEntry is marked driver-only is skipped by a BIT TEST, before its edge
+  // storage is touched at all.
+  //
+  // ORDER. The node-as-pin (port 0) comes first -- it is a real sink on most
+  // cells (a banked op's first "as" operand lives there) -- then the pin list
+  // in ascending port_id.
+  //
+  // CONNECTED PINS ONLY. A pin that exists but carries no edge in the asked-for
+  // direction is not yielded, so the pin set matches the sink (resp. driver)
+  // direction, so get_driver_pin() on anything inp_sorted_pins() yields is
+  // valid, and out_sorted_pins() yields only drivers that actually reach a
+  // sink.
+  //
+  // ORDER CONTRACT: ascending sink (resp. driver) port id, with the node-as-pin
+  // (port 0) first. Not incidental -- find_or_create_pin keeps the per-node pin
+  // chain sorted by port id at insertion -- so consumers that need operands in
+  // cell-pin order (a Sum's `as` before its `bs`, a Hotmux's (control, value)
+  // pairs) may rely on it directly. NOT a contract: the relative order of
+  // SEVERAL DRIVERS OF ONE SINK PIN, which only a compact loop's carry-in has;
+  // that is edge storage order.
+  //
+  // READ-ONLY VIEW over live storage: any add_edge / del_edge / del_pin /
+  // del_node during the walk invalidates an in-flight iterator, and debug
+  // builds abort on it. To mutate while walking, take inp_pins_snapshot()
+  // instead. The iterator owns everything it needs, so
+  // `auto it = n.inp_sorted_pins().begin();` does NOT dangle when the range
+  // temporary dies.
+  //
+  // LOCAL. Pins are a property of this body. In Hier context the handles carry
+  // the traversal stamp, but cross-boundary resolution is NOT performed -- an
+  // Occurrence_node / Occurrence_pin is the handle for the far side of an
+  // instance boundary, and Occurrence_node::inp_sorted_pins() with
+  // Occurrence_pin::get_driver_pins() is the reader that resolves it.
+  [[nodiscard]] SortedPinRange inp_sorted_pins() const;
+  [[nodiscard]] SortedPinRange out_sorted_pins() const;
+
+  // SNAPSHOT twins for the loop that MUTATES while walking (the shape that
+  // made the old (now deleted) inp_edges() materialize in the first place: cprop's
+  // ordered_inp_edges, DCE, rewrites that delete the edge they are standing
+  // on). Same pins, same order, in a small vector that no longer aliases the
+  // graph -- so add_edge / del_edge / del_node inside the loop are safe.
+  //
+  // The handles are still just handles: deleting the PIN or its NODE, then
+  // dereferencing a later element, is on the caller as it always was.
+  [[nodiscard]] absl::InlinedVector<Pin_class, 8> inp_pins_snapshot() const;
+  [[nodiscard]] absl::InlinedVector<Pin_class, 8> out_pins_snapshot() const;
   // Fast boolean predicates — avoid materializing the full edge vector when
   // callers only need an "any?" answer (the has_outputs / has_inputs hot
   // paths in netlist clients).
@@ -804,9 +889,6 @@ public:
   [[nodiscard]] const Occurrence_path &parent_path() const noexcept {
     return parent_path_;
   }
-  [[nodiscard]] Definition_index definition_index() const noexcept {
-    return group_.base_node().get_definition_index();
-  }
   [[nodiscard]] Node_class base_node() const { return group_.base_node(); }
   [[nodiscard]] Gid target_gid() const {
     return group_.base_node().get_subnode_gid();
@@ -1001,10 +1083,23 @@ public:
   [[nodiscard]] Occurrence_pin get_sink_pin(std::string_view name) const;
   [[nodiscard]] OccurrencePinRange out_pins() const;
   [[nodiscard]] OccurrencePinRange inp_pins() const;
+  // THE hierarchical pin-centric readers, and the ones to use. They mirror
+  // Node_class::inp_sorted_pins / out_sorted_pins exactly: the NODE-AS-PIN
+  // (port 0) comes FIRST, then the pin list in ascending port order.
+  //
+  // inp_pins() above is the RAW list and is NOT a substitute: hhds stores port 0
+  // as the node itself, so the raw list omits it -- and port 0 is where a banked
+  // cell's first operand lives. Swapping a sorted walk for a raw one silently
+  // drops that operand; it also loses the port ordering, which is what
+  // `grouped forward: cross-boundary driver must precede its consumer`
+  // (tests/graph_test.cpp) exists to catch.
+  [[nodiscard]] OccurrencePinRange inp_sorted_pins() const;
+  [[nodiscard]] OccurrencePinRange out_sorted_pins() const;
   [[nodiscard]] OccurrenceEdgeRange out_edges() const;
-  [[nodiscard]] OccurrenceEdgeRange inp_edges() const;
-  [[nodiscard]] bool has_out_edges() const { return !out_edges().empty(); }
-  [[nodiscard]] bool has_inp_edges() const { return !inp_edges().empty(); }
+  // Short-circuiting: stops at the first pin that contributes an edge
+  // instead of materialising every hierarchical edge of the node.
+  [[nodiscard]] bool has_out_edges() const;
+  [[nodiscard]] bool has_inp_edges() const;
 
   template <Attribute Tag> [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
     static_assert(std::is_same_v<typename Tag::storage, hier_storage>,
@@ -1095,7 +1190,6 @@ public:
   [[nodiscard]] bool is_known_false() const noexcept { return pin_.is_known_false(); }
   [[nodiscard]] bool is_known_true() const noexcept { return pin_.is_known_true(); }
   [[nodiscard]] OccurrenceEdgeRange out_edges() const;
-  [[nodiscard]] OccurrenceEdgeRange inp_edges() const;
   [[nodiscard]] OccurrencePinRange get_driver_pins() const;
 
   template <Attribute Tag> [[nodiscard]] AttrRef<Tag> attr(Tag = {}) const {
@@ -1242,7 +1336,6 @@ public:
     return parent_graph_;
   }
   [[nodiscard]] Gid get_root_gid() const noexcept { return root_gid_; }
-  [[nodiscard]] Tree_pos get_tree_pos() const noexcept { return tree_pos_; }
   [[nodiscard]] Tree_pos get_hier_pos() const noexcept { return hier_pos_; }
   [[nodiscard]] Nid get_parent_nid() const noexcept { return parent_nid_; }
   [[nodiscard]] Gid get_target_gid() const;
@@ -1299,11 +1392,52 @@ class Graph : public Attr_host {
     PinEntry();
     PinEntry(Nid master_nid_value, Port_id port_id_value);
 
-    [[nodiscard]] Nid get_master_nid() const { return master_nid; }
+    [[nodiscard]] Nid get_master_nid() const {
+      return static_cast<Nid>(master_nid) << 2;
+    }
     [[nodiscard]] Port_id get_port_id() const { return port_id; }
+
+    // --- Direction flags (see the field declarations for the bit budget) ----
+    //
+    // A PinEntry is keyed by (node, port_id) ALONE, so the same entry backs the
+    // driver handle (pid bit 1 set) and the sink handle (bit clear) of that
+    // port. Most cells keep their driver and sink port-id spaces disjoint, but
+    // not all do -- a 1-write/1-read LiveHD Memory has sink pid 1 AND a dout
+    // DRIVER pid 1 -- so "which direction is this pin?" is a THREE-state
+    // question (driver-only / sink-only / both) and needs two bits, not one.
+    //
+    // They are sticky and CUMULATIVE: set when the pin is minted with a known
+    // direction (create_driver_pin / create_sink_pin / append_driver_pin /
+    // materialize_declared_io_pin) and again by Graph::add_edge, which is the
+    // authority -- an edge is what makes a direction real. del_edge does NOT
+    // clear them, so has_sink reads as "has ever been used as a sink".
+    // That is deliberately conservative: a stale bit costs one extra
+    // has_edge_dir probe in inp_sorted_pins / out_sorted_pins, it can never
+    // hide a pin.
+    //
+    // BOTH CLEAR means "never classified" (a pin minted through a path that
+    // predates this bookkeeping). Consumers must treat that as "could be
+    // either" and fall back to the edge probe, never as "neither" -- that is
+    // what keeps a missed marking site a slowdown instead of a wrong answer.
+    // "Provably not a sink" / "provably not a driver": the O(1) skip tests the
+    // sorted-pin iterators use before touching any edge storage.
+    [[nodiscard]] bool driver_only() const noexcept {
+      return has_driver != 0 && has_sink == 0;
+    }
+    [[nodiscard]] bool sink_only() const noexcept {
+      return has_sink != 0 && has_driver == 0;
+    }
+    void mark_driver() noexcept { has_driver = 1; }
+    void mark_sink() noexcept { has_sink = 1; }
     auto add_edge(Pid self_id, Pid other_id, OverflowPool &pool) -> bool;
     auto delete_edge(Pid self_id, Pid other_id, OverflowPool &pool) -> bool;
     [[nodiscard]] bool has_edges() const;
+    // Does any edge carry the given driver bit (Vid bit 1)? Short-circuits on
+    // the first match and never decodes a target id, so answering
+    // "has_out_edges" costs a handful of masks instead of an EdgeRange
+    // construction (which zero-fills a 6-slot buffer and decodes every slot).
+    [[nodiscard]] bool has_edge_dir(bool driver_bit,
+                                    const OverflowVec &overflow) const;
     [[nodiscard]] Pid get_next_pin_id() const { return next_pin_id; }
     void set_next_pin_id(Pid id) { next_pin_id = id; }
     [[nodiscard]] bool check_overflow() const { return use_overflow; }
@@ -1340,7 +1474,11 @@ class Graph : public Attr_host {
       }
 
     private:
-      std::array<Vid, kInlineMax> inline_buf_{};
+      // Deliberately NOT value-initialised: only [0, inline_count_) is ever
+      // read (begin()/end() are bounded by inline_count_), and this ctor runs
+      // ~2e8 times on a mid-size design -- the `{}` was 48 bytes of dead
+      // stores per construction.
+      std::array<Vid, kInlineMax> inline_buf_;
       const OverflowSet *overflow_set_ = nullptr;
       uint8_t inline_count_ = 0;
     };
@@ -1352,8 +1490,33 @@ class Graph : public Attr_host {
     auto overflow_handling(Pid self_id, Vid other_id, OverflowPool &pool)
         -> bool;
 
-    Nid master_nid : Nid_bits;   // 42 bits
-    Port_id port_id : Port_bits; // 22 bits    => 64 bits (8 bytes)
+    // Layout (packed, 32 bytes = 256 bits; 255 used, 1 still spare):
+    //
+    //   master_nid   : 40   owning node's nid >> 2  (see below)
+    //   has_driver   :  1 |
+    //   has_sink     :  1 |  direction flags, documented above
+    //   port_id      : 22   -> 64 bits (8 bytes)
+    //   next_pin_id  : 42
+    //   ledge0       : 42
+    //   ledge1       : 42
+    //   use_overflow :  1   -> 127 bits
+    //   sedges_      : 64   -> 255 bits
+    //
+    // master_nid stores the owning node's nid SHIFTED RIGHT BY 2, not the nid.
+    // A node nid is `index << 2` (Graph::create_node) and every writer masks
+    // bit 1 off before storing, so those two low bits are structurally zero and
+    // carry no information -- spending them on the field was spending 2 of the
+    // 42 bits on known zeros. Storing the index instead frees exactly the two
+    // bits the direction flags need while keeping the same 2^40 node capacity
+    // and the same 32-byte entry. get_master_nid() shifts back, so every
+    // consumer still sees the nid.
+    //
+    // This is the on-disk layout too (save_body bulk-writes pin_table), so a
+    // change here is a GRAPH_BODY_VERSION bump.
+    Nid master_nid : Nid_bits - 2;
+    uint8_t has_driver : 1;
+    uint8_t has_sink : 1;
+    Port_id port_id : Port_bits;
     Pid next_pin_id : Nid_bits;  // 42 bits
     Nid ledge0 : Nid_bits;       // 42 bits to too far node/pin (does not fit in
                                  // sedge) => 64 bits (8 bytes)
@@ -1386,7 +1549,9 @@ class Graph : public Attr_host {
     }
     [[nodiscard]] Pid get_next_pin_id() const { return next_pin_id; }
     void set_next_pin_id(Pid id) { next_pin_id = id; }
-    [[nodiscard]] bool has_edges(const OverflowVec &overflow) const;
+    // See PinEntry::has_edge_dir.
+    [[nodiscard]] bool has_edge_dir(bool driver_bit,
+                                    const OverflowVec &overflow) const;
     auto add_edge(Pid self_id, Pid other_id, OverflowPool &pool) -> bool;
     auto delete_edge(Pid self_id, Pid other_id, OverflowPool &pool) -> bool;
     [[nodiscard]] bool check_overflow() const { return use_overflow; }
@@ -1426,7 +1591,11 @@ class Graph : public Attr_host {
       }
 
     private:
-      std::array<Vid, kInlineMax> inline_buf_{};
+      // Deliberately NOT value-initialised: only [0, inline_count_) is ever
+      // read (begin()/end() are bounded by inline_count_), and this ctor runs
+      // ~2e8 times on a mid-size design -- the `{}` was 48 bytes of dead
+      // stores per construction.
+      std::array<Vid, kInlineMax> inline_buf_;
       const OverflowSet *overflow_set_ = nullptr;
       uint8_t inline_count_ = 0;
     };
@@ -1603,11 +1772,15 @@ public:
   [[nodiscard]] Occurrences_view
   occurrences(const ankerl::unordered_dense::set<Gid> *opaque) const noexcept;
 
-  void display_graph() const;
-  void display_next_pin_of_node() const;
 
   void print(std::ostream &os) const;
   [[nodiscard]] std::string print() const;
+
+  // Monotonic structural-mutation counter for THIS body (see body_epoch_).
+  // Bumped by note_body_mutation(), which every structural mutator owes.
+  // Public so tests can prove a walk did not race a mutation; the lazy edge
+  // views read it for their debug mutate-while-iterating assertion.
+  [[nodiscard]] uint64_t body_epoch() const noexcept { return body_epoch_; }
 
 private:
   // An attribute write does NOT make the BODY dirty. The node/pin tables are
@@ -1752,9 +1925,13 @@ private:
   }
   void del_edge(Pin_class driver_pin, Pin_class sink_pin);
   [[nodiscard]] OutEdgeRange out_edges(Node_class node);
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges(Node_class node);
   [[nodiscard]] OutEdgeRange out_edges(Pin_class pin);
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4> inp_edges(Pin_class pin);
+  // Pin-list views backing Node_class::inp_sorted_pins / out_sorted_pins.
+  [[nodiscard]] SortedPinRange sorted_pins(Node_class node, bool want_sink);
+  // THE in-edge primitive: the driver(s) of one sink pin. There is no node-level
+  // in-edge reader any more -- walk sorted_pins(node, /*want_sink=*/true) and
+  // ask each pin.
+  [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_driver_pins(Pin_class pin);
   [[nodiscard]] absl::InlinedVector<Pin_class, 4> get_pins(Node_class node);
   [[nodiscard]] absl::InlinedVector<Pin_class, 4>
   get_driver_pins(Node_class node);
@@ -1795,7 +1972,7 @@ private:
   [[nodiscard]] bool backward_is_sink(size_t idx) const noexcept;
 
   // --- Cross-boundary (hierarchical) edge resolution -----------------------
-  // In a HIER traversal, inp_edges()/out_edges() must not stop at a
+  // In a HIER traversal, the in/out readers must not stop at a
   // sub-module's GraphIO boundary pin: the reported driver/sink hops through
   // the wrapping instance(s) — up to the caller and/or down into a callee —
   // until it reaches a real driver/sink leaf. Only the root (starting) graph's
@@ -1838,21 +2015,24 @@ private:
   // absent.
   [[nodiscard]] Pid find_pin_or_zero(Nid nid, Port_id port_id,
                                      bool driver) const;
+  // Stamp a PinEntry's direction flag. No-op for a node-as-pin(0) handle (bit
+  // 0 clear: those edges live on the NodeEntry, which has no such flags) and
+  // for a pid outside the table. Cumulative: the has_driver/has_sink bits are
+  // never cleared, so they read as "has EVER been used in that direction".
+  void mark_pin_direction(Pid pid, bool driver) noexcept;
+
   // Master node nid (role bits cleared) and port_id of an arbitrary pin pid.
   [[nodiscard]] Nid master_nid_of_pid(Pid pid) const;
   [[nodiscard]] Port_id port_of_pid(Pid pid) const;
   static constexpr int kHierResolveMaxDepth =
       4096; // runaway guard for malformed nets
 
-  // Local (single-graph) edge readers — the historical behavior, used directly
-  // for Class/Flat handles and as the per-graph primitive by the hier readers.
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4>
-  inp_edges_local(Node_class node);
+  // Local (single-graph) OUT-edge reader — the per-graph primitive the hier
+  // reader is built on. The in-edge twins are gone: a sink pin has one driver,
+  // so get_driver_pins(Pin_class) is the whole in-edge story.
   [[nodiscard]] absl::InlinedVector<Edge_class, 4>
   out_edges_local(Node_class node);
-  // Hier readers: resolve each far endpoint across module boundaries.
-  [[nodiscard]] absl::InlinedVector<Edge_class, 4>
-  inp_edges_hier(Node_class node);
+  // Hier reader: resolve each far endpoint across module boundaries.
   [[nodiscard]] absl::InlinedVector<Edge_class, 4>
   out_edges_hier(Node_class node);
   // Starting instance chain (root..node's body) for the hier resolvers.
@@ -1872,6 +2052,20 @@ private:
 
   std::vector<NodeEntry> node_table;
   std::vector<PinEntry> pin_table;
+  // Pin-append cursor for find_or_create_pin. The pin list of a node is a
+  // sorted singly-linked list, so creating P pins in ascending port order used
+  // to cost Theta(P^2) list hops -- 2.0e9 hops on one mid-size module. This
+  // remembers the last pin this graph created and lets the next create resume
+  // the scan there instead of at the head.
+  //
+  // It is a pure accelerator and is SELF-VALIDATING: before use, the cursor is
+  // range-checked against pin_table and re-read from storage (master nid and
+  // port id must still match). Any mutation that could invalidate it -- a
+  // delete_pin, a clear, a clone, a load -- makes one of those checks fail and
+  // the scan falls back to the head. No invalidation hook is required.
+  Nid cursor_pin_nid_ = 0;   // owning node (role bits cleared); 0 == no cursor
+  Pid cursor_pin_pid_ = 0;   // canonical pid of the cursor pin
+  Port_id cursor_pin_port_ = 0;
   // The constant pool: values[port - 1] is the Dlop of the CONST_NODE driver
   // pin with that port id. std::deque so a `const Dlop*` handed out by
   // Pin_class::const_value() survives later create_constant calls (push_back
@@ -1929,9 +2123,34 @@ private:
   // from storage order and the Tail from alive-but-unemitted survivors. No
   // Node_class objects are cached, so memory is O(Pass2) + O(N × 4 bytes)
   // rather than O(N × sizeof(Node_class)).
-  mutable std::vector<Nid> forward_pass2_cache_;
   mutable std::vector<uint32_t> forward_remaining_in_cache_;
   mutable bool forward_caches_valid_ = false;
+  // The replayable emission order, recorded by the same Pass1+Pass2 dry run
+  // inside ensure_forward_caches() that used to be thrown away. Without it
+  // every traversal re-walked every out-edge of every node (O(E) per walk --
+  // ~85M sink visits over one intpipe_decode compile) even when the cache was
+  // already valid, and every iterator ctor copied forward_remaining_in_cache_
+  // and zeroed a bitmap before it could yield a single node.
+  //
+  // `pos` is what keeps the replay honest under mutation: the edge patcher
+  // compares two ranks to decide in O(1) whether an ADDED edge points BACKWARDS
+  // in the recorded order -- the only thing that can make a replay
+  // non-topological. Deletions touching the unordered cycle Tail rebuild it.
+  struct Forward_order {
+    std::vector<uint64_t> pass1_bits;    // emitted by the Pass-1 storage scan
+    std::vector<uint64_t> emitted_bits;  // Pass1 | Pass2; Tail is the alive complement
+    std::vector<Nid> pass2;              // Pass-2 replay list, in emission order
+    std::vector<uint32_t> pos;           // full emission rank; kNoOrderPos if unplaced
+    size_t node_count = 0;
+  };
+  // IMMUTABLE once published. Every ForwardClassIterator copies the shared_ptr
+  // for the length of its walk, so a rebuild provoked by a NESTED walk (or by
+  // anything else mid-iteration) publishes a NEW snapshot and leaves the one
+  // being replayed alone. The old per-iterator scratch bought that stability by
+  // copying O(N) counts per walk; a refcount bump buys it for free -- and it
+  // also closes the hole the old code had, where Pass 2 read the live
+  // Pass-2 list while Pass 1 read a private copy.
+  mutable std::shared_ptr<const Forward_order> forward_order_;
   mutable std::vector<Nid> backward_pass2_cache_;
   mutable std::vector<uint32_t> backward_remaining_out_cache_;
   mutable bool backward_caches_valid_ = false;
@@ -1961,6 +2180,13 @@ private:
   //               one's save moves the tail, and patching at our now-stale
   //               offset lands mid-table and truncates the rest away.
   mutable bool dirty_ = true;
+  // Monotonic "the body's structure changed" counter, bumped by
+  // note_body_mutation() (which every structural mutator owes). Lazy edge
+  // views stamp it at begin() and re-check it on ++/deref in debug builds, so
+  // "mutate while iterating a view" aborts instead of silently reading freed
+  // or reshuffled edge storage. Plain (non-atomic) on purpose: a Graph body is
+  // single-writer, and this is a debug guard, not a synchronization point.
+  uint64_t body_epoch_ = 1;
   mutable bool attrs_dirty_ = true;
   mutable std::streamoff attr_offset_ = -1;
   mutable std::string body_dir_;
@@ -1990,6 +2216,8 @@ private:
   friend class Hier_instance;
   friend class OutEdgeIterator;
   friend class OutEdgeRange;
+  friend class SortedPinIterator;
+  friend class SortedPinRange;
   friend class Subnode_group;
   friend class Body_view;
   friend class Definitions_view;
@@ -1998,7 +2226,7 @@ private:
   friend struct detail::Hierarchy_view_state;
 };
 
-// Lazy, auto-scaling view over the OUT edges of a pin or node. Yields
+// Lazy, auto-scaling view over the edges of a pin or node. Yields
 // Edge_class on demand instead of materializing a vector: a pin with a huge
 // fanout (clock/reset/enable -> 100K+ sinks) is walked in place over its
 // overflow set with NO copy and supports early `break`, while the common small
@@ -2032,7 +2260,19 @@ public:
     return tmp;
   }
   [[nodiscard]] bool operator==(const OutEdgeIterator &o) const noexcept {
-    return phase_ == Phase::End && o.phase_ == Phase::End;
+    if (phase_ == Phase::End || o.phase_ == Phase::End) {
+      return phase_ == o.phase_;
+    }
+    if (graph_ != o.graph_ || phase_ != o.phase_) {
+      return false;
+    }
+    if (phase_ == Phase::Materialized) {
+      return mat_ == o.mat_ && mat_idx_ == o.mat_idx_;
+    }
+    return is_node_src_ == o.is_node_src_ && cur_self_ == o.cur_self_ &&
+           is_overflow_ == o.is_overflow_ &&
+           (is_overflow_ ? ovf_ == o.ovf_ && ovf_it_ == o.ovf_it_
+                         : idx_ == o.idx_);
   }
   [[nodiscard]] bool operator!=(const OutEdgeIterator &o) const noexcept {
     return !(*this == o);
@@ -2048,8 +2288,11 @@ private:
   bool load_next_pin();
   void bind_node_as_pin();
   void bind_pin();
-  void set_driver(Pid driver_pid);
+  // Builds the driver pin for the entry just bound.
+  void set_self_pin(Pid self_pid);
   [[nodiscard]] Edge_class build_edge(Vid vid) const;
+  // Debug-only: abort if the body was structurally mutated since begin().
+  void check_epoch() const noexcept;
 
   [[nodiscard]] bool entry_at_end() const noexcept {
     return is_overflow_ ? (ovf_it_ == ovf_end_) : (idx_ >= n_);
@@ -2106,14 +2349,21 @@ private:
   std::shared_ptr<absl::InlinedVector<Edge_class, 4>> mat_;
   size_t mat_idx_ = 0;
 
-  // Driver pin for the active entry (built once per entry, already stamped).
-  Pin_class cur_driver_{};
+  // Driver for the active entry, built and context-stamped once per entry.
+  Pin_class cur_self_{};
+
+  // Debug mutation guard: Graph::body_epoch() at begin() time.
+  uint64_t epoch_ = 0;
 
   friend class OutEdgeRange;
   friend class Graph;
 };
 
-// Movable handle returned by out_edges(); begin() seeds a fresh iterator.
+// Movable handle returned by out_edges(); begin() seeds a
+// fresh iterator. The iterator copies everything it needs out of the range
+// (including the hier `mat_` shared_ptr), so an iterator OUTLIVES the range it
+// came from -- `auto it = node.out_edges().begin();` is safe, unlike the
+// same line over a materializing accessor's temporary vector.
 class OutEdgeRange {
 public:
   using iterator = OutEdgeIterator;
@@ -2141,6 +2391,110 @@ private:
 
   friend class Graph;
   friend class OutEdgeIterator;
+};
+
+// Lightweight iterator over ONE NODE'S PIN LINKED LIST, in ascending port_id,
+// yielding only the pins of one direction. Backs
+// Node_class::inp_sorted_pins() / out_sorted_pins(); see those for the
+// contract. No allocation, no edge decoding, no vector: the whole cursor is
+// the node base, the next list link and the current pid.
+//
+// Per step it does:
+//   1. an O(1) BIT TEST on the PinEntry's direction flags -- a pin the flags
+//      prove is exclusively the other direction is skipped without its edge
+//      storage being read at all (this is the 12,168-out-edge `eq` case);
+//   2. for a surviving candidate, PinEntry::has_edge_dir, which short-circuits
+//      on the first edge of the wanted direction and never reconstructs a
+//      target id.
+// Unclassified pins (both flags clear -- a pin minted before this bookkeeping
+// existed) fall through to step 2 in BOTH directions, so a missing mark is a
+// slowdown, never a dropped pin.
+class SortedPinIterator {
+public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type = Pin_class;
+  using reference = Pin_class;
+  using pointer = void;
+  using difference_type = std::ptrdiff_t;
+
+  SortedPinIterator() = default; // end sentinel
+
+  [[nodiscard]] Pin_class operator*() const;
+  SortedPinIterator &operator++();
+  SortedPinIterator operator++(int) {
+    SortedPinIterator tmp = *this;
+    ++*this;
+    return tmp;
+  }
+  [[nodiscard]] bool operator==(const SortedPinIterator &o) const noexcept {
+    if (at_end() || o.at_end()) {
+      return at_end() == o.at_end();
+    }
+    return graph_ == o.graph_ && self_nid_ == o.self_nid_ &&
+           want_sink_ == o.want_sink_ && on_port0_ == o.on_port0_ &&
+           cur_pid_ == o.cur_pid_;
+  }
+  [[nodiscard]] bool operator!=(const SortedPinIterator &o) const noexcept {
+    return !(*this == o);
+  }
+
+private:
+  void start();
+  void advance();
+  [[nodiscard]] bool at_end() const noexcept {
+    return graph_ == nullptr || (!on_port0_ && cur_pid_ == 0);
+  }
+  void check_epoch() const noexcept;
+
+  Graph *graph_ = nullptr;
+  bool want_sink_ = false;
+  bool on_port0_ = false; // current position IS the node-as-pin(0)
+  Nid self_nid_ = 0;      // node base (& ~3)
+  Pid next_link_ = 0;     // next entry of the pin list to consider
+  Pid cur_pid_ = 0;       // canonical pid of the current list entry (0 = none)
+
+  // Context template, stamped onto every yielded pin so the handles compare
+  // and hash exactly like the ones out_edges() hands out.
+  Handle_context context_ = Handle_context::Class;
+  Gid root_gid_ = Gid_invalid;
+  Tree_pos hier_pos_ = INVALID;
+  std::shared_ptr<const std::vector<Nid>> hier_path_;
+
+  uint64_t epoch_ = 0; // debug mutation guard: Graph::body_epoch() at begin()
+
+  friend class SortedPinRange;
+  friend class Graph;
+};
+
+// Movable handle returned by inp_sorted_pins() / out_sorted_pins(). begin()
+// seeds a fresh iterator that copies everything it needs, so the iterator
+// outlives the range temporary.
+class SortedPinRange {
+public:
+  using iterator = SortedPinIterator;
+
+  [[nodiscard]] SortedPinIterator begin() const;
+  [[nodiscard]] SortedPinIterator end() const noexcept {
+    return SortedPinIterator{};
+  }
+  // size() walks the range and front()/empty() each re-seed an iterator, so
+  // they are O(pins), not O(1). Do not call size() per node in a hot loop --
+  // range-for once and count, or take a snapshot.
+  [[nodiscard]] bool empty() const { return begin() == end(); }
+  [[nodiscard]] size_t size() const;
+  [[nodiscard]] Pin_class front() const;  // precondition: !empty()
+
+private:
+  Graph *graph_ = nullptr;
+  bool want_sink_ = false;
+  Nid self_nid_ = 0;
+  Handle_context context_ = Handle_context::Class;
+  Gid root_gid_ = Gid_invalid;
+  Tree_pos hier_pos_ = INVALID;
+  std::shared_ptr<const std::vector<Nid>> hier_path_;
+
+  friend class Graph;
+  friend class SortedPinIterator;
 };
 
 // Lazy, single-pass iterator over a graph's live nodes (node_table scan,
@@ -2192,10 +2546,19 @@ private:
 
 // Forward topological iterator for a single graph body. Emits sources first,
 // then storage-order combinational nodes (Pass 1), then deferred back-edge
-// targets (Pass 2 replayed from Graph::forward_pass2_cache_), then any cycle
-// survivors (Tail). No Node_class objects are cached — per-iteration scratch
-// (a working copy of in-edge counts and an emitted bitset) is the only
-// per-walk allocation. Move-only to keep that scratch unique.
+// targets (Pass 2 replayed from the recorded list), then any cycle
+// survivors (Tail). No Node_class objects are cached and there is NO per-walk
+// scratch at all: the whole emission order is replayed from the graph-level
+// snapshot (Graph::Forward_order, pinned by shared_ptr for the whole walk),
+// so construction is O(1) and a walk touches no edge. Move-only is kept for
+// source compatibility.
+//
+// Mutating the body DURING a walk is defined: the walk keeps replaying the
+// snapshot it pinned, so it still yields exactly the nodes that were alive-and
+// -ordered when it started (nodes deleted meanwhile are skipped by the alive
+// test; nodes created meanwhile are not visited). It does NOT observe a rebuild
+// that some other walk provokes in the middle. Callers that need to see new
+// nodes must start a new walk, as they always did.
 class ForwardClassIterator {
 public:
   using iterator_category = std::input_iterator_tag;
@@ -2235,11 +2598,13 @@ private:
   explicit ForwardClassIterator(Graph *graph, bool loop_break_first = true,
                                 bool loop_break_last = false);
   void advance();
-  void propagate(size_t driver_idx, size_t cursor);
   [[nodiscard]] bool is_source(size_t idx) const noexcept;
+  // Replay predicates: reads of the immutable snapshot this walk pinned at
+  // construction. No per-iterator scratch, so construction is O(1).
+  [[nodiscard]] bool in_pass1(size_t idx) const noexcept;
   [[nodiscard]] bool is_emitted(size_t idx) const noexcept;
-  void mark_emitted(size_t idx) noexcept;
   Graph *graph_ = nullptr;
+  std::shared_ptr<const Graph::Forward_order> order_;
   Phase phase_ = Phase::End;
   size_t idx_ = 0;
   size_t pass2_head_ = 0;
@@ -2247,9 +2612,6 @@ private:
   size_t current_idx_ = 0;
   bool loop_break_first_ = true;
   bool loop_break_last_ = false;
-
-  std::vector<uint32_t> working_remaining_in_;
-  std::vector<uint64_t> emitted_bits_;
 
   friend class ForwardClassRange;
 };
@@ -2542,7 +2904,6 @@ public:
   }
   [[nodiscard]] uint64_t size_hint() const;
   [[nodiscard]] std::optional<uint64_t> size_exact() const;
-  [[nodiscard]] uint64_t physical_node_count_hint() const;
   [[nodiscard]] std::optional<uint64_t> physical_node_count_exact() const;
 
 private:
@@ -2681,7 +3042,6 @@ public:
   // its Gid and name preserved. Distinct from clear(), which tombstones the
   // entire GraphIO+Graph entry. Used by callers that want "reset all IO
   // declarations on this slot" without invalidating the slot itself.
-  void reset_declarations();
   [[nodiscard]] bool has_input(std::string_view name) const;
   [[nodiscard]] bool has_output(std::string_view name) const;
   [[nodiscard]] bool is_loop_break(std::string_view name) const;
@@ -3762,7 +4122,7 @@ inline void GraphIO::delete_output(std::string_view name) {
   if (auto graph = get_graph()) {
     const auto pin_it = graph->output_pins_.find(std::string(name));
     if (pin_it != graph->output_pins_.end()) {
-      I(graph->inp_edges(graph->make_pin_class(pin_it->second)).empty() &&
+      I(!graph->make_pin_class(pin_it->second).has_driver() &&
         "delete_output: output pin is still connected — disconnect before "
         "delete");
     }
@@ -3783,25 +4143,6 @@ inline void GraphIO::clear() {
   owner_lib_->delete_graphio(shared_from_this());
 }
 
-inline void GraphIO::reset_declarations() {
-  I(owner_lib_ != nullptr &&
-    "reset_declarations: GraphIO is no longer attached to a library");
-  // Drop body-side counterpart pins first, while we still know the names.
-  if (auto graph = get_graph()) {
-    for (const auto &input : input_pin_decls_) {
-      graph->erase_declared_io_pin(input.name, graph->input_pins_);
-    }
-    for (const auto &output : output_pin_decls_) {
-      graph->erase_declared_io_pin(output.name, graph->output_pins_);
-    }
-  }
-  input_pin_decls_.clear();
-  output_pin_decls_.clear();
-  declared_io_pins_.clear();
-  if (owner_lib_ != nullptr) {
-    owner_lib_->note_graph_mutation();
-  }
-}
 
 inline bool GraphIO::has_input(std::string_view name) const {
   const auto it = declared_io_pins_.find(std::string(name));
@@ -3917,6 +4258,7 @@ inline Port_id GraphIO::get_output_port_id(std::string_view name) const {
 
 inline void Graph::note_body_mutation() noexcept {
   dirty_ = true;
+  ++body_epoch_;
   if (owner_lib_ != nullptr) {
     owner_lib_->note_graph_mutation();
   }

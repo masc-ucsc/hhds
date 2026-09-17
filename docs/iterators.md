@@ -98,6 +98,30 @@ physical `multiplicity()`.
 The hierarchical views also provide `lift()` for root-body nodes and pins, and
 `reachable_pins()` for occurrence-aware traversal across graph boundaries.
 
+### Pins and edges
+
+`node.inp_sorted_pins()` and `node.out_sorted_pins()` visit connected pins in
+ascending port order, including port 0. On a `Node_class` these are lazy local
+storage views. On an `Occurrence_node` the pins retain their occurrence context;
+their connectivity readers resolve hierarchy boundaries.
+
+```cpp
+for (auto sink : node.inp_sorted_pins()) {
+  for (auto driver : sink.get_driver_pins()) {
+    // Consume every driver, including seed and feedback on a compact carry.
+  }
+}
+```
+
+For a class sink known to have at most one driver, `get_driver_pin()` returns
+that driver or an invalid handle if disconnected. It asserts on multiple
+drivers in debug builds. Use `driver.out_edges()` for fanout.
+
+Local pin and edge iterators retain their state when the range temporary dies.
+Structural mutation invalidates them. To disconnect inputs while walking, use
+`node.inp_pins_snapshot()`; to delete outgoing edges, copy `out_edges()` into a
+vector first. Pin snapshots retain handles, not connectivity snapshots.
+
 ### Cost model
 
 - `body().nodes()` is a streaming storage walk.

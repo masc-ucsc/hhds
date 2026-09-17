@@ -48,7 +48,7 @@ TEST(NamePersistence, TreeSubnodeSurvivesDeleteRecreateAcrossSaveLoad) {
 
     // Hierarchical traversal descends into leaf.
     std::vector<std::string> hier;
-    for (auto n : top->pre_order_with_subtrees(top_root, true)) {
+    for (auto n : top_root.occurrences().nodes(hhds::Tree_order::preorder)) {
       hier.push_back(std::string(n.attr(name).get()));
     }
     EXPECT_EQ(hier, (std::vector<std::string>{"top_root", "calls_leaf", "leaf_v1", "leaf_v1_child"}));
@@ -97,7 +97,7 @@ TEST(NamePersistence, TreeSubnodeSurvivesDeleteRecreateAcrossSaveLoad) {
     auto top_root = top->get_root_node();
 
     std::vector<std::string> hier;
-    for (auto n : top->pre_order_with_subtrees(top_root, true)) {
+    for (auto n : top_root.occurrences().nodes(hhds::Tree_order::preorder)) {
       hier.push_back(std::string(n.attr(name).get()));
     }
     EXPECT_EQ(hier, (std::vector<std::string>{"top_root", "calls_leaf", "leaf_v2", "leaf_v2_child"}));
@@ -229,7 +229,8 @@ TEST(NamePersistence, IoDeclarationDeleteRequiresDisconnectedPinAndPreservesName
 
   and1_out.connect_sink(used_out);
   EXPECT_EQ(used_out.get_pin_name(), "used_out");
-  EXPECT_EQ(used_out.inp_edges().size(), 1u);
+  EXPECT_EQ(used_out.get_driver_pin(), and1_out);
+  EXPECT_TRUE(used_out.has_driver());
 
 #ifndef NDEBUG
   EXPECT_DEATH(top_gio->delete_output("used_out"), "connected");
@@ -238,7 +239,8 @@ TEST(NamePersistence, IoDeclarationDeleteRequiresDisconnectedPinAndPreservesName
   used_out.del_pin();
   EXPECT_TRUE(used_out.is_valid());
   EXPECT_EQ(used_out.get_pin_name(), "used_out");
-  EXPECT_EQ(used_out.inp_edges().size(), 0u);
+  EXPECT_TRUE(used_out.get_driver_pin().is_invalid());
+  EXPECT_FALSE(used_out.has_driver());
 
   top_gio->delete_output("used_out");
   EXPECT_FALSE(top_gio->has_output("used_out"));
@@ -289,14 +291,21 @@ TEST(NamePersistence, IoMapsReconcileAgainstLoadedBodyAfterLateDecl) {
 
     auto late = g->get_input_pin("late_in");
     EXPECT_EQ(late.get_pin_name(), "late_in");
-    EXPECT_EQ(late.out_edges().size(), 1u);  // still drives n1's port-5 sink
+    ASSERT_EQ(late.out_edges().size(), 1u);
+    EXPECT_EQ(late.out_edges().front().sink.get_port_id(), 5u);
+    EXPECT_EQ(late.out_edges().front().sink.get_driver_pin(), late);
 
     auto a = g->get_input_pin("a");
     EXPECT_EQ(a.get_pin_name(), "a");
-    EXPECT_EQ(a.out_edges().size(), 1u);
+    ASSERT_EQ(a.out_edges().size(), 1u);
+    EXPECT_EQ(a.out_edges().front().sink.get_port_id(), 3u);
+    EXPECT_EQ(a.out_edges().front().sink.get_driver_pin(), a);
 
     EXPECT_EQ(g->get_output_pin("y").get_pin_name(), "y");
-    EXPECT_EQ(g->get_output_pin("y").inp_edges().size(), 1u);
+    const auto output_driver = g->get_output_pin("y").get_driver_pin();
+    ASSERT_TRUE(output_driver.is_valid());
+    EXPECT_EQ(output_driver.get_port_id(), 4u);
+    EXPECT_EQ(output_driver.get_master_node(), a.out_edges().front().sink.get_master_node());
   }
 
   fs::remove_all(test_dir);

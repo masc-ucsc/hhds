@@ -40,6 +40,116 @@ namespace hhds {
   return hash_mix64(hash ^ (value + 0x9e3779b97f4a7c15ULL + (hash << 6U) + (hash >> 2U)));
 }
 
+// ---------------------------------------------------------------------------
+// The field combiner (owner spec, 2026-09-16). This is the construction the
+// commutative fold is DEFINED by; the sum/xor/count combiner below predates it
+// and is kept only for callers that have not moved.
+//
+//   p      = 2^61 - 1 (a Mersenne prime); the group is F* = GF(p)*
+//   mu     = splitmix64 finalizer, a non-algebraic mixer
+//   mu2(a,b) = mu(a ^ mu(b))
+//   gamma(h) = max(2, mu(h) mod p)  -- projects into F*, EXCLUDING 0 and 1
+//
+// The commutative fold is the PRODUCT of gamma(term) in F*, with the operand
+// COUNT folded in separately. Why a product in a prime field rather than the
+// sum/xor/count fold below:
+//   * gamma never yields 0, so no operand can ANNIHILATE the accumulator, and
+//     never yields 1, so no operand can VANISH from it. A bare xor has both
+//     failures (h ^ h == 0), and a sum has the second (+0).
+//   * duplicates accumulate multiplicatively: {a,a} gives gamma(a)^2 != gamma(a),
+//     so `a + a` (which is 2a) cannot hash like `a`.
+//   * the count is folded explicitly because the product alone does not encode
+//     cardinality.
+//
+// INVARIANTS (all enforced by construction below, and pinned by the tests):
+//   1. every integer passes through mu before reaching mu2 or gamma -- no raw
+//      index, width or port id ever enters the field;
+//   2. gamma excludes 0 and 1, so no operand annihilates or vanishes;
+//   3. the count is folded in explicitly;
+//   4. edge attributes enter BEFORE the product, so an inversion cannot migrate
+//      between operands;
+//   6. the commutative branch never folds a pin index; the ordered branch always
+//      does (see node_hash.hpp, which owns 5 and 7).
+//
+// THIS IS A FILTER, NOT A DECISION: a 64-bit digest of an unbounded structure
+// collides. A caller that MERGES on a match must confirm with a real operand
+// comparison; a false merge is a silent miscompile.
+
+inline constexpr uint64_t kMersenne61 = (1ULL << 61U) - 1U;  // p
+
+// splitmix64 finalizer -- mu.
+[[nodiscard]] constexpr uint64_t hash_mu(uint64_t value) noexcept {
+  value ^= value >> 30U;
+  value *= 0xbf58476d1ce4e5b9ULL;
+  value ^= value >> 27U;
+  value *= 0x94d049bb133111ebULL;
+  value ^= value >> 31U;
+  return value;
+}
+
+// mu2(a,b) = mu(a ^ mu(b)) -- the pairwise mixer every fold goes through.
+[[nodiscard]] constexpr uint64_t hash_mu2(uint64_t a, uint64_t b) noexcept { return hash_mu(a ^ hash_mu(b)); }
+
+// gamma: project a digest into F* = GF(2^61-1)*, excluding 0 and 1 so that no
+// operand can annihilate the product or drop out of it.
+[[nodiscard]] constexpr uint64_t hash_gamma(uint64_t h) noexcept {
+  const uint64_t r = hash_mu(h) % kMersenne61;
+  return r < 2U ? 2U : r;
+}
+
+// Multiply in GF(2^61-1). The Mersenne shape lets the 128-bit product fold with
+// shifts and an add instead of a division.
+[[nodiscard]] constexpr uint64_t hash_mulmod61(uint64_t a, uint64_t b) noexcept {
+  const __uint128_t prod = static_cast<__uint128_t>(a) * b;
+  uint64_t          lo   = static_cast<uint64_t>(prod) & kMersenne61;
+  const uint64_t    hi   = static_cast<uint64_t>(prod >> 61U);
+  lo += hi;
+  if (lo >= kMersenne61) {
+    lo -= kMersenne61;
+  }
+  return lo;
+}
+
+// Order-independent fold over one COMMUTATIVE GROUP (one operand bank).
+//
+// A cell with several banks (LiveHD's Sum/LT/GT: "as" on even pids, "bs" on odd)
+// is NOT one commutative set and NOT positional -- it is a SEQUENCE of groups.
+// Fold each bank with its own Field_combiner, then combine the bank digests
+// POSITIONALLY, so a swap inside a bank is invisible and a swap across banks is
+// not. A non-banked op is the degenerate case: every pid is its own group of one.
+class Field_combiner {
+public:
+  constexpr void add(uint64_t term) noexcept {
+    // mu BEFORE gamma, per invariant 1 ("every integer passes through mu before
+    // reaching mu2 or gamma"). gamma applies mu internally too, so a term is
+    // mixed TWICE before it enters the field -- and that is load-bearing, not
+    // belt-and-braces. With a single mix, splitmix64's leading `z ^= z >> 30` is
+    // a NO-OP for any term below 2^30, the avalanche is one multiply short, and
+    // enough multiplicative structure survives that gamma goes LINEAR on small
+    // inputs: measured gamma(30) == 2*gamma(15) and gamma(20) == 2*gamma(10)
+    // exactly, so {10,30} and {15,20} collided because 10*30 == 15*20. Three
+    // such collisions in a 4095-multiset sweep; zero with the mix below, and
+    // zero over 45150.
+    prod_ = hash_mulmod61(prod_, hash_gamma(hash_mu(term)));
+    ++count_;
+  }
+
+  [[nodiscard]] constexpr uint64_t value() const noexcept { return hash_mu2(prod_, count_); }
+  [[nodiscard]] constexpr uint64_t count() const noexcept { return count_; }
+
+private:
+  uint64_t prod_  = 1U;  // F* identity; gamma never returns 1, so it cannot be forged
+  uint64_t count_ = 0;
+};
+
+[[nodiscard]] constexpr uint64_t field_combine(std::span<const uint64_t> terms) noexcept {
+  Field_combiner c;
+  for (uint64_t t : terms) {
+    c.add(t);
+  }
+  return c.value();
+}
+
 // Order-INDEPENDENT combiner over a multiset of 64-bit terms.
 //
 // Each term is mixed first (so the accumulators never see raw, structured
@@ -70,14 +180,6 @@ private:
   uint64_t xor_   = 0;
   uint64_t count_ = 0;
 };
-
-[[nodiscard]] constexpr uint64_t commutative_combine(std::span<const uint64_t> terms) noexcept {
-  Commutative_combiner c;
-  for (uint64_t t : terms) {
-    c.add(t);
-  }
-  return c.value();
-}
 
 // 128-bit variant, for the callers that key cone identity on the digest and
 // cannot afford a 64-bit birthday collision over a large cone population
@@ -113,13 +215,5 @@ private:
   Commutative_combiner a_;
   Commutative_combiner b_;
 };
-
-[[nodiscard]] constexpr Sig128 commutative_combine128(std::span<const Sig128> terms) noexcept {
-  Commutative_combiner128 c;
-  for (const auto& t : terms) {
-    c.add(t);
-  }
-  return c.value();
-}
 
 }  // namespace hhds

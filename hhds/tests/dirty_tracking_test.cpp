@@ -229,7 +229,7 @@ int main() {
   // with a single accepted version there is no legacy file left to patch.)
   // Bump `kBodyVersion` in step with GRAPH_BODY_VERSION in graph.cpp.
   {
-    constexpr uint32_t kBodyVersion = 6;
+    constexpr uint32_t kBodyVersion = 7;
 
     const auto legacy = fs::temp_directory_path() / (tag + "_legacy");
     fs::remove_all(legacy);

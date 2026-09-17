@@ -9,6 +9,20 @@ using namespace hhds;
 
 static Nid node_of(Nid nid) { return nid & ~static_cast<Nid>(3); }
 
+// The pin-centric replacement for the DELETED Occurrence inp_edges(): every
+// driver of every sink pin, in sorted-pin order. Plural per sink -- a
+// cross-boundary sink can resolve to several drivers, which is exactly what
+// probe_multidriver below is here to show.
+[[nodiscard]] static std::vector<Occurrence_pin> hier_in_drivers(const Occurrence_node& n) {
+  std::vector<Occurrence_pin> out;
+  for (const auto& sink : n.inp_sorted_pins()) {
+    for (const auto& driver : sink.get_driver_pins()) {
+      out.push_back(driver);
+    }
+  }
+  return out;
+}
+
 static Occurrence_node find_hier_node(Graph* top, Gid gid, Nid nid) {
   Occurrence_node found;
   bool            ok   = false;
@@ -114,7 +128,7 @@ static void probe_fanout_up_then_down() {
 }
 
 // MULTI-DRIVER sink (illegal-ish but possible): leaf input "a" driven by two
-// top drivers. inp_edges from buf (hier) should surface BOTH.
+// top drivers. The in-drivers of buf (hier) should surface BOTH.
 static void probe_multidriver() {
   GraphLibrary lib;
   auto         leaf_io = lib.create_io("leafMD");
@@ -133,11 +147,11 @@ static void probe_multidriver() {
   s2.create_driver_pin().connect_sink(r.create_sink_pin(1));
 
   auto buf_h = find_hier_node(top.get(), leaf->get_gid(), buf.get_debug_nid());
-  auto ins   = buf_h.inp_edges();
-  std::cout << "probe_multidriver: inp_edges count = " << ins.size() << " (expect 2: s1,s2)\n";
+  auto ins   = hier_in_drivers(buf_h);
+  std::cout << "probe_multidriver: in-driver count = " << ins.size() << " (expect 2: s1,s2)\n";
 }
 
-// DANGLING: leaf input "a" not connected at top. inp_edges should be... what?
+// DANGLING: leaf input "a" not connected at top. What do the in-drivers report?
 static void probe_dangling_up() {
   GraphLibrary lib;
   auto         leaf_io = lib.create_io("leafDA");
@@ -153,11 +167,14 @@ static void probe_dangling_up() {
   (void)r;
 
   auto buf_h = find_hier_node(top.get(), leaf->get_gid(), buf.get_debug_nid());
-  auto ins   = buf_h.inp_edges();
-  std::cout << "probe_dangling_up: inp_edges count = " << ins.size() << " (instance input unconnected)\n";
-  // local view:
-  auto ins_local = buf.inp_edges();
-  std::cout << "   local inp_edges count = " << ins_local.size() << "\n";
+  auto ins   = hier_in_drivers(buf_h);
+  std::cout << "probe_dangling_up: in-driver count = " << ins.size() << " (instance input unconnected)\n";
+  // local (flat) view:
+  size_t local = 0;
+  for (const auto& sink : buf.inp_sorted_pins()) {
+    local += sink.get_driver_pins().size();
+  }
+  std::cout << "   local in-driver count = " << local << "\n";
 }
 
 // Querying an INSTANCE node itself (is_hier instance with subnode) in hier ctx.
@@ -191,11 +208,11 @@ static void probe_query_instance_node() {
   }
   assert(ok);
   std::cout << "probe_query_instance_node: r path='" << r_h.get_hier_name() << "' has_subnode\n";
-  auto ins = r_h.inp_edges();
-  std::cout << "   r.inp_edges count = " << ins.size() << "\n";
-  for (const auto& e : ins) {
-    std::cout << "     driver gid=" << e.driver.get_current_gid()
-              << " master=" << node_of(e.driver.get_master_node().get_debug_nid()) << " (src=" << node_of(src.get_debug_nid())
+  auto ins = hier_in_drivers(r_h);
+  std::cout << "   r in-driver count = " << ins.size() << "\n";
+  for (const auto& drv : ins) {
+    std::cout << "     driver gid=" << drv.get_current_gid()
+              << " master=" << node_of(drv.get_master_node().get_debug_nid()) << " (src=" << node_of(src.get_debug_nid())
               << ")\n";
   }
   auto outs = r_h.out_edges();
@@ -223,11 +240,11 @@ static void probe_const_driver() {
   k.connect_sink(r.create_sink_pin(1));
 
   auto buf_h = find_hier_node(top.get(), leaf->get_gid(), buf.get_debug_nid());
-  auto ins   = buf_h.inp_edges();
-  std::cout << "probe_const_driver: inp_edges count = " << ins.size() << " (expect 1: CONST)\n";
-  for (const auto& e : ins) {
-    std::cout << "   driver gid=" << e.driver.get_current_gid() << " master=" << node_of(e.driver.get_master_node().get_debug_nid())
-              << " is_driver=" << e.driver.is_driver() << " (CONST_NODE=12)\n";
+  auto ins   = hier_in_drivers(buf_h);
+  std::cout << "probe_const_driver: in-driver count = " << ins.size() << " (expect 1: CONST)\n";
+  for (const auto& drv : ins) {
+    std::cout << "   driver gid=" << drv.get_current_gid() << " master=" << node_of(drv.get_master_node().get_debug_nid())
+              << " is_driver=" << drv.is_driver() << " (CONST_NODE=12)\n";
   }
 }
 
@@ -251,9 +268,9 @@ static void probe_boundary_cycle() {
   r.create_driver_pin(2).connect_sink(r.create_sink_pin(1));  // r.y -> r.a  (cycle)
 
   auto buf_h = find_hier_node(top.get(), leaf->get_gid(), buf.get_debug_nid());
-  std::cout << "probe_boundary_cycle: calling inp_edges (depth cap should fire)...\n";
-  auto ins = buf_h.inp_edges();
-  std::cout << "   inp_edges count = " << ins.size() << "\n";
+  std::cout << "probe_boundary_cycle: collecting in-drivers (depth cap should fire)...\n";
+  auto ins = hier_in_drivers(buf_h);
+  std::cout << "   in-driver count = " << ins.size() << "\n";
 }
 
 // TRUE pass-through cycle: leaf wires input a directly to output y (no node),
@@ -275,7 +292,7 @@ static void probe_passthrough_cycle() {
   r.create_driver_pin(2).connect_sink(r.create_sink_pin(1));   // r.y -> r.a (cycle)
   r.create_driver_pin(2).connect_sink(snk.create_sink_pin());  // also r.y -> snk (observable)
 
-  // Query snk.inp_edges in hier ctx: driver is r.y -> down into leaf OUTPUT ->
+  // Query snk in-drivers in hier ctx: driver is r.y -> down into leaf OUTPUT ->
   // driven by leaf INPUT a -> up to r.a -> driven by r.y -> ... cycle.
   Occurrence_node snk_h;
   bool            ok = false;
@@ -286,9 +303,9 @@ static void probe_passthrough_cycle() {
     }
   }
   assert(ok);
-  std::cout << "probe_passthrough_cycle: calling snk.inp_edges (true cycle, depth cap)...\n";
-  auto ins = snk_h.inp_edges();
-  std::cout << "   inp_edges count = " << ins.size() << " (cycle -> likely 0, edge silently dropped)\n";
+  std::cout << "probe_passthrough_cycle: collecting snk in-drivers (true cycle, depth cap)...\n";
+  auto ins = hier_in_drivers(snk_h);
+  std::cout << "   in-driver count = " << ins.size() << " (cycle -> likely 0, edge silently dropped)\n";
 }
 
 // PORT 0 boundary: instance connected through port 0 (node-as-pin) on both
@@ -314,10 +331,10 @@ static void probe_port0_boundary() {
   r.create_driver_pin(0).connect_sink(dst.create_sink_pin());  // r.y(port0) -> dst
 
   auto buf_h = find_hier_node(top.get(), leaf->get_gid(), buf.get_debug_nid());
-  auto ins   = buf_h.inp_edges();
-  std::cout << "probe_port0_boundary: inp_edges count = " << ins.size() << " (expect 1: src)\n";
-  for (const auto& e : ins) {
-    std::cout << "   driver master=" << node_of(e.driver.get_master_node().get_debug_nid())
+  auto ins   = hier_in_drivers(buf_h);
+  std::cout << "probe_port0_boundary: in-driver count = " << ins.size() << " (expect 1: src)\n";
+  for (const auto& drv : ins) {
+    std::cout << "   driver master=" << node_of(drv.get_master_node().get_debug_nid())
               << " (src=" << node_of(src.get_debug_nid()) << ")\n";
   }
   auto outs = buf_h.out_edges();
@@ -332,7 +349,7 @@ static void probe_port0_boundary() {
 // wrapper modules P1 and P2. In each wrapper, the leaf instance is the first
 // subnode, so it gets the SAME per-graph tree_pos. Both wrappers are placed in
 // top. The leaf passes a->y. Top feeds P1.a from srcA and reads P1.y into dstA;
-// P2.a from srcB, P2.y into dstB. From the leaf reached via P1, inp_edges must
+// P2.a from srcB, P2.y into dstB. From the leaf reached via P1, the in-drivers must
 // resolve to srcA (NOT srcB). If reconstruct_hier_path matches by (gid,tree_pos)
 // only, it may pick the P2 chain.
 static void probe_ambiguous_hier_pos() {
@@ -385,10 +402,10 @@ static void probe_ambiguous_hier_pos() {
   int idx = 0;
   for (auto n : top->grouped_hierarchy().nodes(hhds::Node_order::forward)) {
     if (n.get_current_gid() == leaf->get_gid() && node_of(n.get_debug_nid()) == node_of(buf.get_debug_nid())) {
-      auto ins = n.inp_edges();
-      std::cout << "  leaf-buf visit #" << idx << " path=" << n.get_hier_name() << " inp_edges=" << ins.size();
-      for (const auto& e : ins) {
-        std::cout << " -> driver master=" << node_of(e.driver.get_master_node().get_debug_nid());
+      auto ins = hier_in_drivers(n);
+      std::cout << "  leaf-buf visit #" << idx << " path=" << n.get_hier_name() << " in_drivers=" << ins.size();
+      for (const auto& drv : ins) {
+        std::cout << " -> driver master=" << node_of(drv.get_master_node().get_debug_nid());
       }
       std::cout << "  (srcA=" << node_of(srcA.get_debug_nid()) << " srcB=" << node_of(srcB.get_debug_nid()) << ")\n";
       auto outs = n.out_edges();

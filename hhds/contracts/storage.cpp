@@ -97,9 +97,10 @@ TEST(GraphStorage, Pin0CreatesNoPinEntry) {
   // connect through pin(0) and verify edges work
   spin0.connect_driver(n2.create_driver_pin(0));
 
-  auto inp = spin0.inp_edges();
-  EXPECT_EQ(inp.size(), 1u);
-  EXPECT_EQ(inp[0].sink, spin0);
+  auto inp = spin0.get_driver_pins();
+  ASSERT_EQ(inp.size(), 1u);
+  EXPECT_EQ(inp.front(), n2.get_driver_pin(0));
+  EXPECT_EQ(spin0.get_driver_pin(), n2.get_driver_pin(0));
 
   auto outp = n2.create_driver_pin(0).out_edges();
   EXPECT_EQ(outp.size(), 1u);
@@ -132,6 +133,17 @@ TEST(GraphStorage, NonZeroPortSharesSinglePinEntry) {
 
   // Both should resolve to the same underlying PinEntry (same id ignoring bit 1).
   EXPECT_EQ(driver_pin.get_debug_pid() & ~static_cast<hhds::Pid>(2), sink_pin.get_debug_pid() & ~static_cast<hhds::Pid>(2));
+
+  auto upstream   = graph->create_node().create_driver_pin();
+  auto downstream = graph->create_node().create_sink_pin();
+  sink_pin.connect_driver(upstream);
+  driver_pin.connect_sink(downstream);
+  ASSERT_EQ(node.inp_sorted_pins().size(), 1u);
+  ASSERT_EQ(node.out_sorted_pins().size(), 1u);
+  EXPECT_EQ(node.inp_sorted_pins().front(), sink_pin);
+  EXPECT_EQ(node.out_sorted_pins().front(), driver_pin);
+  EXPECT_EQ(sink_pin.get_driver_pin(), upstream);
+  EXPECT_EQ(driver_pin.get_sink_pin(), downstream);
 }
 
 TEST(GraphStorage, EdgeBidirectionalBits) {
@@ -147,14 +159,16 @@ TEST(GraphStorage, EdgeBidirectionalBits) {
 
   // n1 out_edges: should see n2 as a sink (local edge, bit 1 = 0)
   auto out = n1.out_edges();
-  EXPECT_EQ(out.size(), 1u);
+  ASSERT_EQ(out.size(), 1u);
 
-  // n2 inp_edges: should see n1 as a driver (back edge, bit 1 = 1)
-  auto inp = n2.inp_edges();
-  EXPECT_EQ(inp.size(), 1u);
+  // n2's sink pin: should see n1 as its driver (back edge, bit 1 = 1)
+  auto inp = n2.inp_sorted_pins();
+  ASSERT_EQ(inp.size(), 1u);
+  EXPECT_EQ(inp.front().get_driver_pin(), n1.get_driver_pin(0));
+  EXPECT_EQ(out.front().sink, inp.front());
 
-  // Cross-check: n1 should have no inp_edges, n2 no out_edges
-  EXPECT_EQ(n1.inp_edges().size(), 0u);
+  // Cross-check: n1 has no in-edges, n2 no out-edges
+  EXPECT_FALSE(n1.has_inp_edges());
   EXPECT_EQ(n2.out_edges().size(), 0u);
 }
 
@@ -169,9 +183,9 @@ TEST(GraphStorage, EdgeAndNodeDeletionTombstones) {
   auto s      = sink.create_sink_pin(2);
 
   s.connect_driver(d);
-  EXPECT_EQ(s.inp_edges().size(), 1u);
+  EXPECT_EQ(s.get_driver_pins().size(), 1u);
   s.del_sink(d);
-  EXPECT_EQ(s.inp_edges().size(), 0u);
+  EXPECT_EQ(s.get_driver_pins().size(), 0u);
   EXPECT_EQ(d.out_edges().size(), 0u);
 
   s.connect_driver(d);
@@ -179,7 +193,7 @@ TEST(GraphStorage, EdgeAndNodeDeletionTombstones) {
   EXPECT_TRUE(driver.is_invalid());
   EXPECT_TRUE(d.is_invalid());
   EXPECT_TRUE(s.is_valid());
-  EXPECT_EQ(s.inp_edges().size(), 0u);
+  EXPECT_EQ(s.get_driver_pins().size(), 0u);
 
   std::vector<hhds::Nid> visited;
   for (auto node : graph->body().nodes(hhds::Node_order::forward)) {
@@ -578,6 +592,13 @@ TEST(GraphPersistence, SaveLoadRoundTrip) {
   auto snk2 = n3.create_sink_pin(0);
   drv2.connect_sink(snk2);
 
+  // A real PinEntry, like port 0, can carry both directions. Persistence
+  // must preserve that classification and skip existing disconnected pins.
+  drv.connect_sink(n2.create_sink_pin(4));
+  n2.create_driver_pin(4).connect_sink(n3.create_sink_pin(5));
+  (void)n2.create_sink_pin(2);
+  (void)n2.create_driver_pin(6);
+
   // Collect original edges.
   auto orig_out_n1 = n1.out_edges();
   auto orig_out_n2 = n2.out_edges();
@@ -610,6 +631,23 @@ TEST(GraphPersistence, SaveLoadRoundTrip) {
   auto loaded_out_n2 = loaded_n2.out_edges();
   EXPECT_EQ(loaded_out_n1.size(), orig_out_n1.size());
   EXPECT_EQ(loaded_out_n2.size(), orig_out_n2.size());
+
+  std::vector<hhds::Port_id> input_ports;
+  for (auto sink : loaded_n2.inp_sorted_pins()) {
+    input_ports.push_back(sink.get_port_id());
+    const auto driver = sink.get_driver_pin();
+    EXPECT_EQ(driver.get_graph(), graph2.get());
+    EXPECT_EQ(driver, loaded_n1.get_driver_pin(0));
+  }
+  std::vector<hhds::Port_id> output_ports;
+  for (auto driver : loaded_n2.out_sorted_pins()) {
+    output_ports.push_back(driver.get_port_id());
+    const auto sink = driver.get_sink_pin();
+    EXPECT_EQ(sink.get_graph(), graph2.get());
+    EXPECT_EQ(sink.get_master_node(), loaded_n3);
+  }
+  EXPECT_EQ(input_ports, (std::vector<hhds::Port_id>{0, 4}));
+  EXPECT_EQ(output_ports, input_ports);
 
   // Verify subnode survived through named pin resolution.
   auto loaded_sub_pin = loaded_n1.create_sink_pin("x");
