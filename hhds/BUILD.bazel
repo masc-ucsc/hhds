@@ -654,3 +654,21 @@ cc_test(
     srcs = ["tests/cone_hash_test.cpp"],
     deps = [":graph"],
 )
+
+cc_binary(
+    name = "driver_lookup_bench",
+    srcs = ["tests/driver_lookup_bench.cpp"],
+    copts = COPTS,
+    tags = ["manual"],
+    deps = [":graph"],
+)
+
+cc_test(
+    name = "back_edge_index_test",
+    srcs = ["tests/back_edge_index_test.cpp"],
+    copts = COPTS,
+    deps = [
+        ":graph",
+        "@googletest//:gtest_main",
+    ],
+)

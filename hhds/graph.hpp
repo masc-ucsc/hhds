@@ -1445,6 +1445,43 @@ class Graph : public Attr_host {
       return sedges_.overflow_idx;
     }
 
+    // --- Back-edge index (OVERFLOW MODE ONLY) -------------------------------
+    //
+    // An entry's overflow set mixes both directions: the in-edges of the sink
+    // side of this port (Vid bit 1 SET) and the out-edges of its driver side
+    // (bit 1 clear). For port 0 that is every entry -- a NodeEntry backs both
+    // sink pin 0 and driver pin 0 -- so "the one driver of input 0" used to
+    // scan the node's whole FANOUT. The fields an overflowed entry no longer
+    // uses for inline edges carry a derived index of the back edges instead:
+    //
+    //   back_count   = # Vids with bit 1 set in the overflow set (exact)
+    //   back slot0/1 = distinct back-edge Vids present in the set, or 0;
+    //                  when back_count <= 2 they hold EXACTLY the back edges
+    //                  (when > 2 they hold at most two of them)
+    //
+    // It is a pure accelerator: the overflow set stays the single source of
+    // truth for edge iteration (order included). It is maintained by
+    // add_edge / delete_edge / overflow_handling (the only writers of a live
+    // entry's set), rebuilt from the set when the overflow contents are loaded
+    // (Graph::ensure_overflow_loaded), and ZEROED on save (save_body), so the
+    // on-disk body bytes are exactly the pre-index format.
+    //
+    // Storage: slot0 = ledge1, slot1 = ledge0, back_count = the upper 32 bits
+    // of sedges_ (the lower 32 are overflow_idx). All three were zero in
+    // overflow mode before the index existed.
+    [[nodiscard]] Vid back_slot0() const noexcept {
+      return static_cast<Vid>(ledge1);
+    }
+    [[nodiscard]] Vid back_slot1() const noexcept {
+      return static_cast<Vid>(ledge0);
+    }
+    void set_back_slot0(Vid v) noexcept { ledge1 = static_cast<Nid>(v); }
+    void set_back_slot1(Vid v) noexcept { ledge0 = static_cast<Nid>(v); }
+    [[nodiscard]] uint32_t back_count() const noexcept {
+      return sedges_.ovf.back_count;
+    }
+    void set_back_count(uint32_t n) noexcept { sedges_.ovf.back_count = n; }
+
     static constexpr size_t MAX_EDGES = 8;
 
     class EdgeRange {
@@ -1528,6 +1565,10 @@ class Graph : public Attr_host {
       int64_t sedges; // 4 × 16-bit packed slots (when use_overflow == 0)
       uint32_t overflow_idx; // index into Graph::overflow_sets_ (when
                              // use_overflow == 1)
+      struct {
+        uint32_t idx;        // aliases overflow_idx
+        uint32_t back_count; // back-edge index (see back_count())
+      } ovf;
     } sedges_;               // Total: 8 bytes
   };
 
@@ -1558,6 +1599,26 @@ class Graph : public Attr_host {
     [[nodiscard]] uint32_t get_overflow_idx() const {
       return sedges_.overflow_idx;
     }
+
+    // Back-edge index (OVERFLOW MODE ONLY) -- see PinEntry::back_slot0. This
+    // is the case it exists for: port 0's in-edge shares the NodeEntry with
+    // port 0's whole fanout. slot0 = ledge1, slot1 = sedges_extra (48 bits
+    // hold a 42-bit Vid), back_count = upper 32 bits of sedges_. ledge0 is NOT
+    // available: in overflow mode it holds the subnode Gid.
+    [[nodiscard]] Vid back_slot0() const noexcept {
+      return static_cast<Vid>(ledge1);
+    }
+    [[nodiscard]] Vid back_slot1() const noexcept {
+      return static_cast<Vid>(sedges_extra);
+    }
+    void set_back_slot0(Vid v) noexcept { ledge1 = static_cast<Nid>(v); }
+    void set_back_slot1(Vid v) noexcept {
+      sedges_extra = static_cast<uint64_t>(v);
+    }
+    [[nodiscard]] uint32_t back_count() const noexcept {
+      return sedges_.ovf.back_count;
+    }
+    void set_back_count(uint32_t n) noexcept { sedges_.ovf.back_count = n; }
 
     void set_subnode(Nid self_nid, Gid gid, OverflowPool &pool);
     [[nodiscard]] Gid get_subnode() const noexcept;
@@ -1629,6 +1690,10 @@ class Graph : public Attr_host {
       int64_t sedges;        // low-4 slots of 16 bits (fills 64 bits exactly)
       uint32_t overflow_idx; // index into Graph::overflow_sets_ (when
                              // use_overflow == 1)
+      struct {
+        uint32_t idx;        // aliases overflow_idx
+        uint32_t back_count; // back-edge index (see back_count())
+      } ovf;
     } sedges_;               // 8 bytes
   };
 
@@ -1781,6 +1846,13 @@ public:
   // Public so tests can prove a walk did not race a mutation; the lazy edge
   // views read it for their debug mutate-while-iterating assertion.
   [[nodiscard]] uint64_t body_epoch() const noexcept { return body_epoch_; }
+
+  // Test hook for the back-edge index of overflowed edge entries (see
+  // PinEntry::back_slot0): re-derives it from every overflow set and reports
+  // whether the maintained index agrees -- exact back-edge count, slots that
+  // are distinct back edges of the set (all of them when count <= 2), and a
+  // driver visit order equal to a full scan's. O(total edges).
+  [[nodiscard]] bool debug_back_index_consistent() const;
 
 private:
   // An attribute write does NOT make the BODY dirty. The node/pin tables are

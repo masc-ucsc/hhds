@@ -174,6 +174,17 @@ to overflow mode:
    `overflow_sets_`, and `ledge0`/`ledge1` are zeroed (except `ledge0`
    may hold a subnode Gid for NodeEntry).
 4. All future edges go directly into the hash set.
+5. The inline fields the set freed carry a derived **back-edge index**:
+   the exact number of back edges (Vid bit 1 set) in the set, in the upper
+   32 bits of `sedges_`, plus up to two of those back-edge Vids (all of them
+   when there are at most two) in `ledge1` and in `ledge0` (PinEntry) or
+   `sedges_extra` (NodeEntry, whose `ledge0` is the subnode Gid). A NodeEntry
+   backs both sink pin 0 and driver pin 0, so without it "the driver of input
+   0" scanned the node's whole fanout; with it `get_driver_pins` /
+   `has_driver` / `has_edge_dir` cost O(in-degree). The set stays the only
+   source of truth for iteration (a two-driver answer is ordered by set
+   position), `add_edge` / `delete_edge` maintain the index, and it is never
+   persisted (see §5.3).
 
 **This transition is one-way** — once in overflow mode, the entry never
 returns to inline mode. The `overflow_idx` field is a `uint32_t` stored
@@ -415,9 +426,12 @@ Forest
  ...     var      attribute stores (the "attr tail", see attr_offset_)
 ```
 
-NodeEntry and PinEntry are written as-is from memory. The `sedges_` union
-contains either packed short edges (when `use_overflow == 0`) or an
-`overflow_idx` (when `use_overflow == 1`). No pointers are stored on disk.
+NodeEntry and PinEntry are written as-is from memory, except that an
+overflowed entry's back-edge index (§2.5, Tier 3) is written as zeros -- the
+bytes it had before the index existed -- and rebuilt from the overflow sets
+when `ensure_overflow_loaded` reads them. The `sedges_` union contains either
+packed short edges (when `use_overflow == 0`) or an `overflow_idx` (when
+`use_overflow == 1`). No pointers are stored on disk.
 
 `load_body` accepts **exactly one** version (`GRAPH_BODY_VERSION`). Anything
 older is refused rather than upgraded: bodies before 6 predate the constant

@@ -1327,6 +1327,140 @@ bool subnode_loop_domain_valid(const Subnode_loop& loop) {
          && !__builtin_add_overflow(loop.first, scaled, &value);
 }
 
+// --- Back-edge index of an OVERFLOWED Node/PinEntry --------------------------
+// See PinEntry::back_slot0 in graph.hpp for the invariant. `Entry` is
+// Graph::NodeEntry or Graph::PinEntry (same accessor names on both).
+constexpr Vid kBackEdgeBit = static_cast<Vid>(2);
+
+// Recompute the index from the set: slots get the first two back edges in set
+// (insertion) order, back_count the exact total. O(set size).
+template <class Entry>
+void back_index_rebuild(Entry& e, const OverflowSet& set) {
+  uint32_t n  = 0;
+  Vid      s0 = 0;
+  Vid      s1 = 0;
+  for (const Vid v : set) {
+    if ((v & kBackEdgeBit) == 0) {
+      continue;
+    }
+    if (n == 0) {
+      s0 = v;
+    } else if (n == 1) {
+      s1 = v;
+    }
+    ++n;
+  }
+  e.set_back_slot0(s0);
+  e.set_back_slot1(s1);
+  e.set_back_count(n);
+}
+
+// `v` (a back edge) was just INSERTED into the entry's set (it was not there).
+template <class Entry>
+void back_index_note_insert(Entry& e, Vid v) {
+  if (e.back_slot0() == 0) {
+    e.set_back_slot0(v);
+  } else if (e.back_slot1() == 0) {
+    e.set_back_slot1(v);
+  }
+  e.set_back_count(e.back_count() + 1);
+}
+
+// `v` (a back edge) was just ERASED from `set`. Only when the count drops to
+// <= 2 with a slot missing does it rescan, so the common 1-driver add/remove is
+// O(1) and a rescan needs a third driver to have come and gone.
+template <class Entry>
+void back_index_note_erase(Entry& e, Vid v, const OverflowSet& set) {
+  assert(e.back_count() > 0 && "back_index_note_erase: back-edge count underflow");
+  const uint32_t n = e.back_count() - 1;
+  if (e.back_slot0() == v) {
+    e.set_back_slot0(0);
+  } else if (e.back_slot1() == v) {
+    e.set_back_slot1(0);
+  }
+  const uint32_t held = (e.back_slot0() != 0 ? 1U : 0U) + (e.back_slot1() != 0 ? 1U : 0U);
+  if (n <= 2 && held < n) {
+    back_index_rebuild(e, set);
+    return;
+  }
+  e.set_back_count(n);
+}
+
+// Visit every back edge of `e` in overflow-set iteration order -- the exact
+// sequence a full scan of the set filtered on bit 1 produces -- in
+// O(back_count) instead of O(set size) whenever back_count <= 2.
+template <class Entry, class F>
+void back_index_visit(const Entry& e, const OverflowSet& set, F&& f) {
+  const uint32_t n = e.back_count();
+  if (n == 0) {
+    return;
+  }
+  if (n > 2) {
+    for (const Vid v : set) {
+      if (v & kBackEdgeBit) {
+        f(v);
+      }
+    }
+    return;
+  }
+  Vid a = e.back_slot0();
+  Vid b = e.back_slot1();
+  if (a == 0) {
+    a = b;
+    b = 0;
+  }
+  if (n == 1) {
+    assert(a != 0 && b == 0 && "back_index_visit: index out of sync with back_count");
+    f(a);
+    return;
+  }
+  assert(a != 0 && b != 0 && "back_index_visit: index out of sync with back_count");
+  // The set iterates its dense values vector (insertion order, swap-with-last
+  // on erase), so the positions find() returns are the scan order.
+  if (set.find(b) < set.find(a)) {
+    std::swap(a, b);
+  }
+  f(a);
+  f(b);
+}
+
+// Every back edge (Vid bit 1 set) of an entry, in its get_edges order.
+template <class Entry, class Id, class F>
+void for_each_back_edge(const Entry& e, Id self_id, const OverflowVec& overflow, F&& f) {
+  if (e.check_overflow()) {
+    back_index_visit(e, overflow[e.get_overflow_idx()], f);
+    return;
+  }
+  for (const Vid v : e.get_edges(self_id, overflow)) {
+    if (v & kBackEdgeBit) {
+      f(v);
+    }
+  }
+}
+
+// Write a Node/PinEntry table with every overflowed entry's back-edge index
+// zeroed: the index is derived data, rebuilt on load, and keeping it off disk
+// keeps body.bin byte-identical to the pre-index format (and a pure function
+// of the edge sets rather than of the insert/erase history).
+template <class Entry>
+void write_table_without_back_index(std::ostream& os, const std::vector<Entry>& table) {
+  constexpr size_t   kChunk = 4096;
+  std::vector<Entry> buf;
+  buf.reserve(std::min(kChunk, table.size()));
+  for (size_t base = 0; base < table.size(); base += kChunk) {
+    const size_t n = std::min(kChunk, table.size() - base);
+    buf.assign(table.begin() + static_cast<std::ptrdiff_t>(base), table.begin() + static_cast<std::ptrdiff_t>(base + n));
+    for (auto& e : buf) {
+      if (e.check_overflow()) {
+        e.set_back_slot0(0);
+        e.set_back_slot1(0);
+        e.set_back_count(0);
+      }
+    }
+    os.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(n * sizeof(Entry)));
+  }
+}
+
 }  // namespace
 
 auto Node_class::get_root_gid() const noexcept -> Gid {
@@ -1392,7 +1526,9 @@ Graph::PinEntry::PinEntry(Nid mn, Port_id pid)
 
 auto Graph::PinEntry::overflow_handling(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
-    pool.sets[sedges_.overflow_idx].insert(other_id);
+    if (pool.sets[sedges_.overflow_idx].insert(other_id).second && (other_id & kBackEdgeBit)) {
+      back_index_note_insert(*this, other_id);
+    }
     return true;
   }
   uint32_t           idx       = pool.alloc();
@@ -1433,6 +1569,7 @@ auto Graph::PinEntry::overflow_handling(Pid self_id, Vid other_id, OverflowPool&
   ledge0 = ledge1 = 0;
 
   hs.insert(other_id);
+  back_index_rebuild(*this, hs);  // ledge0/ledge1/upper sedges_ now carry the back-edge index
   return true;
 }
 
@@ -1503,7 +1640,14 @@ auto Graph::PinEntry::add_edge(Pid self_id, Vid other_id, OverflowPool& pool) ->
 
 auto Graph::PinEntry::delete_edge(Pid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
-    return pool.sets[sedges_.overflow_idx].erase(other_id) != 0;
+    auto& set = pool.sets[sedges_.overflow_idx];
+    if (set.erase(other_id) == 0) {
+      return false;
+    }
+    if (other_id & kBackEdgeBit) {
+      back_index_note_erase(*this, other_id, set);
+    }
+    return true;
   }
 
   // Fast in-place delete for inline edges. We iterate slots, decode each, and
@@ -1607,12 +1751,10 @@ bool Graph::PinEntry::has_edge_dir(bool driver_bit, const OverflowVec& overflow)
   const uint64_t     want       = driver_bit ? DRIVER_BIT : 0;
 
   if (use_overflow) {
-    for (auto vid : overflow[sedges_.overflow_idx]) {
-      if ((static_cast<uint64_t>(vid) & DRIVER_BIT) == want) {
-        return true;
-      }
-    }
-    return false;
+    // O(1) from the back-edge index: bit 1 set <=> back edge, and the set
+    // holds no duplicates, so the forward edges are exactly size - back_count.
+    const uint32_t n_back = back_count();
+    return driver_bit ? n_back != 0 : overflow[sedges_.overflow_idx].size() > n_back;
   }
   const uint64_t packed = sedges_.sedges;
   for (int slot = 0; slot < 4; ++slot) {
@@ -1640,8 +1782,8 @@ void Graph::NodeEntry::clear_node() { bzero(this, sizeof(NodeEntry)); }
 
 auto Graph::NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
-    if (other_id) {
-      pool.sets[sedges_.overflow_idx].insert(other_id);
+    if (other_id && pool.sets[sedges_.overflow_idx].insert(other_id).second && (other_id & kBackEdgeBit)) {
+      back_index_note_insert(*this, other_id);
     }
     return true;
   }
@@ -1697,6 +1839,7 @@ auto Graph::NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool
   if (other_id) {
     hs.insert(other_id);
   }
+  back_index_rebuild(*this, hs);  // ledge1/sedges_extra/upper sedges_ now carry the back-edge index
   return true;
 }
 
@@ -1773,7 +1916,14 @@ auto Graph::NodeEntry::add_edge(Nid self_id, Vid other_id, OverflowPool& pool) -
 
 auto Graph::NodeEntry::delete_edge(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
   if (use_overflow) {
-    return pool.sets[sedges_.overflow_idx].erase(other_id) != 0;
+    auto& set = pool.sets[sedges_.overflow_idx];
+    if (set.erase(other_id) == 0) {
+      return false;
+    }
+    if (other_id & kBackEdgeBit) {
+      back_index_note_erase(*this, other_id, set);
+    }
+    return true;
   }
 
   // Fast in-place delete for inline edges (4 sedges + 3 sedges_extra + 2 ledges).
@@ -1832,12 +1982,10 @@ bool Graph::NodeEntry::has_edge_dir(bool driver_bit, const OverflowVec& overflow
   const uint64_t     want       = driver_bit ? DRIVER_BIT : 0;
 
   if (use_overflow) {
-    for (auto vid : overflow[sedges_.overflow_idx]) {
-      if ((static_cast<uint64_t>(vid) & DRIVER_BIT) == want) {
-        return true;
-      }
-    }
-    return false;
+    // O(1) from the back-edge index: bit 1 set <=> back edge, and the set
+    // holds no duplicates, so the forward edges are exactly size - back_count.
+    const uint32_t n_back = back_count();
+    return driver_bit ? n_back != 0 : overflow[sedges_.overflow_idx].size() > n_back;
   }
   const uint64_t packed = sedges_.sedges;
   for (int slot = 0; slot < 4; ++slot) {
@@ -5881,28 +6029,69 @@ auto Graph::get_driver_pins(Pin_class pin) -> absl::InlinedVector<Pin_class, 4> 
     }
   };
 
-  // port_id == 0 lives on the NodeEntry, not in the pin linked list.
+  // port_id == 0 lives on the NodeEntry, not in the pin linked list. Either
+  // way the entry also stores the port's DRIVER-side fanout; for_each_back_edge
+  // answers from the back-edge index of an overflowed entry, so the cost is the
+  // in-degree, not the fanout (see PinEntry::back_slot0 in graph.hpp).
   if (!(pin.get_debug_pid() & static_cast<Pid>(1))) {
     const Nid self_nid = pin.get_debug_pid() & ~static_cast<Nid>(2);
-    auto*     self     = ref_node(self_nid);
-    for (auto vid : self->get_edges(self_nid, overflow_sets())) {
-      if (!(vid & 2)) {
-        continue;  // forward (out) edge
-      }
-      stamp(vid);
-    }
+    for_each_back_edge(*ref_node(self_nid), self_nid, overflow_sets(), stamp);
     return out;
   }
 
   const Pid self_pid_sink = (pin.get_debug_pid() & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
-  auto*     self          = ref_pin(self_pid_sink);
-  for (auto vid : self->get_edges(self_pid_sink, overflow_sets())) {
-    if (!(vid & 2)) {
-      continue;  // forward (out) edge
-    }
-    stamp(vid);
-  }
+  for_each_back_edge(*ref_pin(self_pid_sink), self_pid_sink, overflow_sets(), stamp);
   return out;
+}
+
+bool Graph::debug_back_index_consistent() const {
+  const auto& sets  = overflow_sets();
+  const auto  check = [&](const auto& e) -> bool {
+    if (!e.check_overflow()) {
+      return true;
+    }
+    if (e.get_overflow_idx() >= sets.size()) {
+      return false;
+    }
+    const auto&      set = sets[e.get_overflow_idx()];
+    std::vector<Vid> scan;
+    for (const Vid v : set) {
+      if (v & kBackEdgeBit) {
+        scan.push_back(v);
+      }
+    }
+    if (e.back_count() != scan.size()) {
+      return false;
+    }
+    const Vid s0 = e.back_slot0();
+    const Vid s1 = e.back_slot1();
+    if (s0 != 0 && s0 == s1) {
+      return false;
+    }
+    for (const Vid s : {s0, s1}) {
+      if (s != 0 && ((s & kBackEdgeBit) == 0 || !set.contains(s))) {
+        return false;
+      }
+    }
+    const size_t held = (s0 != 0 ? 1U : 0U) + (s1 != 0 ? 1U : 0U);
+    if (scan.size() <= 2 && held != scan.size()) {
+      return false;
+    }
+    std::vector<Vid> visited;
+    back_index_visit(e, set, [&](Vid v) { visited.push_back(v); });
+    return visited == scan;
+  };
+  for (const auto& e : node_table) {
+    if (!check(e)) {
+      return false;
+    }
+  }
+  for (const auto& e : pin_table) {
+    if (!check(e)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 auto Graph::get_pins(Node_class node) -> absl::InlinedVector<Pin_class, 4> {
@@ -6182,9 +6371,18 @@ void Graph::save_body(const std::string& dir_path) const {
     ofs.write(reinterpret_cast<const char*>(&pin_count), sizeof(pin_count));
     ofs.write(reinterpret_cast<const char*>(&overflow_count), sizeof(overflow_count));
 
-    // Bulk write node_table and pin_table — pointer-free POD arrays.
-    ofs.write(reinterpret_cast<const char*>(node_table.data()), static_cast<std::streamsize>(node_count * sizeof(NodeEntry)));
-    ofs.write(reinterpret_cast<const char*>(pin_table.data()), static_cast<std::streamsize>(pin_count * sizeof(PinEntry)));
+    // Bulk write node_table and pin_table — pointer-free POD arrays. An
+    // overflowed entry carries a derived back-edge index in otherwise-unused
+    // fields; it is written as zeros (the pre-index bytes) and rebuilt when the
+    // overflow sets are loaded. No overflow set => no overflowed entry => the
+    // tables can go out verbatim.
+    if (overflow_sets().empty()) {
+      ofs.write(reinterpret_cast<const char*>(node_table.data()), static_cast<std::streamsize>(node_count * sizeof(NodeEntry)));
+      ofs.write(reinterpret_cast<const char*>(pin_table.data()), static_cast<std::streamsize>(pin_count * sizeof(PinEntry)));
+    } else {
+      write_table_without_back_index(ofs, node_table);
+      write_table_without_back_index(ofs, pin_table);
+    }
     save_constant_pool(ofs);
 
     // Native compact-loop descriptors. Write in nid order so persistence is a
@@ -6346,6 +6544,21 @@ void Graph::ensure_overflow_loaded() const {
       std::ifstream ifs(path, std::ios::binary);
       assert(ifs.good() && "ensure_overflow_loaded: cannot open overflow file for reading");
       read_set(ifs, i);
+    }
+  }
+
+  // The back-edge index of an overflowed entry is not persisted (save_body
+  // writes it as zeros); rebuild it now that the set contents exist. Every
+  // reader of the index reaches it through overflow_sets() / the overflow pool,
+  // which is what ran this load, so none can observe the zeroed form.
+  for (auto& e : self->node_table) {
+    if (e.check_overflow()) {
+      back_index_rebuild(e, self->overflow_storage_[e.get_overflow_idx()]);
+    }
+  }
+  for (auto& e : self->pin_table) {
+    if (e.check_overflow()) {
+      back_index_rebuild(e, self->overflow_storage_[e.get_overflow_idx()]);
     }
   }
 }
