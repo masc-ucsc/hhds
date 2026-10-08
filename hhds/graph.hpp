@@ -1117,8 +1117,13 @@ public:
                         path_.root_gid(), std::move(steps));
   }
 
+  // Field-wise, exactly Occurrence_index's defaulted == and hash, without the
+  // temporary: building one copies path_'s shared storage handle (two atomic
+  // refcount ops per compare/hash), which was ~20% of `lhd sim` setup on
+  // large hierarchical designs.
   [[nodiscard]] bool operator==(const Occurrence_node &other) const noexcept {
-    return get_occurrence_index() == other.get_occurrence_index();
+    return node_.get_definition_index() == other.node_.get_definition_index() &&
+           path_ == other.path_;
   }
   [[nodiscard]] bool operator!=(const Occurrence_node &other) const noexcept {
     return !(*this == other);
@@ -1126,7 +1131,8 @@ public:
 
   template <typename H>
   friend H AbslHashValue(H h, const Occurrence_node &node) {
-    return H::combine(std::move(h), node.get_occurrence_index());
+    const auto object = node.node_.get_definition_index();
+    return H::combine(std::move(h), node.path_, object.gid, object.value);
   }
 
 private:
@@ -1208,15 +1214,18 @@ public:
                         path_.root_gid(), std::move(steps));
   }
 
+  // Field-wise; see Occurrence_node::operator==.
   [[nodiscard]] bool operator==(const Occurrence_pin &other) const noexcept {
-    return get_occurrence_index() == other.get_occurrence_index();
+    return pin_.get_definition_index() == other.pin_.get_definition_index() &&
+           path_ == other.path_;
   }
   [[nodiscard]] bool operator!=(const Occurrence_pin &other) const noexcept {
     return !(*this == other);
   }
 
   template <typename H> friend H AbslHashValue(H h, const Occurrence_pin &pin) {
-    return H::combine(std::move(h), pin.get_occurrence_index());
+    const auto object = pin.pin_.get_definition_index();
+    return H::combine(std::move(h), pin.path_, object.gid, object.value);
   }
 
 private:

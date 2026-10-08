@@ -710,16 +710,39 @@ std::vector<Occurrence_pin> Hierarchy_view_state::resolve_driver(Pin_class drive
     }
     const auto site_pin = site_graph->make_pin_class(site_pid);
     for (const auto& driver : site_pin.get_driver_pins()) {
-      if (driver.get_master_node().get_debug_nid() == site.get_debug_nid()) {
+      const bool self_edge  = driver.get_master_node().get_debug_nid() == site.get_debug_nid();
+      bool       carry_edge = false;
+      if (self_edge && loop) {
+        for (const auto& carry : group.carries()) {
+          carry_edge = carry_edge || (carry.input_port() == port && carry.output_port() == driver.get_port_id());
+        }
+      }
+      if (carry_edge) {
         // A compact carry self-edge is visible only in the grouped view. In
         // the occurrence view it is replaced by the external initial driver
         // for ordinal zero and by output[r-1] for every later ordinal. Keeping
         // it here would give ordinal zero an extra dependency on its own Sub
         // output and manufacture a combinational cycle.
-        if (expand_loops && loop) {
+        if (expand_loops) {
           continue;
         }
         result.push_back(make_pin(driver, body_handle, parent));
+      } else if (self_edge) {
+        // Any other output feeding its own instance's input -- a Moore
+        // feedback through a register in the callee -- resolves into the
+        // callee like any other driver. A comb feed-through (out = f(in)) is a
+        // genuine loop that would come straight back to this input: the guard
+        // stops there and leaves the boundary pin, unresolved, as the driver.
+        thread_local std::vector<std::pair<uint32_t, Port_id>> resolving;
+        const auto                                             key = std::make_pair(body_handle, port);
+        if (std::ranges::find(resolving, key) != resolving.end()) {
+          result.push_back(make_pin(driver, body_handle, parent));
+          continue;
+        }
+        resolving.push_back(key);
+        auto resolved = resolve_driver(driver, parent, depth + 1);
+        resolving.pop_back();
+        result.insert(result.end(), resolved.begin(), resolved.end());
       } else {
         auto resolved = resolve_driver(driver, parent, depth + 1);
         result.insert(result.end(), resolved.begin(), resolved.end());
