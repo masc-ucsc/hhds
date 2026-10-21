@@ -21,8 +21,10 @@
 
 #include <unistd.h>
 
+#include <bit>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -479,6 +481,62 @@ int main() {
     }
     std::printf("ok: a body.bin rewritten under us is written whole, never tail-patched\n");
     fs::remove_all(shared);
+  }
+
+  // Version 7's unused pin bit used to contain allocator garbage. Loading an
+  // otherwise clean old body must still rewrite that bit on a same-path save.
+  // The persisted bitfield layout below is the supported little-endian ABI.
+  if constexpr (std::endian::native == std::endian::little) {
+    const auto padding_dir = fs::temp_directory_path() / (tag + "_padding");
+    fs::remove_all(padding_dir);
+    {
+      hhds::GraphLibrary lib;
+      auto               io            = lib.create_io("padding");
+      auto               padding_graph = io->create_graph();
+      auto               a = padding_graph->create_node(), b = padding_graph->create_node();
+      a.create_driver_pin(1).connect_sink(b.create_sink_pin(2));
+      lib.save(padding_dir.string());
+    }
+    fs::path body;
+    for (const auto& entry : fs::directory_iterator(padding_dir)) {
+      if (entry.is_directory() && entry.path().filename().string().starts_with("graph_")) {
+        body = entry.path() / "body.bin";
+      }
+    }
+    const auto       canonical = read_all(body);
+    constexpr size_t header    = 3 * sizeof(uint32_t) + 3 * sizeof(uint64_t);
+    if (canonical.size() < header || version_of(body) != 7) {
+      std::printf("FAIL: unexpected body layout in pin-padding regression\n");
+      return 1;
+    }
+    uint64_t nodes = 0, pins = 0;
+    std::memcpy(&nodes, canonical.data() + 3 * sizeof(uint32_t), sizeof(nodes));
+    std::memcpy(&pins, canonical.data() + 3 * sizeof(uint32_t) + sizeof(nodes), sizeof(pins));
+    const size_t pin_offset = header + nodes * 32;
+    if (!pins || pin_offset + pins * 32 > canonical.size()) {
+      std::printf("FAIL: missing pin records in pin-padding regression\n");
+      return 1;
+    }
+    auto legacy = canonical;
+    for (size_t i = 0; i < pins; ++i) {
+      legacy[pin_offset + i * 32 + 23] |= static_cast<char>(0x80);
+    }
+    {
+      std::ofstream out(body, std::ios::binary);
+      out.write(legacy.data(), static_cast<std::streamsize>(legacy.size()));
+    }
+    {
+      hhds::GraphLibrary lib;
+      lib.load(padding_dir.string());
+      (void)lib.find_io("padding")->get_graph();
+      lib.save(padding_dir.string());
+    }
+    if (legacy == canonical || read_all(body) != canonical) {
+      std::printf("FAIL: clean reload/save did not canonicalize legacy pin padding\n");
+      return 1;
+    }
+    std::printf("ok: legacy pin padding is canonicalized without graph edits\n");
+    fs::remove_all(padding_dir);
   }
 
   std::printf("PASS\n");

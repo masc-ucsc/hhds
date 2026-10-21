@@ -1536,7 +1536,7 @@ class Graph : public Attr_host {
     auto overflow_handling(Pid self_id, Vid other_id, OverflowPool &pool)
         -> bool;
 
-    // Layout (packed, 32 bytes = 256 bits; 255 used, 1 still spare):
+    // Layout (packed, 32 bytes = 256 bits; 255 used, 1 reserved):
     //
     //   master_nid   : 40   owning node's nid >> 2  (see below)
     //   has_driver   :  1 |
@@ -1545,8 +1545,9 @@ class Graph : public Attr_host {
     //   next_pin_id  : 42
     //   ledge0       : 42
     //   ledge1       : 42
-    //   use_overflow :  1   -> 127 bits
-    //   sedges_      : 64   -> 255 bits
+    //   use_overflow :  1
+    //   reserved     :  1   -> 128 bits
+    //   sedges_      : 64   -> 256 bits
     //
     // master_nid stores the owning node's nid SHIFTED RIGHT BY 2, not the nid.
     // A node nid is `index << 2` (Graph::create_node) and every writer masks
@@ -1569,6 +1570,7 @@ class Graph : public Attr_host {
     Nid ledge1 : Nid_bits;       // 42 bits to too far node/pin (does not fit in
                                  // sedge) => 64 bits (8 bytes)
     uint8_t use_overflow : 1;    // 1 bit      => 64 bits (8 bytes)
+    uint8_t reserved : 1;        // canonical zero in the existing spare bit
 
     union {
       int64_t sedges; // 4 × 16-bit packed slots (when use_overflow == 0)

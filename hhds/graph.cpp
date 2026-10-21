@@ -1528,22 +1528,31 @@ auto Pin_class::get_root_gid() const noexcept -> Gid {
 auto Pin_class::get_current_gid() const noexcept -> Gid { return graph_ != nullptr ? graph_->get_gid() : Gid_invalid; }
 
 Graph::PinEntry::PinEntry()
-    : master_nid(0), has_driver(0), has_sink(0), port_id(0), next_pin_id(0), ledge0(0), ledge1(0), use_overflow(0),
-      sedges_{.sedges = 0} {}
+    : master_nid(0)
+    , has_driver(0)
+    , has_sink(0)
+    , port_id(0)
+    , next_pin_id(0)
+    , ledge0(0)
+    , ledge1(0)
+    , use_overflow(0)
+    , reserved(0)
+    , sedges_{.sedges = 0} {}
 
 // `mn` is an owning node nid; master_nid stores it >> 2 (see the field comment
 // in graph.hpp). Every caller has already masked bit 1 off, and a node nid has
 // bit 0 clear by construction, so the shift is lossless.
 Graph::PinEntry::PinEntry(Nid mn, Port_id pid)
-    : master_nid(mn >> 2),
-      has_driver(0),
-      has_sink(0),
-      port_id(pid),
-      next_pin_id(0),
-      ledge0(0),
-      ledge1(0),
-      use_overflow(0),
-      sedges_{.sedges = 0} {
+    : master_nid(mn >> 2)
+    , has_driver(0)
+    , has_sink(0)
+    , port_id(pid)
+    , next_pin_id(0)
+    , ledge0(0)
+    , ledge1(0)
+    , use_overflow(0)
+    , reserved(0)
+    , sedges_{.sedges = 0} {
   assert((mn & static_cast<Nid>(3)) == 0 && "PinEntry: master nid must be a node id (low 2 bits clear)");
 }
 
@@ -6588,6 +6597,7 @@ void Graph::ensure_overflow_loaded() const {
 
 void Graph::load_body(const std::string& dir_path) {
   namespace fs = std::filesystem;
+  bool canonicalized_padding = false;
 
   // --- body.bin ---
   {
@@ -6629,6 +6639,12 @@ void Graph::load_body(const std::string& dir_path) {
 
     pin_table.resize(pin_count);
     ifs.read(reinterpret_cast<char*>(pin_table.data()), static_cast<std::streamsize>(pin_count * sizeof(PinEntry)));
+    // Older version-7 bodies can contain an uninitialized spare bit. It is
+    // not graph state; normalize it before any clone or subsequent save.
+    for (auto& pin : pin_table) {
+      canonicalized_padding = canonicalized_padding || pin.reserved != 0;
+      pin.reserved          = 0;
+    }
     load_constant_pool(ifs);
 
     // Size the overflow vector (holes included) but DEFER reading the set
@@ -6735,7 +6751,7 @@ void Graph::load_body(const std::string& dir_path) {
       throw std::runtime_error("load_body: next-active role requires activation input");
     }
   }
-  dirty_       = false;
+  dirty_       = canonicalized_padding;
   attrs_dirty_ = false;
   body_dir_    = dir_path;
   {
