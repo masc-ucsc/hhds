@@ -35,7 +35,7 @@ uint64_t fold(const std::vector<uint64_t>& v) {
 // Invariant 2: gamma excludes 0 and 1, so no operand can ANNIHILATE the product
 // or VANISH from it. This is the property a bare xor lacks in both directions.
 void test_gamma_never_zero_or_one() {
-  for (uint64_t v : {0ULL, 1ULL, 2ULL, hhds::kMersenne61 - 1, hhds::kMersenne61, hhds::kMersenne61 + 1, ~0ULL}) {
+  for (uint64_t v : std::initializer_list<uint64_t>{0, 1, 2, hhds::kMersenne61 - 1, hhds::kMersenne61, hhds::kMersenne61 + 1, ~uint64_t{0}}) {
     TEST_CHECK(hhds::hash_gamma(v) >= 2);
     TEST_CHECK(hhds::hash_gamma(v) < hhds::kMersenne61);
   }

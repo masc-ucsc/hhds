@@ -176,7 +176,7 @@ TEST(SourceLocator, ResolveAllDiamondAndTruncation) {
 TEST(SourceLocator, LineColDerivation) {
   Source_locator sl;
   (void)sl.mint("a.prp", 0, 4, 1);
-  sl.set_file_line_offsets("a.prp", {0, 10, 25});
+  sl.set_file_line_offsets("a.prp", std::vector<uint64_t>{0, 10, 25});
 
   const auto lc0 = sl.to_line_col("a.prp", 0);
   ASSERT_TRUE(lc0.has_value());
@@ -381,7 +381,7 @@ TEST(SourceLocatorPersist, SaveLoadRoundTrip) {
   const SourceId b = sl.mint_line("src/b.v", 42);
   const SourceId c = combine2(sl, a, b);
   sl.set_file_content_hash("src/a.prp", 0x1234u);
-  sl.set_file_line_offsets("src/a.prp", {0, 10, 25});
+  sl.set_file_line_offsets("src/a.prp", std::vector<uint64_t>{0, 10, 25});
   sl.save(dir.string());
 
   Source_locator loaded;
@@ -1040,7 +1040,7 @@ TEST(SourceLocator, ImportFromReMintsAndCarriesContent) {
 
 TEST(SourceLocator, ImportFromCarriesMetadataWithoutContent) {
   Source_locator src;
-  src.set_file_line_offsets("src/m.prp", {0, 10, 25});
+  src.set_file_line_offsets("src/m.prp", std::vector<uint64_t>{0, 10, 25});
   src.set_file_content_hash("src/m.prp", 0xfeedu);
   const SourceId s = src.mint("src/m.prp", 12, 14, 2);
 
