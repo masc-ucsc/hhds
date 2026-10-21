@@ -384,6 +384,14 @@ cc_test(
 )
 
 cc_test(
+    name = "attr_persistence",
+    size = "small",
+    srcs = ["tests/attr_persistence.cpp"],
+    copts = COPTS,
+    deps = [":graph"],
+)
+
+cc_test(
     name = "attr_race_test",
     size = "small",
     srcs = ["tests/attr_race_test.cpp"],

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <cstdint>
@@ -644,9 +645,26 @@ public:
 
   void save_entries(std::ostream& os) const override {
     if constexpr (std::is_same_v<typename Tag::storage, flat_storage>) {
-      for (const auto& [key, value] : map_) {
-        os.write(reinterpret_cast<const char*>(&key), sizeof(key));
-        write_value<value_type>(os, value);
+      if constexpr (attr_is_flag<Tag>() || attr_is_dense<Tag>()) {
+        // Bitset/vector stores already enumerate keys in ascending order.
+        for (const auto& [key, value] : map_) {
+          os.write(reinterpret_cast<const char*>(&key), sizeof(key));
+          write_value<value_type>(os, value);
+        }
+      } else {
+        // Hash iteration depends on insertion order and (for absl) process
+        // seeding. Identical graphs must persist identically so content-based
+        // incremental caches do not mistake reordered metadata for edits.
+        std::vector<typename map_type::const_iterator> entries;
+        entries.reserve(map_.size());
+        for (auto it = map_.begin(); it != map_.end(); ++it) {
+          entries.push_back(it);
+        }
+        std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) { return a->first < b->first; });
+        for (const auto& entry : entries) {
+          os.write(reinterpret_cast<const char*>(&entry->first), sizeof(entry->first));
+          write_value<value_type>(os, entry->second);
+        }
       }
     } else {
       for (const auto& [key, value] : map_) {
