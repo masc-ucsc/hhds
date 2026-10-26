@@ -1,6 +1,7 @@
 // This file is distributed under the BSD 3-Clause License. See LICENSE for details.
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <sstream>
@@ -26,6 +27,23 @@ struct Dense {
 };
 struct Flag {
   using value_type = hhds::flag;
+  using storage    = hhds::flat_storage;
+};
+struct Segment {
+  int64_t layer, x1, y1, x2, y2;
+  bool    operator==(const Segment&) const = default;
+};
+struct Routes {
+  using value_type = std::vector<Segment>;
+  using storage    = hhds::flat_storage;
+  using layout     = hhds::dense_layout;
+};
+struct Nested {
+  using value_type = std::vector<std::vector<std::string>>;
+  using storage    = hhds::flat_storage;
+};
+struct Bits {
+  using value_type = std::vector<bool>;
   using storage    = hhds::flat_storage;
 };
 class Host : public hhds::Attr_host {
@@ -56,6 +74,69 @@ int main() {
   hhds::register_attr_tag<Text>("hhds.persistence.text");
   hhds::register_attr_tag<Dense>("hhds.persistence.dense");
   hhds::register_attr_tag<Flag>("hhds.persistence.flag");
+  hhds::register_attr_tag<Routes>("hhds.persistence.routes");
+  hhds::register_attr_tag<Nested>("hhds.persistence.nested");
+  hhds::register_attr_tag<Bits>("hhds.persistence.bits");
+  {
+    Host                 host;
+    std::vector<Segment> segments(10000, {3, 1, 2, 100, 2});
+    host.attr<Routes>(3).set(segments);
+    host.attr<Nested>(4).set({
+        {"signal", std::string("a\0b", 3)},
+        {},
+        {std::string(10000, 'x')}
+    });
+    host.attr<Nested>(7).set({});
+    host.attr<Bits>(1).set({true, false, true});
+    check(!host.attr<Routes>(5).has());  // dense default-value sentinel
+    check(host.attr<Nested>(7).has());   // sparse retains an empty payload
+    const auto         bytes = save(host);
+    Host               loaded;
+    std::istringstream stream(bytes, std::ios::binary);
+    loaded.load_attr_stores(stream);
+    check(loaded.attr<Routes>(3).get() == segments);
+    check(!loaded.attr<Routes>(5).has());
+    check(loaded.attr<Nested>(4).get() == host.attr<Nested>(4).get());
+    check(loaded.attr<Nested>(7).has());
+    check(loaded.attr<Bits>(1).get() == host.attr<Bits>(1).get());
+    check(save(loaded) == bytes);
+    loaded.attr<Routes>(3).del();
+    check(!loaded.attr<Routes>(3).has());
+    loaded.attr<Routes>(3).set({
+        {4, 0, 0, 1, 0}
+    });
+    check(loaded.attr<Routes>(3).get().size() == 1);
+  }
+  const auto rejects = [](auto type, const std::string& bytes) {
+    using T = decltype(type);
+    std::istringstream stream(bytes, std::ios::binary);
+    bool               rejected = false;
+    try {
+      (void)hhds::detail::read_value<T>(stream);
+    } catch (const std::runtime_error&) {
+      rejected = true;
+    }
+    check(rejected);
+  };
+  rejects(std::vector<int64_t>{}, std::string(3, '\0'));
+  std::ostringstream bad(std::ios::binary);
+  hhds::detail::write_value(bad, std::numeric_limits<uint64_t>::max());
+  rejects(std::vector<int64_t>{}, bad.str());
+  rejects(std::vector<std::string>{}, bad.str());
+  bad.str("");
+  bad.clear();
+  hhds::detail::write_value(bad, uint64_t{100000000});
+  rejects(std::vector<int64_t>{}, bad.str());  // bounded allocation on short input
+  rejects(std::string{}, bad.str());
+  bad.str("");
+  bad.clear();
+  hhds::detail::write_value(bad, uint64_t{1});
+  hhds::detail::write_value(bad, uint8_t{2});
+  rejects(std::vector<bool>{}, bad.str());
+  bad.str("");
+  bad.clear();
+  hhds::detail::write_value(bad, std::vector<std::string>{"abc"});
+  rejects(std::vector<std::string>{}, bad.str().substr(0, bad.str().size() - 1));
   std::vector<uint64_t> keys(2048);
   std::iota(keys.begin(), keys.end(), uint64_t{1});
   std::mt19937 random(42);

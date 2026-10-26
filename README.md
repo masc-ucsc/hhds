@@ -52,6 +52,15 @@ node.attr(hhds::attrs::name).set("adder");
 node.attr(mytool::attrs::bits).set(32);
 ```
 
+Attribute persistence supports scalar/trivially copyable payloads, strings,
+and `std::vector` payloads of those types (including nested vectors). Vector
+payloads work with sparse and dense layouts; an empty vector is the absent
+sentinel for a dense attribute, so use `del()` rather than storing it. Existing
+scalar and string encodings are unchanged. Vector decoding reads bounded chunks
+instead of allocating directly from an untrusted count, and rejects truncated
+payloads. A persistent tag ID owns its payload schema; changing the element
+layout requires a new ID or an explicit migration.
+
 Downstream projects add new attributes by declaring tag structs in their own
 namespace — no HHDS edits needed.
 

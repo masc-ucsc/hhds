@@ -220,6 +220,14 @@ private:
 };
 
 template <typename T>
+inline constexpr bool attr_vector_value = false;
+template <typename E, typename A>
+inline constexpr bool attr_vector_value<std::vector<E, A>> = true;
+
+// Existing scalar/string encodings are unchanged. Vectors encode an element
+// count followed by the element encodings, recursively. Never persist pointers
+// or the vector object itself. Payload schemas belong to registered tag IDs.
+template <typename T>
 void write_value(std::ostream& os, const T& value) {
   if constexpr (std::is_same_v<T, flag>) {
     (void)os;
@@ -230,10 +238,31 @@ void write_value(std::ostream& os, const T& value) {
     if (size != 0) {
       os.write(value.data(), static_cast<std::streamsize>(size));
     }
+  } else if constexpr (attr_vector_value<T>) {
+    using E = typename T::value_type;
+    static_assert(!std::is_same_v<E, flag>, "use a flag attribute rather than a zero-byte vector element");
+    const uint64_t size = value.size();
+    write_value(os, size);
+    if constexpr (std::is_trivially_copyable_v<E> && !std::is_same_v<E, bool>) {
+      for (size_t pos = 0; pos < value.size();) {
+        const size_t count = std::min<size_t>(4096, value.size() - pos);
+        os.write(reinterpret_cast<const char*>(value.data() + pos), static_cast<std::streamsize>(count * sizeof(E)));
+        pos += count;
+      }
+    } else {
+      for (const auto& element : value) {
+        if constexpr (std::is_same_v<E, bool>) {
+          write_value(os, uint8_t(element));
+        } else {
+          write_value<E>(os, element);
+        }
+      }
+    }
   } else if constexpr (std::is_trivially_copyable_v<T>) {
     os.write(reinterpret_cast<const char*>(&value), sizeof(value));
   } else {
-    static_assert(dependent_false<T>::value, "Attribute persistence supports only std::string and trivially copyable values");
+    static_assert(dependent_false<T>::value,
+                  "Attribute persistence supports strings, trivially copyable values, and vectors thereof");
   }
 }
 
@@ -243,19 +272,63 @@ T read_value(std::istream& is) {
     (void)is;
     return T{};
   } else if constexpr (std::is_same_v<T, std::string>) {
-    uint64_t size = 0;
-    is.read(reinterpret_cast<char*>(&size), sizeof(size));
-    std::string value(size, '\0');
-    if (size != 0) {
-      is.read(value.data(), static_cast<std::streamsize>(size));
+    const auto  size = read_value<uint64_t>(is);
+    std::string value;
+    if (size > value.max_size()) {
+      throw std::runtime_error("attribute string length exceeds capacity");
+    }
+    // Bound allocation before each successful read, including nested strings.
+    while (value.size() < size) {
+      const auto pos   = value.size();
+      const auto count = static_cast<size_t>(std::min<uint64_t>(4096, size - pos));
+      value.resize(pos + count);
+      if (!is.read(value.data() + pos, static_cast<std::streamsize>(count))) {
+        throw std::runtime_error("truncated attribute string");
+      }
+    }
+    return value;
+  } else if constexpr (attr_vector_value<T>) {
+    using E = typename T::value_type;
+    static_assert(!std::is_same_v<E, flag>, "use a flag attribute rather than a zero-byte vector element");
+    const auto size = read_value<uint64_t>(is);
+    T          value;
+    if (size > value.max_size()) {
+      throw std::runtime_error("attribute vector length exceeds capacity");
+    }
+    if constexpr (std::is_trivially_copyable_v<E> && !std::is_same_v<E, bool>) {
+      // Do not reserve the file-supplied count: a corrupt length must not cause
+      // an enormous allocation before discovering that the payload is absent.
+      while (value.size() < size) {
+        const auto pos   = value.size();
+        const auto count = static_cast<size_t>(std::min<uint64_t>(4096, size - pos));
+        value.resize(pos + count);
+        if (!is.read(reinterpret_cast<char*>(value.data() + pos), static_cast<std::streamsize>(count * sizeof(E)))) {
+          throw std::runtime_error("truncated attribute vector");
+        }
+      }
+    } else {
+      for (uint64_t i = 0; i < size; ++i) {
+        if constexpr (std::is_same_v<E, bool>) {
+          const auto bit = read_value<uint8_t>(is);
+          if (bit > 1) {
+            throw std::runtime_error("invalid attribute vector boolean");
+          }
+          value.push_back(bit != 0);
+        } else {
+          value.push_back(read_value<E>(is));
+        }
+      }
     }
     return value;
   } else if constexpr (std::is_trivially_copyable_v<T>) {
     T value{};
-    is.read(reinterpret_cast<char*>(&value), sizeof(value));
+    if (!is.read(reinterpret_cast<char*>(&value), sizeof(value))) {
+      throw std::runtime_error("truncated attribute value");
+    }
     return value;
   } else {
-    static_assert(dependent_false<T>::value, "Attribute persistence supports only std::string and trivially copyable values");
+    static_assert(dependent_false<T>::value,
+                  "Attribute persistence supports strings, trivially copyable values, and vectors thereof");
   }
 }
 
@@ -587,14 +660,14 @@ public:
 // reference-STABLE std::unordered_map. Hier storage likewise stays std (its
 // erase-during-iteration loop relies on erase(it) returning the next iterator).
 template <Attribute Tag>
-using attr_map_t
-    = std::conditional_t<attr_is_flag<Tag>(), Flag_attr_map,
-      std::conditional_t<attr_is_dense<Tag>(), Dense_attr_map<typename Tag::value_type>,
-                         std::conditional_t<std::is_same_v<typename Tag::storage, flat_storage>,
-                                            std::conditional_t<std::is_trivially_copyable_v<typename Tag::value_type>,
-                                                               absl::flat_hash_map<Attr_key, typename Tag::value_type>,
-                                                               std::unordered_map<Attr_key, typename Tag::value_type>>,
-                                            std::unordered_map<Hier_attr_key, typename Tag::value_type, Hier_attr_key_hash>>>>;
+using attr_map_t = std::conditional_t<
+    attr_is_flag<Tag>(), Flag_attr_map,
+    std::conditional_t<attr_is_dense<Tag>(), Dense_attr_map<typename Tag::value_type>,
+                       std::conditional_t<std::is_same_v<typename Tag::storage, flat_storage>,
+                                          std::conditional_t<std::is_trivially_copyable_v<typename Tag::value_type>,
+                                                             absl::flat_hash_map<Attr_key, typename Tag::value_type>,
+                                                             std::unordered_map<Attr_key, typename Tag::value_type>>,
+                                          std::unordered_map<Hier_attr_key, typename Tag::value_type, Hier_attr_key_hash>>>>;
 
 template <Attribute Tag>
 class Attr_store_impl final : public Attr_store_base {
