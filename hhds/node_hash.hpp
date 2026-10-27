@@ -46,8 +46,8 @@ namespace hhds {
 // structure, so two different nodes CAN collide. A caller that merges nodes on
 // a match (CSE, cone dedup) must confirm with a real multiset comparison of the
 // operands first; a false merge is a silent miscompile.
-inline constexpr uint64_t kTagLeaf = 0x1eaf00001eaf0001ULL;
-inline constexpr uint64_t kTagNode = 0x40de000040de0002ULL;
+inline constexpr uint64_t kTagLeaf  = 0x1eaf00001eaf0001ULL;
+inline constexpr uint64_t kTagNode  = 0x40de000040de0002ULL;
 inline constexpr uint64_t kTagCycle = 0xc1c1e000c1c1e003ULL;
 
 struct default_sink_role {

@@ -139,7 +139,7 @@ void test_random_dag() {
   gio->add_output("out", 0);
   auto graph = gio->create_graph();
 
-  constexpr int     kN   = 200;
+  constexpr int     kN = 200;
   std::vector<Node> n;
   n.reserve(kN);
   for (int i = 0; i < kN; ++i) {

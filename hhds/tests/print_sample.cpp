@@ -150,8 +150,7 @@ int main() {
     return it == ref_names.end() ? "?" : it->second;
   };
 
-  ast_custom.format_node
-      = [&](std::ostream& os, const hhds::Tree::Node_class& node, const hhds::Tree::PrintContext& ctx) -> bool {
+  ast_custom.format_node = [&](std::ostream& os, const hhds::Tree::Node_class& node, const hhds::Tree::PrintContext& ctx) -> bool {
     auto type     = node.get_type();
     auto children = ctx.get_children();
 

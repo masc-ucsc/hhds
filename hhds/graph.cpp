@@ -1072,7 +1072,6 @@ OccurrenceEdgeRange Occurrence_pin::out_edges() const {
   return OccurrenceEdgeRange(state_ ? state_->pin_out_edges(*this) : std::vector<Occurrence_edge>{}, state_);
 }
 
-
 OccurrencePinRange Occurrence_pin::get_driver_pins() const {
   std::vector<Occurrence_pin> result;
   if (state_ != nullptr) {
@@ -1132,7 +1131,7 @@ OccurrencePinRange Occurrence_node::out_sorted_pins() const {
 }
 
 OccurrenceEdgeRange Occurrence_node::out_edges() const {
-  std::vector<Occurrence_edge>      result;
+  std::vector<Occurrence_edge> result;
   for (const auto& driver : node_.out_sorted_pins()) {
     const Occurrence_pin pin(driver, path_, container_path_, state_);
     for (const auto& edge : pin.out_edges()) {
@@ -1150,7 +1149,6 @@ OccurrenceEdgeRange Occurrence_node::out_edges() const {
   }
   return OccurrenceEdgeRange(std::move(result), state_);
 }
-
 
 // has_*_edges mirror the out_edges() / driver-pin readers exactly, but stop at the first pin
 // that contributes an edge: the range is non-empty iff SOME pin contributes, so
@@ -1285,7 +1283,7 @@ void ReachablePinIterator::advance() {
     }
 
     edges_.clear();
-    edge_pos_           = 0;
+    edge_pos_ = 0;
     if (options_.direction == Direction::forward) {
       const auto adjacent = from.out_edges();
       edges_.reserve(adjacent.size());
@@ -2410,8 +2408,8 @@ void Graph::ensure_forward_caches() const {
 
   // Built aside and PUBLISHED at the end: an in-flight walk keeps replaying the
   // previous snapshot rather than watching this one take shape.
-  auto  order = std::make_shared<Forward_order>();
-  auto& pass2 = order->pass2;
+  auto  order       = std::make_shared<Forward_order>();
+  auto& pass2       = order->pass2;
   order->node_count = node_count;
   order->pass1_bits.assign((node_count + 63) / 64, 0);
   order->emitted_bits.assign((node_count + 63) / 64, 0);
@@ -2419,7 +2417,7 @@ void Graph::ensure_forward_caches() const {
   forward_remaining_in_cache_.assign(node_count, 0);
 
   if (node_count <= kFirstUserNodeIdx) {
-    forward_order_       = std::move(order);
+    forward_order_        = std::move(order);
     forward_caches_valid_ = true;
     return;
   }
@@ -2758,8 +2756,7 @@ void Graph::patch_traversal_caches_for_edge(Vid driver_id, Vid sink_id, int32_t 
             forward_caches_valid_ = false;
           }
         }
-      } else if (!is_emit_bits(forward_order_->emitted_bits, driver_idx)
-                 || !is_emit_bits(forward_order_->emitted_bits, sink_idx)) {
+      } else if (!is_emit_bits(forward_order_->emitted_bits, driver_idx) || !is_emit_bits(forward_order_->emitted_bits, sink_idx)) {
         forward_caches_valid_ = false;
       }
       auto& slot = forward_remaining_in_cache_[sink_idx];
@@ -3392,7 +3389,7 @@ void Pin_class::del_sink() const {
   assert(graph_ != nullptr && "del_sink: pin is not attached to a graph");
   // del_pin() removes both directions of a shared entry, including when
   // invoked on its driver handle. Read and delete through the sink form.
-  auto sink = *this;
+  auto sink     = *this;
   sink.pin_pid &= ~static_cast<Pid>(2);
   // get_driver_pins() SNAPSHOTS, which matters: del_sink(driver) mutates the
   // very edge storage the driver decode walks.
@@ -4586,7 +4583,6 @@ std::optional<uint64_t> Grouped_hierarchy_view::size_exact() const { return stat
 uint64_t Grouped_hierarchy_view::size_hint() const { return size_exact().value_or(std::numeric_limits<uint64_t>::max()); }
 
 std::optional<uint64_t> Grouped_hierarchy_view::physical_node_count_exact() const { return state()->count_nodes(true); }
-
 
 OccurrenceNodeRange Occurrences_view::nodes() const { return OccurrenceNodeRange::streaming(state()); }
 
@@ -5814,7 +5810,6 @@ OutEdgeIterator& OutEdgeIterator::operator++() {
   return *this;
 }
 
-
 // ---------------------------------------------------------------------------
 // Pin-centric readers: SortedPinRange / SortedPinIterator
 //
@@ -6020,9 +6015,9 @@ auto Pin_class::get_driver_pin() const -> Pin_class {
 auto Pin_class::get_sink_pin() const -> Pin_class {
   assert(graph_ != nullptr && "get_sink_pin: pin is not attached to a graph");
   assert(is_driver() && "get_sink_pin: expects a driver pin");
-  auto      range = out_edges();
-  auto      it    = range.begin();
-  const auto stop = range.end();
+  auto       range = out_edges();
+  auto       it    = range.begin();
+  const auto stop  = range.end();
   if (it == stop) {
     return {};  // no fanout
   }
@@ -6048,11 +6043,11 @@ auto Graph::get_driver_pins(Pin_class pin) -> absl::InlinedVector<Pin_class, 4> 
 
   const auto stamp = [&](Vid vid) {
     if (vid & 1) {
-      Pin_class driver   = make_pin_class(static_cast<Pid>(vid));
-      driver.context_    = pin.context_;
-      driver.root_gid_   = pin.root_gid_;
-      driver.hier_pos_   = pin.hier_pos_;
-      driver.hier_path_  = pin.hier_path_;
+      Pin_class driver  = make_pin_class(static_cast<Pid>(vid));
+      driver.context_   = pin.context_;
+      driver.root_gid_  = pin.root_gid_;
+      driver.hier_pos_  = pin.hier_pos_;
+      driver.hier_path_ = pin.hier_path_;
       out.push_back(std::move(driver));
     } else {
       // node-as-pin driver: deliberately NOT context-stamped, matching the
@@ -6296,8 +6291,6 @@ void Graph::set_next_pin(Nid nid, Pid next_pin) {
   }
 }
 
-
-
 void Graph::print(std::ostream& os) const {
   assert_accessible();
   os << name_ << " {\n";
@@ -6350,9 +6343,9 @@ std::string Graph::print() const {
 
 static constexpr uint32_t GRAPH_BODY_MAGIC     = 0x48484742;  // "HHGB"
 static constexpr uint32_t GRAPH_BODY_VERSION   = 7;           // 6: constant pool section (Dlop values)
-                                                             // 7: PinEntry direction flags (master_nid narrowed to
-                                                             //    nid>>2; pin_table is bulk-written, so the layout
-                                                             //    change is a format change)
+                                                              // 7: PinEntry direction flags (master_nid narrowed to
+                                                              //    nid>>2; pin_table is bulk-written, so the layout
+                                                              //    change is a format change)
 static constexpr uint32_t SUBNODE_LOOP_VERSION = 1;
 static constexpr uint32_t ENDIAN_CHECK         = 0x01020304;
 
@@ -6596,7 +6589,7 @@ void Graph::ensure_overflow_loaded() const {
 }
 
 void Graph::load_body(const std::string& dir_path) {
-  namespace fs = std::filesystem;
+  namespace fs               = std::filesystem;
   bool canonicalized_padding = false;
 
   // --- body.bin ---

@@ -38,8 +38,7 @@ namespace {
 }
 
 // Same, but keeping the sink so a caller can filter on its port id.
-[[nodiscard]] std::vector<std::pair<hhds::Occurrence_pin, hhds::Occurrence_pin>> hier_in_pairs(
-    const hhds::Occurrence_node& n) {
+[[nodiscard]] std::vector<std::pair<hhds::Occurrence_pin, hhds::Occurrence_pin>> hier_in_pairs(const hhds::Occurrence_node& n) {
   std::vector<std::pair<hhds::Occurrence_pin, hhds::Occurrence_pin>> out;  // (sink, driver)
   for (const auto& sink : n.inp_sorted_pins()) {
     for (const auto& driver : sink.get_driver_pins()) {

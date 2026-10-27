@@ -87,7 +87,7 @@ std::vector<Pin_class> collect(const Range& r) {
 // the order inp_sorted_pins() must produce.
 std::vector<Pin_class> expected_inp_pins(Node_class n) {
   std::vector<Pin_class> out;
-  auto* const            g = n.get_graph();
+  auto* const            g    = n.get_graph();
   const auto             scan = [&](const Node_class& other) {
     for (const auto& e : other.out_edges()) {
       if (e.sink.get_master_node() != n) {
@@ -108,8 +108,7 @@ std::vector<Pin_class> expected_inp_pins(Node_class n) {
   // The builtin singletons are NOT in body().nodes(), but they drive it.
   scan(g->get_input_node());
   scan(g->get_constant_node());
-  std::sort(out.begin(), out.end(),
-            [](const Pin_class& a, const Pin_class& b) { return a.get_port_id() < b.get_port_id(); });
+  std::sort(out.begin(), out.end(), [](const Pin_class& a, const Pin_class& b) { return a.get_port_id() < b.get_port_id(); });
   return out;
 }
 
@@ -401,10 +400,10 @@ void test_high_fanout_in_pin_walk_is_not_o_fanout() {
     return got.size();
   };
 
-  size_t steps_small = 0;
-  size_t steps_big   = 0;
-  const auto in_small = build(100, steps_small);
-  const auto in_big   = build(10000, steps_big);
+  size_t     steps_small = 0;
+  size_t     steps_big   = 0;
+  const auto in_small    = build(100, steps_small);
+  const auto in_big      = build(10000, steps_big);
 
   TEST_CHECK(in_small == 1 && in_big == 1);
   // Yield count is a function of the fan-IN, not of the fanout.

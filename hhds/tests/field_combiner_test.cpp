@@ -7,12 +7,12 @@
 // F* = GF(2^61-1)* with gamma excluding 0 and 1 survives all of them. Each test
 // names the invariant it pins.
 
-#include "hhds/hash_mix.hpp"
-
 #include <cstdio>
 #include <cstdlib>
 #include <set>
 #include <vector>
+
+#include "hhds/hash_mix.hpp"
 
 namespace {
 
@@ -35,7 +35,8 @@ uint64_t fold(const std::vector<uint64_t>& v) {
 // Invariant 2: gamma excludes 0 and 1, so no operand can ANNIHILATE the product
 // or VANISH from it. This is the property a bare xor lacks in both directions.
 void test_gamma_never_zero_or_one() {
-  for (uint64_t v : std::initializer_list<uint64_t>{0, 1, 2, hhds::kMersenne61 - 1, hhds::kMersenne61, hhds::kMersenne61 + 1, ~uint64_t{0}}) {
+  for (uint64_t v :
+       std::initializer_list<uint64_t>{0, 1, 2, hhds::kMersenne61 - 1, hhds::kMersenne61, hhds::kMersenne61 + 1, ~uint64_t{0}}) {
     TEST_CHECK(hhds::hash_gamma(v) >= 2);
     TEST_CHECK(hhds::hash_gamma(v) < hhds::kMersenne61);
   }
@@ -144,4 +145,3 @@ int main() {
   std::printf("field_combiner_test passed\n");
   return 0;
 }
-

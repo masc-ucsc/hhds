@@ -100,10 +100,10 @@ inline constexpr uint64_t kMersenne61 = (1ULL << 61U) - 1U;  // p
 // Multiply in GF(2^61-1). The Mersenne shape lets the 128-bit product fold with
 // shifts and an add instead of a division.
 [[nodiscard]] constexpr uint64_t hash_mulmod61(uint64_t a, uint64_t b) noexcept {
-  const __uint128_t prod = static_cast<__uint128_t>(a) * b;
-  uint64_t          lo   = static_cast<uint64_t>(prod) & kMersenne61;
-  const uint64_t    hi   = static_cast<uint64_t>(prod >> 61U);
-  lo += hi;
+  const __uint128_t prod  = static_cast<__uint128_t>(a) * b;
+  uint64_t          lo    = static_cast<uint64_t>(prod) & kMersenne61;
+  const uint64_t    hi    = static_cast<uint64_t>(prod >> 61U);
+  lo                     += hi;
   if (lo >= kMersenne61) {
     lo -= kMersenne61;
   }
@@ -169,9 +169,7 @@ public:
     ++count_;
   }
 
-  [[nodiscard]] constexpr uint64_t value() const noexcept {
-    return hash_combine64(hash_combine64(hash_mix64(sum_), xor_), count_);
-  }
+  [[nodiscard]] constexpr uint64_t value() const noexcept { return hash_combine64(hash_combine64(hash_mix64(sum_), xor_), count_); }
 
   [[nodiscard]] constexpr uint64_t count() const noexcept { return count_; }
 

@@ -7,12 +7,12 @@
 // which are allocation order and are reshuffled every time a graph is loaded.
 // The build-order test below is the one that would catch a regression there.
 
-#include "hhds/node_hash.hpp"
-
 #include <cstdio>
 #include <cstdlib>
 #include <set>
 #include <vector>
+
+#include "hhds/node_hash.hpp"
 
 namespace {
 
@@ -29,11 +29,9 @@ constexpr hhds::Type kSum = 1;
 constexpr hhds::Type kAnd = 3;
 
 // Sum is banked on pid parity (even = "as"), like LiveHD's Ntype::sink_bank.
-hhds::Port_id role(hhds::Type t, hhds::Port_id pid) {
-  return (t == kSum || t == kAnd) ? static_cast<hhds::Port_id>(0) : pid;
-}
-bool     is_leaf(const hhds::Pin_class& p) { return p.get_master_node().get_type() == kIn; }
-uint64_t width_of(const hhds::Pin_class&) { return 8; }
+hhds::Port_id role(hhds::Type t, hhds::Port_id pid) { return (t == kSum || t == kAnd) ? static_cast<hhds::Port_id>(0) : pid; }
+bool          is_leaf(const hhds::Pin_class& p) { return p.get_master_node().get_type() == kIn; }
+uint64_t      width_of(const hhds::Pin_class&) { return 8; }
 
 // Build `out = (x OP y)` where the two leaves are created in the order given, so
 // the SAME structure gets DIFFERENT node ids between the two calls.
@@ -56,9 +54,7 @@ uint64_t build_and_hash(bool leaves_reversed, hhds::Type op) {
 }
 
 // THE incremental property: node ids change with build order, the digest must not.
-void test_stable_under_id_reshuffle() {
-  TEST_CHECK(build_and_hash(false, kSum) == build_and_hash(true, kSum));
-}
+void test_stable_under_id_reshuffle() { TEST_CHECK(build_and_hash(false, kSum) == build_and_hash(true, kSum)); }
 
 // Different cell type over the same operands must not collide (spec invariant 7).
 void test_op_discriminates() { TEST_CHECK(build_and_hash(false, kSum) != build_and_hash(false, kAnd)); }
@@ -74,8 +70,7 @@ void test_leaf_is_identity_free() {
   b.set_type(kIn);
   // Two DIFFERENT boundary nodes of the same type/port/width hash the same: the
   // cone's identity comes from its shape, not from which leaf instance it hit.
-  TEST_CHECK(hhds::cone_leaf_hash(a.create_driver_pin(), width_of)
-             == hhds::cone_leaf_hash(b.create_driver_pin(), width_of));
+  TEST_CHECK(hhds::cone_leaf_hash(a.create_driver_pin(), width_of) == hhds::cone_leaf_hash(b.create_driver_pin(), width_of));
 }
 
 // subgraph_hash is the fold of the OUTPUT cones, ordered by the stable port_id.

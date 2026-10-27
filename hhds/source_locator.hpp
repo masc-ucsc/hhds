@@ -240,8 +240,7 @@ public:
           // line tables and threw bad_alloc inside derive_line_offsets. `src`
           // already holds the hash and the table that belong to these exact
           // bytes, so carry all three by pointer.
-          adopt_file_content(a.path, std::move(content), src.file_content_hash(a.path),
-                             src.file_line_offsets_shared(a.path));
+          adopt_file_content(a.path, std::move(content), src.file_content_hash(a.path), src.file_line_offsets_shared(a.path));
         } else {
           if (file_line_offsets(a.path) == nullptr) {
             if (auto offs = src.file_line_offsets_shared(a.path); offs != nullptr) {
@@ -471,7 +470,7 @@ public:
     evict_file_entries(file_id);
     files_[file_id].content_hash = 0;
     files_[file_id].line_offsets = nullptr;
-    files_[file_id].content = nullptr;
+    files_[file_id].content      = nullptr;
   }
 
   // ---- file contents ---------------------------------------------------------
@@ -726,8 +725,8 @@ private:
   };
 
   struct File {
-    std::string                        path;
-    uint64_t                           content_hash = 0;
+    std::string                                  path;
+    uint64_t                                     content_hash = 0;
     // Ascending byte offsets of line starts. SHARED, like `content`: one
     // physical table per file no matter how many locators anchor into it. The
     // slang reader builds one Lnast -- and so one locator -- PER MODULE, so a
@@ -736,7 +735,7 @@ private:
     std::shared_ptr<const std::vector<uint64_t>> line_offsets;
     // In-memory source bytes (never persisted). shared_ptr: cross-locator
     // carries are pointer copies, and views into *content outlive clear().
-    std::shared_ptr<const std::string> content;
+    std::shared_ptr<const std::string>           content;
   };
 
   // Byte offset of every line start (first entry always 0) — the table
@@ -1211,7 +1210,7 @@ private:
         for (size_t i = 0; i < count; ++i) {
           SourceId parent = 0;
           if (!(ss >> parent) || find_local_raw(parent) == nullptr) {  // _raw: we ARE the materialize
-            return false;  // missing or not-yet-defined parent
+            return false;                                              // missing or not-yet-defined parent
           }
           e.parents.push_back(parent);
         }
@@ -1266,8 +1265,7 @@ private:
         if (mine.content_hash == 0 && f.content_hash != 0) {
           mine.content_hash = f.content_hash;
         }
-        if ((mine.line_offsets == nullptr || mine.line_offsets->empty()) && f.line_offsets != nullptr
-            && !f.line_offsets->empty()) {
+        if ((mine.line_offsets == nullptr || mine.line_offsets->empty()) && f.line_offsets != nullptr && !f.line_offsets->empty()) {
           mine.line_offsets = f.line_offsets;  // pointer copy
         }
         if (mine.content == nullptr && f.content != nullptr) {

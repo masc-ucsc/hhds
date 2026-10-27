@@ -33,9 +33,7 @@ namespace {
 
 using Key = std::pair<hhds::Nid, hhds::Port_id>;  // (driver node nid, driver port)
 
-Key key_of(const hhds::Pin& drv) {
-  return {drv.get_master_node().get_debug_nid() & ~static_cast<hhds::Nid>(3), drv.get_port_id()};
-}
+Key key_of(const hhds::Pin& drv) { return {drv.get_master_node().get_debug_nid() & ~static_cast<hhds::Nid>(3), drv.get_port_id()}; }
 
 std::vector<Key> driver_keys(const hhds::Pin& sink) {
   std::vector<Key> out;
@@ -49,10 +47,10 @@ std::set<Key> as_set(const std::vector<Key>& v) { return {v.begin(), v.end()}; }
 
 // One "hub": a sink whose storage entry also carries a big fanout.
 struct Hub {
-  hhds::Node         node;
-  hhds::Pin          sink;    // the port whose drivers we ask for
-  hhds::Pin          out;     // the driver side of the SAME storage entry
-  std::set<Key>      drivers; // model
+  hhds::Node             node;
+  hhds::Pin              sink;     // the port whose drivers we ask for
+  hhds::Pin              out;      // the driver side of the SAME storage entry
+  std::set<Key>          drivers;  // model
   std::vector<hhds::Pin> fanout_sinks;
 };
 
@@ -105,13 +103,13 @@ TEST_F(BackEdgeIndex, RandomMutationsAgreeWithModel) {
   grow_fanout(node_hub, 40);  // past the 9 inline NodeEntry slots
   grow_fanout(pin_hub, 40);   // past the 6 inline PinEntry slots
 
-  bool self_loop  = false;  // node_hub drives its own sink 0
+  bool self_loop   = false;  // node_hub drives its own sink 0
   int  down_3_to_2 = 0;      // the transition that may force a rescan
   int  at_5        = 0;
   for (int step = 0; step < 6000; ++step) {
     Hub&         h      = (rng() & 1) ? node_hub : pin_hub;
     const size_t before = h.drivers.size();
-    const int op = static_cast<int>(rng() % 100);
+    const int    op     = static_cast<int>(rng() % 100);
     if (op < 30) {  // connect a driver (bias toward crossing 0..5)
       auto& src = sources[rng() % sources.size()];
       if (h.drivers.size() < 5 && !h.drivers.contains(key_of(src))) {
@@ -154,7 +152,7 @@ TEST_F(BackEdgeIndex, RandomMutationsAgreeWithModel) {
       sources[i] = (rng() & 1) ? n.create_driver_pin() : n.create_driver_pin(3);
     }
     down_3_to_2 += (before == 3 && h.drivers.size() == 2) ? 1 : 0;
-    at_5 += h.drivers.size() == 5 ? 1 : 0;
+    at_5        += h.drivers.size() == 5 ? 1 : 0;
     check(node_hub, "node_hub", step);
     check(pin_hub, "pin_hub", step);
     ASSERT_TRUE(g->debug_back_index_consistent()) << "step " << step;
@@ -169,10 +167,10 @@ TEST_F(BackEdgeIndex, DriverOrderMatchesAFullScan) {
   // edge): the index answers from its slots, the order must still be the
   // overflow set's scan order. debug_back_index_consistent compares exactly
   // that; exercise it across fanout erasures, which reorder the set.
-  hhds::GraphLibrary lib;
-  auto               g   = lib.create_io("top")->create_graph();
-  auto               hub = g->create_node();
-  auto               out = hub.create_driver_pin();
+  hhds::GraphLibrary     lib;
+  auto                   g   = lib.create_io("top")->create_graph();
+  auto                   hub = g->create_node();
+  auto                   out = hub.create_driver_pin();
   std::vector<hhds::Pin> sinks;
   for (int i = 0; i < 30; ++i) {
     sinks.push_back(g->create_node().create_sink_pin());
@@ -196,14 +194,14 @@ TEST_F(BackEdgeIndex, DriverOrderMatchesAFullScan) {
 }
 
 TEST_F(BackEdgeIndex, SurvivesSaveLoad) {
-  namespace fs  = std::filesystem;
+  namespace fs   = std::filesystem;
   const auto dir = fs::temp_directory_path() / ("hhds_back_edge_index_test_" + std::to_string(::getpid()));
   fs::remove_all(dir);
 
   std::vector<std::vector<Key>> before;
   {
-    hhds::GraphLibrary lib;
-    auto               g = lib.create_io("top")->create_graph();
+    hhds::GraphLibrary      lib;
+    auto                    g = lib.create_io("top")->create_graph();
     std::vector<hhds::Node> hubs;
     for (int drivers = 0; drivers <= 4; ++drivers) {
       auto hub = g->create_node();

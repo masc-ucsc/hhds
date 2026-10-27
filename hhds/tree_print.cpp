@@ -33,12 +33,12 @@ size_t Tree::node_body_width(Tree_pos c, size_t name_width, const PrintOptions& 
 
   switch (te.sclass) {
     case Statement_class::Attr:
-    case Statement_class::Use:
+    case Statement_class::Use :
     case Statement_class::End : return 0;
 
     case Statement_class::Assign: return 7 + te.name.size();
 
-    case Statement_class::Open_def:
+    case Statement_class::Open_def  :
     case Statement_class::Closed_def: {
       size_t w = 4 + te.name.size();
       if (auto nt = node_text_override(c, options); nt.has_value()) {
@@ -47,7 +47,7 @@ size_t Tree::node_body_width(Tree_pos c, size_t name_width, const PrintOptions& 
       return w;
     }
 
-    case Statement_class::Open_call:
+    case Statement_class::Open_call  :
     case Statement_class::Closed_call: {
       size_t w = te.name.size();
       if (auto nt = node_text_override(c, options); nt.has_value()) {
@@ -250,7 +250,7 @@ void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const P
       os << " = assign " << te.name;
       body_w = 7 + te.name.size();
       break;
-    case Statement_class::Open_def:
+    case Statement_class::Open_def  :
     case Statement_class::Closed_def: {
       emit_pos(node_pos);
       os << " = def " << te.name;
@@ -261,7 +261,7 @@ void Tree::print_node(std::ostream& os, Tree_pos node_pos, size_t depth, const P
       }
       break;
     }
-    case Statement_class::Open_call:
+    case Statement_class::Open_call  :
     case Statement_class::Closed_call: {
       emit_pos(node_pos);
       os << " = " << te.name;

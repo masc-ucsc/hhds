@@ -15,7 +15,7 @@ namespace {
 
 #define TEST_CHECK(condition)                                                            \
   do {                                                                                   \
-    if (!(condition)) {                                                                   \
+    if (!(condition)) {                                                                  \
       std::fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #condition); \
       std::abort();                                                                      \
     }                                                                                    \
@@ -97,9 +97,7 @@ void test_canonical_node_hash() {
   auto b = g->create_node();
 
   // Two distinct leaf hashes, keyed off the driver node's own id.
-  const auto child = [&](const hhds::Pin_class& p) -> uint64_t {
-    return p.get_master_node() == a ? 0x1111ULL : 0x2222ULL;
-  };
+  const auto child = [&](const hhds::Pin_class& p) -> uint64_t { return p.get_master_node() == a ? 0x1111ULL : 0x2222ULL; };
 
   // Sum(add: a, b) vs Sum(add: b, a). Two operands of ONE role, each on its own
   // sink pin (pids 0 and 2 -- consecutive slots of the even/"added" bank):

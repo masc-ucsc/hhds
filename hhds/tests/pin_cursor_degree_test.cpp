@@ -78,7 +78,7 @@ PortVec iota_ports(hhds::Port_id lo, hhds::Port_id hi) {
 
 TEST(PinCursor, AscendingCreateBuildsSortedChain) {
   hhds::GraphLibrary lib;
-  auto               g = lib.create_io("top")->create_graph();
+  auto               g   = lib.create_io("top")->create_graph();
   auto               n   = g->create_node();
   auto               drv = g->create_node().create_driver_pin();
 
@@ -94,7 +94,7 @@ TEST(PinCursor, AscendingCreateBuildsSortedChain) {
 
 TEST(PinCursor, DescendingCreateBuildsSortedChain) {
   hhds::GraphLibrary lib;
-  auto               g = lib.create_io("top")->create_graph();
+  auto               g   = lib.create_io("top")->create_graph();
   auto               n   = g->create_node();
   auto               drv = g->create_node().create_driver_pin();
 
@@ -106,7 +106,7 @@ TEST(PinCursor, DescendingCreateBuildsSortedChain) {
 
 TEST(PinCursor, ShuffledCreateBuildsSortedChain) {
   hhds::GraphLibrary lib;
-  auto               g = lib.create_io("top")->create_graph();
+  auto               g   = lib.create_io("top")->create_graph();
   auto               n   = g->create_node();
   auto               drv = g->create_node().create_driver_pin();
 
@@ -122,9 +122,9 @@ TEST(PinCursor, InterleavedNodesKeepTheirOwnChains) {
   // The cursor names ONE node, so round-robin creation makes it wrong on almost
   // every call. The fallback must still produce three correct chains.
   hhds::GraphLibrary lib;
-  auto               g = lib.create_io("top")->create_graph();
-  auto               a = g->create_node();
-  auto               b = g->create_node();
+  auto               g   = lib.create_io("top")->create_graph();
+  auto               a   = g->create_node();
+  auto               b   = g->create_node();
   auto               c   = g->create_node();
   auto               drv = g->create_node().create_driver_pin();
 
@@ -144,7 +144,7 @@ TEST(PinCursor, InterleavedNodesKeepTheirOwnChains) {
 
 TEST(PinCursor, RecreateReturnsTheExistingPin) {
   hhds::GraphLibrary    lib;
-  auto                  g = lib.create_io("top")->create_graph();
+  auto                  g   = lib.create_io("top")->create_graph();
   auto                  n   = g->create_node();
   auto                  drv = g->create_node().create_driver_pin();
   std::vector<uint64_t> pids;

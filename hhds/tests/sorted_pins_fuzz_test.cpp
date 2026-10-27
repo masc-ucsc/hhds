@@ -73,7 +73,7 @@ std::vector<hhds::Pid> pids_of(const std::vector<Pin_class>& v) {
 // puts the node-as-pin (port 0) first, the order inp_sorted_pins() produces.
 std::vector<Pin_class> expected_inp_pins(Node_class n) {
   std::vector<Pin_class> out;
-  auto* const            g = n.get_graph();
+  auto* const            g    = n.get_graph();
   const auto             scan = [&](const Node_class& other) {
     for (const auto& e : other.out_edges()) {
       if (e.sink.get_master_node() != n) {
@@ -94,8 +94,7 @@ std::vector<Pin_class> expected_inp_pins(Node_class n) {
   // The builtin singletons are NOT in body().nodes(), but they drive it.
   scan(g->get_input_node());
   scan(g->get_constant_node());
-  std::sort(out.begin(), out.end(),
-            [](const Pin_class& a, const Pin_class& b) { return a.get_port_id() < b.get_port_id(); });
+  std::sort(out.begin(), out.end(), [](const Pin_class& a, const Pin_class& b) { return a.get_port_id() < b.get_port_id(); });
   return out;
 }
 
@@ -118,11 +117,12 @@ std::vector<Pin_class> collect(const Range& r) {
   return out;
 }
 
-void report_and_die(const char* what, uint64_t seed, const std::vector<Pin_class>& want,
-                    const std::vector<Pin_class>& got) {
+void report_and_die(const char* what, uint64_t seed, const std::vector<Pin_class>& want, const std::vector<Pin_class>& got) {
   const auto a = pids_of(want);
   const auto b = pids_of(got);
-  std::fprintf(stderr, "sorted_pins_fuzz: %s MISMATCH (seed=%llu)\n  edge-reader says:", what,
+  std::fprintf(stderr,
+               "sorted_pins_fuzz: %s MISMATCH (seed=%llu)\n  edge-reader says:",
+               what,
                static_cast<unsigned long long>(seed));
   for (auto p : a) {
     std::fprintf(stderr, " %llu", static_cast<unsigned long long>(p));
@@ -242,7 +242,7 @@ void fuzz_one(uint64_t seed) {
       far_drivers.push_back(drv);
     }
     if (role == 2 || role == 3) {
-      auto dp = n.create_driver_pin(static_cast<Port_id>(port));
+      auto      dp     = n.create_driver_pin(static_cast<Port_id>(port));
       // Fanout sometimes crosses the 4-slot inline set into overflow.
       const int fanout = pick(0, 2) == 0 ? pick(1, 3) : pick(4, 40);
       for (int i = 0; i < fanout; ++i) {

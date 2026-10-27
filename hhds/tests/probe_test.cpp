@@ -211,9 +211,8 @@ static void probe_query_instance_node() {
   auto ins = hier_in_drivers(r_h);
   std::cout << "   r in-driver count = " << ins.size() << "\n";
   for (const auto& drv : ins) {
-    std::cout << "     driver gid=" << drv.get_current_gid()
-              << " master=" << node_of(drv.get_master_node().get_debug_nid()) << " (src=" << node_of(src.get_debug_nid())
-              << ")\n";
+    std::cout << "     driver gid=" << drv.get_current_gid() << " master=" << node_of(drv.get_master_node().get_debug_nid())
+              << " (src=" << node_of(src.get_debug_nid()) << ")\n";
   }
   auto outs = r_h.out_edges();
   std::cout << "   r.out_edges count = " << outs.size() << "\n";
@@ -334,8 +333,8 @@ static void probe_port0_boundary() {
   auto ins   = hier_in_drivers(buf_h);
   std::cout << "probe_port0_boundary: in-driver count = " << ins.size() << " (expect 1: src)\n";
   for (const auto& drv : ins) {
-    std::cout << "   driver master=" << node_of(drv.get_master_node().get_debug_nid())
-              << " (src=" << node_of(src.get_debug_nid()) << ")\n";
+    std::cout << "   driver master=" << node_of(drv.get_master_node().get_debug_nid()) << " (src=" << node_of(src.get_debug_nid())
+              << ")\n";
   }
   auto outs = buf_h.out_edges();
   std::cout << "   out_edges count = " << outs.size() << " (expect 1: dst)\n";
