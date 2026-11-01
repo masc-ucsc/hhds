@@ -6178,7 +6178,49 @@ auto Graph::get_sink_pins(Node_class node) -> absl::InlinedVector<Pin_class, 4> 
   return out;
 }
 
-void Graph::delete_node(Nid nid) {
+void Graph::delete_nodes(std::span<const Node_class> nodes) {
+  assert_accessible();
+  if (nodes.empty()) {
+    return;
+  }
+  std::vector<Nid> ids;
+  ids.reserve(nodes.size());
+  for (const auto& node : nodes) {
+    if (node.get_graph() != this) {
+      throw std::invalid_argument("delete_nodes: foreign or invalid node handle");
+    }
+    const auto nid = static_cast<Nid>(node.get_class_index().value) & ~static_cast<Nid>(3);
+    const auto actual = nid >> 2;
+    if (actual < 4 || actual >= node_table.size() || !node_table[actual].is_alive()) {
+      throw std::invalid_argument("delete_nodes: builtin or invalid node handle");
+    }
+    ids.push_back(nid);
+  }
+  std::sort(ids.begin(), ids.end());
+  ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+  std::vector<Attr_key> keys;
+  keys.reserve(2 * ids.size());
+  for (const auto nid : ids) {
+    keys.push_back(make_node_attr_key(static_cast<uint64_t>(nid)));
+    keys.push_back(make_pin_attr_key(static_cast<uint64_t>(nid)));
+    for (Pid pin = ref_node(nid)->get_next_pin_id(); pin != 0;) {
+      const auto canonical = (pin & ~static_cast<Pid>(2)) | static_cast<Pid>(1);
+      keys.push_back(make_pin_attr_key(static_cast<uint64_t>(canonical)));
+      pin = ref_pin(canonical)->get_next_pin_id();
+    }
+  }
+  std::sort(keys.begin(), keys.end());
+  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+  // No graph operation below reads attributes of the doomed nodes. Remove
+  // them together before structural deletion; callers observe the complete
+  // operation, with no deferred/tombstoned attributes left in stores or saves.
+  erase_attr_objects(keys);
+  for (const auto nid : ids) {
+    delete_node(nid, false);
+  }
+}
+
+void Graph::delete_node(Nid nid, bool erase_attributes) {
   assert_accessible();
   nid                 &= ~static_cast<Nid>(3);
   const Nid actual_id  = nid >> 2;
@@ -6216,8 +6258,10 @@ void Graph::delete_node(Nid nid) {
     del_edge_int(driver, sink);
   }
 
-  erase_attr_object(make_node_attr_key(static_cast<uint64_t>(nid)));
-  erase_attr_object(make_pin_attr_key(static_cast<uint64_t>(nid)));
+  if (erase_attributes) {
+    erase_attr_object(make_node_attr_key(static_cast<uint64_t>(nid)));
+    erase_attr_object(make_pin_attr_key(static_cast<uint64_t>(nid)));
+  }
   for (auto pin_pid : pins_to_delete) {
     const Pid actual_pin_id = pin_pid >> 2;
     auto*     pin           = &pin_table[actual_pin_id];
@@ -6225,7 +6269,9 @@ void Graph::delete_node(Nid nid) {
       overflow_free_.push_back(pin->get_overflow_idx());
       overflow_sets()[pin->get_overflow_idx()].clear();
     }
-    erase_attr_object(make_pin_attr_key(static_cast<uint64_t>(pin_pid)));
+    if (erase_attributes) {
+      erase_attr_object(make_pin_attr_key(static_cast<uint64_t>(pin_pid)));
+    }
     pin_table[actual_pin_id] = PinEntry();
   }
 

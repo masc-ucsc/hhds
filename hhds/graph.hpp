@@ -1503,6 +1503,12 @@ public:
   Graph& operator=(Graph&&)      = delete;
 
   [[nodiscard]] Node                     create_node();
+  // Delete ordinary nodes as one operation, including all node/pin attributes
+  // in every occurrence. Duplicate handles are accepted; invalid, builtin or
+  // foreign handles are rejected before mutation. Handles must belong to this
+  // body. Bulk cleanup avoids a hierarchy-attribute scan for every deletion.
+  void delete_nodes(std::span<const Node_class> nodes);
+
   void                                   clear();
   [[nodiscard]] Gid                      get_gid() const noexcept { return self_gid_; }
   [[nodiscard]] std::string_view         get_name() const noexcept { return name_; }
@@ -1721,7 +1727,7 @@ private:
   // and copy_body_from (after an in-memory table copy) so both paths produce
   // identical derived state. Does NOT set dirty_ — each caller sets it.
   void              rebuild_derived_after_body();
-  void              delete_node(Nid nid);
+  void              delete_node(Nid nid, bool erase_attributes = true);
   [[nodiscard]] Pid materialize_declared_io_pin(std::string_view name, Port_id port_id, Nid owner_nid,
                                                 ankerl::unordered_dense::map<std::string, Pid, Name_hash, Name_eq>& pins_by_name);
   void              erase_declared_io_pin(std::string_view                                                    name,

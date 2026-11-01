@@ -8,6 +8,7 @@
 #include <istream>
 #include <memory>
 #include <ostream>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -646,6 +647,13 @@ public:
   [[nodiscard]] virtual uint64_t                         size() const noexcept                                            = 0;
   virtual void                                           clear_entries() noexcept                                         = 0;
   virtual void                                           erase_object(Attr_key key) noexcept                              = 0;
+  // Keys are sorted. The default preserves custom-store compatibility.
+  virtual void erase_objects(std::span<const Attr_key> keys) noexcept {
+    for (const auto key : keys) {
+      erase_object(key);
+    }
+  }
+
   virtual void                                           save_entries(std::ostream& os) const                             = 0;
   virtual void                                           load_entries(std::istream& is, uint64_t count, bool legacy_hier) = 0;
   [[nodiscard]] virtual std::unique_ptr<Attr_store_base> clone() const                                                    = 0;
@@ -708,6 +716,24 @@ public:
     } else {
       for (auto it = map_.begin(); it != map_.end();) {
         if (it->first.flat_key == key) {
+          it = map_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+  }
+
+  void erase_objects(std::span<const Attr_key> keys) noexcept override {
+    if constexpr (std::is_same_v<typename Tag::storage, flat_storage>) {
+      for (const auto key : keys) {
+        map_.erase(key);
+      }
+    } else {
+      // A graph sweep removes many objects at once. Scanning this store for
+      // every deleted node/pin is quadratic; visit it once for the whole batch.
+      for (auto it = map_.begin(); it != map_.end();) {
+        if (std::binary_search(keys.begin(), keys.end(), it->first.flat_key)) {
           it = map_.erase(it);
         } else {
           ++it;
@@ -987,6 +1013,16 @@ protected:
     for (auto& store : attr_stores_) {
       if (store) {
         store->erase_object(key);
+      }
+    }
+  }
+
+  void erase_attr_objects(std::span<const Attr_key> keys) noexcept {
+    [[maybe_unused]] const Attr_debug_write_guard guard(*this);
+    assert(std::is_sorted(keys.begin(), keys.end()));
+    for (auto& store : attr_stores_) {
+      if (store) {
+        store->erase_objects(keys);
       }
     }
   }

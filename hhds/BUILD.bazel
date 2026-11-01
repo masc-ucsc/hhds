@@ -231,6 +231,22 @@ cc_test(
     ],
 )
 
+cc_binary(
+    name = "graph_attr_erase_bench",
+    srcs = ["tests/graph_attr_erase_bench.cpp"],
+    tags = ["manual"],
+    deps = [":graph"],
+)
+
+cc_test(
+    name = "graph_bulk_erase",
+    srcs = ["tests/graph_bulk_erase.cpp"],
+    deps = [
+        ":graph",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "sorted_pins_test",
     srcs = ["tests/sorted_pins_test.cpp"],
