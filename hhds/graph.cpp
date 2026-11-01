@@ -6259,8 +6259,19 @@ void Graph::delete_node(Nid nid, bool erase_attributes) {
   }
 
   if (erase_attributes) {
-    erase_attr_object(make_node_attr_key(static_cast<uint64_t>(nid)));
-    erase_attr_object(make_pin_attr_key(static_cast<uint64_t>(nid)));
+    // A memory cell can have hundreds of ports. Hierarchical attributes must
+    // be visited once for the node and all its pins, rather than rescanning
+    // the complete store separately for every pin removed below.
+    std::vector<Attr_key> keys;
+    keys.reserve(pins_to_delete.size() + 2);
+    keys.push_back(make_node_attr_key(static_cast<uint64_t>(nid)));
+    keys.push_back(make_pin_attr_key(static_cast<uint64_t>(nid)));
+    for (const auto pin_pid : pins_to_delete) {
+      keys.push_back(make_pin_attr_key(static_cast<uint64_t>(pin_pid)));
+    }
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    erase_attr_objects(keys);
   }
   for (auto pin_pid : pins_to_delete) {
     const Pid actual_pin_id = pin_pid >> 2;
@@ -6268,9 +6279,6 @@ void Graph::delete_node(Nid nid, bool erase_attributes) {
     if (pin->use_overflow) {
       overflow_free_.push_back(pin->get_overflow_idx());
       overflow_sets()[pin->get_overflow_idx()].clear();
-    }
-    if (erase_attributes) {
-      erase_attr_object(make_pin_attr_key(static_cast<uint64_t>(pin_pid)));
     }
     pin_table[actual_pin_id] = PinEntry();
   }
