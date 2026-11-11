@@ -416,6 +416,14 @@ cc_test(
 )
 
 cc_test(
+    name = "dense_attr_lanes",
+    size = "small",
+    srcs = ["tests/dense_attr_lanes.cpp"],
+    copts = COPTS,
+    deps = [":graph"],
+)
+
+cc_test(
     name = "attr_race_test",
     size = "small",
     srcs = ["tests/attr_race_test.cpp"],

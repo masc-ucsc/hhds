@@ -1,7 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <bit>
 #include <cassert>
 #include <cstdint>
 #include <functional>
@@ -66,14 +68,18 @@ template <Attribute Tag>
 }
 
 // Optional per-tag layout policy (`using layout = hhds::dense_layout;`).
-// Default is sparse (hash map). dense_layout backs the store with a plain
-// vector indexed by the flat key; it is only valid for flat_storage tags.
+// Default is sparse (hash map). dense_layout backs the store with plain
+// vectors indexed by the object's table index (Dense_attr_map: the tag bits
+// of the flat key pick the vector), so an attribute that every node of a
+// graph has costs sizeof(value_type) per node; it is only valid for
+// flat_storage tags.
 //
-// dense_layout contract: value_type{} is reserved as the not-present
-// sentinel (hhds ids reserve 0 as invalid), so a dense tag must never store
-// value_type{} — set() asserts on it; use del() instead. Iteration over a
-// dense store yields proxy entries: bind with `auto&&` or `const auto&`,
-// never `auto&`.
+// dense_layout contract: value_type{} IS the not-present state (hhds ids
+// reserve 0 as invalid; a width, a color or a region id of 0 means "none").
+// Storing value_type{} is therefore the same as del(): has() is false
+// afterwards and the entry is not persisted. A tag that must tell a stored
+// zero from an absent value stays sparse. Iteration over a dense store yields
+// proxy entries: bind with `auto&&` or `const auto&`, never `auto&`.
 //
 // Build with -DHHDS_ATTR_PROFILE (bazel --config=attr_profile) to dump
 // per-tag utilization at exit and get a dense-vs-sparse recommendation.
@@ -457,16 +463,38 @@ private:
 // absent entry (see the dense_layout contract above), so presence needs no
 // extra bitmap. Exposes the subset of the unordered_map surface that
 // Attr_store_impl and AttrRef use; iterators yield proxy entries by value.
+//
+// A flat key is an object index with tag bits below it: a graph node key is
+// `index << 3`, a pin key `index << 3 | 1` (the node as pin 0) or
+// `index << 3 | 3` (a PinEntry), a tree key `position << 1`. Indexing one
+// vector by the key would leave seven slots in eight empty for an attribute
+// that every node has. So the low key_lane_bits pick a LANE and the rest of
+// the key indexes that lane's vector: an attribute set on every node of a
+// graph costs sizeof(T) per node-table entry, and one set on tree positions
+// costs sizeof(T) per position. Lanes nobody writes stay empty vectors.
+// Iteration is in ascending key order, as persistence requires.
 template <typename T>
 class Dense_attr_map {
 public:
   using key_type    = Attr_key;
   using mapped_type = T;
 
+  static constexpr unsigned key_lane_bits = 3;
+  static constexpr size_t   lane_count    = size_t{1} << key_lane_bits;
+  // No object has this key: every iterator past the last entry is on it, so end() looks at no lane.
+  static constexpr Attr_key end_key       = ~Attr_key{0};
+
+private:
+  using lanes_type = std::array<std::vector<T>, lane_count>;
+
+  [[nodiscard]] static constexpr size_t lane_of(Attr_key key) noexcept { return static_cast<size_t>(key) & (lane_count - 1); }
+  [[nodiscard]] static constexpr size_t slot_of(Attr_key key) noexcept { return static_cast<size_t>(key >> key_lane_bits); }
+
+public:
   template <bool IsConst>
   class basic_iterator {
   public:
-    using vector_type    = std::conditional_t<IsConst, const std::vector<T>, std::vector<T>>;
+    using lanes_ptr      = std::conditional_t<IsConst, const lanes_type*, lanes_type*>;
     using reference_type = std::conditional_t<IsConst, const T&, T&>;
 
     struct entry {
@@ -480,57 +508,94 @@ public:
     };
 
     basic_iterator() = default;
-    basic_iterator(vector_type* data, size_t pos) : data_(data), pos_(pos) { skip_absent(); }
+    // On `key`: a present entry (find) or end_key. No lane is looked at until the iterator is advanced, so
+    // a lookup costs one bounds test and one compare.
+    basic_iterator(lanes_ptr lanes, Attr_key key) noexcept : lanes_(lanes), key_(key) {}
+    // On the first present entry at or after key 0.
+    [[nodiscard]] static basic_iterator first(lanes_ptr lanes) noexcept {
+      basic_iterator it(lanes, 0);
+      it.skip_absent();
+      return it;
+    }
 
-    [[nodiscard]] entry       operator*() const noexcept { return entry{static_cast<Attr_key>(pos_), (*data_)[pos_]}; }
+    [[nodiscard]] entry       operator*() const noexcept { return entry{key_, (*lanes_)[lane_of(key_)][slot_of(key_)]}; }
     [[nodiscard]] arrow_proxy operator->() const noexcept { return arrow_proxy{**this}; }
 
     basic_iterator& operator++() noexcept {
-      ++pos_;
+      ++key_;
       skip_absent();
       return *this;
     }
 
-    [[nodiscard]] bool operator==(const basic_iterator& other) const noexcept { return pos_ == other.pos_; }
+    [[nodiscard]] bool operator==(const basic_iterator& other) const noexcept { return key_ == other.key_; }
 
   private:
+    // Ascending key order is slot by slot, and lane by lane inside a slot. Only the lanes that were ever
+    // written are probed, so a walk costs one probe per allocated slot.
     void skip_absent() noexcept {
-      while (data_ != nullptr && pos_ < data_->size() && (*data_)[pos_] == T{}) {
-        ++pos_;
+      if (!scanned_) {
+        for (size_t lane = 0; lane < lane_count; ++lane) {
+          const auto size = (*lanes_)[lane].size();
+          if (size != 0) {
+            used_lanes_ |= 1U << lane;
+            slots_       = std::max(slots_, size);
+          }
+        }
+        scanned_ = true;
       }
+      size_t   slot = slot_of(key_);
+      unsigned from = static_cast<unsigned>(lane_of(key_));
+      for (; slot < slots_; ++slot, from = 0) {
+        for (unsigned pending = used_lanes_ & (~0U << from); pending != 0; pending &= pending - 1) {
+          const auto  lane   = static_cast<size_t>(std::countr_zero(pending));
+          const auto& values = (*lanes_)[lane];
+          if (slot < values.size() && !(values[slot] == T{})) {
+            key_ = (static_cast<Attr_key>(slot) << key_lane_bits) | lane;
+            return;
+          }
+        }
+      }
+      key_ = end_key;
     }
 
-    vector_type* data_ = nullptr;
-    size_t       pos_  = 0;
+    lanes_ptr lanes_      = nullptr;
+    Attr_key  key_        = end_key;
+    size_t    slots_      = 0;  // the longest lane (valid once scanned_)
+    unsigned  used_lanes_ = 0;  // bit per non-empty lane (valid once scanned_)
+    bool      scanned_    = false;
   };
 
   using iterator       = basic_iterator<false>;
   using const_iterator = basic_iterator<true>;
 
-  [[nodiscard]] iterator       begin() noexcept { return iterator(&data_, 0); }
-  [[nodiscard]] iterator       end() noexcept { return iterator(&data_, data_.size()); }
-  [[nodiscard]] const_iterator begin() const noexcept { return const_iterator(&data_, 0); }
-  [[nodiscard]] const_iterator end() const noexcept { return const_iterator(&data_, data_.size()); }
+  [[nodiscard]] iterator       begin() noexcept { return iterator::first(&lanes_); }
+  [[nodiscard]] iterator       end() noexcept { return iterator(&lanes_, end_key); }
+  [[nodiscard]] const_iterator begin() const noexcept { return const_iterator::first(&lanes_); }
+  [[nodiscard]] const_iterator end() const noexcept { return const_iterator(&lanes_, end_key); }
 
   [[nodiscard]] iterator find(Attr_key key) noexcept {
-    if (key < data_.size() && !(data_[key] == T{})) {
-      return iterator(&data_, static_cast<size_t>(key));
+    const auto& lane = lanes_[lane_of(key)];
+    if (slot_of(key) < lane.size() && !(lane[slot_of(key)] == T{})) {
+      return iterator(&lanes_, key);
     }
     return end();
   }
 
   [[nodiscard]] const_iterator find(Attr_key key) const noexcept {
-    if (key < data_.size() && !(data_[key] == T{})) {
-      return const_iterator(&data_, static_cast<size_t>(key));
+    const auto& lane = lanes_[lane_of(key)];
+    if (slot_of(key) < lane.size() && !(lane[slot_of(key)] == T{})) {
+      return const_iterator(&lanes_, key);
     }
     return end();
   }
 
   [[nodiscard]] T& operator[](Attr_key key) {
-    if (key >= data_.size()) {
-      data_.resize(static_cast<size_t>(key) + 1);
+    auto&      lane = lanes_[lane_of(key)];
+    const auto slot = slot_of(key);
+    if (slot >= lane.size()) {
+      lane.resize(slot + 1);
     }
-    return data_[static_cast<size_t>(key)];
+    return lane[slot];
   }
 
   template <typename V>
@@ -539,36 +604,55 @@ public:
   }
 
   size_t erase(Attr_key key) {
-    if (key < data_.size() && !(data_[key] == T{})) {
-      data_[static_cast<size_t>(key)] = T{};
+    auto&      lane = lanes_[lane_of(key)];
+    const auto slot = slot_of(key);
+    if (slot < lane.size() && !(lane[slot] == T{})) {
+      lane[slot] = T{};
       return 1;
     }
     return 0;
   }
 
-  void clear() noexcept { data_.clear(); }
+  void clear() noexcept {
+    for (auto& lane : lanes_) {
+      lane.clear();
+    }
+  }
 
   [[nodiscard]] size_t size() const noexcept {
     size_t count = 0;
-    for (const auto& value : data_) {
-      if (!(value == T{})) {
-        ++count;
+    for (const auto& lane : lanes_) {
+      for (const auto& value : lane) {
+        if (!(value == T{})) {
+          ++count;
+        }
       }
     }
     return count;
   }
 
   [[nodiscard]] bool empty() const noexcept {
-    for (const auto& value : data_) {
-      if (!(value == T{})) {
-        return false;
+    for (const auto& lane : lanes_) {
+      for (const auto& value : lane) {
+        if (!(value == T{})) {
+          return false;
+        }
       }
     }
     return true;
   }
 
+  // Slots allocated over all lanes: what the store costs, in units of sizeof(T).
+  [[nodiscard]] size_t slot_count() const noexcept {
+    size_t slots = 0;
+    for (const auto& lane : lanes_) {
+      slots += lane.size();
+    }
+    return slots;
+  }
+
 private:
-  std::vector<T> data_;
+  lanes_type lanes_;
 };
 
 #ifdef HHDS_ATTR_PROFILE
@@ -613,14 +697,14 @@ private:
     }
     std::fprintf(stderr, "\nhhds attr profile (flat stores, aggregated at store destruction):\n");
     for (const auto& [id, stat] : stats_) {
-      // Dense pays value_bytes per key slot; sparse pays key+value plus hash
-      // node overhead per present entry.
+      // Dense pays value_bytes per slot of each key lane it uses; sparse pays
+      // key+value plus hash node overhead per present entry.
       const uint64_t dense_bytes  = stat.key_span * stat.value_bytes;
       const uint64_t sparse_bytes = stat.entries * (sizeof(Attr_key) + stat.value_bytes + 16);
       const double   utilization
           = stat.key_span == 0 ? 0.0 : 100.0 * static_cast<double>(stat.entries) / static_cast<double>(stat.key_span);
       std::fprintf(stderr,
-                   "  %-44s layout=%-6s stores=%llu entries=%llu key_span=%llu util=%5.1f%% recommend=%s\n",
+                   "  %-44s layout=%-6s stores=%llu entries=%llu dense_slots=%llu util=%5.1f%% recommend=%s\n",
                    id.c_str(),
                    stat.is_dense ? "dense" : "sparse",
                    static_cast<unsigned long long>(stat.stores),
@@ -688,13 +772,17 @@ public:
 #ifdef HHDS_ATTR_PROFILE
   ~Attr_store_impl() override {
     if constexpr (std::is_same_v<typename Tag::storage, flat_storage>) {
-      uint64_t entries  = 0;
-      uint64_t key_span = 0;
+      // key_span: the slots a dense store allocates for these keys, one vector per key lane (Dense_attr_map).
+      uint64_t                                                  entries = 0;
+      std::array<uint64_t, Dense_attr_map<uint8_t>::lane_count> lane_slots{};
       for (const auto& [key, value] : map_) {
         ++entries;
-        if (static_cast<uint64_t>(key) + 1 > key_span) {
-          key_span = static_cast<uint64_t>(key) + 1;
-        }
+        auto& slots = lane_slots[static_cast<uint64_t>(key) & (Dense_attr_map<uint8_t>::lane_count - 1)];
+        slots       = std::max(slots, (static_cast<uint64_t>(key) >> Dense_attr_map<uint8_t>::key_lane_bits) + 1);
+      }
+      uint64_t key_span = 0;
+      for (const auto slots : lane_slots) {
+        key_span += slots;
       }
       if (entries != 0) {
         Attr_profile::instance().record(persistent_id_, attr_is_dense<Tag>(), sizeof(value_type), entries, key_span);
@@ -1334,11 +1422,15 @@ inline void AttrRef<Tag>::set() {
 template <Attribute Tag>
 inline void AttrRef<Tag>::set(const value_type& value) {
   static_assert(!attr_is_flag<Tag>(), "a flag attribute stores no value: use set()");
-  if constexpr (attr_is_dense<Tag>()) {
-    assert(!(value == value_type{}) && "AttrRef::set: dense_layout reserves value_type{} as not-present; use del()");
-  }
   auto& map = host_->attr_store(Tag{});
   host_->attr_debug_check_key_write();
+  if constexpr (attr_is_dense<Tag>()) {
+    if (value == value_type{}) {  // the absent state: the same as del(), and no slot is allocated for it
+      map.erase(key());
+      host_->attr_note_modified();
+      return;
+    }
+  }
   map[key()] = value;
   host_->attr_note_modified();
 }
@@ -1346,11 +1438,15 @@ inline void AttrRef<Tag>::set(const value_type& value) {
 template <Attribute Tag>
 inline void AttrRef<Tag>::set(value_type&& value) {
   static_assert(!attr_is_flag<Tag>(), "a flag attribute stores no value: use set()");
-  if constexpr (attr_is_dense<Tag>()) {
-    assert(!(value == value_type{}) && "AttrRef::set: dense_layout reserves value_type{} as not-present; use del()");
-  }
   auto& map = host_->attr_store(Tag{});
   host_->attr_debug_check_key_write();
+  if constexpr (attr_is_dense<Tag>()) {
+    if (value == value_type{}) {  // the absent state: the same as del(), and no slot is allocated for it
+      map.erase(key());
+      host_->attr_note_modified();
+      return;
+    }
+  }
   map[key()] = std::move(value);
   host_->attr_note_modified();
 }

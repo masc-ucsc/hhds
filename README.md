@@ -54,8 +54,10 @@ node.attr(mytool::attrs::bits).set(32);
 
 Attribute persistence supports scalar/trivially copyable payloads, strings,
 and `std::vector` payloads of those types (including nested vectors). Vector
-payloads work with sparse and dense layouts; an empty vector is the absent
-sentinel for a dense attribute, so use `del()` rather than storing it. Existing
+payloads work with sparse and dense layouts. A dense attribute costs one slot
+per object (node, pin or tree position) and treats the default value as
+absent: storing `value_type{}`, for instance an empty vector or a zero, is the
+same as `del()`. Existing
 scalar and string encodings are unchanged. Vector decoding reads bounded chunks
 instead of allocating directly from an untrusted count, and rejects truncated
 payloads. A persistent tag ID owns its payload schema; changing the element
