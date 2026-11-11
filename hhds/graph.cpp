@@ -1848,23 +1848,30 @@ auto Graph::NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool
   for (int i = 0; i < 4; ++i) {
     flush_slot((sedges_.sedges >> (i * SHIFT)) & SLOT_MASK);
   }
-  const uint64_t extra = sedges_extra;
-  for (int i = 0; i < 3; ++i) {
-    flush_slot((extra >> (i * SHIFT)) & SLOT_MASK);
-  }
-
-  if (ledge0) {
-    hs.insert(static_cast<Vid>(ledge0));
-  }
-  if (ledge1) {
-    hs.insert(static_cast<Vid>(ledge1));
+  // An inline subnode holds no edge: its ledge0 is the callee gid and its
+  // last extra slot the mark. Nothing is flushed, and the gid stays in ledge0,
+  // which is where overflow mode keeps it.
+  const bool inline_sub = inline_subnode();
+  const Nid  callee     = inline_sub ? static_cast<Nid>(ledge0) : Nid{0};
+  if (!inline_sub) {
+    const uint64_t extra = sedges_extra;
+    for (int i = 0; i < 3; ++i) {
+      flush_slot((extra >> (i * SHIFT)) & SLOT_MASK);
+    }
+    if (ledge0) {
+      hs.insert(static_cast<Vid>(ledge0));
+    }
+    if (ledge1) {
+      hs.insert(static_cast<Vid>(ledge1));
+    }
   }
 
   use_overflow         = 1;
   sedges_.sedges       = 0;
   sedges_.overflow_idx = idx;
   sedges_extra         = 0;
-  ledge0 = ledge1 = 0;
+  ledge0               = callee;
+  ledge1               = 0;
 
   if (other_id) {
     hs.insert(other_id);
@@ -1874,7 +1881,9 @@ auto Graph::NodeEntry::overflow_handling(Nid self_id, Vid other_id, OverflowPool
 }
 
 auto Graph::NodeEntry::add_edge(Nid self_id, Vid other_id, OverflowPool& pool) -> bool {
-  if (use_overflow) {
+  // An inline subnode holds no edge: its first one moves it to an overflow set
+  // (see inline_subnode()), which is where set_subnode used to put it at once.
+  if (use_overflow || inline_subnode()) {
     return overflow_handling(self_id, other_id, pool);
   }
 
@@ -1956,6 +1965,11 @@ auto Graph::NodeEntry::delete_edge(Nid self_id, Vid other_id, OverflowPool& pool
     return true;
   }
 
+  // An inline subnode holds no edge (its ledge0 is the callee gid, its last
+  // extra slot the mark): there is nothing to delete.
+  if (inline_subnode()) {
+    return false;
+  }
   // Fast in-place delete for inline edges (4 sedges + 3 sedges_extra + 2 ledges).
   // Zero out the matching slot; gaps are fine (add_edge and populate_vec both
   // handle them).
@@ -2024,6 +2038,9 @@ bool Graph::NodeEntry::has_edge_dir(bool driver_bit, const OverflowVec& overflow
       return true;
     }
   }
+  if (inline_subnode()) {
+    return false;  // no edge: ledge0 is the callee gid and the last extra slot the mark
+  }
   const uint64_t extra = sedges_extra;
   for (int slot = 0; slot < 3; ++slot) {
     const uint64_t raw = (extra >> (slot * 16)) & SLOT_MASK;
@@ -2045,31 +2062,40 @@ void Graph::NodeEntry::set_subnode(Nid self_nid, Gid gid, OverflowPool& pool) {
   if (gid == Gid_invalid) {
     return;
   }
-  // Ensure overflow mode so ledge0 is no longer used as an edge spill slot.
-  if (!use_overflow) {
-    const Vid self_vid = static_cast<Vid>(self_nid & ~static_cast<Nid>(3));
-    (void)overflow_handling(self_vid, 0, pool);  // 0 => promote only, no edge insert
-  }
-
-  // Store gid in ledge0 as (gid + 1) so ledge0==0 means "no subnode".
+  // ledge0 holds the gid; 0 means "no subnode" (a gid is never 0).
   const uint64_t g = static_cast<uint64_t>(gid);
-  assert(g < (1ULL << Nid_bits));  // since ledge0 is Nid_bits wide
+  assert(g != 0 && g < (1ULL << Nid_bits));  // since ledge0 is Nid_bits wide
+  if (!use_overflow && !inline_subnode()) {
+    if (sedges_.sedges == 0 && sedges_extra == 0 && ledge0 == 0 && ledge1 == 0) {
+      // The usual case, and every cell of a netlist: no edge in the entry
+      // itself. Mark it; no overflow set is needed (see inline_subnode()).
+      sedges_extra = kInlineSubMark;
+    } else {
+      // The entry holds port-0 edges: move them to an overflow set, which
+      // leaves ledge0 for the gid.
+      const Vid self_vid = static_cast<Vid>(self_nid & ~static_cast<Nid>(3));
+      (void)overflow_handling(self_vid, 0, pool);  // 0 => promote only, no edge insert
+    }
+  }
   ledge0 = static_cast<Nid>(g);
 }
 
 Gid Graph::NodeEntry::get_subnode() const noexcept {
-  if (!use_overflow || ledge0 == 0) {
+  if (ledge0 == 0 || (!use_overflow && !inline_subnode())) {
     return Gid_invalid;
   }
   return static_cast<Gid>(static_cast<uint64_t>(ledge0));
 }
 
-bool Graph::NodeEntry::has_subnode() const noexcept { return use_overflow && ledge0 != 0; }
+bool Graph::NodeEntry::has_subnode() const noexcept { return ledge0 != 0 && (use_overflow || inline_subnode()); }
 
 Graph::NodeEntry::EdgeRange::EdgeRange(const Graph::NodeEntry* node, Nid nid, const OverflowVec& overflow) noexcept {
   if (node->use_overflow) {
     overflow_set_ = &overflow[node->sedges_.overflow_idx];
     return;
+  }
+  if (node->inline_subnode()) {
+    return;  // no edge: ledge0 is the callee gid and the last extra slot the mark
   }
   // Inline: decode 4 packed sedge slots + 3 extra slots + ledge0/ledge1 into inline_buf_.
   constexpr uint64_t SLOT_MASK  = (1ULL << 16) - 1;  // grab 16 bits
@@ -6071,6 +6097,17 @@ auto Graph::get_driver_pins(Pin_class pin) -> absl::InlinedVector<Pin_class, 4> 
   return out;
 }
 
+size_t Graph::debug_overflow_entry_count() const {
+  size_t count = 0;
+  for (const auto& e : node_table) {
+    count += e.check_overflow() ? 1 : 0;
+  }
+  for (const auto& e : pin_table) {
+    count += e.check_overflow() ? 1 : 0;
+  }
+  return count;
+}
+
 bool Graph::debug_back_index_consistent() const {
   const auto& sets  = overflow_sets();
   const auto  check = [&](const auto& e) -> bool {
@@ -6396,10 +6433,13 @@ std::string Graph::print() const {
 // --------------------------------------------------------------------------
 
 static constexpr uint32_t GRAPH_BODY_MAGIC     = 0x48484742;  // "HHGB"
-static constexpr uint32_t GRAPH_BODY_VERSION   = 7;           // 6: constant pool section (Dlop values)
+static constexpr uint32_t GRAPH_BODY_VERSION   = 8;           // 6: constant pool section (Dlop values)
                                                               // 7: PinEntry direction flags (master_nid narrowed to
                                                               //    nid>>2; pin_table is bulk-written, so the layout
                                                               //    change is a format change)
+                                                              // 8: NodeEntry inline subnode (callee gid in ledge0
+                                                              //    without overflow mode): a reader of 7 would take
+                                                              //    the gid for an edge, so the number moves
 static constexpr uint32_t SUBNODE_LOOP_VERSION = 1;
 static constexpr uint32_t ENDIAN_CHECK         = 0x01020304;
 

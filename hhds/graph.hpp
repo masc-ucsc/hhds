@@ -1426,6 +1426,28 @@ class Graph : public Attr_host {
     [[nodiscard]] Gid  get_subnode() const noexcept;
     [[nodiscard]] bool has_subnode() const noexcept;
 
+    // INLINE SUBNODE. A subnode's callee gid lives in ledge0. In overflow mode
+    // that is all ledge0 is for. A subnode whose own entry holds NO edge keeps
+    // the gid there too, without an overflow set, and says so with a mark in
+    // the last sedges_extra slot: a slot value no edge encodes (sign set,
+    // magnitude zero). Every cell of a mapped netlist is such a node (its
+    // edges sit on its pins, port ids 1 and up), so promoting each one to
+    // overflow just to free ledge0 cost a hash set per cell.
+    //
+    // The first edge added to the entry itself (a port-0 edge) moves it to
+    // overflow mode, as set_subnode always did. A subnode with port-0 edges is
+    // therefore stored, and its edges are visited, exactly as before.
+    static constexpr uint64_t kExtraSlot2Mask = 0xFFFFULL << 32;
+    static constexpr uint64_t kInlineSubMark  = 0x8000ULL << 32;
+    [[nodiscard]] bool        inline_subnode() const noexcept {
+      return !use_overflow && (static_cast<uint64_t>(sedges_extra) & kExtraSlot2Mask) == kInlineSubMark;
+    }
+    //
+    // The free slots of an inline subnode are deliberately NOT used for edges:
+    // inline slots are visited in slot order, an overflow set in insertion
+    // order, and the order in which a subnode's port-0 edges are visited is
+    // observable (downstream results depend on it).
+
     static constexpr size_t MAX_EDGES = 8;
 
     class EdgeRange {
@@ -1632,6 +1654,10 @@ public:
   // are distinct back edges of the set (all of them when count <= 2), and a
   // driver visit order equal to a full scan's. O(total edges).
   [[nodiscard]] bool debug_back_index_consistent() const;
+  // Test hook: how many node/pin entries currently keep their edges in an
+  // overflow set. A subnode with no edge in its own entry needs none; one
+  // with a port-0 edge has one (see NodeEntry::inline_subnode).
+  [[nodiscard]] size_t debug_overflow_entry_count() const;
 
 private:
   // An attribute write does NOT make the BODY dirty. The node/pin tables are

@@ -231,7 +231,7 @@ int main() {
   // with a single accepted version there is no legacy file left to patch.)
   // Bump `kBodyVersion` in step with GRAPH_BODY_VERSION in graph.cpp.
   {
-    constexpr uint32_t kBodyVersion = 7;
+    constexpr uint32_t kBodyVersion = 8;
 
     const auto legacy = fs::temp_directory_path() / (tag + "_legacy");
     fs::remove_all(legacy);
@@ -505,7 +505,7 @@ int main() {
     }
     const auto       canonical = read_all(body);
     constexpr size_t header    = 3 * sizeof(uint32_t) + 3 * sizeof(uint64_t);
-    if (canonical.size() < header || version_of(body) != 7) {
+    if (canonical.size() < header || version_of(body) != 8) {
       std::printf("FAIL: unexpected body layout in pin-padding regression\n");
       return 1;
     }

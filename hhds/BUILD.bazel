@@ -408,6 +408,14 @@ cc_test(
 )
 
 cc_test(
+    name = "inline_subnode",
+    size = "small",
+    srcs = ["tests/inline_subnode.cpp"],
+    copts = COPTS,
+    deps = [":graph"],
+)
+
+cc_test(
     name = "attr_race_test",
     size = "small",
     srcs = ["tests/attr_race_test.cpp"],

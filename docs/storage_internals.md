@@ -101,7 +101,7 @@ For an OR gate with one input and one output (both port 0), the single
   0-41  nid           42b     Self node-table index
  42-57  type          16b     User-defined type tag
  58-99  next_pin_id   42b     Head of pin linked list (Pid-encoded)
-100-141 ledge0        42b     Long edge slot 0 / subnode Gid (when overflow)
+100-141 ledge0        42b     Long edge slot 0 / subnode Gid (see 2.3.1)
 142-183 ledge1        42b     Long edge slot 1
 184     use_overflow   1b     0 = inline edges, 1 = hash-set mode
 185-191 padding        7b
@@ -110,6 +110,25 @@ For an OR gate with one input and one output (both port 0), the single
  ─────────────────────────────────────────────────────────────
  Total: 256 bits = 32 bytes
 ```
+
+#### 2.3.1 Where a subnode keeps its callee Gid
+
+A subnode (`set_subnode`) stores the callee Gid in `ledge0`. A Gid is never 0,
+so `ledge0 == 0` means "no subnode". Two states tell that `ledge0` is a Gid
+and not an edge:
+
+- **Overflow mode** (`use_overflow == 1`): the edges are in the overflow set
+  and `ledge0` is free for the Gid.
+- **Inline subnode** (`use_overflow == 0` and the last `sedges_extra` slot holds
+  the mark `0x8000`, a slot value no edge encodes: sign set, magnitude zero).
+  The entry holds no edge of its own, so it needs no overflow set.
+
+`set_subnode` on an entry without edges makes it an inline subnode. That is
+every cell of a mapped netlist: a cell's edges sit on its pins (port ids 1 and
+up), not in its own entry. The first edge added to the entry itself (a port-0
+edge) moves it to overflow mode, and `set_subnode` on an entry that already
+holds edges moves it at once; so a subnode with port-0 edges is stored, and its
+edges are visited, in insertion order as for any overflowed entry.
 
 ### 2.4 PinEntry Layout (32 bytes, packed)
 
@@ -198,10 +217,11 @@ the individual entries.
 
 #### Subnode Storage (NodeEntry only)
 
-When a node links to a sub-graph (`set_subnode`), the entry is **forced into
-overflow mode** so that `ledge0` can be repurposed to store the `Gid` of the
-child graph. This means any node with a subnode always pays the hash-set cost
-for its edges.
+When a node links to a sub-graph (`set_subnode`), `ledge0` stores the `Gid` of
+the child graph. An entry that holds no edge of its own keeps it inline (the
+inline subnode of 2.3.1) and pays for no hash set; this is the case of every
+cell of a mapped netlist. An entry that holds port-0 edges, or gets its first
+one later, is in overflow mode, where `ledge0` is not an edge slot.
 
 ### 2.6 Pin Linked List
 
@@ -370,7 +390,7 @@ Forest
 | ID width             | 42-bit (Nid_bits)        | 64-bit (Tree_pos)       |
 | Edge storage         | Inline (6) then hash set | N/A (parent/child/sibling pointers) |
 | Deletion             | Tombstone                | Tombstone + intra-chunk compaction |
-| Hierarchy            | Gid in ledge0 (overflow) | Negative parent = subnode Tid |
+| Hierarchy            | Gid in ledge0 (2.3.1)    | Negative parent = subnode Tid |
 | Backing store        | `std::vector` (flat)     | `std::vector` (flat)    |
 
 ---
