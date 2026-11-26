@@ -31,7 +31,7 @@ bazel_dep(name = "bazel_skylib", version = "1.9.2")
 
 # Boost.Graph — header-only baseline used by hhds/bench/boost_*_bench to
 # emit the same CSV schema as hhds_bench for cross-library comparison.
-bazel_dep(name = "boost.graph", version = "1.90.0.bcr.1")
+bazel_dep(name = "boost.graph", version = "1.90.0.bcr.2")
 
 # Perfetto
 http_archive(
