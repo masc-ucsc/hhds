@@ -1125,6 +1125,39 @@ TEST(SourceLocator, RerunEditedFileEvictsStaleSpansViaMerge) {
   EXPECT_EQ(base.file_content_hash("f1.v"), Source_locator::content_hash_of("HEADER\naaaa\nbbbb\n"));
 }
 
+TEST(SourceLocator, ImportedUnchangedSpanSurvivesEditsAcrossGraphDeltas) {
+  const fs::path dir = fresh_dir("hhds_generation_import");
+  for (bool reload : {false, true}) {
+    Source_locator lib, fresh, first, second, loaded;
+    lib.set_file_content("x.prp", std::string("x=1\n"));
+    const auto original       = lib.mint("x.prp", 0, 1, 1);
+    const auto line           = lib.mint_line("x.prp", 1);
+    const auto unchanged_pair = lib.combine({original, line});
+    if (reload) {
+      lib.save(dir.string());
+      ASSERT_TRUE(lib.load(dir.string()));
+    }
+    fresh.set_file_content("x.prp", std::string("x=100\n"));
+    const auto unchanged    = fresh.mint("x.prp", 0, 1, 1);
+    const auto moved        = fresh.mint("x.prp", 2, 5, 1);
+    const auto changed_pair = fresh.combine({unchanged, moved});
+    ASSERT_EQ(fresh.combine({unchanged, fresh.mint_line("x.prp", 1)}), unchanged_pair);
+    first.set_base(&lib);
+    second.set_base(&lib);
+    first.import_from(fresh, moved);
+    second.import_from(fresh, unchanged_pair);
+    second.import_from(fresh, changed_pair);
+    (void)lib.merge(first);
+    (void)lib.merge(second);
+    ASSERT_EQ(lib.file_content_hash("x.prp"), fresh.file_content_hash("x.prp"));
+    lib.save(dir.string());
+    ASSERT_TRUE(loaded.load(dir.string()));
+    EXPECT_EQ(loaded.resolve_all(unchanged_pair).anchors.size(), 2u);
+    EXPECT_EQ(loaded.resolve_all(changed_pair).anchors.size(), 2u);
+  }
+  fs::remove_all(dir);
+}
+
 TEST(SourceLocator, RerunEvictsDependentCombineViaMerge) {
   Source_locator base;
   base.set_file_content("f1.v", std::string("aaaa\n"));

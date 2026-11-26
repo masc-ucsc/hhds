@@ -220,8 +220,24 @@ public:
     if (id == SourceId_invalid || &src == this) {
       return id;
     }
-    if (has(id)) {
-      return id;  // already present (shared base, or a previous import)
+    const Source_locator* owner  = nullptr;
+    const Entry*          source = src.find_entry(id, &owner);
+    if (source == nullptr) {
+      return SourceId_invalid;
+    }
+    if (&src == base_) {
+      return id;
+    }
+    // Repeated concrete imports can skip resolution once this version and
+    // payload are local. A matching byte range in the base alone may belong
+    // to a generation that another graph will evict during the next fold.
+    if (source->kind != Anchor_kind::Combine) {
+      const auto path = owner->file_path(source->file_id);
+      if (const Entry* e = find_local(id);
+          e && anchor_payload_equal(*e, *this, source->kind, path, source->start_byte, source->end_byte, source->line)
+          && file_content_hash(path) == src.file_content_hash(path)) {
+        return id;
+      }
     }
     const auto rs = src.resolve_all(id);
     if (rs.anchors.empty()) {
@@ -230,27 +246,33 @@ public:
     std::vector<SourceId> ids;
     ids.reserve(rs.anchors.size());
     for (const auto& a : rs.anchors) {
-      if (file_content(a.path) == nullptr) {
-        if (auto content = src.file_content(a.path); content != nullptr) {
-          // adopt, NOT set_file_content: the latter shares the bytes but still
-          // re-hashes them and rebuilds the line table from scratch. This runs
-          // once PER IMPORTING UNIT (uPass_tolg::Tolg::build imports each
-          // module's anchors), so re-deriving cost O(units x file_bytes) all
-          // over again -- 1040 modules over one 190 MB source wanted ~66 GB of
-          // line tables and threw bad_alloc inside derive_line_offsets. `src`
-          // already holds the hash and the table that belong to these exact
-          // bytes, so carry all three by pointer.
-          adopt_file_content(a.path, std::move(content), src.file_content_hash(a.path), src.file_line_offsets_shared(a.path));
+      const uint64_t incoming = src.file_content_hash(a.path);
+      const uint64_t current  = file_content_hash(a.path);
+      const bool     changed  = incoming != 0 && current != 0 && incoming != current;
+      if (changed) {
+        const auto it = path_to_fid_.find(a.path);
+        if (it != path_to_fid_.end()) {
+          evict_file_entries(it->second);
+        }
+      }
+      if (changed || file_content(a.path) == nullptr) {
+        if (auto content = src.file_content(a.path)) {
+          // Both tables refer to the same immutable source buffer. Share its
+          // precomputed line index as well, including for multi-unit files.
+          adopt_file_content(a.path, std::move(content), incoming, src.file_line_offsets_shared(a.path));
+        } else if (changed) {
+          File& f        = files_[intern_file(a.path)];
+          f.content      = nullptr;
+          f.content_hash = incoming;
+          f.line_offsets = src.file_line_offsets_shared(a.path);
         } else {
           if (file_line_offsets(a.path) == nullptr) {
-            if (auto offs = src.file_line_offsets_shared(a.path); offs != nullptr) {
-              set_file_line_offsets(a.path, std::move(offs));  // pointer carry, not a copy
+            if (auto offsets = src.file_line_offsets_shared(a.path)) {
+              set_file_line_offsets(a.path, std::move(offsets));
             }
           }
-          if (file_content_hash(a.path) == 0) {
-            if (const uint64_t h = src.file_content_hash(a.path); h != 0) {
-              set_file_content_hash(a.path, h);  // load_file_content can still validate here
-            }
+          if (current == 0 && incoming != 0) {
+            set_file_content_hash(a.path, incoming);
           }
         }
       }
@@ -933,6 +955,11 @@ private:
            && (kind != Anchor_kind::Line_only || e.line == line) && owner.file_path(e.file_id) == path;
   }
 
+  bool changed_generation(std::string_view path, uint64_t old_hash) const {
+    const uint64_t current = file_content_hash(path);
+    return old_hash != 0 && current != 0 && current != old_hash;
+  }
+
   // Probe from `want`: an existing identical payload dedups (own or base); a
   // different payload at the slot is a true collision and the id advances.
   SourceId insert_anchor(SourceId want, Anchor_kind kind, std::string_view path, uint64_t start_byte, uint64_t end_byte,
@@ -947,6 +974,9 @@ private:
         break;
       }
       if (anchor_payload_equal(*e, *owner, kind, path, start_byte, end_byte, line)) {
+        if (owner != this && changed_generation(path, owner->files_[e->file_id].content_hash)) {
+          break;  // re-mint locally before a fold evicts the older generation
+        }
         return id;
       }
       ++id;
@@ -978,6 +1008,9 @@ private:
         break;
       }
       if (anchor_payload_equal(*e, *owner, Anchor_kind::Span, file_path(file_id), start_byte, end_byte, line)) {
+        if (owner != this && changed_generation(file_path(file_id), owner->files_[e->file_id].content_hash)) {
+          break;  // re-mint locally before a fold evicts the older generation
+        }
         return id;
       }
       ++id;
@@ -1005,6 +1038,9 @@ private:
         break;
       }
       if (e->kind == Anchor_kind::Combine && e->parents == parents) {
+        if (owner != this && std::any_of(parents.begin(), parents.end(), [this](SourceId p) { return find_local(p) != nullptr; })) {
+          break;  // the older combine will disappear along with its shadowed parent
+        }
         return id;
       }
       ++id;
